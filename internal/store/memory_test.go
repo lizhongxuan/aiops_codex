@@ -108,6 +108,7 @@ func TestResetConversationClearsThreadCardsAndApprovals(t *testing.T) {
 	sessionID := "sess-reset"
 	st.EnsureSession(sessionID)
 	st.SetThread(sessionID, "thread-live")
+	st.SetTurn(sessionID, "turn-live")
 	st.UpsertCard(sessionID, model.Card{
 		ID:        "card-1",
 		Type:      "MessageCard",
@@ -122,11 +123,23 @@ func TestResetConversationClearsThreadCardsAndApprovals(t *testing.T) {
 		ThreadID:    "thread-live",
 		RequestedAt: model.NowString(),
 	})
+	st.AddChoice(sessionID, model.ChoiceRequest{
+		ID:          "choice-1",
+		TurnID:      "turn-live",
+		Status:      "pending",
+		RequestedAt: model.NowString(),
+	})
 	st.AddApprovalGrant(sessionID, model.ApprovalGrant{
 		ID:          "grant-1",
 		Type:        "command",
 		Fingerprint: "command|server-local|/tmp|rm /tmp/demo.txt",
 		CreatedAt:   model.NowString(),
+	})
+	st.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.Turn.Active = true
+		runtime.Turn.Phase = "executing"
+		runtime.Activity.CommandsRun = 2
+		runtime.Activity.CurrentReadingFile = "design_ui_0324.md"
 	})
 
 	st.ResetConversation(sessionID)
@@ -144,10 +157,67 @@ func TestResetConversationClearsThreadCardsAndApprovals(t *testing.T) {
 	if len(session.Approvals) != 0 {
 		t.Fatalf("expected approvals to be cleared, got %d", len(session.Approvals))
 	}
+	if len(session.Choices) != 0 {
+		t.Fatalf("expected choices to be cleared, got %d", len(session.Choices))
+	}
 	if len(session.ApprovalGrants) != 0 {
 		t.Fatalf("expected approval grants to be cleared, got %d", len(session.ApprovalGrants))
 	}
+	if session.Runtime.Turn.Active {
+		t.Fatalf("expected turn runtime to be inactive after reset")
+	}
+	if session.Runtime.Turn.Phase != "idle" {
+		t.Fatalf("expected turn phase to reset to idle, got %q", session.Runtime.Turn.Phase)
+	}
+	if session.Runtime.Activity.CommandsRun != 0 || session.Runtime.Activity.CurrentReadingFile != "" {
+		t.Fatalf("expected runtime activity to be cleared, got %#v", session.Runtime.Activity)
+	}
 	if got := st.SessionIDByThread("thread-live"); got != "" {
 		t.Fatalf("expected thread mapping to be removed, got %q", got)
+	}
+	if got := st.SessionIDByTurn("turn-live"); got != "" {
+		t.Fatalf("expected turn mapping to be removed, got %q", got)
+	}
+}
+
+func TestChoiceLifecycleInMemory(t *testing.T) {
+	st := New()
+	sessionID := "sess-choice"
+	st.EnsureSession(sessionID)
+
+	choice := model.ChoiceRequest{
+		ID:          "choice-1",
+		TurnID:      "turn-1",
+		Status:      "pending",
+		RequestedAt: model.NowString(),
+		Questions: []model.ChoiceQuestion{
+			{
+				Header:   "Environment",
+				Question: "请选择环境",
+				Options: []model.ChoiceOption{
+					{Label: "dev", Value: "dev"},
+					{Label: "prod", Value: "prod"},
+				},
+			},
+		},
+	}
+	st.AddChoice(sessionID, choice)
+
+	got, ok := st.Choice(sessionID, choice.ID)
+	if !ok {
+		t.Fatalf("expected choice to be found")
+	}
+	if got.Status != "pending" || len(got.Questions) != 1 {
+		t.Fatalf("unexpected choice payload: %#v", got)
+	}
+
+	st.ResolveChoice(sessionID, choice.ID, "completed", "2026-03-24T12:00:00Z")
+
+	resolved, ok := st.Choice(sessionID, choice.ID)
+	if !ok {
+		t.Fatalf("expected resolved choice to be found")
+	}
+	if resolved.Status != "completed" || resolved.ResolvedAt == "" {
+		t.Fatalf("expected choice to be resolved, got %#v", resolved)
 	}
 }

@@ -10,6 +10,8 @@ const store = useAppStore();
 
 const composerMessage = ref("");
 const scrollContainer = ref(null);
+const showFileDetails = ref(false);
+const showSearchDetails = ref(false);
 let isUserScrolling = false;
 
 /* ---- ThinkingCard local state ---- */
@@ -52,19 +54,44 @@ watch(
 );
 
 /* ---- Activity summary ---- */
+const activity = computed(() => store.runtime.activity);
+
+function truncateLabel(value, max = 88) {
+  if (!value || value.length <= max) return value;
+  return `${value.slice(0, max - 3)}...`;
+}
+
 const activitySummary = computed(() => {
-  const a = store.runtime.activity;
+  const a = activity.value;
   const parts = [];
-  if (a.currentReadingFile) {
-    return `现在浏览 ${a.currentReadingFile}`;
-  }
   if (a.filesViewed > 0) parts.push(`${a.filesViewed} 个文件`);
   if (a.searchCount > 0) parts.push(`${a.searchCount} 个搜索`);
   if (a.listCount > 0) parts.push(`${a.listCount} 个列表`);
   if (a.commandsRun > 0) parts.push(`${a.commandsRun} 个命令`);
   if (parts.length === 0) return "";
-  return `已浏览 ${parts.join("，")}`;
+  if (a.filesViewed > 0) return `已浏览 ${parts.join("，")}`;
+  return `已处理 ${parts.join("，")}`;
 });
+
+const currentReadingLine = computed(() => {
+  const file = activity.value.currentReadingFile;
+  return file ? `现在浏览 ${file}` : "";
+});
+
+const currentSearchLine = computed(() => {
+  const a = activity.value;
+  if (a.currentWebSearchQuery) {
+    return `现在搜索网页（${truncateLabel(a.currentWebSearchQuery)}）`;
+  }
+  if (!a.searchedWebQueries?.length) return "";
+  const latest = a.searchedWebQueries[a.searchedWebQueries.length - 1];
+  const label = latest?.query || latest?.label || "";
+  if (!label) return "";
+  return `已搜索网页（${truncateLabel(label)}）`;
+});
+
+const viewedFileDetails = computed(() => activity.value.viewedFiles || []);
+const searchedQueryDetails = computed(() => activity.value.searchedWebQueries || []);
 
 /* ---- Reconnection ---- */
 const showReconnectBanner = computed(() => {
@@ -156,10 +183,46 @@ async function decideApproval({ approvalId, decision }) {
   }
 }
 
+async function handleChoice({ requestId, answers }) {
+  try {
+    store.setTurnPhase("thinking");
+    const response = await fetch(`/api/v1/choices/${requestId}/answer`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answers }),
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      store.errorMessage = data.error || "choice submit failed";
+      store.setTurnPhase("failed");
+      return;
+    }
+    store.errorMessage = "";
+    isUserScrolling = false;
+  } catch (e) {
+    console.error(e);
+    store.errorMessage = "choice submit failed";
+    store.setTurnPhase("failed");
+  }
+}
+
 function retryConnection() {
   store.runtime.codex.retryAttempt = 0;
   store.runtime.codex.status = "reconnecting";
   store.connectWs();
+}
+
+function handleRetry() {
+  if (isStopped.value) {
+    retryConnection();
+    return;
+  }
+  store.fetchState();
+}
+
+function handleRefresh() {
+  window.location.reload();
 }
 
 function handleScroll(e) {
@@ -181,6 +244,22 @@ watch(
         }
       });
     }
+  },
+  { deep: true }
+);
+
+watch(
+  () => activity.value.viewedFiles,
+  () => {
+    showFileDetails.value = false;
+  },
+  { deep: true }
+);
+
+watch(
+  () => activity.value.searchedWebQueries,
+  () => {
+    showSearchDetails.value = false;
   },
   { deep: true }
 );
@@ -217,11 +296,57 @@ watch(
           class="stream-row"
           :class="getRowClass(card)"
         >
-          <CardItem :card="card" @approval="decideApproval" />
+          <CardItem
+            :card="card"
+            @approval="decideApproval"
+            @choice="handleChoice"
+            @retry="handleRetry"
+            @refresh="handleRefresh"
+          />
         </div>
 
-        <div v-if="activitySummary && showThinking" class="activity-summary">
-          {{ activitySummary }}
+        <div v-if="showThinking && (currentReadingLine || activitySummary || currentSearchLine)" class="activity-summary">
+          <button
+            v-if="currentReadingLine"
+            type="button"
+            class="activity-line plain"
+            :disabled="!viewedFileDetails.length"
+            @click="showFileDetails = !showFileDetails"
+          >
+            {{ currentReadingLine }}
+          </button>
+
+          <button
+            v-if="activitySummary"
+            type="button"
+            class="activity-line"
+            :disabled="!viewedFileDetails.length"
+            @click="showFileDetails = !showFileDetails"
+          >
+            {{ activitySummary }}
+          </button>
+
+          <button
+            v-if="currentSearchLine"
+            type="button"
+            class="activity-line"
+            :disabled="!searchedQueryDetails.length"
+            @click="showSearchDetails = !showSearchDetails"
+          >
+            {{ currentSearchLine }}
+          </button>
+
+          <div v-if="showFileDetails && viewedFileDetails.length" class="activity-details">
+            <div v-for="entry in viewedFileDetails" :key="entry.label || entry.path" class="activity-detail-item">
+              {{ entry.label || entry.path }}
+            </div>
+          </div>
+
+          <div v-if="showSearchDetails && searchedQueryDetails.length" class="activity-details">
+            <div v-for="entry in searchedQueryDetails" :key="entry.label || entry.query" class="activity-detail-item">
+              {{ entry.label || entry.query }}
+            </div>
+          </div>
         </div>
 
         <div v-if="showThinking" class="stream-row row-assistant">
@@ -275,12 +400,51 @@ watch(
 }
 
 .activity-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding: 6px 0;
   margin-left: 48px;
+  animation: fadeInUp 0.2s ease-out;
+}
+
+.activity-line {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0;
+  border: none;
+  background: transparent;
   font-size: var(--text-meta-size, 12px);
   color: var(--text-meta, #9ca3af);
   font-weight: 500;
-  animation: fadeInUp 0.2s ease-out;
+  cursor: pointer;
+}
+
+.activity-line:disabled {
+  cursor: default;
+}
+
+.activity-line:not(:disabled):hover {
+  color: #6b7280;
+}
+
+.activity-line.plain {
+  color: #9ca3af;
+}
+
+.activity-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+  padding-left: 12px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.activity-detail-item {
+  line-height: 1.5;
 }
 
 .row-notice {

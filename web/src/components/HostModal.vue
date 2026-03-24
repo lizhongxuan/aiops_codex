@@ -1,21 +1,29 @@
 <script setup>
+import { useRouter } from "vue-router";
 import Modal from "./Modal.vue";
 import { useAppStore } from "../store";
-import { ServerIcon, CheckCircle2Icon } from "lucide-vue-next";
+import { ServerIcon, CheckCircle2Icon, TerminalIcon } from "lucide-vue-next";
 
 const emit = defineEmits(["close"]);
 const store = useAppStore();
+const router = useRouter();
 
 function selectHost(hostId) {
   store.selectHost(hostId);
   emit("close");
+}
+
+function openTerminal(hostId) {
+  store.selectHost(hostId);
+  emit("close");
+  router.push(`/terminal/${hostId}`);
 }
 </script>
 
 <template>
   <Modal title="Select Host Environment" @close="emit('close')">
     <div class="host-list">
-      <button
+      <div
         v-for="host in store.snapshot.hosts"
         :key="host.id"
         class="host-item"
@@ -35,10 +43,19 @@ function selectHost(hostId) {
             <span v-if="!host.executable" class="badge readonly">只读展示</span>
           </div>
         </div>
+        <button
+          v-if="host.executable && host.status === 'online'"
+          type="button"
+          class="host-action-btn"
+          @click.stop="openTerminal(host.id)"
+        >
+          <TerminalIcon size="14" />
+          <span>进入终端</span>
+        </button>
         <div class="host-check" v-if="store.snapshot.selectedHostId === host.id">
           <CheckCircle2Icon size="20" class="text-blue" />
         </div>
-      </button>
+      </div>
       
       <div v-if="!store.snapshot.hosts.length" class="empty-state">
         No hosts available.
@@ -145,6 +162,25 @@ function selectHost(hostId) {
 
 .text-blue {
   color: #3b82f6;
+}
+
+.host-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid #dbe3ee;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.host-action-btn:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 .empty-state {

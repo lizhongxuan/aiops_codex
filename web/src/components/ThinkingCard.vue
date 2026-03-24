@@ -14,6 +14,7 @@ const phaseLabel = computed(() => {
     thinking: "正在思考",
     planning: "正在规划步骤",
     waiting_approval: "正在等待审批",
+    waiting_input: "正在等待你的选择",
     executing: "正在执行命令",
     finalizing: "正在整理结果",
   };

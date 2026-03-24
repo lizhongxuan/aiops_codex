@@ -1,9 +1,11 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from "vue";
+import { useRouter } from "vue-router";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ChevronRightIcon, ChevronDownIcon, TerminalIcon, CheckIcon, XIcon } from "lucide-vue-next";
+import { ChevronRightIcon, ChevronDownIcon, TerminalIcon, CheckIcon, XIcon, ExternalLinkIcon } from "lucide-vue-next";
 import "@xterm/xterm/css/xterm.css";
+import { useAppStore } from "../store";
 
 const props = defineProps({
   card: {
@@ -12,6 +14,8 @@ const props = defineProps({
   },
 });
 
+const router = useRouter();
+const store = useAppStore();
 const isExpanded = ref(true);
 const terminalContainer = ref(null);
 let term = null;
@@ -25,6 +29,9 @@ const isSuccess = computed(() => props.card.status === "completed");
 const isFailed = computed(() => props.card.status === "error" || props.card.status === "failed");
 
 const hasOutput = computed(() => !!props.card.output);
+const canOpenTerminal = computed(() => {
+  return store.selectedHost?.executable && store.selectedHost?.status === "online";
+});
 
 /* Human-readable duration */
 const durationLabel = computed(() => {
@@ -41,6 +48,12 @@ function toggleExpand() {
       setTimeout(() => fitAddon?.fit(), 10);
     }
   }
+}
+
+function openInTerminal(event) {
+  event.stopPropagation();
+  if (!canOpenTerminal.value) return;
+  router.push(`/terminal/${store.snapshot.selectedHostId}`);
 }
 
 function initTerminal() {
@@ -129,6 +142,15 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="term-meta">
+        <button
+          v-if="canOpenTerminal"
+          type="button"
+          class="term-open-btn"
+          @click="openInTerminal"
+        >
+          <ExternalLinkIcon size="12" />
+          <span>在终端中打开</span>
+        </button>
         <span class="term-cwd" v-if="card.cwd">{{ card.cwd }}</span>
         <span class="term-status-badge success" v-if="isSuccess">
           <CheckIcon size="12" /> Success
@@ -260,6 +282,25 @@ onBeforeUnmount(() => {
   gap: 12px;
   margin-left: 12px;
   flex-shrink: 0;
+}
+
+.term-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #dbe3ee;
+  background: #ffffff;
+  color: #475569;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.term-open-btn:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 .term-cwd {

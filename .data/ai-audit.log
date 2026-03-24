@@ -103,3 +103,30 @@
 {"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"你好\n","ts":"2026-03-24T19:05:31+08:00"}
 {"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"1\n","ts":"2026-03-24T19:08:10+08:00"}
 {"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"查股市\n","ts":"2026-03-24T19:08:23+08:00"}
+{"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"agent-local","hostname":"agent-local","os":"darwin","ts":"2026-03-24T21:26:05+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"你好\n","ts":"2026-03-24T21:30:19+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"查看本地有什么文件\n","ts":"2026-03-24T21:31:44+08:00"}
+{"approvalId":"approval-4603f4cb3a893028","command":"/bin/zsh -lc 'find . -maxdepth 2 -mindepth 1 | sort'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T21:32:07+08:00","type":"command"}
+{"approvalId":"approval-4603f4cb3a893028","decision":"accept","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T21:32:42+08:00","type":"command"}
+{"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"agent-local","hostname":"agent-local","os":"darwin","ts":"2026-03-24T21:49:53+08:00"}
+{"event":"agent.timeout","hostId":"agent-local","ts":"2026-03-24T21:52:20+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"你好","ts":"2026-03-24T22:05:10+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"你有哪些执行状态?\n","ts":"2026-03-24T22:05:25+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"还有一些读文件,搜索文件是什么状态?\n\n","ts":"2026-03-24T22:06:21+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"可以","ts":"2026-03-24T22:06:45+08:00"}
+{"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"agent-local","hostname":"agent-local","os":"darwin","ts":"2026-03-24T22:08:59+08:00"}
+{"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"agent-local","hostname":"agent-local","os":"darwin","ts":"2026-03-24T22:10:25+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"你好呀","ts":"2026-03-24T22:13:04+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"看下cpu占用\n","ts":"2026-03-24T22:13:49+08:00"}
+{"approvalId":"approval-50545c339cdbeeca","command":"/bin/zsh -lc 'top -l 1 -o cpu | head -n 20'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:14:01+08:00","type":"command"}
+{"approvalId":"approval-c01b27cb9fa2a048","command":"/bin/zsh -lc 'ps -Ao pid,pcpu,pmem,comm -r | head -n 10'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:14:01+08:00","type":"command"}
+{"approvalId":"approval-50545c339cdbeeca","decision":"accept","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:14:15+08:00","type":"command"}
+{"approvalId":"approval-c01b27cb9fa2a048","decision":"accept","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:14:18+08:00","type":"command"}
+{"approvalId":"approval-03d9c4b1f7fbb7a4","command":"/bin/zsh -lc 'sysctl -n vm.loadavg'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:14:34+08:00","type":"command"}
+{"approvalId":"approval-fa995ac20147f296","command":"/bin/zsh -lc uptime","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:14:34+08:00","type":"command"}
+{"approvalId":"approval-405e22374df197fc","command":"/bin/zsh -lc 'iostat -c 2 2'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:14:34+08:00","type":"command"}
+{"approvalId":"approval-03d9c4b1f7fbb7a4","decision":"accept","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:15:31+08:00","type":"command"}
+{"approvalId":"approval-fa995ac20147f296","decision":"accept","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:15:34+08:00","type":"command"}
+{"approvalId":"approval-405e22374df197fc","decision":"accept","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:15:37+08:00","type":"command"}
+{"approvalId":"approval-b237e8820d321d05","command":"/bin/zsh -lc 'sysctl -n hw.ncpu'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:15:48+08:00","type":"command"}
+{"approvalId":"approval-b237e8820d321d05","decision":"accept","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-24T22:15:53+08:00","type":"command"}

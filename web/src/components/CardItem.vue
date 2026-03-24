@@ -61,10 +61,7 @@ const isMessage = computed(() => {
     </template>
 
     <template v-else-if="isMessage">
-      <div v-if="card.text === 'status: completed'" class="task-completed-divider">
-        ---- 本次任务执行完毕 ----
-      </div>
-      <MessageCard v-else :card="card" />
+      <MessageCard :card="card" />
     </template>
 
     <!-- PlanCard -->
@@ -133,12 +130,5 @@ const isMessage = computed(() => {
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-.task-completed-divider {
-  text-align: center;
-  color: #94a3b8;
-  font-size: 12px;
-  margin: 16px 0;
-  width: 100%;
 }
 </style>

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/gorilla/websocket"
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
@@ -62,6 +63,16 @@ type chatRequest struct {
 
 type approvalDecisionRequest struct {
 	Decision string `json:"decision"`
+}
+
+type choiceAnswerInput struct {
+	Value   string `json:"value"`
+	Label   string `json:"label,omitempty"`
+	IsOther bool   `json:"isOther,omitempty"`
+}
+
+type choiceAnswerRequest struct {
+	Answers []choiceAnswerInput `json:"answers"`
 }
 
 type loginResponse struct {
@@ -138,6 +149,7 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/auth/oauth/callback", a.withSession(a.handleOAuthCallback))
 	httpMux.HandleFunc("/api/v1/chat/message", a.withSession(a.handleChatMessage))
 	httpMux.HandleFunc("/api/v1/approvals/", a.withSession(a.handleApprovalDecision))
+	httpMux.HandleFunc("/api/v1/choices/", a.withSession(a.handleChoiceAnswer))
 	httpMux.HandleFunc("/ws", a.withSession(a.handleWS))
 	httpMux.Handle("/", a.serveFrontend())
 
@@ -620,7 +632,7 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 
 	userCard := model.Card{
 		ID:        model.NewID("msg"),
-		Type:      "MessageCard",
+		Type:      "UserMessageCard",
 		Role:      "user",
 		Text:      req.Message,
 		Status:    "completed",
@@ -628,6 +640,7 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		UpdatedAt: model.NowString(),
 	}
 	a.store.UpsertCard(sessionID, userCard)
+	a.startRuntimeTurn(sessionID, req.HostID)
 	a.broadcastSnapshot(sessionID)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -635,16 +648,17 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 
 	err := a.startTurn(ctx, sessionID, req)
 	if err != nil {
-		resultCard := model.Card{
-			ID:        model.NewID("result"),
-			Type:      "ResultCard",
+		a.finishRuntimeTurn(sessionID, "failed")
+		a.store.UpsertCard(sessionID, model.Card{
+			ID:        model.NewID("error"),
+			Type:      "ErrorCard",
 			Title:     "Turn failed",
+			Message:   err.Error(),
 			Text:      err.Error(),
 			Status:    "failed",
 			CreatedAt: model.NowString(),
 			UpdatedAt: model.NowString(),
-		}
-		a.store.UpsertCard(sessionID, resultCard)
+		})
 		a.broadcastSnapshot(sessionID)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -659,7 +673,7 @@ func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) 
 		return err
 	}
 
-	err = a.requestTurn(ctx, threadID, req)
+	err = a.requestTurn(ctx, sessionID, threadID, req)
 	if err == nil {
 		return nil
 	}
@@ -676,12 +690,12 @@ func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) 
 	if err != nil {
 		return err
 	}
-	return a.requestTurn(ctx, threadID, req)
+	return a.requestTurn(ctx, sessionID, threadID, req)
 }
 
-func (a *App) requestTurn(ctx context.Context, threadID string, req chatRequest) error {
+func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req chatRequest) error {
 	var result map[string]any
-	return a.codex.Request(ctx, "turn/start", map[string]any{
+	err := a.codex.Request(ctx, "turn/start", map[string]any{
 		"threadId":       threadID,
 		"cwd":            a.cfg.DefaultWorkspace,
 		"approvalPolicy": "untrusted",
@@ -698,16 +712,23 @@ func (a *App) requestTurn(ctx context.Context, threadID string, req chatRequest)
 			{"type": "text", "text": req.Message},
 		},
 	}, &result)
+	if err != nil {
+		return err
+	}
+	if turnID := getTurnID(result); turnID != "" {
+		a.store.SetTurn(sessionID, turnID)
+	}
+	return nil
 }
 
 func (a *App) appendThreadResetCard(sessionID string) {
 	now := model.NowString()
 	a.store.UpsertCard(sessionID, model.Card{
-		ID:        model.NewID("result"),
-		Type:      "ResultCard",
+		ID:        model.NewID("notice"),
+		Type:      "NoticeCard",
 		Title:     "Thread restarted",
 		Text:      "The previous Codex thread was no longer available, so this request is continuing in a fresh thread.",
-		Status:    "completed",
+		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
@@ -759,6 +780,11 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 
 	cardStatus := approvalStatusFromDecision(decision)
 	a.store.ResolveApproval(sessionID, approvalID, cardStatus, model.NowString())
+	nextPhase := "thinking"
+	if decision == "accept" || decision == "accept_session" {
+		nextPhase = "executing"
+	}
+	a.setRuntimeTurnPhase(sessionID, nextPhase)
 	a.audit("approval.decision", map[string]any{
 		"sessionId":  sessionID,
 		"approvalId": approvalID,
@@ -777,6 +803,80 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 			card.UpdatedAt = model.NowString()
 		})
 	}
+	a.broadcastSnapshot(sessionID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	choiceID := strings.TrimPrefix(r.URL.Path, "/api/v1/choices/")
+	choiceID = strings.TrimSuffix(choiceID, "/answer")
+	choice, ok := a.store.Choice(sessionID, choiceID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "choice not found"})
+		return
+	}
+
+	var req choiceAnswerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if len(req.Answers) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "answers are required"})
+		return
+	}
+	if len(choice.Questions) > 0 && len(req.Answers) != len(choice.Questions) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "answers count does not match questions"})
+		return
+	}
+
+	codexAnswers := make([]map[string]any, 0, len(req.Answers))
+	for _, answer := range req.Answers {
+		value := strings.TrimSpace(answer.Value)
+		if value == "" {
+			value = strings.TrimSpace(answer.Label)
+		}
+		if value == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "all answers must be non-empty"})
+			return
+		}
+		codexAnswer := map[string]any{
+			"value": value,
+			"label": emptyToNil(strings.TrimSpace(answer.Label)),
+		}
+		if answer.IsOther {
+			codexAnswer["isOther"] = true
+		}
+		codexAnswers = append(codexAnswers, codexAnswer)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := a.codex.Respond(ctx, choice.RequestIDRaw, map[string]any{
+		"answers": codexAnswers,
+	}); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	now := model.NowString()
+	a.store.ResolveChoice(sessionID, choiceID, "completed", now)
+	a.store.UpdateCard(sessionID, choice.ItemID, func(card *model.Card) {
+		card.Status = "completed"
+		card.AnswerSummary = choiceAnswerSummary(choice.Questions, req.Answers)
+		card.UpdatedAt = now
+	})
+	a.setRuntimeTurnPhase(sessionID, "thinking")
+	a.audit("choice.answer", map[string]any{
+		"sessionId": sessionID,
+		"choiceId":  choiceID,
+		"answers":   len(req.Answers),
+	})
 	a.broadcastSnapshot(sessionID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -863,11 +963,19 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			})
 			a.broadcastSnapshot(targetSessionID)
 		}
+	case "turn/started":
+		sessionID := a.sessionIDFromPayload(payload)
+		if sessionID == "" {
+			return
+		}
+		a.bindTurnToSession(sessionID, payload)
 	case "turn/plan/updated":
 		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
 		if sessionID == "" {
 			return
 		}
+		a.bindTurnToSession(sessionID, payload)
+		a.setRuntimeTurnPhase(sessionID, "planning")
 		cardID := "plan-" + getString(payload, "turnId")
 		planItems := toPlanItems(payload["plan"])
 		card := model.Card{
@@ -884,10 +992,11 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 	case "item/started":
 		a.handleItemStarted(payload)
 	case "item/agentMessage/delta":
-		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			return
 		}
+		a.bindTurnToSession(sessionID, payload)
 		itemID := getString(payload, "itemId")
 		if session := a.store.Session(sessionID); session != nil {
 			exists := false
@@ -901,7 +1010,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 				now := model.NowString()
 				a.store.UpsertCard(sessionID, model.Card{
 					ID:        itemID,
-					Type:      "MessageCard",
+					Type:      "AssistantMessageCard",
 					Role:      "assistant",
 					Status:    "inProgress",
 					CreatedAt: now,
@@ -915,10 +1024,11 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		})
 		a.broadcastSnapshot(sessionID)
 	case "item/commandExecution/outputDelta":
-		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			return
 		}
+		a.bindTurnToSession(sessionID, payload)
 		itemID := getString(payload, "itemId")
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
 			card.Output += getString(payload, "delta")
@@ -926,10 +1036,11 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		})
 		a.broadcastSnapshot(sessionID)
 	case "item/fileChange/outputDelta":
-		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			return
 		}
+		a.bindTurnToSession(sessionID, payload)
 		itemID := getString(payload, "itemId")
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
 			card.Output += getString(payload, "delta")
@@ -939,43 +1050,53 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 	case "item/completed":
 		a.handleItemCompleted(payload)
 	case "serverRequest/resolved":
-		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			return
 		}
+		a.bindTurnToSession(sessionID, payload)
 		a.broadcastSnapshot(sessionID)
 	case "turn/completed":
-		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			return
 		}
+		a.bindTurnToSession(sessionID, payload)
 		turn := getMap(payload, "turn")
-		card := model.Card{
-			ID:        "result-" + getString(turn, "id"),
-			Type:      "ResultCard",
-			Title:     "Turn completed",
-			Text:      "status: " + getString(turn, "status"),
-			Status:    getString(turn, "status"),
-			CreatedAt: model.NowString(),
-			UpdatedAt: model.NowString(),
+		turnStatus := getString(turn, "status")
+		a.store.UpdateCard(sessionID, "plan-"+getString(turn, "id"), func(card *model.Card) {
+			card.Status = normalizeCardStatus(turnStatus)
+			card.UpdatedAt = model.NowString()
+		})
+		if normalizeCardStatus(turnStatus) == "completed" {
+			a.finishRuntimeTurn(sessionID, "completed")
+		} else {
+			a.finishRuntimeTurn(sessionID, "failed")
 		}
-		a.store.UpsertCard(sessionID, card)
-		log.Printf("turn completed session=%s turn=%s status=%s", sessionID, getString(turn, "id"), getString(turn, "status"))
+		log.Printf("turn completed session=%s turn=%s status=%s", sessionID, getString(turn, "id"), turnStatus)
 		a.broadcastSnapshot(sessionID)
 	case "error":
-		sessionID := a.store.SessionIDs()
-		text := getString(getMap(payload, "error"), "message")
-		for _, id := range sessionID {
-			card := model.Card{
-				ID:        model.NewID("result"),
-				Type:      "ResultCard",
+		errorPayload := getMap(payload, "error")
+		text := getString(errorPayload, "message")
+		threadID := getString(payload, "threadId")
+		sessionIDs := a.store.SessionIDs()
+		if threadID != "" {
+			if sessionID := a.store.SessionIDByThread(threadID); sessionID != "" {
+				sessionIDs = []string{sessionID}
+			}
+		}
+		for _, id := range sessionIDs {
+			a.finishRuntimeTurn(id, "failed")
+			a.store.UpsertCard(id, model.Card{
+				ID:        model.NewID("error"),
+				Type:      "ErrorCard",
 				Title:     "Error",
+				Message:   text,
 				Text:      text,
 				Status:    "failed",
 				CreatedAt: model.NowString(),
 				UpdatedAt: model.NowString(),
-			}
-			a.store.UpsertCard(id, card)
+			})
 			a.broadcastSnapshot(id)
 		}
 	}
@@ -998,10 +1119,12 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			"chatgptPlanType":  emptyToNil(tokens.ChatGPTPlanType),
 		})
 	case "item/commandExecution/requestApproval":
-		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			return
 		}
+		a.bindTurnToSession(sessionID, payload)
+		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
 		hostID := model.ServerLocalHostID
 		if session := a.store.Session(sessionID); session != nil && session.SelectedHostID != "" {
 			hostID = session.SelectedHostID
@@ -1013,8 +1136,8 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			Fingerprint:  approvalFingerprintForCommand(hostID, getString(payload, "command"), getString(payload, "cwd")),
 			Type:         "command",
 			Status:       "pending",
-			ThreadID:     getString(payload, "threadId"),
-			TurnID:       getString(payload, "turnId"),
+			ThreadID:     getStringAny(payload, "threadId", "thread_id"),
+			TurnID:       getStringAny(payload, "turnId", "turn_id"),
 			ItemID:       getString(payload, "itemId"),
 			Command:      getString(payload, "command"),
 			Cwd:          getString(payload, "cwd"),
@@ -1054,10 +1177,12 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		a.store.UpsertCard(sessionID, card)
 		a.broadcastSnapshot(sessionID)
 	case "item/fileChange/requestApproval":
-		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			return
 		}
+		a.bindTurnToSession(sessionID, payload)
+		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
 		itemID := getString(payload, "itemId")
 		cachedItem := a.store.Item(sessionID, itemID)
 		hostID := model.ServerLocalHostID
@@ -1072,8 +1197,8 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			Fingerprint:  approvalFingerprintForFileChange(hostID, getString(payload, "grantRoot"), changes),
 			Type:         "file_change",
 			Status:       "pending",
-			ThreadID:     getString(payload, "threadId"),
-			TurnID:       getString(payload, "turnId"),
+			ThreadID:     getStringAny(payload, "threadId", "thread_id"),
+			TurnID:       getStringAny(payload, "turnId", "turn_id"),
 			ItemID:       itemID,
 			Reason:       getString(payload, "reason"),
 			GrantRoot:    getString(payload, "grantRoot"),
@@ -1110,48 +1235,99 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		}
 		a.store.UpsertCard(sessionID, card)
 		a.broadcastSnapshot(sessionID)
+	case "request_user_input":
+		sessionID := a.sessionIDFromPayload(payload)
+		if sessionID == "" {
+			_ = a.codex.RespondError(context.Background(), string(rawID), -32000, "session not found for request_user_input")
+			return
+		}
+		a.bindTurnToSession(sessionID, payload)
+		questions := toChoiceQuestions(payload["questions"])
+		if len(questions) == 0 {
+			_ = a.codex.RespondError(context.Background(), string(rawID), -32602, "request_user_input requires questions")
+			return
+		}
+		a.setRuntimeTurnPhase(sessionID, "waiting_input")
+		now := model.NowString()
+		choiceID := model.NewID("choice")
+		choice := model.ChoiceRequest{
+			ID:           choiceID,
+			RequestIDRaw: string(rawID),
+			ThreadID:     getStringAny(payload, "threadId", "thread_id"),
+			TurnID:       getStringAny(payload, "turnId", "turn_id"),
+			ItemID:       choiceID,
+			Status:       "pending",
+			Questions:    questions,
+			RequestedAt:  now,
+		}
+		card := model.Card{
+			ID:        choice.ItemID,
+			Type:      "ChoiceCard",
+			Title:     choiceCardTitle(questions),
+			RequestID: choice.ID,
+			Question:  questions[0].Question,
+			Options:   questions[0].Options,
+			Questions: questions,
+			Status:    "pending",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		a.store.AddChoice(sessionID, choice)
+		a.store.UpsertCard(sessionID, card)
+		a.audit("choice.requested", map[string]any{
+			"sessionId": sessionID,
+			"choiceId":  choice.ID,
+			"questions": len(questions),
+		})
+		a.broadcastSnapshot(sessionID)
 	}
 }
 
 func (a *App) handleItemStarted(payload map[string]any) {
-	sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+	sessionID := a.sessionIDFromPayload(payload)
 	if sessionID == "" {
 		return
 	}
+	a.bindTurnToSession(sessionID, payload)
 	item := getMap(payload, "item")
 	itemID := getString(item, "id")
 	itemType := getString(item, "type")
 	a.store.RememberItem(sessionID, itemID, item)
+	a.updateActivityFromItem(sessionID, item, false)
 
 	now := model.NowString()
 	switch itemType {
 	case "commandExecution":
+		a.setRuntimeTurnPhase(sessionID, "executing")
+		a.incrementCommandCount(sessionID)
 		card := model.Card{
 			ID:        itemID,
-			Type:      "StepCard",
+			Type:      "CommandCard",
 			Title:     "Command execution",
 			Command:   getString(item, "command"),
 			Cwd:       getString(item, "cwd"),
-			Status:    getString(item, "status"),
+			Status:    normalizeCardStatus(getString(item, "status")),
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
 		a.store.UpsertCard(sessionID, card)
 	case "fileChange":
+		a.setRuntimeTurnPhase(sessionID, "executing")
 		card := model.Card{
 			ID:        itemID,
-			Type:      "StepCard",
+			Type:      "FileChangeCard",
 			Title:     "File change",
-			Status:    getString(item, "status"),
+			Status:    normalizeCardStatus(getString(item, "status")),
 			Changes:   toChanges(item["changes"]),
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
 		a.store.UpsertCard(sessionID, card)
 	case "agentMessage":
+		a.setRuntimeTurnPhase(sessionID, "finalizing")
 		card := model.Card{
 			ID:        itemID,
-			Type:      "MessageCard",
+			Type:      "AssistantMessageCard",
 			Role:      "assistant",
 			Status:    "inProgress",
 			CreatedAt: now,
@@ -1163,14 +1339,16 @@ func (a *App) handleItemStarted(payload map[string]any) {
 }
 
 func (a *App) handleItemCompleted(payload map[string]any) {
-	sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+	sessionID := a.sessionIDFromPayload(payload)
 	if sessionID == "" {
 		return
 	}
+	a.bindTurnToSession(sessionID, payload)
 	item := getMap(payload, "item")
 	itemID := getString(item, "id")
 	itemType := getString(item, "type")
 	a.store.RememberItem(sessionID, itemID, item)
+	a.updateActivityFromItem(sessionID, item, true)
 
 	switch itemType {
 	case "agentMessage":
@@ -1183,35 +1361,17 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 		})
 	case "commandExecution":
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
-			card.Status = getString(item, "status")
+			card.Status = normalizeCardStatus(getString(item, "status"))
 			if output := getString(item, "aggregatedOutput"); output != "" && card.Output == "" {
 				card.Output = output
 			}
 			card.UpdatedAt = model.NowString()
 		})
-		a.store.UpsertCard(sessionID, model.Card{
-			ID:        "result-" + itemID,
-			Type:      "ResultCard",
-			Title:     "Command result",
-			Text:      fmt.Sprintf("exit code: %.0f", getFloat(item, "exitCode")),
-			Status:    getString(item, "status"),
-			CreatedAt: model.NowString(),
-			UpdatedAt: model.NowString(),
-		})
 	case "fileChange":
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
-			card.Status = getString(item, "status")
+			card.Status = normalizeCardStatus(getString(item, "status"))
 			card.Changes = toChanges(item["changes"])
 			card.UpdatedAt = model.NowString()
-		})
-		a.store.UpsertCard(sessionID, model.Card{
-			ID:        "result-" + itemID,
-			Type:      "ResultCard",
-			Title:     "File change result",
-			Text:      fmt.Sprintf("%d file changes", len(toChanges(item["changes"]))),
-			Status:    getString(item, "status"),
-			CreatedAt: model.NowString(),
-			UpdatedAt: model.NowString(),
 		})
 	}
 	a.broadcastSnapshot(sessionID)
@@ -1239,14 +1399,13 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 	approval.ResolvedAt = now
 	a.store.AddApproval(sessionID, approval)
 	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+	a.setRuntimeTurnPhase(sessionID, "executing")
 	a.store.UpsertCard(sessionID, model.Card{
 		ID:        "auto-approval-" + approval.ItemID,
-		Type:      "StepCard",
+		Type:      "NoticeCard",
 		Title:     "Auto-approved for session",
-		Status:    "autoApproved",
-		Command:   approval.Command,
-		Cwd:       approval.Cwd,
-		Changes:   approval.Changes,
+		Text:      autoApprovalNoticeText(approval),
+		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
@@ -1260,6 +1419,128 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 	})
 	a.broadcastSnapshot(sessionID)
 	return true
+}
+
+func (a *App) startRuntimeTurn(sessionID, hostID string) {
+	startedAt := model.NowString()
+	a.store.ClearTurn(sessionID)
+	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.Turn.Active = true
+		runtime.Turn.Phase = "thinking"
+		runtime.Turn.HostID = defaultHostID(hostID)
+		runtime.Turn.StartedAt = startedAt
+		runtime.Activity = model.ActivityRuntime{
+			ViewedFiles:        make([]model.ActivityEntry, 0),
+			SearchedWebQueries: make([]model.ActivityEntry, 0),
+		}
+	})
+}
+
+func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
+	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.Turn.Active = phase != "" && phase != "idle" && phase != "completed" && phase != "failed"
+		runtime.Turn.Phase = phase
+		if runtime.Turn.StartedAt == "" && runtime.Turn.Active {
+			runtime.Turn.StartedAt = model.NowString()
+		}
+		if runtime.Turn.HostID == "" {
+			runtime.Turn.HostID = model.ServerLocalHostID
+		}
+	})
+}
+
+func (a *App) finishRuntimeTurn(sessionID, phase string) {
+	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.Turn.Active = false
+		runtime.Turn.Phase = phase
+		runtime.Activity.CurrentReadingFile = ""
+		runtime.Activity.CurrentWebSearchQuery = ""
+	})
+}
+
+func (a *App) incrementCommandCount(sessionID string) {
+	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.Activity.CommandsRun++
+	})
+}
+
+func (a *App) bindTurnToSession(sessionID string, payload map[string]any) {
+	turnID := getTurnID(payload)
+	if sessionID == "" || turnID == "" {
+		return
+	}
+	a.store.SetTurn(sessionID, turnID)
+}
+
+func (a *App) sessionIDFromPayload(payload map[string]any) string {
+	if sessionID := a.store.SessionIDByThread(getStringAny(payload, "threadId", "thread_id")); sessionID != "" {
+		return sessionID
+	}
+	if sessionID := a.store.SessionIDByTurn(getTurnID(payload)); sessionID != "" {
+		return sessionID
+	}
+	activeSessionID := ""
+	for _, sessionID := range a.store.SessionIDs() {
+		session := a.store.Session(sessionID)
+		if session == nil || !session.Runtime.Turn.Active {
+			continue
+		}
+		if activeSessionID != "" {
+			return ""
+		}
+		activeSessionID = sessionID
+	}
+	return activeSessionID
+}
+
+func (a *App) updateActivityFromItem(sessionID string, item map[string]any, completed bool) {
+	kind, entry, currentLabel, ok := detectActivitySignal(item)
+	if !ok {
+		return
+	}
+
+	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		switch kind {
+		case "file_read":
+			if completed {
+				if runtime.Activity.CurrentReadingFile == currentLabel {
+					runtime.Activity.CurrentReadingFile = ""
+				}
+				appendUniqueActivityEntry(&runtime.Activity.ViewedFiles, entry, func(existing, next model.ActivityEntry) bool {
+					return existing.Path != "" && existing.Path == next.Path
+				})
+				runtime.Activity.FilesViewed = len(runtime.Activity.ViewedFiles)
+				return
+			}
+			runtime.Activity.CurrentReadingFile = currentLabel
+		case "web_search":
+			if completed {
+				if runtime.Activity.CurrentWebSearchQuery == currentLabel {
+					runtime.Activity.CurrentWebSearchQuery = ""
+				}
+				appendUniqueActivityEntry(&runtime.Activity.SearchedWebQueries, entry, func(existing, next model.ActivityEntry) bool {
+					return existing.Query != "" && existing.Query == next.Query
+				})
+				runtime.Activity.SearchCount = len(runtime.Activity.SearchedWebQueries)
+				return
+			}
+			runtime.Activity.CurrentWebSearchQuery = currentLabel
+		case "list":
+			if completed {
+				runtime.Activity.ListCount++
+			}
+		}
+	})
+}
+
+func autoApprovalNoticeText(approval model.ApprovalRequest) string {
+	if approval.Type == "command" && approval.Command != "" {
+		return fmt.Sprintf("已自动批准本会话内同类命令：%s", truncate(approval.Command, 72))
+	}
+	if approval.Type == "file_change" {
+		return "已自动批准本会话内同类文件修改。"
+	}
+	return "已自动批准本会话内同类操作。"
 }
 
 func approvalGrantFromApproval(approval model.ApprovalRequest) model.ApprovalGrant {
@@ -1345,10 +1626,25 @@ Summarize command results clearly for the web UI.
 }
 
 func (a *App) snapshot(sessionID string) model.Snapshot {
-	return a.store.Snapshot(sessionID, model.UIConfig{
+	snapshot := a.store.Snapshot(sessionID, model.UIConfig{
 		OAuthConfigured: a.cfg.OAuthConfigured(),
 		CodexAlive:      a.codex.Alive(),
 	})
+	snapshot.Runtime.Codex.RetryMax = 5
+	if a.codex.Alive() {
+		snapshot.Runtime.Codex.Status = "connected"
+		snapshot.Runtime.Codex.LastError = ""
+	} else {
+		snapshot.Runtime.Codex.Status = "stopped"
+		snapshot.Runtime.Codex.LastError = a.codex.LastExitError()
+	}
+	if snapshot.Runtime.Turn.Phase == "" {
+		snapshot.Runtime.Turn.Phase = "idle"
+	}
+	if snapshot.Runtime.Turn.HostID == "" {
+		snapshot.Runtime.Turn.HostID = snapshot.SelectedHostID
+	}
+	return snapshot
 }
 
 func (a *App) broadcastSnapshot(sessionID string) {
@@ -1763,6 +2059,60 @@ func toPlanItems(raw any) []model.PlanItem {
 	return items
 }
 
+func toChoiceQuestions(raw any) []model.ChoiceQuestion {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	questions := make([]model.ChoiceQuestion, 0, len(list))
+	for _, entry := range list {
+		questionMap, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		questions = append(questions, model.ChoiceQuestion{
+			Header:   getString(questionMap, "header"),
+			Question: getString(questionMap, "question"),
+			IsOther:  getBool(questionMap, "isOther"),
+			IsSecret: getBool(questionMap, "isSecret"),
+			Options:  toChoiceOptions(questionMap["options"]),
+		})
+	}
+	return questions
+}
+
+func toChoiceOptions(raw any) []model.ChoiceOption {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	options := make([]model.ChoiceOption, 0, len(list))
+	for _, entry := range list {
+		switch value := entry.(type) {
+		case string:
+			options = append(options, model.ChoiceOption{
+				Label: value,
+				Value: value,
+			})
+		case map[string]any:
+			label := getString(value, "label")
+			if label == "" {
+				label = getString(value, "value")
+			}
+			optionValue := getString(value, "value")
+			if optionValue == "" {
+				optionValue = label
+			}
+			options = append(options, model.ChoiceOption{
+				Label:       label,
+				Value:       optionValue,
+				Description: getString(value, "description"),
+			})
+		}
+	}
+	return options
+}
+
 func toChanges(raw any) []model.FileChange {
 	list, ok := raw.([]any)
 	if !ok {
@@ -1783,6 +2133,48 @@ func toChanges(raw any) []model.FileChange {
 	return changes
 }
 
+func choiceCardTitle(questions []model.ChoiceQuestion) string {
+	if len(questions) == 0 {
+		return "需要你的输入"
+	}
+	if len(questions) == 1 {
+		if questions[0].Header != "" {
+			return questions[0].Header
+		}
+	}
+	return "需要你的输入"
+}
+
+func choiceAnswerSummary(questions []model.ChoiceQuestion, answers []choiceAnswerInput) []string {
+	summary := make([]string, 0, len(answers))
+	for index, answer := range answers {
+		label := strings.TrimSpace(answer.Label)
+		if label == "" {
+			label = strings.TrimSpace(answer.Value)
+		}
+		if label == "" {
+			continue
+		}
+		if index < len(questions) && questions[index].Header != "" {
+			summary = append(summary, questions[index].Header+": "+label)
+			continue
+		}
+		summary = append(summary, label)
+	}
+	return summary
+}
+
+func getTurnID(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if turnID := getStringAny(payload, "turnId", "turn_id"); turnID != "" {
+		return turnID
+	}
+	turn := getMap(payload, "turn")
+	return getString(turn, "id")
+}
+
 func kindLabel(raw any) string {
 	switch value := raw.(type) {
 	case string:
@@ -1795,6 +2187,177 @@ func kindLabel(raw any) string {
 	return ""
 }
 
+func defaultHostID(hostID string) string {
+	if hostID == "" {
+		return model.ServerLocalHostID
+	}
+	return hostID
+}
+
+func normalizeCardStatus(status string) string {
+	switch status {
+	case "", "running":
+		return "inProgress"
+	case "in_progress", "inProgress", "pending":
+		return "inProgress"
+	case "completed", "success", "accepted", "accepted_for_session", "accepted_for_session_auto":
+		return "completed"
+	case "failed", "error", "decline", "declined", "cancelled", "canceled":
+		return "failed"
+	default:
+		return status
+	}
+}
+
+type stringHit struct {
+	Key   string
+	Value string
+}
+
+func detectActivitySignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	hits := make([]stringHit, 0, 24)
+	collectStringHits("", item, &hits)
+
+	descriptors := make([]string, 0, len(hits))
+	var filePath string
+	var query string
+	for _, hit := range hits {
+		key := strings.ToLower(hit.Key)
+		value := strings.TrimSpace(hit.Value)
+		if value == "" {
+			continue
+		}
+		lowerValue := strings.ToLower(value)
+		if isDescriptorKey(key) {
+			descriptors = append(descriptors, lowerValue)
+		}
+		if filePath == "" && isFilePathKey(key) && looksLikePath(value) {
+			filePath = value
+		}
+		if query == "" && isQueryKey(key) {
+			query = value
+		}
+		if query == "" && (strings.Contains(lowerValue, "search the web:") || strings.Contains(lowerValue, "search_query")) {
+			query = strings.TrimSpace(strings.TrimPrefix(value, "Search the web:"))
+		}
+	}
+
+	descriptorText := strings.Join(descriptors, " | ")
+	switch {
+	case query != "" && isWebSearchDescriptor(descriptorText):
+		return "web_search", model.ActivityEntry{
+			Label: "Search the web: " + query,
+			Query: query,
+		}, query, true
+	case filePath != "" && isListDescriptor(descriptorText):
+		return "list", model.ActivityEntry{
+			Label: "List " + filePath,
+			Path:  filePath,
+		}, filepath.Base(filePath), true
+	case filePath != "" && isReadDescriptor(descriptorText):
+		display := filepath.Base(filePath)
+		if display == "." || display == "/" || display == "" {
+			display = filePath
+		}
+		return "file_read", model.ActivityEntry{
+			Label: "Read " + display,
+			Path:  filePath,
+		}, display, true
+	default:
+		return "", model.ActivityEntry{}, "", false
+	}
+}
+
+func collectStringHits(prefix string, raw any, hits *[]stringHit) {
+	switch value := raw.(type) {
+	case map[string]any:
+		for key, entry := range value {
+			nextKey := key
+			if prefix != "" {
+				nextKey = prefix + "." + key
+			}
+			collectStringHits(nextKey, entry, hits)
+		}
+	case []any:
+		for _, entry := range value {
+			collectStringHits(prefix, entry, hits)
+		}
+	case string:
+		*hits = append(*hits, stringHit{Key: prefix, Value: value})
+	}
+}
+
+func appendUniqueActivityEntry(entries *[]model.ActivityEntry, entry model.ActivityEntry, match func(model.ActivityEntry, model.ActivityEntry) bool) {
+	for _, existing := range *entries {
+		if match(existing, entry) {
+			return
+		}
+	}
+	*entries = append(*entries, entry)
+}
+
+func isDescriptorKey(key string) bool {
+	return strings.HasSuffix(key, "type") ||
+		strings.HasSuffix(key, "title") ||
+		strings.HasSuffix(key, "kind") ||
+		strings.HasSuffix(key, "name") ||
+		strings.HasSuffix(key, "label") ||
+		strings.HasSuffix(key, "action") ||
+		strings.HasSuffix(key, "tool") ||
+		strings.HasSuffix(key, "toolname") ||
+		strings.HasSuffix(key, "method")
+}
+
+func isFilePathKey(key string) bool {
+	return (strings.Contains(key, "path") || strings.Contains(key, "file") || strings.Contains(key, "filename")) &&
+		!strings.Contains(key, "cwd") &&
+		!strings.Contains(key, "grantroot")
+}
+
+func isQueryKey(key string) bool {
+	return strings.HasSuffix(key, "query") ||
+		strings.HasSuffix(key, "searchquery") ||
+		strings.HasSuffix(key, ".q") ||
+		strings.HasSuffix(key, "pattern")
+}
+
+func looksLikePath(value string) bool {
+	return strings.Contains(value, "/") ||
+		strings.HasPrefix(value, "~") ||
+		(strings.Contains(filepath.Base(value), ".") && !strings.Contains(value, " "))
+}
+
+func isWebSearchDescriptor(text string) bool {
+	return strings.Contains(text, "search the web") ||
+		strings.Contains(text, "search_query") ||
+		strings.Contains(text, "web_search") ||
+		strings.Contains(text, "web search")
+}
+
+func isListDescriptor(text string) bool {
+	return descriptorHasToken(text, "list") ||
+		descriptorHasToken(text, "glob") ||
+		descriptorHasToken(text, "directory") ||
+		descriptorHasToken(text, "ls")
+}
+
+func isReadDescriptor(text string) bool {
+	if strings.Contains(text, "filechange") || strings.Contains(text, "file change") || strings.Contains(text, "edit") || strings.Contains(text, "write") {
+		return false
+	}
+	return descriptorHasToken(text, "read") ||
+		descriptorHasToken(text, "open") ||
+		descriptorHasToken(text, "view")
+}
+
+func descriptorHasToken(text, token string) bool {
+	return slices.ContainsFunc(strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	}), func(field string) bool {
+		return field == token
+	})
+}
+
 func getMap(payload map[string]any, key string) map[string]any {
 	value, _ := payload[key].(map[string]any)
 	return value
@@ -1803,6 +2366,15 @@ func getMap(payload map[string]any, key string) map[string]any {
 func getString(payload map[string]any, key string) string {
 	value, _ := payload[key].(string)
 	return value
+}
+
+func getStringAny(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := getString(payload, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func getBool(payload map[string]any, key string) bool {

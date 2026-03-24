@@ -15,11 +15,14 @@ type SessionState struct {
 	ID             string
 	AuthSessionID  string
 	ThreadID       string
+	TurnID         string
 	SelectedHostID string
 	Cards          []model.Card
 	Approvals      map[string]model.ApprovalRequest
+	Choices        map[string]model.ChoiceRequest
 	ApprovalGrants []model.ApprovalGrant
 	ItemCache      map[string]map[string]any
+	Runtime        model.RuntimeState
 	Auth           model.AuthState
 	Tokens         model.ExternalAuthTokens
 	CreatedAt      string
@@ -40,6 +43,7 @@ type Store struct {
 	sessions        map[string]*SessionState
 	authSessions    map[string]*AuthSessionState
 	threadToSession map[string]string
+	turnToSession   map[string]string
 	loginToSession  map[string]string
 	lastAuthSession string
 	hosts           map[string]model.Host
@@ -89,6 +93,7 @@ func New() *Store {
 		sessions:        make(map[string]*SessionState),
 		authSessions:    make(map[string]*AuthSessionState),
 		threadToSession: make(map[string]string),
+		turnToSession:   make(map[string]string),
 		loginToSession:  make(map[string]string),
 		hosts: map[string]model.Host{
 			model.ServerLocalHostID: {
@@ -147,6 +152,7 @@ func (s *Store) SetSelectedHost(sessionID, hostID string) {
 	s.mu.Lock()
 	session, _ := s.ensureSessionLocked(sessionID)
 	session.SelectedHostID = hostID
+	session.Runtime.Turn.HostID = defaultHostID(hostID)
 	session.LastActivityAt = model.NowString()
 	s.mu.Unlock()
 	s.SaveStableState("")
@@ -177,17 +183,49 @@ func (s *Store) ClearThread(sessionID string) {
 	s.SaveStableState("")
 }
 
+func (s *Store) SetTurn(sessionID, turnID string) {
+	if turnID == "" {
+		return
+	}
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	if session.TurnID != "" && session.TurnID != turnID {
+		delete(s.turnToSession, session.TurnID)
+	}
+	session.TurnID = turnID
+	session.LastActivityAt = model.NowString()
+	s.turnToSession[turnID] = sessionID
+	s.mu.Unlock()
+}
+
+func (s *Store) ClearTurn(sessionID string) {
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	if session.TurnID != "" {
+		delete(s.turnToSession, session.TurnID)
+	}
+	session.TurnID = ""
+	session.LastActivityAt = model.NowString()
+	s.mu.Unlock()
+}
+
 func (s *Store) ResetConversation(sessionID string) {
 	s.mu.Lock()
 	session, _ := s.ensureSessionLocked(sessionID)
 	if session.ThreadID != "" {
 		delete(s.threadToSession, session.ThreadID)
 	}
+	if session.TurnID != "" {
+		delete(s.turnToSession, session.TurnID)
+	}
 	session.ThreadID = ""
+	session.TurnID = ""
 	session.Cards = nil
 	session.Approvals = make(map[string]model.ApprovalRequest)
+	session.Choices = make(map[string]model.ChoiceRequest)
 	session.ApprovalGrants = make([]model.ApprovalGrant, 0)
 	session.ItemCache = make(map[string]map[string]any)
+	session.Runtime = defaultRuntime(session.SelectedHostID)
 	session.LastActivityAt = model.NowString()
 	s.mu.Unlock()
 	s.SaveStableState("")
@@ -197,6 +235,12 @@ func (s *Store) SessionIDByThread(threadID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.threadToSession[threadID]
+}
+
+func (s *Store) SessionIDByTurn(turnID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.turnToSession[turnID]
 }
 
 func (s *Store) SetPendingLogin(sessionID, loginID string) {
@@ -408,11 +452,52 @@ func (s *Store) Item(sessionID, itemID string) map[string]any {
 	return copyMap
 }
 
+func (s *Store) UpdateRuntime(sessionID string, fn func(*model.RuntimeState)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	fn(&session.Runtime)
+	session.LastActivityAt = model.NowString()
+}
+
 func (s *Store) AddApproval(sessionID string, approval model.ApprovalRequest) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, _ := s.ensureSessionLocked(sessionID)
 	session.Approvals[approval.ID] = approval
+	session.LastActivityAt = model.NowString()
+}
+
+func (s *Store) AddChoice(sessionID string, choice model.ChoiceRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	session.Choices[choice.ID] = choice
+	session.LastActivityAt = model.NowString()
+}
+
+func (s *Store) Choice(sessionID, choiceID string) (model.ChoiceRequest, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	session := s.sessions[sessionID]
+	if session == nil {
+		return model.ChoiceRequest{}, false
+	}
+	choice, ok := session.Choices[choiceID]
+	return choice, ok
+}
+
+func (s *Store) ResolveChoice(sessionID, choiceID, status, resolvedAt string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	choice, ok := session.Choices[choiceID]
+	if !ok {
+		return
+	}
+	choice.Status = status
+	choice.ResolvedAt = resolvedAt
+	session.Choices[choiceID] = choice
 	session.LastActivityAt = model.NowString()
 }
 
@@ -568,6 +653,7 @@ func (s *Store) Snapshot(sessionID string, cfg model.UIConfig) model.Snapshot {
 		Hosts:          hosts,
 		Cards:          cards,
 		Approvals:      approvals,
+		Runtime:        cloneRuntime(session.Runtime),
 		LastActivityAt: session.LastActivityAt,
 		Config:         cfg,
 	}
@@ -589,8 +675,10 @@ func defaultSession(sessionID string) *SessionState {
 		ID:             sessionID,
 		SelectedHostID: model.ServerLocalHostID,
 		Approvals:      make(map[string]model.ApprovalRequest),
+		Choices:        make(map[string]model.ChoiceRequest),
 		ApprovalGrants: make([]model.ApprovalGrant, 0),
 		ItemCache:      make(map[string]map[string]any),
+		Runtime:        defaultRuntime(model.ServerLocalHostID),
 		CreatedAt:      now,
 		LastActivityAt: now,
 	}
@@ -655,12 +743,15 @@ func (s *Store) LoadStableState(path string) error {
 			ID:             session.ID,
 			AuthSessionID:  session.AuthSessionID,
 			ThreadID:       "",
+			TurnID:         "",
 			SelectedHostID: defaultHostID(session.SelectedHostID),
 			Approvals:      make(map[string]model.ApprovalRequest),
+			Choices:        make(map[string]model.ChoiceRequest),
 			ApprovalGrants: append([]model.ApprovalGrant(nil), session.ApprovalGrants...),
 			ItemCache:      make(map[string]map[string]any),
 			Auth:           session.Auth,
 			Tokens:         fromPersistentTokens(session.Tokens),
+			Runtime:        defaultRuntime(session.SelectedHostID),
 			CreatedAt:      session.CreatedAt,
 			LastActivityAt: session.LastActivityAt,
 		}
@@ -698,6 +789,7 @@ func (s *Store) LoadStableState(path string) error {
 	}
 
 	s.threadToSession = make(map[string]string)
+	s.turnToSession = make(map[string]string)
 	s.loginToSession = cloneStringMap(state.LoginToSession)
 	s.lastAuthSession = state.LastAuthSession
 	s.hosts = cloneHostMap(state.Hosts)
@@ -780,9 +872,14 @@ func cloneSession(session *SessionState) *SessionState {
 	out := *session
 	out.Cards = append([]model.Card(nil), session.Cards...)
 	out.Approvals = make(map[string]model.ApprovalRequest, len(session.Approvals))
+	out.Choices = make(map[string]model.ChoiceRequest, len(session.Choices))
 	out.ApprovalGrants = append([]model.ApprovalGrant(nil), session.ApprovalGrants...)
+	out.Runtime = cloneRuntime(session.Runtime)
 	for k, v := range session.Approvals {
 		out.Approvals[k] = v
+	}
+	for k, v := range session.Choices {
+		out.Choices[k] = v
 	}
 	out.ItemCache = make(map[string]map[string]any, len(session.ItemCache))
 	for k, v := range session.ItemCache {
@@ -793,6 +890,31 @@ func cloneSession(session *SessionState) *SessionState {
 		out.ItemCache[k] = copyMap
 	}
 	return &out
+}
+
+func defaultRuntime(hostID string) model.RuntimeState {
+	hostID = defaultHostID(hostID)
+	return model.RuntimeState{
+		Turn: model.TurnRuntime{
+			Phase:  "idle",
+			HostID: hostID,
+		},
+		Codex: model.CodexRuntime{
+			Status:   "connected",
+			RetryMax: 5,
+		},
+		Activity: model.ActivityRuntime{
+			ViewedFiles:        make([]model.ActivityEntry, 0),
+			SearchedWebQueries: make([]model.ActivityEntry, 0),
+		},
+	}
+}
+
+func cloneRuntime(runtime model.RuntimeState) model.RuntimeState {
+	out := runtime
+	out.Activity.ViewedFiles = append([]model.ActivityEntry(nil), runtime.Activity.ViewedFiles...)
+	out.Activity.SearchedWebQueries = append([]model.ActivityEntry(nil), runtime.Activity.SearchedWebQueries...)
+	return out
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

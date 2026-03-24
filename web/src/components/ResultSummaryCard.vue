@@ -17,7 +17,7 @@ defineProps({
     </div>
 
     <div class="result-body">
-      <p class="result-summary" v-if="card.summary">{{ card.summary }}</p>
+      <p class="result-summary" v-if="card.summary || card.text">{{ card.summary || card.text }}</p>
 
       <div class="kv-table" v-if="card.kvRows?.length">
         <div class="kv-row" v-for="(row, idx) in card.kvRows" :key="idx">

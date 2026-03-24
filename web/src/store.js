@@ -25,7 +25,7 @@ export const useAppStore = defineStore("app", {
     runtime: {
       turn: {
         active: false,
-        phase: "idle", // idle | thinking | planning | waiting_approval | executing | finalizing | completed | failed
+        phase: "idle", // idle | thinking | planning | waiting_approval | waiting_input | executing | finalizing | completed | failed
         hostId: "",
         startedAt: null,
       },
@@ -42,6 +42,8 @@ export const useAppStore = defineStore("app", {
         commandsRun: 0,
         currentReadingFile: "",
         viewedFiles: [],
+        currentWebSearchQuery: "",
+        searchedWebQueries: [],
       },
     },
     authForm: {
@@ -94,9 +96,31 @@ export const useAppStore = defineStore("app", {
       this.snapshot.config = data.config || this.snapshot.config;
       /* Merge runtime if server sends it */
       if (data.runtime) {
-        if (data.runtime.turn) Object.assign(this.runtime.turn, data.runtime.turn);
-        if (data.runtime.codex) Object.assign(this.runtime.codex, data.runtime.codex);
-        if (data.runtime.activity) Object.assign(this.runtime.activity, data.runtime.activity);
+        this.runtime.turn = {
+          active: false,
+          phase: "idle",
+          hostId: this.snapshot.selectedHostId || "server-local",
+          startedAt: null,
+          ...(data.runtime.turn || {}),
+        };
+        this.runtime.codex = {
+          status: "connected",
+          retryAttempt: this.runtime.codex.retryAttempt,
+          retryMax: 5,
+          lastError: "",
+          ...(data.runtime.codex || {}),
+        };
+        this.runtime.activity = {
+          filesViewed: 0,
+          searchCount: 0,
+          listCount: 0,
+          commandsRun: 0,
+          currentReadingFile: "",
+          viewedFiles: [],
+          currentWebSearchQuery: "",
+          searchedWebQueries: [],
+          ...(data.runtime.activity || {}),
+        };
       }
       this.loading = false;
     },
@@ -112,6 +136,8 @@ export const useAppStore = defineStore("app", {
         commandsRun: 0,
         currentReadingFile: "",
         viewedFiles: [],
+        currentWebSearchQuery: "",
+        searchedWebQueries: [],
       };
     },
     async fetchState() {
