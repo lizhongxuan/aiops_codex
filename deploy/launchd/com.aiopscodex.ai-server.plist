@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aiopscodex.ai-server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/lizhongxuan/Desktop/aiops-codex/.data/bin/ai-server</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/lizhongxuan</string>
+    <key>CODEX_HOME</key>
+    <string>/Users/lizhongxuan/.codex</string>
+    <key>AIOPS_HTTP_ADDR</key>
+    <string>127.0.0.1:18080</string>
+    <key>AIOPS_GRPC_ADDR</key>
+    <string>127.0.0.1:18090</string>
+    <key>DEFAULT_WORKSPACE</key>
+    <string>/Users/lizhongxuan/.aiops_codex</string>
+    <key>HOST_AGENT_BOOTSTRAP_TOKEN</key>
+    <string>change-me</string>
+    <key>CODEX_APP_SERVER_PATH</key>
+    <string>/Users/lizhongxuan/.cursor/extensions/openai.chatgpt-26.318.11754-darwin-arm64/bin/macos-aarch64/codex</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/lizhongxuan/Desktop/aiops-codex</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/lizhongxuan/Desktop/aiops-codex/.data/launchd-ai-server.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/lizhongxuan/Desktop/aiops-codex/.data/launchd-ai-server.err.log</string>
+</dict>
+</plist>

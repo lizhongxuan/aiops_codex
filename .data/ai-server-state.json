@@ -1,0 +1,43 @@
+{
+  "sessions": {
+    "sess-2203add776c38e48": {
+      "id": "sess-2203add776c38e48",
+      "selectedHostId": "server-local",
+      "auth": {
+        "connected": false,
+        "pending": false
+      },
+      "tokens": {},
+      "createdAt": "2026-03-24T12:24:57+08:00",
+      "lastActivityAt": "2026-03-24T12:24:57+08:00"
+    }
+  },
+  "authSessions": {},
+  "threadToSession": {},
+  "loginToSession": {},
+  "hosts": {
+    "agent-local": {
+      "id": "agent-local",
+      "name": "agent-local",
+      "kind": "agent",
+      "status": "online",
+      "executable": false,
+      "os": "darwin",
+      "arch": "arm64",
+      "agentVersion": "0.1.0",
+      "labels": {
+        "env": "dev"
+      },
+      "lastHeartbeat": "2026-03-24T12:27:37+08:00"
+    },
+    "server-local": {
+      "id": "server-local",
+      "name": "server-local",
+      "kind": "server_local",
+      "status": "online",
+      "executable": true,
+      "os": "darwin",
+      "arch": "arm64"
+    }
+  }
+}
