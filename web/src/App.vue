@@ -42,6 +42,15 @@ const wsStatus = ref("disconnected");
 
 let socket;
 
+const loginResultMessages = {
+  success: "GPT 登录成功，当前页面会自动恢复登录态。",
+  oauth_not_configured: "服务端还没有配置 OAuth，请改用本机 ChatGPT 登录或补齐 OAuth 配置。",
+  missing_code: "登录回调缺少 code 参数，请重新发起登录。",
+  invalid_state: "登录状态校验失败，请重新点击 Connect GPT。",
+  exchange_failed: "OAuth code 换取 token 失败，请检查服务端 OAuth 配置。",
+  codex_login_failed: "已完成 OAuth，但注入 Codex 登录态失败，请查看服务端日志。",
+};
+
 const selectedHostId = computed({
   get() {
     return snapshot.selectedHostId || "server-local";
@@ -108,6 +117,7 @@ async function login() {
     errorMessage.value = data.error || "login failed";
     return;
   }
+  await fetchState();
   if (data.authUrl) {
     window.open(data.authUrl, "_blank", "noopener,noreferrer");
   }
@@ -118,6 +128,8 @@ async function logout() {
     method: "POST",
     credentials: "include",
   });
+  errorMessage.value = "";
+  await fetchState();
 }
 
 function startConfiguredOAuth() {
@@ -172,6 +184,20 @@ function selectHost(hostId) {
 const loginHint = computed(() => {
   const params = new URLSearchParams(window.location.search);
   return params.get("login");
+});
+
+const loginHintText = computed(() => {
+  if (!loginHint.value) {
+    return "";
+  }
+  return loginResultMessages[loginHint.value] || `登录结果: ${loginHint.value}`;
+});
+
+const loginHintState = computed(() => {
+  if (!loginHint.value) {
+    return "";
+  }
+  return loginHint.value === "success" ? "hint" : "error";
 });
 
 const selectedHost = computed(() => {
@@ -250,7 +276,7 @@ onBeforeUnmount(() => {
           </span>
         </div>
 
-        <p v-if="loginHint" class="hint">最近一次登录结果: {{ loginHint }}</p>
+        <p v-if="loginHintText" :class="loginHintState">{{ loginHintText }}</p>
         <p v-if="snapshot.auth.email" class="subtle">账号: {{ snapshot.auth.email }}</p>
         <p v-if="snapshot.auth.mode" class="subtle">模式: {{ snapshot.auth.mode }}</p>
         <p v-if="snapshot.auth.planType" class="subtle">计划: {{ snapshot.auth.planType }}</p>
@@ -364,7 +390,7 @@ onBeforeUnmount(() => {
               </p>
             </div>
 
-            <p v-if="loginHint" class="chat-banner hint">最近一次登录结果: {{ loginHint }}</p>
+            <p v-if="loginHintText" class="chat-banner" :class="loginHintState">{{ loginHintText }}</p>
             <p v-if="errorMessage" class="chat-banner error">{{ errorMessage }}</p>
             <p v-if="!snapshot.auth.connected" class="chat-banner hint">
               先在左侧完成 GPT 登录，登录成功后才能向 Codex 发送任务。

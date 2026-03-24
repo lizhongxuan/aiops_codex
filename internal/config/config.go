@@ -13,6 +13,7 @@ type Config struct {
 	CodexPath               string
 	CodexHome               string
 	StatePath               string
+	AuditLogPath            string
 	DefaultWorkspace        string
 	SessionCookieName       string
 	SessionSecret           string
@@ -36,8 +37,10 @@ func Load() Config {
 	cwd, err := os.Getwd()
 	workspace := filepath.Join(home, ".aiops_codex")
 	statePath := filepath.Join(".data", "ai-server-state.json")
+	auditLogPath := filepath.Join(".data", "ai-audit.log")
 	if err == nil {
 		statePath = filepath.Join(cwd, ".data", "ai-server-state.json")
+		auditLogPath = filepath.Join(cwd, ".data", "ai-audit.log")
 	}
 
 	return Config{
@@ -46,6 +49,7 @@ func Load() Config {
 		CodexPath:               env("CODEX_APP_SERVER_PATH", "codex"),
 		CodexHome:               env("CODEX_HOME", filepath.Join(home, ".codex")),
 		StatePath:               env("APP_STATE_PATH", statePath),
+		AuditLogPath:            env("APP_AUDIT_LOG_PATH", auditLogPath),
 		DefaultWorkspace:        env("DEFAULT_WORKSPACE", workspace),
 		SessionCookieName:       env("APP_SESSION_COOKIE_NAME", "aiops_codex_session"),
 		SessionSecret:           env("APP_SESSION_SECRET", "dev-insecure-session-secret"),

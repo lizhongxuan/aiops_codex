@@ -12,9 +12,16 @@ function onDecision(decision) {
   if (!props.card.approval?.requestId) {
     return;
   }
+  let resolvedDecision = decision;
+  if (decision === "decline") {
+    const availableDecisions = props.card.approval?.decisions || [];
+    if (!availableDecisions.includes("decline") && availableDecisions.includes("cancel")) {
+      resolvedDecision = "cancel";
+    }
+  }
   emit("approval", {
     approvalId: props.card.approval.requestId,
-    decision,
+    decision: resolvedDecision,
   });
 }
 
@@ -111,6 +118,7 @@ function roleLabel(card) {
       </ul>
       <div v-if="card.approval && card.status === 'pending'" class="approval-actions">
         <button class="primary" @click="onDecision('accept')">Approve once</button>
+        <button @click="onDecision('accept_session')">Allow for session</button>
         <button @click="onDecision('decline')">Decline</button>
       </div>
     </template>

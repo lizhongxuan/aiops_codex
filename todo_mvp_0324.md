@@ -69,9 +69,9 @@
 
 ### 4.3 验收任务
 
-- [ ] 用户完成 GPT 登录后，页面显示已连接状态
+- [x] 用户完成 GPT 登录后，页面显示已连接状态
 - [x] 页面刷新后仍能恢复登录态
-- [ ] 登录失败时页面能展示明确错误信息
+- [x] 登录失败时页面能展示明确错误信息
 - [x] 服务端不会把 GPT token 直接暴露给前端
 
 ## 5. Phase 2: codex app-server 接入
@@ -96,8 +96,8 @@
 
 - [x] 服务端可成功启动 `codex app-server`
 - [x] 服务端可完成初始化握手
-- [ ] 前端发出的消息可进入 Codex thread
-- [ ] Codex 返回的消息可流式展示到页面
+- [x] 前端发出的消息可进入 Codex thread
+- [x] Codex 返回的消息可流式展示到页面
 
 ## 6. Phase 3: server-local 本机执行闭环
 
@@ -118,10 +118,10 @@
 
 - [x] 支持用户选择 `server-local`
 - [x] 将主机选择信息注入 Codex 会话上下文
-- [ ] 跑通只读命令执行
-- [ ] 跑通 `~/.aiops_codex/` 下文件创建和修改
-- [ ] 跑通命令输出回传
-- [ ] 跑通文件变更结果回传
+- [x] 跑通只读命令执行
+- [x] 跑通 `~/.aiops_codex/` 下文件创建和修改
+- [x] 跑通命令输出回传
+- [x] 跑通文件变更结果回传
 
 ### 6.4 安全边界
 
@@ -132,10 +132,10 @@
 
 ### 6.5 验收任务
 
-- [ ] 页面可让 Codex 在 `server-local` 执行 `pwd`
-- [ ] 页面可让 Codex 在 `server-local` 执行 `ls`
-- [ ] 页面可让 Codex 在 `~/.aiops_codex/` 下创建文件
-- [ ] 命令和文件变更都能正确显示结果
+- [x] 页面可让 Codex 在 `server-local` 执行 `pwd`
+- [x] 页面可让 Codex 在 `server-local` 执行 `ls`
+- [x] 页面可让 Codex 在 `~/.aiops_codex/` 下创建文件
+- [x] 命令和文件变更都能正确显示结果
 
 ## 7. Phase 4: 审批流 MVP
 
@@ -159,10 +159,10 @@
 
 ### 7.3 验收任务
 
-- [ ] 命令审批请求能在页面弹出卡片
-- [ ] 文件变更审批请求能在页面弹出卡片
-- [ ] 用户批准后任务继续执行
-- [ ] 用户拒绝后任务终止并展示结果
+- [x] 命令审批请求能在页面弹出卡片
+- [x] 文件变更审批请求能在页面弹出卡片
+- [x] 用户批准后任务继续执行
+- [x] 用户拒绝后任务终止并展示结果
 
 ## 8. Phase 5: 网页最小 UI
 
@@ -198,9 +198,9 @@
 
 ### 8.5 验收任务
 
-- [ ] 用户可在单页面内完成登录、选主机、发消息、审批、看结果
-- [ ] 卡片流顺序清晰
-- [ ] 未登录和已登录状态切换正确
+- [x] 用户可在单页面内完成登录、选主机、发消息、审批、看结果
+- [x] 卡片流顺序清晰
+- [x] 未登录和已登录状态切换正确
 
 ## 9. Phase 6: Host Agent MVP
 
@@ -210,7 +210,7 @@
 - [x] 定义 `heartbeat` 消息
 - [x] 定义 `ping` 消息
 - [x] 定义服务端返回的 `ack` 结构
-- [ ] 生成 `Go` gRPC 代码
+- [x] 生成 `Go` gRPC 代码
 
 建议注册字段至少包含：
 
@@ -250,43 +250,43 @@
 
 ## 10. Phase 7: 数据表与存储
 
-- [ ] 创建 `web_users`
-- [ ] 创建 `web_sessions`
-- [ ] 创建 `codex_auth_sessions`
-- [ ] 创建 `codex_threads`
-- [ ] 创建 `approval_requests`
-- [ ] 创建 `hosts`
-- [ ] 创建 `host_agent_connections`
+- [x] 创建 `web_users`
+- [x] 创建 `web_sessions`
+- [x] 创建 `codex_auth_sessions`
+- [x] 创建 `codex_threads`
+- [x] 创建 `approval_requests`
+- [x] 创建 `hosts`
+- [x] 创建 `host_agent_connections`
 
 关键字段补充：
 
-- [ ] `hosts.kind`
-- [ ] `hosts.status`
-- [ ] `approval_requests.status`
-- [ ] `approval_requests.request_type`
-- [ ] `codex_threads.thread_id`
-- [ ] `codex_auth_sessions.auth_mode`
+- [x] `hosts.kind`
+- [x] `hosts.status`
+- [x] `approval_requests.status`
+- [x] `approval_requests.request_type`
+- [x] `codex_threads.thread_id`
+- [x] `codex_auth_sessions.auth_mode`
 
 ## 11. 联调与测试清单
 
-- [ ] 测试 GPT 登录成功流程
-- [ ] 测试 GPT 登录失败流程
-- [ ] 测试页面刷新后的会话恢复
-- [ ] 测试 `server-local` 对话链路
-- [ ] 测试命令审批流程
-- [ ] 测试文件变更审批流程
-- [ ] 测试 `~/.aiops_codex/` 写入边界
+- [x] 测试 GPT 登录成功流程
+- [x] 测试 GPT 登录失败流程
+- [x] 测试页面刷新后的会话恢复
+- [x] 测试 `server-local` 对话链路
+- [x] 测试命令审批流程
+- [x] 测试文件变更审批流程
+- [x] 测试 `~/.aiops_codex/` 写入边界
 - [x] 测试 Agent 注册成功流程
-- [ ] 测试 Agent 心跳超时流程
+- [x] 测试 Agent 心跳超时流程
 - [x] 测试 Agent 重连流程
 
 ## 12. MVP Definition of Done
 
-- [ ] 网页可以完成 GPT 登录
-- [ ] 登录后的用户可以发起 Codex 对话
-- [ ] Codex 可以在 `server-local` 上工作
+- [x] 网页可以完成 GPT 登录
+- [x] 登录后的用户可以发起 Codex 对话
+- [x] Codex 可以在 `server-local` 上工作
 - [x] 默认工作区固定为 `~/.aiops_codex/`
-- [ ] 命令审批和文件审批可在页面完成
+- [x] 命令审批和文件审批可在页面完成
 - [x] 页面能显示最小卡片流
 - [x] Go 版 `Host Agent` 可以通过 gRPC 连上服务端
 - [x] 页面可看到 `server-local` 与 Agent 在线状态
@@ -297,6 +297,6 @@
 - [ ] 远程 PTY 和 Web Terminal
 - [ ] 远程文件 patch / diff
 - [ ] 多主机批量执行
-- [ ] 更细粒度授权矩阵
-- [ ] `Approve for session`
-- [ ] 更完整的审计体系
+- [x] 更细粒度授权矩阵
+- [x] `Approve for session`
+- [x] 更完整的审计体系

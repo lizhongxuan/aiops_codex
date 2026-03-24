@@ -79,6 +79,8 @@ type Card struct {
 type ApprovalRequest struct {
 	ID           string       `json:"id"`
 	RequestIDRaw string       `json:"-"`
+	HostID       string       `json:"hostId,omitempty"`
+	Fingerprint  string       `json:"-"`
 	Type         string       `json:"type"`
 	Status       string       `json:"status"`
 	ThreadID     string       `json:"threadId"`
@@ -92,6 +94,16 @@ type ApprovalRequest struct {
 	Changes      []FileChange `json:"changes,omitempty"`
 	RequestedAt  string       `json:"requestedAt"`
 	ResolvedAt   string       `json:"resolvedAt,omitempty"`
+}
+
+type ApprovalGrant struct {
+	ID          string `json:"id"`
+	HostID      string `json:"hostId,omitempty"`
+	Type        string `json:"type"`
+	Fingerprint string `json:"fingerprint"`
+	Command     string `json:"command,omitempty"`
+	Cwd         string `json:"cwd,omitempty"`
+	CreatedAt   string `json:"createdAt"`
 }
 
 type Snapshot struct {

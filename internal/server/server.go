@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,7 @@ type App struct {
 	wsClients   map[string]map[*websocket.Conn]struct{}
 	oauthMu     sync.Mutex
 	oauthStates map[string]string
+	auditMu     sync.Mutex
 	httpServer  *http.Server
 	grpcServer  *grpc.Server
 }
@@ -96,6 +98,9 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(a.cfg.StatePath), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(a.cfg.AuditLogPath), 0o755); err != nil {
 		return err
 	}
 	absWorkspace, err := filepath.Abs(a.cfg.DefaultWorkspace)
@@ -191,6 +196,9 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 	defer func() {
 		if hostID != "" {
 			a.store.MarkHostOffline(hostID)
+			a.audit("agent.disconnect", map[string]any{
+				"hostId": hostID,
+			})
 			a.broadcastAllSnapshots()
 		}
 	}()
@@ -220,6 +228,13 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 
 			hostID = msg.Registration.HostID
 			log.Printf("host-agent register host_id=%s hostname=%s", msg.Registration.HostID, msg.Registration.Hostname)
+			a.audit("agent.register", map[string]any{
+				"hostId":       msg.Registration.HostID,
+				"hostname":     msg.Registration.Hostname,
+				"os":           msg.Registration.OS,
+				"arch":         msg.Registration.Arch,
+				"agentVersion": msg.Registration.AgentVersion,
+			})
 			a.store.UpsertHost(model.Host{
 				ID:            msg.Registration.HostID,
 				Name:          msg.Registration.Hostname,
@@ -326,6 +341,11 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 			"type":   "apiKey",
 			"apiKey": req.APIKey,
 		}, &result); err != nil {
+			a.audit("auth.login_failed", map[string]any{
+				"sessionId": sessionID,
+				"mode":      req.Mode,
+				"error":     err.Error(),
+			})
 			a.store.SetAuth(sessionID, model.AuthState{LastError: err.Error()}, model.ExternalAuthTokens{})
 			a.broadcastAllSnapshots()
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -336,6 +356,10 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 			Mode:      "apikey",
 			Email:     req.Email,
 		}, model.ExternalAuthTokens{Email: req.Email})
+		a.audit("auth.login_started", map[string]any{
+			"sessionId": sessionID,
+			"mode":      req.Mode,
+		})
 		a.broadcastAllSnapshots()
 		writeJSON(w, http.StatusOK, loginResponse{})
 	case "chatgpt":
@@ -348,12 +372,22 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 		if err := a.codex.Request(ctx, "account/login/start", map[string]any{
 			"type": "chatgpt",
 		}, &result); err != nil {
+			a.audit("auth.login_failed", map[string]any{
+				"sessionId": sessionID,
+				"mode":      req.Mode,
+				"error":     err.Error(),
+			})
 			a.store.SetAuth(sessionID, model.AuthState{LastError: err.Error()}, model.ExternalAuthTokens{})
 			a.broadcastAllSnapshots()
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 			return
 		}
 		a.store.SetPendingLogin(sessionID, result.LoginID)
+		a.audit("auth.login_started", map[string]any{
+			"sessionId": sessionID,
+			"mode":      req.Mode,
+			"loginId":   result.LoginID,
+		})
 		a.broadcastAllSnapshots()
 		writeJSON(w, http.StatusOK, loginResponse{AuthURL: result.AuthURL})
 	case "chatgptAuthTokens":
@@ -377,6 +411,11 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 			"chatgptAccountId": accountID,
 			"chatgptPlanType":  emptyToNil(planType),
 		}, &result); err != nil {
+			a.audit("auth.login_failed", map[string]any{
+				"sessionId": sessionID,
+				"mode":      req.Mode,
+				"error":     err.Error(),
+			})
 			a.store.SetAuth(sessionID, model.AuthState{LastError: err.Error()}, model.ExternalAuthTokens{})
 			a.broadcastAllSnapshots()
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -392,6 +431,11 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 			ChatGPTAccountID: accountID,
 			ChatGPTPlanType:  planType,
 			Email:            req.Email,
+		})
+		a.audit("auth.login_started", map[string]any{
+			"sessionId": sessionID,
+			"mode":      req.Mode,
+			"planType":  planType,
 		})
 		a.broadcastAllSnapshots()
 		writeJSON(w, http.StatusOK, loginResponse{})
@@ -410,6 +454,9 @@ func (a *App) handleAuthLogout(w http.ResponseWriter, r *http.Request, sessionID
 	var result map[string]any
 	_ = a.codex.Request(ctx, "account/logout", map[string]any{}, &result)
 	log.Printf("auth logout session=%s", sessionID)
+	a.audit("auth.logout", map[string]any{
+		"sessionId": sessionID,
+	})
 	a.store.ClearAuth(sessionID)
 	a.broadcastAllSnapshots()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -534,6 +581,8 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	if req.HostID == "" {
 		req.HostID = model.ServerLocalHostID
 	}
+
+	a.syncAccountState(r.Context(), sessionID)
 	auth := a.store.Auth(sessionID)
 	if !auth.Connected {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录 GPT 账号"})
@@ -548,6 +597,11 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	a.store.TouchSession(sessionID)
 	a.store.SetSelectedHost(sessionID, req.HostID)
 	log.Printf("chat message session=%s host=%s text=%q", sessionID, req.HostID, truncate(req.Message, 120))
+	a.audit("chat.message", map[string]any{
+		"sessionId": sessionID,
+		"hostId":    req.HostID,
+		"text":      truncate(req.Message, 400),
+	})
 
 	userCard := model.Card{
 		ID:        model.NewID("msg"),
@@ -574,7 +628,7 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	err = a.codex.Request(ctx, "turn/start", map[string]any{
 		"threadId":       threadID,
 		"cwd":            a.cfg.DefaultWorkspace,
-		"approvalPolicy": "on-request",
+		"approvalPolicy": "untrusted",
 		"developerInstructions": fmt.Sprintf(
 			"Current selected host is %s. Operate only on this host. The default writable workspace is %s. Do not assume access outside the workspace unless explicitly requested and approved.",
 			req.HostID,
@@ -631,26 +685,39 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		decision = "accept"
 	}
 	log.Printf("approval decision session=%s approval=%s decision=%s", sessionID, approvalID, decision)
+	if decision == "accept_session" {
+		a.store.AddApprovalGrant(sessionID, approvalGrantFromApproval(approval))
+	}
+
+	codexDecision := mapApprovalDecision(decision, approval)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	err := a.codex.Respond(ctx, approval.RequestIDRaw, map[string]any{
-		"decision": decision,
+		"decision": codexDecision,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 
-	a.store.ResolveApproval(sessionID, approvalID, decision, model.NowString())
+	cardStatus := approvalStatusFromDecision(decision)
+	a.store.ResolveApproval(sessionID, approvalID, cardStatus, model.NowString())
+	a.audit("approval.decision", map[string]any{
+		"sessionId":  sessionID,
+		"approvalId": approvalID,
+		"type":       approval.Type,
+		"hostId":     approval.HostID,
+		"decision":   cardStatus,
+	})
 	if approval.Type == "command" {
 		a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
-			card.Status = decision
+			card.Status = cardStatus
 			card.UpdatedAt = model.NowString()
 		})
 	} else {
 		a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
-			card.Status = decision
+			card.Status = cardStatus
 			card.UpdatedAt = model.NowString()
 		})
 	}
@@ -868,9 +935,15 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		if sessionID == "" {
 			return
 		}
+		hostID := model.ServerLocalHostID
+		if session := a.store.Session(sessionID); session != nil && session.SelectedHostID != "" {
+			hostID = session.SelectedHostID
+		}
 		approval := model.ApprovalRequest{
 			ID:           model.NewID("approval"),
 			RequestIDRaw: string(rawID),
+			HostID:       hostID,
+			Fingerprint:  approvalFingerprintForCommand(hostID, getString(payload, "command"), getString(payload, "cwd")),
 			Type:         "command",
 			Status:       "pending",
 			ThreadID:     getString(payload, "threadId"),
@@ -882,7 +955,18 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			Decisions:    toStringSlice(payload["availableDecisions"]),
 			RequestedAt:  model.NowString(),
 		}
+		if a.autoApproveBySessionGrant(sessionID, approval) {
+			return
+		}
 		log.Printf("approval requested type=command session=%s item=%s command=%q", sessionID, approval.ItemID, approval.Command)
+		a.audit("approval.requested", map[string]any{
+			"sessionId":  sessionID,
+			"approvalId": approval.ID,
+			"type":       approval.Type,
+			"hostId":     approval.HostID,
+			"command":    approval.Command,
+			"cwd":        approval.Cwd,
+		})
 		a.store.AddApproval(sessionID, approval)
 		card := model.Card{
 			ID:      approval.ItemID,
@@ -909,9 +993,16 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		}
 		itemID := getString(payload, "itemId")
 		cachedItem := a.store.Item(sessionID, itemID)
+		hostID := model.ServerLocalHostID
+		if session := a.store.Session(sessionID); session != nil && session.SelectedHostID != "" {
+			hostID = session.SelectedHostID
+		}
+		changes := toChanges(cachedItem["changes"])
 		approval := model.ApprovalRequest{
 			ID:           model.NewID("approval"),
 			RequestIDRaw: string(rawID),
+			HostID:       hostID,
+			Fingerprint:  approvalFingerprintForFileChange(hostID, getString(payload, "grantRoot"), changes),
 			Type:         "file_change",
 			Status:       "pending",
 			ThreadID:     getString(payload, "threadId"),
@@ -919,11 +1010,21 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			ItemID:       itemID,
 			Reason:       getString(payload, "reason"),
 			GrantRoot:    getString(payload, "grantRoot"),
-			Changes:      toChanges(cachedItem["changes"]),
+			Changes:      changes,
 			Decisions:    []string{"accept", "decline"},
 			RequestedAt:  model.NowString(),
 		}
+		if a.autoApproveBySessionGrant(sessionID, approval) {
+			return
+		}
 		log.Printf("approval requested type=file_change session=%s item=%s", sessionID, itemID)
+		a.audit("approval.requested", map[string]any{
+			"sessionId":  sessionID,
+			"approvalId": approval.ID,
+			"type":       approval.Type,
+			"hostId":     approval.HostID,
+			"grantRoot":  approval.GrantRoot,
+		})
 		a.store.AddApproval(sessionID, approval)
 		card := model.Card{
 			ID:      itemID,
@@ -1022,7 +1123,7 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			card.UpdatedAt = model.NowString()
 		})
 		a.store.UpsertCard(sessionID, model.Card{
-			ID:        model.NewID("result"),
+			ID:        "result-" + itemID,
 			Type:      "ResultCard",
 			Title:     "Command result",
 			Text:      fmt.Sprintf("exit code: %.0f", getFloat(item, "exitCode")),
@@ -1037,7 +1138,7 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			card.UpdatedAt = model.NowString()
 		})
 		a.store.UpsertCard(sessionID, model.Card{
-			ID:        model.NewID("result"),
+			ID:        "result-" + itemID,
 			Type:      "ResultCard",
 			Title:     "File change result",
 			Text:      fmt.Sprintf("%d file changes", len(toChanges(item["changes"]))),
@@ -1047,6 +1148,98 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 		})
 	}
 	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) autoApproveBySessionGrant(sessionID string, approval model.ApprovalRequest) bool {
+	if approval.Fingerprint == "" {
+		return false
+	}
+	if _, ok := a.store.ApprovalGrant(sessionID, approval.Fingerprint); !ok {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := a.codex.Respond(ctx, approval.RequestIDRaw, map[string]any{
+		"decision": "accept",
+	}); err != nil {
+		log.Printf("auto approval failed session=%s approval=%s err=%s", sessionID, approval.ID, truncate(err.Error(), 200))
+		return false
+	}
+
+	now := model.NowString()
+	approval.Status = "accepted_for_session_auto"
+	approval.ResolvedAt = now
+	a.store.AddApproval(sessionID, approval)
+	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        "auto-approval-" + approval.ItemID,
+		Type:      "StepCard",
+		Title:     "Auto-approved for session",
+		Status:    "autoApproved",
+		Command:   approval.Command,
+		Cwd:       approval.Cwd,
+		Changes:   approval.Changes,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	log.Printf("approval auto accepted by session grant session=%s approval=%s type=%s", sessionID, approval.ID, approval.Type)
+	a.audit("approval.auto_accepted", map[string]any{
+		"sessionId":   sessionID,
+		"approvalId":  approval.ID,
+		"type":        approval.Type,
+		"hostId":      approval.HostID,
+		"fingerprint": approval.Fingerprint,
+	})
+	a.broadcastSnapshot(sessionID)
+	return true
+}
+
+func approvalGrantFromApproval(approval model.ApprovalRequest) model.ApprovalGrant {
+	return model.ApprovalGrant{
+		ID:          model.NewID("grant"),
+		HostID:      approval.HostID,
+		Type:        approval.Type,
+		Fingerprint: approval.Fingerprint,
+		Command:     approval.Command,
+		Cwd:         approval.Cwd,
+		CreatedAt:   model.NowString(),
+	}
+}
+
+func mapApprovalDecision(decision string, approval model.ApprovalRequest) string {
+	switch decision {
+	case "accept", "accept_session":
+		return "accept"
+	case "decline":
+		if slices.Contains(approval.Decisions, "decline") {
+			return "decline"
+		}
+		if slices.Contains(approval.Decisions, "cancel") {
+			return "cancel"
+		}
+	}
+	return decision
+}
+
+func approvalStatusFromDecision(decision string) string {
+	if decision == "accept_session" {
+		return "accepted_for_session"
+	}
+	return decision
+}
+
+func approvalFingerprintForCommand(hostID, command, cwd string) string {
+	return strings.Join([]string{"command", hostID, cwd, command}, "|")
+}
+
+func approvalFingerprintForFileChange(hostID, grantRoot string, changes []model.FileChange) string {
+	parts := make([]string, 0, len(changes))
+	for _, change := range changes {
+		parts = append(parts, change.Path+":"+change.Kind)
+	}
+	slices.Sort(parts)
+	return strings.Join([]string{"file_change", hostID, grantRoot, strings.Join(parts, ",")}, "|")
 }
 
 func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error) {
@@ -1067,7 +1260,7 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 	err := a.codex.Request(ctx, "thread/start", map[string]any{
 		"model":          "gpt-5.4",
 		"cwd":            a.cfg.DefaultWorkspace,
-		"approvalPolicy": "on-request",
+		"approvalPolicy": "untrusted",
 		"sandbox":        "workspace-write",
 		"developerInstructions": fmt.Sprintf(strings.TrimSpace(`
 You are embedded inside a web AI ops console.
@@ -1186,7 +1379,7 @@ func (a *App) syncAccountState(ctx context.Context, sessionID string) {
 	}
 
 	if result.RequiresOpenAIAuth || result.Account == nil {
-		if currentTokens.AccessToken != "" && currentAuth.Mode != "apiKey" {
+		if !currentAuth.Connected && currentTokens.AccessToken != "" && currentAuth.Mode != "apiKey" {
 			if restored, err := a.restoreStoredCodexAuth(ctx, sessionID, currentTokens, currentAuth.Mode); err != nil {
 				log.Printf("stored codex auth retry failed session=%s err=%s", sessionID, truncate(err.Error(), 200))
 			} else if restored {
@@ -1202,6 +1395,20 @@ func (a *App) syncAccountState(ctx context.Context, sessionID string) {
 	}
 
 	if result.RequiresOpenAIAuth || result.Account == nil {
+		if currentTokens.AccessToken != "" && currentAuth.Mode != "apiKey" {
+			a.store.UpdateAuth(sessionID, func(auth *model.AuthState, tokens *model.ExternalAuthTokens) {
+				auth.Connected = true
+				auth.Pending = false
+				if auth.Mode == "" {
+					auth.Mode = "chatgptAuthTokens"
+				}
+				auth.LastError = ""
+				if tokens.AccessToken == "" {
+					*tokens = currentTokens
+				}
+			})
+			return
+		}
 		if currentAuth.Pending {
 			return
 		}
@@ -1254,6 +1461,9 @@ func (a *App) monitorHosts(ctx context.Context) {
 			}
 			for _, hostID := range changed {
 				log.Printf("host-agent timeout host_id=%s marked offline", hostID)
+				a.audit("agent.timeout", map[string]any{
+					"hostId": hostID,
+				})
 			}
 			a.broadcastAllSnapshots()
 		}
@@ -1346,6 +1556,43 @@ func (a *App) signatureForSession(sessionID string) string {
 	mac := hmac.New(sha256.New, []byte(a.cfg.SessionSecret))
 	_, _ = mac.Write([]byte(sessionID))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (a *App) audit(event string, fields map[string]any) {
+	if a.cfg.AuditLogPath == "" {
+		return
+	}
+	record := map[string]any{
+		"ts":    model.NowString(),
+		"event": event,
+	}
+	for key, value := range fields {
+		record[key] = value
+	}
+
+	content, err := json.Marshal(record)
+	if err != nil {
+		log.Printf("audit marshal failed event=%s err=%s", event, truncate(err.Error(), 200))
+		return
+	}
+
+	a.auditMu.Lock()
+	defer a.auditMu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(a.cfg.AuditLogPath), 0o755); err != nil {
+		log.Printf("audit mkdir failed path=%s err=%s", a.cfg.AuditLogPath, truncate(err.Error(), 200))
+		return
+	}
+	file, err := os.OpenFile(a.cfg.AuditLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		log.Printf("audit open failed path=%s err=%s", a.cfg.AuditLogPath, truncate(err.Error(), 200))
+		return
+	}
+	defer file.Close()
+
+	if _, err := file.Write(append(content, '\n')); err != nil {
+		log.Printf("audit write failed path=%s err=%s", a.cfg.AuditLogPath, truncate(err.Error(), 200))
+	}
 }
 
 type oauthTokenResponse struct {

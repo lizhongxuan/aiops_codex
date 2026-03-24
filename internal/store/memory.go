@@ -18,6 +18,7 @@ type SessionState struct {
 	SelectedHostID string
 	Cards          []model.Card
 	Approvals      map[string]model.ApprovalRequest
+	ApprovalGrants []model.ApprovalGrant
 	ItemCache      map[string]map[string]any
 	Auth           model.AuthState
 	Tokens         model.ExternalAuthTokens
@@ -46,23 +47,32 @@ type Store struct {
 }
 
 type persistentSessionState struct {
-	ID             string                   `json:"id"`
-	AuthSessionID  string                   `json:"authSessionId,omitempty"`
-	ThreadID       string                   `json:"threadId,omitempty"`
-	SelectedHostID string                   `json:"selectedHostId,omitempty"`
-	Auth           model.AuthState          `json:"auth"`
-	Tokens         model.ExternalAuthTokens `json:"tokens"`
-	CreatedAt      string                   `json:"createdAt,omitempty"`
-	LastActivityAt string                   `json:"lastActivityAt,omitempty"`
+	ID             string                       `json:"id"`
+	AuthSessionID  string                       `json:"authSessionId,omitempty"`
+	ThreadID       string                       `json:"threadId,omitempty"`
+	SelectedHostID string                       `json:"selectedHostId,omitempty"`
+	Auth           model.AuthState              `json:"auth"`
+	Tokens         persistentExternalAuthTokens `json:"tokens"`
+	ApprovalGrants []model.ApprovalGrant        `json:"approvalGrants,omitempty"`
+	CreatedAt      string                       `json:"createdAt,omitempty"`
+	LastActivityAt string                       `json:"lastActivityAt,omitempty"`
 }
 
 type persistentAuthSessionState struct {
-	ID            string                   `json:"id"`
-	Auth          model.AuthState          `json:"auth"`
-	Tokens        model.ExternalAuthTokens `json:"tokens"`
-	WebSessionIDs map[string]struct{}      `json:"webSessionIds,omitempty"`
-	CreatedAt     string                   `json:"createdAt,omitempty"`
-	UpdatedAt     string                   `json:"updatedAt,omitempty"`
+	ID            string                       `json:"id"`
+	Auth          model.AuthState              `json:"auth"`
+	Tokens        persistentExternalAuthTokens `json:"tokens"`
+	WebSessionIDs map[string]struct{}          `json:"webSessionIds,omitempty"`
+	CreatedAt     string                       `json:"createdAt,omitempty"`
+	UpdatedAt     string                       `json:"updatedAt,omitempty"`
+}
+
+type persistentExternalAuthTokens struct {
+	IDToken          string `json:"idToken,omitempty"`
+	AccessToken      string `json:"accessToken,omitempty"`
+	ChatGPTAccountID string `json:"chatgptAccountId,omitempty"`
+	ChatGPTPlanType  string `json:"chatgptPlanType,omitempty"`
+	Email            string `json:"email,omitempty"`
 }
 
 type persistentState struct {
@@ -375,6 +385,39 @@ func (s *Store) AddApproval(sessionID string, approval model.ApprovalRequest) {
 	session.LastActivityAt = model.NowString()
 }
 
+func (s *Store) AddApprovalGrant(sessionID string, grant model.ApprovalGrant) {
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	for i := range session.ApprovalGrants {
+		if session.ApprovalGrants[i].Fingerprint == grant.Fingerprint {
+			session.ApprovalGrants[i] = grant
+			session.LastActivityAt = model.NowString()
+			s.mu.Unlock()
+			s.SaveStableState("")
+			return
+		}
+	}
+	session.ApprovalGrants = append(session.ApprovalGrants, grant)
+	session.LastActivityAt = model.NowString()
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
+func (s *Store) ApprovalGrant(sessionID, fingerprint string) (model.ApprovalGrant, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	session := s.sessions[sessionID]
+	if session == nil {
+		return model.ApprovalGrant{}, false
+	}
+	for _, grant := range session.ApprovalGrants {
+		if grant.Fingerprint == fingerprint {
+			return grant, true
+		}
+	}
+	return model.ApprovalGrant{}, false
+}
+
 func (s *Store) Approval(sessionID, approvalID string) (model.ApprovalRequest, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -515,6 +558,7 @@ func defaultSession(sessionID string) *SessionState {
 		ID:             sessionID,
 		SelectedHostID: model.ServerLocalHostID,
 		Approvals:      make(map[string]model.ApprovalRequest),
+		ApprovalGrants: make([]model.ApprovalGrant, 0),
 		ItemCache:      make(map[string]map[string]any),
 		CreatedAt:      now,
 		LastActivityAt: now,
@@ -582,9 +626,10 @@ func (s *Store) LoadStableState(path string) error {
 			ThreadID:       session.ThreadID,
 			SelectedHostID: defaultHostID(session.SelectedHostID),
 			Approvals:      make(map[string]model.ApprovalRequest),
+			ApprovalGrants: append([]model.ApprovalGrant(nil), session.ApprovalGrants...),
 			ItemCache:      make(map[string]map[string]any),
 			Auth:           session.Auth,
-			Tokens:         session.Tokens,
+			Tokens:         fromPersistentTokens(session.Tokens),
 			CreatedAt:      session.CreatedAt,
 			LastActivityAt: session.LastActivityAt,
 		}
@@ -611,7 +656,7 @@ func (s *Store) LoadStableState(path string) error {
 		s.authSessions[id] = &AuthSessionState{
 			ID:            authSession.ID,
 			Auth:          authSession.Auth,
-			Tokens:        authSession.Tokens,
+			Tokens:        fromPersistentTokens(authSession.Tokens),
 			WebSessionIDs: webSessionIDs,
 			CreatedAt:     authSession.CreatedAt,
 			UpdatedAt:     authSession.UpdatedAt,
@@ -662,7 +707,8 @@ func (s *Store) SaveStableState(path string) error {
 			ThreadID:       session.ThreadID,
 			SelectedHostID: session.SelectedHostID,
 			Auth:           session.Auth,
-			Tokens:         session.Tokens,
+			Tokens:         toPersistentTokens(session.Tokens),
+			ApprovalGrants: append([]model.ApprovalGrant(nil), session.ApprovalGrants...),
 			CreatedAt:      session.CreatedAt,
 			LastActivityAt: session.LastActivityAt,
 		}
@@ -674,7 +720,7 @@ func (s *Store) SaveStableState(path string) error {
 		state.AuthSessions[id] = &persistentAuthSessionState{
 			ID:            authSession.ID,
 			Auth:          authSession.Auth,
-			Tokens:        authSession.Tokens,
+			Tokens:        toPersistentTokens(authSession.Tokens),
 			WebSessionIDs: cloneStructMap(authSession.WebSessionIDs),
 			CreatedAt:     authSession.CreatedAt,
 			UpdatedAt:     authSession.UpdatedAt,
@@ -703,6 +749,7 @@ func cloneSession(session *SessionState) *SessionState {
 	out := *session
 	out.Cards = append([]model.Card(nil), session.Cards...)
 	out.Approvals = make(map[string]model.ApprovalRequest, len(session.Approvals))
+	out.ApprovalGrants = append([]model.ApprovalGrant(nil), session.ApprovalGrants...)
 	for k, v := range session.Approvals {
 		out.Approvals[k] = v
 	}
@@ -764,5 +811,25 @@ func serverLocalHost() model.Host {
 		Kind:       "server_local",
 		Status:     "online",
 		Executable: true,
+	}
+}
+
+func toPersistentTokens(tokens model.ExternalAuthTokens) persistentExternalAuthTokens {
+	return persistentExternalAuthTokens{
+		IDToken:          tokens.IDToken,
+		AccessToken:      tokens.AccessToken,
+		ChatGPTAccountID: tokens.ChatGPTAccountID,
+		ChatGPTPlanType:  tokens.ChatGPTPlanType,
+		Email:            tokens.Email,
+	}
+}
+
+func fromPersistentTokens(tokens persistentExternalAuthTokens) model.ExternalAuthTokens {
+	return model.ExternalAuthTokens{
+		IDToken:          tokens.IDToken,
+		AccessToken:      tokens.AccessToken,
+		ChatGPTAccountID: tokens.ChatGPTAccountID,
+		ChatGPTPlanType:  tokens.ChatGPTPlanType,
+		Email:            tokens.Email,
 	}
 }
