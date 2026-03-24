@@ -290,7 +290,7 @@ button, input, textarea, select {
   flex: 1;
   overflow-y: auto;
   scroll-behavior: smooth;
-  padding: 24px 0 160px; /* Space for omnibar to prevent overlap */
+  padding: 24px 0 240px; /* Space for omnibar & breathing room */
 }
 
 .chat-stream-inner {

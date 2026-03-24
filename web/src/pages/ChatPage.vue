@@ -4,6 +4,7 @@ import { useAppStore } from "../store";
 import CardItem from "../components/CardItem.vue";
 import Omnibar from "../components/Omnibar.vue";
 import ThinkingCard from "../components/ThinkingCard.vue";
+import PlanCard from "../components/PlanCard.vue";
 import { BotIcon, WifiOffIcon, RefreshCwIcon } from "lucide-vue-next";
 
 const store = useAppStore();
@@ -12,6 +13,7 @@ const composerMessage = ref("");
 const scrollContainer = ref(null);
 const showFileDetails = ref(false);
 const showSearchDetails = ref(false);
+const authCardCollapsed = ref(false);
 let isUserScrolling = false;
 
 /* ---- ThinkingCard local state ---- */
@@ -27,30 +29,18 @@ const thinkingCard = computed(() => ({
 watch(
   () => store.runtime.turn.phase,
   (phase) => {
-    if (phase === "idle" || phase === "completed" || phase === "failed") {
+    if (phase === "idle" || phase === "completed" || phase === "failed" || phase === "aborted") {
       showThinking.value = false;
     } else {
       thinkingPhase.value = phase;
       showThinking.value = true;
     }
-  }
-);
-
-let initialCardCount = 0;
-
-watch(
-  () => store.snapshot.cards,
-  (cards) => {
-    if (!showThinking.value) return;
     
-    if (cards.length > initialCardCount) {
-      const lastCard = cards[cards.length - 1];
-      if (lastCard && lastCard.role !== "user" && lastCard.type !== "UserMessageCard") {
-        showThinking.value = false;
-      }
+    // Reset collapse state when a new approval arrives
+    if (phase === "waiting_approval") {
+      authCardCollapsed.value = false;
     }
-  },
-  { deep: true }
+  }
 );
 
 /* ---- Activity summary ---- */
@@ -93,9 +83,61 @@ const currentSearchLine = computed(() => {
 const viewedFileDetails = computed(() => activity.value.viewedFiles || []);
 const searchedQueryDetails = computed(() => activity.value.searchedWebQueries || []);
 
+const activePlanCard = computed(() => {
+  if (!store.runtime.turn.active) return null;
+  const planCards = store.snapshot.cards.filter((card) => card.type === "PlanCard" && card.items?.length);
+  if (!planCards.length) return null;
+  return planCards[planCards.length - 1];
+});
+
+const pendingApprovalCards = computed(() => {
+  return store.snapshot.cards.filter((card) => {
+    if (card.status !== "pending") return false;
+    return card.type === "CommandApprovalCard" || card.type === "FileChangeApprovalCard";
+  });
+});
+
+const pendingApprovals = computed(() => {
+  return (store.snapshot.approvals || []).filter((approval) => approval.status === "pending");
+});
+
+const activeApprovalCard = computed(() => {
+  const nextApproval = pendingApprovals.value[0];
+  if (!nextApproval) {
+    return pendingApprovalCards.value[0] || null;
+  }
+
+  const byRequestID = store.snapshot.cards.find((card) => {
+    if (card.status !== "pending") return false;
+    if (card.type !== "CommandApprovalCard" && card.type !== "FileChangeApprovalCard") return false;
+    return card.approval?.requestId === nextApproval.id;
+  });
+  if (byRequestID) return byRequestID;
+
+  return store.snapshot.cards.find((card) => {
+    if (card.status !== "pending") return false;
+    if (card.type !== "CommandApprovalCard" && card.type !== "FileChangeApprovalCard") return false;
+    return card.id === nextApproval.itemId;
+  }) || pendingApprovalCards.value[0] || null;
+});
+
+const visibleCards = computed(() => {
+  return store.snapshot.cards.filter((card) => {
+    // Hide active plan card
+    if (activePlanCard.value && card.id === activePlanCard.value.id && store.runtime.turn.active) {
+      return false;
+    }
+    // Hide all pending approval cards from the chat stream (rendered in overlay)
+    if (card.status === "pending" && (card.type === "CommandApprovalCard" || card.type === "FileChangeApprovalCard")) {
+      return false;
+    }
+    return true;
+  });
+});
+
 /* ---- Reconnection ---- */
 const showReconnectBanner = computed(() => {
-  return store.runtime.codex.status === "reconnecting" || store.runtime.codex.status === "stopped";
+  return store.runtime.codex.status === "reconnecting";
 });
 
 const reconnectLabel = computed(() => {
@@ -105,6 +147,21 @@ const reconnectLabel = computed(() => {
 });
 
 const isStopped = computed(() => store.runtime.codex.status === "stopped");
+
+const connectionErrorCard = computed(() => {
+  if (!isStopped.value) return null;
+  const retryMax = store.runtime.codex.retryMax || 5;
+  const lastError = store.runtime.codex.lastError;
+  return {
+    id: "__codex_stopped__",
+    type: "ErrorCard",
+    title: "Codex app-server 已断开",
+    message: lastError
+      ? `连接恢复失败，已尝试 ${retryMax} 次。最后错误：${lastError}`
+      : `连接恢复失败，已达到 ${retryMax} 次重试上限。`,
+    retryable: true,
+  };
+});
 
 const composerPlaceholder = computed(() => {
   if (!store.snapshot.auth.connected) return "请先登录 GPT 账号后再开始对话";
@@ -125,11 +182,10 @@ function getRowClass(card) {
 }
 
 async function sendMessage() {
-  if (!store.canSend || !composerMessage.value.trim()) return;
+  if (!store.canSend || !composerMessage.value.trim() || store.runtime.turn.active) return;
 
   store.sending = true;
   store.errorMessage = "";
-  initialCardCount = store.snapshot.cards.length;
   showThinking.value = true;
   thinkingPhase.value = "thinking";
   store.setTurnPhase("thinking");
@@ -160,6 +216,27 @@ async function sendMessage() {
     store.setTurnPhase("failed");
   } finally {
     store.sending = false;
+  }
+}
+
+async function stopMessage() {
+  if (!store.runtime.turn.active) return;
+  try {
+    const response = await fetch("/api/v1/chat/stop", {
+      method: "POST",
+      credentials: "include",
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      store.errorMessage = data.error || "stop failed";
+      return;
+    }
+    store.errorMessage = "";
+    showThinking.value = false;
+    store.setTurnPhase("aborted");
+  } catch (e) {
+    console.error(e);
+    store.errorMessage = "stop failed";
   }
 }
 
@@ -263,6 +340,16 @@ watch(
   },
   { deep: true }
 );
+
+watch(
+  () => activeApprovalCard.value?.id,
+  (approvalID, previousID) => {
+    if (!approvalID || approvalID === previousID) return;
+    authCardCollapsed.value = false;
+    thinkingPhase.value = "waiting_approval";
+    showThinking.value = true;
+  }
+);
 </script>
 
 <template>
@@ -290,8 +377,16 @@ watch(
       <p v-if="store.errorMessage" class="chat-banner error">{{ store.errorMessage }}</p>
 
       <div class="chat-stream">
+        <div v-if="connectionErrorCard" class="stream-row row-assistant">
+          <CardItem
+            :card="connectionErrorCard"
+            @retry="handleRetry"
+            @refresh="handleRefresh"
+          />
+        </div>
+
         <div
-          v-for="card in store.snapshot.cards"
+          v-for="card in visibleCards"
           :key="card.id"
           class="stream-row"
           :class="getRowClass(card)"
@@ -357,12 +452,36 @@ watch(
   </div>
 
   <footer class="omnibar-dock">
-    <Omnibar
-      v-model="composerMessage"
-      :placeholder="composerPlaceholder"
-      @send="sendMessage"
-      :disabled="isStopped"
-    />
+    <div class="omnibar-stack">
+      <div v-if="activePlanCard" class="runtime-plan-dock">
+        <PlanCard :card="activePlanCard" compact />
+      </div>
+
+      <!-- Auth Overlay -->
+      <div v-if="activeApprovalCard" class="auth-overlay-dock">
+        <div v-if="!authCardCollapsed" class="auth-overlay-container">
+          <div class="auth-overlay-header">
+             <span class="auth-overlay-title">需要您的确认</span>
+             <button class="icon-btn auth-collapse-btn" @click="authCardCollapsed = true">折叠展开输入框</button>
+          </div>
+          <CardItem :card="activeApprovalCard" :is-overlay="true" @approval="decideApproval" />
+        </div>
+        
+        <button v-else class="auth-restore-btn" @click="authCardCollapsed = false">
+           有 1 项待确认任务被折叠，点击展开审核
+        </button>
+      </div>
+
+      <Omnibar
+        v-if="!activeApprovalCard || authCardCollapsed"
+        v-model="composerMessage"
+        :placeholder="composerPlaceholder"
+        @send="sendMessage"
+        @stop="stopMessage"
+        :disabled="isStopped"
+        :is-docked-bottom="!!activePlanCard || !!activeApprovalCard"
+      />
+    </div>
   </footer>
 </template>
 
@@ -445,6 +564,82 @@ watch(
 
 .activity-detail-item {
   line-height: 1.5;
+}
+
+.omnibar-stack {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.runtime-plan-dock {
+  width: 100%;
+  z-index: 6;
+  position: relative;
+  /* Shift down slightly to cover top border of omnibar if needed, though we set it to transparent anyway */
+  transform: translateY(1px);
+}
+
+.auth-overlay-dock {
+  width: 100%;
+  z-index: 10;
+  margin-bottom: 0;
+  position: relative;
+  transform: translateY(1px);
+}
+
+.auth-overlay-container {
+  background: white;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
+  overflow: hidden;
+}
+
+.auth-overlay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #f8fafc;
+}
+
+.auth-overlay-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fb923c;
+}
+
+.auth-collapse-btn {
+  font-size: 11px;
+  color: #64748b;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.auth-collapse-btn:hover {
+  text-decoration: underline;
+}
+
+.auth-restore-btn {
+  width: 100%;
+  padding: 12px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  color: #c2410c;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 8px;
+  box-shadow: 0 4px 12px rgba(234, 88, 12, 0.05);
+}
+
+.auth-restore-btn:hover {
+  background: #ffedd5;
 }
 
 .row-notice {

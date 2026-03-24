@@ -79,7 +79,9 @@ async function createSession() {
     }
     const data = await response.json();
     sessionId.value = data.sessionId;
-    startedAt.value = new Date().toISOString();
+    currentCwd.value = data.cwd || currentCwd.value;
+    currentShell.value = data.shell || currentShell.value;
+    startedAt.value = data.startedAt || new Date().toISOString();
     connectTerminalWs(data.sessionId);
   } catch (e) {
     connectionStatus.value = "error";
@@ -102,6 +104,9 @@ function connectTerminalWs(sid) {
       switch (msg.type) {
         case "ready":
           connectionStatus.value = "connected";
+          currentCwd.value = msg.cwd || currentCwd.value;
+          currentShell.value = msg.shell || currentShell.value;
+          startedAt.value = msg.startedAt || startedAt.value;
           break;
         case "output":
           term?.write(msg.data);

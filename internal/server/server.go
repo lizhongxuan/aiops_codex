@@ -40,6 +40,10 @@ type App struct {
 	upgrader    websocket.Upgrader
 	wsMu        sync.Mutex
 	wsClients   map[string]map[*websocket.Conn]struct{}
+	turnMu      sync.Mutex
+	turnCancels map[string]context.CancelFunc
+	terminalMu  sync.Mutex
+	terminals   map[string]*terminalSession
 	oauthMu     sync.Mutex
 	oauthStates map[string]string
 	auditMu     sync.Mutex
@@ -98,6 +102,8 @@ func New(cfg config.Config) *App {
 			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
 		wsClients:   make(map[string]map[*websocket.Conn]struct{}),
+		turnCancels: make(map[string]context.CancelFunc),
+		terminals:   make(map[string]*terminalSession),
 		oauthStates: make(map[string]string),
 	}
 	app.codex = codex.New(cfg.CodexPath, app.handleCodexNotification, app.handleCodexServerRequest)
@@ -148,8 +154,11 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/auth/oauth/start", a.withSession(a.handleOAuthStart))
 	httpMux.HandleFunc("/api/v1/auth/oauth/callback", a.withSession(a.handleOAuthCallback))
 	httpMux.HandleFunc("/api/v1/chat/message", a.withSession(a.handleChatMessage))
+	httpMux.HandleFunc("/api/v1/chat/stop", a.withSession(a.handleChatStop))
 	httpMux.HandleFunc("/api/v1/approvals/", a.withSession(a.handleApprovalDecision))
 	httpMux.HandleFunc("/api/v1/choices/", a.withSession(a.handleChoiceAnswer))
+	httpMux.HandleFunc("/api/v1/terminal/sessions", a.withSession(a.handleTerminalCreate))
+	httpMux.HandleFunc("/api/v1/terminal/ws", a.withSession(a.handleTerminalWS))
 	httpMux.HandleFunc("/ws", a.withSession(a.handleWS))
 	httpMux.Handle("/", a.serveFrontend())
 
@@ -193,6 +202,7 @@ func (a *App) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		a.stopAllTerminals(shutdownCtx)
 		_ = a.httpServer.Shutdown(shutdownCtx)
 		a.grpcServer.GracefulStop()
 		return ctx.Err()
@@ -644,10 +654,21 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	a.broadcastSnapshot(sessionID)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
+	a.setTurnCancel(sessionID, cancel)
+	defer func() {
+		a.clearTurnCancel(sessionID)
+		cancel()
+	}()
 
 	err := a.startTurn(ctx, sessionID, req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) && a.turnWasInterrupted(sessionID) {
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"accepted":    false,
+				"interrupted": true,
+			})
+			return
+		}
 		a.finishRuntimeTurn(sessionID, "failed")
 		a.store.UpsertCard(sessionID, model.Card{
 			ID:        model.NewID("error"),
@@ -665,6 +686,55 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+}
+
+func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	session := a.store.Session(sessionID)
+	if session == nil || !session.Runtime.Turn.Active {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "当前没有可中断的任务"})
+		return
+	}
+
+	threadID := session.ThreadID
+	turnID := session.TurnID
+	cancelledPending := a.cancelTurnStart(sessionID)
+
+	if threadID == "" && !cancelledPending {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "当前任务尚未进入可中断状态"})
+		return
+	}
+
+	if threadID != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		params := map[string]any{
+			"threadId":                   threadID,
+			"clean_background_terminals": true,
+		}
+		if turnID != "" {
+			params["turnId"] = turnID
+		}
+		var result map[string]any
+		if err := a.codex.Request(ctx, "turn/interrupt", params, &result); err != nil && !cancelledPending {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	a.cleanBackgroundTerminals(threadID)
+	a.markTurnInterrupted(sessionID, turnID)
+	a.audit("chat.stop", map[string]any{
+		"sessionId": sessionID,
+		"threadId":  threadID,
+		"turnId":    turnID,
+	})
+	a.broadcastSnapshot(sessionID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) error {
@@ -781,7 +851,9 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	cardStatus := approvalStatusFromDecision(decision)
 	a.store.ResolveApproval(sessionID, approvalID, cardStatus, model.NowString())
 	nextPhase := "thinking"
-	if decision == "accept" || decision == "accept_session" {
+	if a.hasPendingApprovals(sessionID) {
+		nextPhase = "waiting_approval"
+	} else if decision == "accept" || decision == "accept_session" {
 		nextPhase = "executing"
 	}
 	a.setRuntimeTurnPhase(sessionID, nextPhase)
@@ -906,8 +978,26 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string)
 	}()
 
 	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
 			return
+		}
+		if messageType != websocket.TextMessage {
+			continue
+		}
+		var incoming struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(payload, &incoming); err != nil {
+			continue
+		}
+		if incoming.Type == "ping" {
+			a.wsMu.Lock()
+			writeErr := conn.WriteJSON(map[string]string{"type": "heartbeat"})
+			a.wsMu.Unlock()
+			if writeErr != nil {
+				return
+			}
 		}
 	}
 }
@@ -968,10 +1058,16 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		if sessionID == "" {
 			return
 		}
+		if a.shouldIgnoreTurnPayload(sessionID, payload) {
+			return
+		}
 		a.bindTurnToSession(sessionID, payload)
 	case "turn/plan/updated":
 		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
 		if sessionID == "" {
+			return
+		}
+		if a.shouldIgnoreTurnPayload(sessionID, payload) {
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
@@ -996,8 +1092,14 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		if sessionID == "" {
 			return
 		}
+		if a.shouldIgnoreTurnPayload(sessionID, payload) {
+			return
+		}
 		a.bindTurnToSession(sessionID, payload)
 		itemID := getString(payload, "itemId")
+		if a.cardIsFinal(sessionID, itemID) {
+			return
+		}
 		if session := a.store.Session(sessionID); session != nil {
 			exists := false
 			for _, card := range session.Cards {
@@ -1028,8 +1130,14 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		if sessionID == "" {
 			return
 		}
+		if a.shouldIgnoreTurnPayload(sessionID, payload) {
+			return
+		}
 		a.bindTurnToSession(sessionID, payload)
 		itemID := getString(payload, "itemId")
+		if a.cardIsFinal(sessionID, itemID) {
+			return
+		}
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
 			card.Output += getString(payload, "delta")
 			card.UpdatedAt = model.NowString()
@@ -1040,8 +1148,14 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		if sessionID == "" {
 			return
 		}
+		if a.shouldIgnoreTurnPayload(sessionID, payload) {
+			return
+		}
 		a.bindTurnToSession(sessionID, payload)
 		itemID := getString(payload, "itemId")
+		if a.cardIsFinal(sessionID, itemID) {
+			return
+		}
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
 			card.Output += getString(payload, "delta")
 			card.UpdatedAt = model.NowString()
@@ -1061,6 +1175,9 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		if sessionID == "" {
 			return
 		}
+		if a.shouldIgnoreTurnPayload(sessionID, payload) {
+			return
+		}
 		a.bindTurnToSession(sessionID, payload)
 		turn := getMap(payload, "turn")
 		turnStatus := getString(turn, "status")
@@ -1073,7 +1190,18 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		} else {
 			a.finishRuntimeTurn(sessionID, "failed")
 		}
+		a.finalizeOpenTurnCards(sessionID, normalizeCardStatus(turnStatus))
+		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
 		log.Printf("turn completed session=%s turn=%s status=%s", sessionID, getString(turn, "id"), turnStatus)
+		a.broadcastSnapshot(sessionID)
+	case "turn/aborted":
+		sessionID := a.sessionIDFromPayload(payload)
+		if sessionID == "" {
+			return
+		}
+		a.bindTurnToSession(sessionID, payload)
+		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
+		a.markTurnInterrupted(sessionID, getTurnID(payload))
 		a.broadcastSnapshot(sessionID)
 	case "error":
 		errorPayload := getMap(payload, "error")
@@ -1288,12 +1416,16 @@ func (a *App) handleItemStarted(payload map[string]any) {
 	if sessionID == "" {
 		return
 	}
+	if a.shouldIgnoreTurnPayload(sessionID, payload) {
+		return
+	}
 	a.bindTurnToSession(sessionID, payload)
 	item := getMap(payload, "item")
 	itemID := getString(item, "id")
 	itemType := getString(item, "type")
 	a.store.RememberItem(sessionID, itemID, item)
 	a.updateActivityFromItem(sessionID, item, false)
+	a.syncProcessLineCard(sessionID, itemID, item, false)
 
 	now := model.NowString()
 	switch itemType {
@@ -1334,6 +1466,8 @@ func (a *App) handleItemStarted(payload map[string]any) {
 			UpdatedAt: now,
 		}
 		a.store.UpsertCard(sessionID, card)
+		a.scheduleFinalizingExecutionCleanup(sessionID, getStringAny(payload, "threadId", "thread_id"))
+		a.scheduleSilentTurnCompletionCheck(sessionID, 6*time.Second)
 	}
 	a.broadcastSnapshot(sessionID)
 }
@@ -1343,12 +1477,19 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 	if sessionID == "" {
 		return
 	}
+	if a.shouldIgnoreTurnPayload(sessionID, payload) {
+		return
+	}
 	a.bindTurnToSession(sessionID, payload)
 	item := getMap(payload, "item")
 	itemID := getString(item, "id")
 	itemType := getString(item, "type")
 	a.store.RememberItem(sessionID, itemID, item)
 	a.updateActivityFromItem(sessionID, item, true)
+	a.syncProcessLineCard(sessionID, itemID, item, true)
+
+	now := model.NowString()
+	durationMS := a.cardDurationMS(sessionID, itemID, now)
 
 	switch itemType {
 	case "agentMessage":
@@ -1357,22 +1498,43 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			if card.Text == "" {
 				card.Text = getString(item, "text")
 			}
-			card.UpdatedAt = model.NowString()
+			card.DurationMS = durationMS
+			card.UpdatedAt = now
+			if isTaskCompletionText(card.Text) {
+				card.Type = "TaskDividerCard"
+				card.Role = ""
+				card.Text = ""
+				card.Title = ""
+				card.Status = "completed"
+			}
 		})
 	case "commandExecution":
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
-			card.Status = normalizeCardStatus(getString(item, "status"))
-			if output := getString(item, "aggregatedOutput"); output != "" && card.Output == "" {
-				card.Output = output
+			output := card.Output
+			if aggregated := getString(item, "aggregatedOutput"); aggregated != "" && len(aggregated) >= len(output) {
+				output = aggregated
 			}
-			card.UpdatedAt = model.NowString()
+			card.Output = output
+			card.Status = completedCommandStatus(item, output)
+			if itemDuration, ok := getIntAny(item, "durationMs", "duration_ms"); ok && itemDuration > 0 {
+				card.DurationMS = int64(itemDuration)
+			} else {
+				card.DurationMS = durationMS
+			}
+			card.UpdatedAt = now
 		})
+		a.resumeThinkingAfterExecution(sessionID)
 	case "fileChange":
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
-			card.Status = normalizeCardStatus(getString(item, "status"))
+			card.Status = completedItemStatus(item)
 			card.Changes = toChanges(item["changes"])
-			card.UpdatedAt = model.NowString()
+			card.DurationMS = durationMS
+			card.UpdatedAt = now
 		})
+		a.resumeThinkingAfterExecution(sessionID)
+	}
+	if itemType == "agentMessage" {
+		a.scheduleSilentTurnCompletionCheck(sessionID, 6*time.Second)
 	}
 	a.broadcastSnapshot(sessionID)
 }
@@ -1438,7 +1600,7 @@ func (a *App) startRuntimeTurn(sessionID, hostID string) {
 
 func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
 	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
-		runtime.Turn.Active = phase != "" && phase != "idle" && phase != "completed" && phase != "failed"
+		runtime.Turn.Active = phase != "" && phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
 		runtime.Turn.Phase = phase
 		if runtime.Turn.StartedAt == "" && runtime.Turn.Active {
 			runtime.Turn.StartedAt = model.NowString()
@@ -1458,6 +1620,241 @@ func (a *App) finishRuntimeTurn(sessionID, phase string) {
 	})
 }
 
+func (a *App) resumeThinkingAfterExecution(sessionID string) {
+	session := a.store.Session(sessionID)
+	if session == nil || !session.Runtime.Turn.Active {
+		return
+	}
+	if session.Runtime.Turn.Phase != "executing" {
+		return
+	}
+	a.setRuntimeTurnPhase(sessionID, "thinking")
+}
+
+func (a *App) hasPendingApprovals(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for _, approval := range session.Approvals {
+		if approval.Status == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) hasPendingChoices(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for _, choice := range session.Choices {
+		if choice.Status == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) hasInProgressExecutionCards(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for _, card := range session.Cards {
+		if normalizeCardStatus(card.Status) != "inProgress" {
+			continue
+		}
+		switch card.Type {
+		case "CommandCard", "FileChangeCard", "ProcessLineCard":
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) hasInProgressCards(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for _, card := range session.Cards {
+		if normalizeCardStatus(card.Status) == "inProgress" || card.Status == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) hasCompletedAssistantMessage(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for _, card := range session.Cards {
+		if card.Type == "AssistantMessageCard" && normalizeCardStatus(card.Status) == "completed" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) finalizeLingeringExecutionCards(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+
+	now := model.NowString()
+	changed := false
+	for _, existing := range session.Cards {
+		if normalizeCardStatus(existing.Status) != "inProgress" {
+			continue
+		}
+
+		switch existing.Type {
+		case "CommandCard":
+			item := a.store.Item(sessionID, existing.ID)
+			output := existing.Output
+			if aggregated := getString(item, "aggregatedOutput"); aggregated != "" && len(aggregated) >= len(output) {
+				output = aggregated
+			}
+			durationMS := existing.DurationMS
+			if durationMS == 0 {
+				if itemDuration, ok := getIntAny(item, "durationMs", "duration_ms"); ok && itemDuration > 0 {
+					durationMS = int64(itemDuration)
+				} else {
+					durationMS = durationBetween(existing.CreatedAt, now)
+				}
+			}
+			status := completedCommandStatus(item, output)
+			a.store.UpdateCard(sessionID, existing.ID, func(card *model.Card) {
+				card.Output = output
+				card.Status = status
+				card.DurationMS = durationMS
+				card.UpdatedAt = now
+			})
+			changed = true
+		case "FileChangeCard", "ProcessLineCard":
+			durationMS := existing.DurationMS
+			if durationMS == 0 {
+				durationMS = durationBetween(existing.CreatedAt, now)
+			}
+			a.store.UpdateCard(sessionID, existing.ID, func(card *model.Card) {
+				card.Status = "completed"
+				card.DurationMS = durationMS
+				card.UpdatedAt = now
+			})
+			changed = true
+		}
+	}
+	return changed
+}
+
+func (a *App) scheduleFinalizingExecutionCleanup(sessionID, threadID string) {
+	session := a.store.Session(sessionID)
+	if session == nil || strings.TrimSpace(threadID) == "" {
+		return
+	}
+	turnID := session.TurnID
+
+	go func() {
+		timer := time.NewTimer(1500 * time.Millisecond)
+		defer timer.Stop()
+		<-timer.C
+
+		current := a.store.Session(sessionID)
+		if current == nil || current.TurnID != turnID {
+			return
+		}
+		if !current.Runtime.Turn.Active || current.Runtime.Turn.Phase != "finalizing" {
+			return
+		}
+		if a.hasPendingApprovals(sessionID) || a.hasPendingChoices(sessionID) {
+			return
+		}
+		if !a.hasInProgressExecutionCards(sessionID) {
+			return
+		}
+
+		changed := a.finalizeLingeringExecutionCards(sessionID)
+		a.cleanBackgroundTerminalsWithTimeout(threadID, 15*time.Second)
+		if changed {
+			log.Printf("finalizing cleanup resolved lingering execution cards session=%s turn=%s", sessionID, turnID)
+			a.broadcastSnapshot(sessionID)
+		}
+	}()
+}
+
+func (a *App) scheduleSilentTurnCompletionCheck(sessionID string, delay time.Duration) {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return
+	}
+	turnID := session.TurnID
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		<-timer.C
+
+		current := a.store.Session(sessionID)
+		if current == nil || current.TurnID != turnID {
+			return
+		}
+		if !current.Runtime.Turn.Active || current.Runtime.Turn.Phase != "finalizing" {
+			return
+		}
+		if a.hasPendingApprovals(sessionID) || a.hasPendingChoices(sessionID) || a.hasInProgressCards(sessionID) {
+			return
+		}
+		if !a.hasCompletedAssistantMessage(sessionID) {
+			return
+		}
+
+		lastActivityAt, err := time.Parse(time.RFC3339, current.LastActivityAt)
+		if err != nil || time.Since(lastActivityAt) < delay {
+			return
+		}
+
+		a.finishRuntimeTurn(sessionID, "completed")
+		a.finalizeOpenTurnCards(sessionID, "completed")
+		log.Printf("auto completed silent finalizing turn session=%s turn=%s", sessionID, turnID)
+		a.broadcastSnapshot(sessionID)
+	}()
+}
+
+func (a *App) setTurnCancel(sessionID string, cancel context.CancelFunc) {
+	a.turnMu.Lock()
+	defer a.turnMu.Unlock()
+	a.turnCancels[sessionID] = cancel
+}
+
+func (a *App) clearTurnCancel(sessionID string) {
+	a.turnMu.Lock()
+	defer a.turnMu.Unlock()
+	if _, ok := a.turnCancels[sessionID]; ok {
+		delete(a.turnCancels, sessionID)
+	}
+}
+
+func (a *App) cancelTurnStart(sessionID string) bool {
+	a.turnMu.Lock()
+	cancel := a.turnCancels[sessionID]
+	a.turnMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (a *App) turnWasInterrupted(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	return session != nil && session.Runtime.Turn.Phase == "aborted"
+}
+
 func (a *App) incrementCommandCount(sessionID string) {
 	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
 		runtime.Activity.CommandsRun++
@@ -1470,6 +1867,36 @@ func (a *App) bindTurnToSession(sessionID string, payload map[string]any) {
 		return
 	}
 	a.store.SetTurn(sessionID, turnID)
+}
+
+func (a *App) shouldIgnoreTurnPayload(sessionID string, payload map[string]any) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	if session.Runtime.Turn.Active || session.Runtime.Turn.Phase != "aborted" {
+		return false
+	}
+	turnID := getTurnID(payload)
+	if turnID != "" && session.TurnID != "" {
+		return turnID == session.TurnID
+	}
+	threadID := getStringAny(payload, "threadId", "thread_id")
+	return threadID != "" && threadID == session.ThreadID
+}
+
+func (a *App) cardIsFinal(sessionID, cardID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for _, card := range session.Cards {
+		if card.ID != cardID {
+			continue
+		}
+		return normalizeCardStatus(card.Status) != "inProgress"
+	}
+	return false
 }
 
 func (a *App) sessionIDFromPayload(payload map[string]any) string {
@@ -1531,6 +1958,199 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 			}
 		}
 	})
+}
+
+func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any, completed bool) {
+	kind, entry, currentLabel, ok := detectActivitySignal(item)
+	if !ok {
+		return
+	}
+
+	cardID := "process-" + itemID
+	now := model.NowString()
+	existing := a.cardByID(sessionID, cardID)
+	createdAt := now
+	if existing != nil && existing.CreatedAt != "" {
+		createdAt = existing.CreatedAt
+	}
+
+	status := "inProgress"
+	durationMS := int64(0)
+	if completed {
+		status = "completed"
+		durationMS = durationBetween(createdAt, now)
+	}
+
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:         cardID,
+		Type:       "ProcessLineCard",
+		Text:       processLineText(kind, entry, currentLabel, completed),
+		Status:     status,
+		DurationMS: durationMS,
+		CreatedAt:  createdAt,
+		UpdatedAt:  now,
+	})
+
+	if completed {
+		a.store.UpsertCard(sessionID, model.Card{
+			ID:         "divider-" + cardID,
+			Type:       "TaskDividerCard",
+			Status:     "completed",
+			DurationMS: durationMS,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		})
+	}
+}
+
+func (a *App) markTurnInterrupted(sessionID, turnID string) {
+	now := model.NowString()
+	a.finishRuntimeTurn(sessionID, "aborted")
+	a.finalizeOpenTurnCards(sessionID, "failed")
+	a.resolvePendingTurnRequests(sessionID, now)
+	cardID := model.NewID("notice")
+	if turnID != "" {
+		cardID = "turn-aborted-" + turnID
+	}
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        cardID,
+		Type:      "NoticeCard",
+		Title:     "任务已中断",
+		Text:      "任务已中断",
+		Status:    "notice",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+func (a *App) cleanBackgroundTerminals(threadID string) {
+	a.cleanBackgroundTerminalsWithTimeout(threadID, 5*time.Second)
+}
+
+func (a *App) cleanBackgroundTerminalsWithTimeout(threadID string, timeout time.Duration) {
+	if strings.TrimSpace(threadID) == "" {
+		return
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	var result map[string]any
+	if err := a.codex.Request(ctx, "thread/backgroundTerminals/clean", map[string]any{
+		"threadId": threadID,
+	}, &result); err != nil {
+		log.Printf("background terminal cleanup skipped thread=%s err=%s", threadID, truncate(err.Error(), 200))
+	}
+}
+
+func (a *App) finalizeOpenTurnCards(sessionID, finalStatus string) {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return
+	}
+
+	now := model.NowString()
+	for _, existing := range session.Cards {
+		if normalizeCardStatus(existing.Status) != "inProgress" && existing.Status != "pending" {
+			continue
+		}
+		switch existing.Type {
+		case "CommandCard", "FileChangeCard", "ProcessLineCard", "CommandApprovalCard", "FileChangeApprovalCard", "ChoiceCard":
+			cardID := existing.ID
+			durationMS := durationBetween(existing.CreatedAt, now)
+			a.store.UpdateCard(sessionID, cardID, func(card *model.Card) {
+				card.Status = finalStatus
+				if card.DurationMS == 0 {
+					card.DurationMS = durationMS
+				}
+				card.UpdatedAt = now
+			})
+		}
+	}
+}
+
+func (a *App) resolvePendingTurnRequests(sessionID, resolvedAt string) {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return
+	}
+	for approvalID, approval := range session.Approvals {
+		if approval.Status == "pending" {
+			a.store.ResolveApproval(sessionID, approvalID, "cancelled", resolvedAt)
+		}
+	}
+	for choiceID, choice := range session.Choices {
+		if choice.Status == "pending" {
+			a.store.ResolveChoice(sessionID, choiceID, "cancelled", resolvedAt)
+		}
+	}
+}
+
+func (a *App) cardByID(sessionID, cardID string) *model.Card {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return nil
+	}
+	for _, card := range session.Cards {
+		if card.ID == cardID {
+			copyCard := card
+			return &copyCard
+		}
+	}
+	return nil
+}
+
+func (a *App) cardDurationMS(sessionID, cardID, endedAt string) int64 {
+	card := a.cardByID(sessionID, cardID)
+	if card == nil {
+		return 0
+	}
+	return durationBetween(card.CreatedAt, endedAt)
+}
+
+func processLineText(kind string, entry model.ActivityEntry, currentLabel string, completed bool) string {
+	if completed {
+		return strings.TrimSpace(entry.Label)
+	}
+	switch kind {
+	case "file_read":
+		return "现在浏览 " + currentLabel
+	case "web_search":
+		return "现在搜索网页（" + currentLabel + "）"
+	case "list":
+		return "现在列出 " + currentLabel
+	default:
+		return strings.TrimSpace(entry.Label)
+	}
+}
+
+func isTaskCompletionText(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(strings.Trim(value, "- ")))
+	switch normalized {
+	case "status: completed", "completed", "turn completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func durationBetween(startedAt, endedAt string) int64 {
+	if startedAt == "" || endedAt == "" {
+		return 0
+	}
+	startTime, err := time.Parse(time.RFC3339, startedAt)
+	if err != nil {
+		return 0
+	}
+	endTime, err := time.Parse(time.RFC3339, endedAt)
+	if err != nil {
+		return 0
+	}
+	if endTime.Before(startTime) {
+		return 0
+	}
+	return endTime.Sub(startTime).Milliseconds()
 }
 
 func autoApprovalNoticeText(approval model.ApprovalRequest) string {
@@ -2202,11 +2822,70 @@ func normalizeCardStatus(status string) string {
 		return "inProgress"
 	case "completed", "success", "accepted", "accepted_for_session", "accepted_for_session_auto":
 		return "completed"
-	case "failed", "error", "decline", "declined", "cancelled", "canceled":
+	case "failed", "error", "decline", "declined", "cancelled", "canceled", "aborted", "interrupted":
 		return "failed"
 	default:
 		return status
 	}
+}
+
+func completedItemStatus(item map[string]any) string {
+	status := normalizeCardStatus(getString(item, "status"))
+	if status != "inProgress" {
+		return status
+	}
+	return "completed"
+}
+
+func completedCommandStatus(item map[string]any, output string) string {
+	exitCode, ok := getIntAny(item, "exitCode", "exit_code")
+	if ok && exitCode != 0 {
+		return "failed"
+	}
+	if commandOutputLooksFailed(output) {
+		return "failed"
+	}
+	return completedItemStatus(item)
+}
+
+func commandOutputLooksFailed(output string) bool {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return false
+	}
+
+	lower := strings.ToLower(trimmed)
+	strongSignals := []string{
+		"operation not permitted",
+		"permission denied",
+		"command not found",
+		"no such file or directory",
+		"is not recognized as an internal or external command",
+		"unknown option",
+		"illegal option",
+		"invalid option",
+		"traceback (most recent call last):",
+	}
+	for _, signal := range strongSignals {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+
+	for _, line := range strings.Split(lower, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "zsh:") || strings.HasPrefix(line, "bash:") || strings.HasPrefix(line, "sh:") {
+			return true
+		}
+		if strings.HasPrefix(line, "python: can't open file") || strings.HasPrefix(line, "npm err!") {
+			return true
+		}
+	}
+
+	return false
 }
 
 type stringHit struct {
@@ -2385,6 +3064,22 @@ func getBool(payload map[string]any, key string) bool {
 func getFloat(payload map[string]any, key string) float64 {
 	value, _ := payload[key].(float64)
 	return value
+}
+
+func getIntAny(payload map[string]any, keys ...string) (int, bool) {
+	for _, key := range keys {
+		switch value := payload[key].(type) {
+		case int:
+			return value, true
+		case int32:
+			return int(value), true
+		case int64:
+			return int(value), true
+		case float64:
+			return int(value), true
+		}
+	}
+	return 0, false
 }
 
 func toStringSlice(raw any) []string {

@@ -7,6 +7,10 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  compact: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const isExpanded = ref(true);
@@ -32,7 +36,7 @@ function getIconForStatus(status) {
 </script>
 
 <template>
-  <div class="plan-card">
+  <div class="plan-card" :class="{ compact }">
     <div class="plan-header" @click="toggleExpand">
       <div class="plan-left">
         <ListTodoIcon size="16" class="plan-icon" />
@@ -70,6 +74,15 @@ function getIconForStatus(status) {
   max-width: 640px;
 }
 
+.plan-card.compact {
+  margin: 0;
+  max-width: none;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
+  box-shadow: 0 -4px 12px rgba(15, 23, 42, 0.05);
+}
+
 .plan-header {
   padding: 10px 14px;
   display: flex;
@@ -78,6 +91,10 @@ function getIconForStatus(status) {
   cursor: pointer;
   user-select: none;
   transition: background 0.15s;
+}
+
+.plan-card.compact .plan-header {
+  padding: 12px 16px;
 }
 
 .plan-header:hover {
@@ -109,6 +126,10 @@ function getIconForStatus(status) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.plan-card.compact .plan-body {
+  padding: 6px 16px 14px;
 }
 
 .plan-item {

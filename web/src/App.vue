@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { useAppStore } from "./store";
 import LoginModal from "./components/LoginModal.vue";
 import HostModal from "./components/HostModal.vue";
+import SettingsModal from "./components/SettingsModal.vue";
 import { MessageSquarePlusIcon, AppWindowIcon, SettingsIcon, UserCircleIcon, ServerIcon, PanelsTopLeftIcon, TerminalIcon } from "lucide-vue-next";
 
 const store = useAppStore();
@@ -11,6 +12,7 @@ const router = useRouter();
 
 const isLoginModalOpen = ref(false);
 const isHostModalOpen = ref(false);
+const isSettingsModalOpen = ref(false);
 const isMcpDrawerOpen = ref(false);
 
 function toggleMcpDrawer() {
@@ -99,7 +101,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sidebar-bottom">
-        <button class="nav-icon-btn" title="Settings">
+        <button class="nav-icon-btn" title="Settings" @click="isSettingsModalOpen = true">
           <SettingsIcon size="20" />
         </button>
         <div class="flex-spacer"></div>
@@ -154,6 +156,7 @@ onBeforeUnmount(() => {
     <!-- Modals -->
     <LoginModal v-if="isLoginModalOpen" @close="isLoginModalOpen = false" />
     <HostModal v-if="isHostModalOpen" @close="isHostModalOpen = false" />
+    <SettingsModal v-if="isSettingsModalOpen" @close="isSettingsModalOpen = false" />
   </div>
 </template>
 

@@ -14,8 +14,13 @@ const phaseLabel = computed(() => {
     thinking: "正在思考",
     planning: "正在规划步骤",
     waiting_approval: "正在等待审批",
-    waiting_input: "正在等待你的选择",
+    waiting_confirmation: "正在等待确认",
+    waiting_input: "正在等待您的选择",
     executing: "正在执行命令",
+    browsing: "正在浏览文件",
+    searching: "正在搜索内容",
+    editing: "正在修改代码",
+    testing: "正在验证与测试",
     finalizing: "正在整理结果",
   };
   return map[props.card.phase] || "正在思考";

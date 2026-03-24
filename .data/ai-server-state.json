@@ -12,7 +12,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T13:08:30+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-11ec1ffe487218c6": {
       "id": "sess-11ec1ffe487218c6",
@@ -41,7 +41,7 @@
         }
       ],
       "createdAt": "2026-03-24T14:35:48+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-157c6deac8bd9f98": {
       "id": "sess-157c6deac8bd9f98",
@@ -59,7 +59,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:28:08+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-173640bbae919808": {
       "id": "sess-173640bbae919808",
@@ -77,7 +77,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-1f9402ccd8ce545d": {
       "id": "sess-1f9402ccd8ce545d",
@@ -95,7 +95,25 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:28:59+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
+    },
+    "sess-2080a7f92fbdb042": {
+      "id": "sess-2080a7f92fbdb042",
+      "authSessionId": "auth-sess-2080a7f92fbdb042",
+      "selectedHostId": "server-local",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "createdAt": "2026-03-25T01:37:48+08:00",
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-2203add776c38e48": {
       "id": "sess-2203add776c38e48",
@@ -114,17 +132,98 @@
       },
       "approvalGrants": [
         {
-          "id": "grant-fef6bc5bb9774f15",
+          "id": "grant-194d40a47e5737ae",
           "hostId": "server-local",
           "type": "command",
-          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'df -h .'",
-          "command": "/bin/zsh -lc 'df -h .'",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'sysctl -n hw.ncpu'",
+          "command": "/bin/zsh -lc 'sysctl -n hw.ncpu'",
           "cwd": "/Users/lizhongxuan/.aiops_codex",
-          "createdAt": "2026-03-24T19:01:10+08:00"
+          "createdAt": "2026-03-25T02:01:56+08:00"
+        },
+        {
+          "id": "grant-287b386bd6cd3a61",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'top -l 1 -n 0 | head -n 15'",
+          "command": "/bin/zsh -lc 'top -l 1 -n 0 | head -n 15'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:01:57+08:00"
+        },
+        {
+          "id": "grant-a702e8430a91ae3c",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc uptime",
+          "command": "/bin/zsh -lc uptime",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:01:59+08:00"
+        },
+        {
+          "id": "grant-5ca0d9eed5006717",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'ps -Ao pid,comm,%cpu -r | head -n 8'",
+          "command": "/bin/zsh -lc 'ps -Ao pid,comm,%cpu -r | head -n 8'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:02:00+08:00"
+        },
+        {
+          "id": "grant-4946e244677c7f77",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'sysctl -n machdep.cpu.brand_string'",
+          "command": "/bin/zsh -lc 'sysctl -n machdep.cpu.brand_string'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:02:01+08:00"
+        },
+        {
+          "id": "grant-2fd0af3ff38be987",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc hostinfo",
+          "command": "/bin/zsh -lc hostinfo",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:02:26+08:00"
+        },
+        {
+          "id": "grant-62b8fddb10542ebb",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc vm_stat",
+          "command": "/bin/zsh -lc vm_stat",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:02:27+08:00"
+        },
+        {
+          "id": "grant-fb684533b106d5b7",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'iostat -C 1 2'",
+          "command": "/bin/zsh -lc 'iostat -C 1 2'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:02:27+08:00"
+        },
+        {
+          "id": "grant-7d5770d2e76fbb2f",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'sysctl -n vm.loadavg'",
+          "command": "/bin/zsh -lc 'sysctl -n vm.loadavg'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:02:28+08:00"
+        },
+        {
+          "id": "grant-22b77748172d6078",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc \"date '+%Y-%m-%d %H:%M:%S %Z'\"",
+          "command": "/bin/zsh -lc \"date '+%Y-%m-%d %H:%M:%S %Z'\"",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-25T02:02:41+08:00"
         }
       ],
       "createdAt": "2026-03-24T12:24:57+08:00",
-      "lastActivityAt": "2026-03-24T22:17:23+08:00"
+      "lastActivityAt": "2026-03-25T07:30:49+08:00"
     },
     "sess-23ec6c0e11a354b2": {
       "id": "sess-23ec6c0e11a354b2",
@@ -142,7 +241,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T16:07:26+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-2585f92caa02ec4c": {
       "id": "sess-2585f92caa02ec4c",
@@ -160,7 +259,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:39:55+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-25f0985e05a15dac": {
       "id": "sess-25f0985e05a15dac",
@@ -178,7 +277,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:34:49+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-27b9f9e26b351f68": {
       "id": "sess-27b9f9e26b351f68",
@@ -196,7 +295,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:39:45+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-2a220af9c402a548": {
       "id": "sess-2a220af9c402a548",
@@ -214,7 +313,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-2c1c7a48281816d4": {
       "id": "sess-2c1c7a48281816d4",
@@ -232,7 +331,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:06:11+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-30303a6f3afeae62": {
       "id": "sess-30303a6f3afeae62",
@@ -246,7 +345,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T12:30:10+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-30760d06c1190d29": {
       "id": "sess-30760d06c1190d29",
@@ -275,7 +374,7 @@
         }
       ],
       "createdAt": "2026-03-24T14:40:06+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-38bcfc61122a2b98": {
       "id": "sess-38bcfc61122a2b98",
@@ -293,7 +392,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:12:03+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-3dac2f24f2238bc7": {
       "id": "sess-3dac2f24f2238bc7",
@@ -311,7 +410,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:34:41+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-3f5527a515ea3a55": {
       "id": "sess-3f5527a515ea3a55",
@@ -329,7 +428,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:12:38+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-476f8a697c46c311": {
       "id": "sess-476f8a697c46c311",
@@ -347,7 +446,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:14:48+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-4804c7f633c21cc2": {
       "id": "sess-4804c7f633c21cc2",
@@ -365,7 +464,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:28:19+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-4e02888072a90bee": {
       "id": "sess-4e02888072a90bee",
@@ -383,7 +482,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-55a3e097019cdf42": {
       "id": "sess-55a3e097019cdf42",
@@ -397,7 +496,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-568a9277e54488ec": {
       "id": "sess-568a9277e54488ec",
@@ -415,7 +514,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:09+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-5d57e22506de725b": {
       "id": "sess-5d57e22506de725b",
@@ -433,7 +532,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-5e90b66665b67b1e": {
       "id": "sess-5e90b66665b67b1e",
@@ -451,7 +550,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T12:39:58+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-6030a1253f70212a": {
       "id": "sess-6030a1253f70212a",
@@ -469,7 +568,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T12:59:01+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-64086cd2a57a7df7": {
       "id": "sess-64086cd2a57a7df7",
@@ -487,7 +586,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-67458aed88a00067": {
       "id": "sess-67458aed88a00067",
@@ -505,7 +604,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:12:50+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-67aeb6fd60ba113a": {
       "id": "sess-67aeb6fd60ba113a",
@@ -523,7 +622,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:10:21+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-67d92ab4cebc6cfb": {
       "id": "sess-67d92ab4cebc6cfb",
@@ -541,7 +640,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:16+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-72b9136a3fa41483": {
       "id": "sess-72b9136a3fa41483",
@@ -555,7 +654,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:34:50+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-7916adced5e75866": {
       "id": "sess-7916adced5e75866",
@@ -573,7 +672,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:09:54+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-7aa115de971ceb1d": {
       "id": "sess-7aa115de971ceb1d",
@@ -587,7 +686,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-7c7e4c8c48ad9994": {
       "id": "sess-7c7e4c8c48ad9994",
@@ -605,7 +704,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:35:00+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-857b9810ad7f7c1a": {
       "id": "sess-857b9810ad7f7c1a",
@@ -623,7 +722,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T13:02:14+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-86886a20aefc9598": {
       "id": "sess-86886a20aefc9598",
@@ -641,7 +740,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:06:20+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-8906931036c43b51": {
       "id": "sess-8906931036c43b51",
@@ -659,7 +758,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:34:50+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-8ec1a3a42e1120b8": {
       "id": "sess-8ec1a3a42e1120b8",
@@ -677,7 +776,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T16:32:07+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-91226c73cb9aed21": {
       "id": "sess-91226c73cb9aed21",
@@ -695,7 +794,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T16:20:09+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-966d47a2b7fc18f5": {
       "id": "sess-966d47a2b7fc18f5",
@@ -713,7 +812,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:39+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-96837a6cbb000c9d": {
       "id": "sess-96837a6cbb000c9d",
@@ -731,7 +830,25 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T12:47:20+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
+    },
+    "sess-9f629635756d1859": {
+      "id": "sess-9f629635756d1859",
+      "authSessionId": "auth-sess-9f629635756d1859",
+      "selectedHostId": "server-local",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "createdAt": "2026-03-25T00:16:41+08:00",
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-a1889c242ca45ae4": {
       "id": "sess-a1889c242ca45ae4",
@@ -745,7 +862,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-a5d40cafae6d22a0": {
       "id": "sess-a5d40cafae6d22a0",
@@ -763,7 +880,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T16:33:35+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-b1b854cce784ed20": {
       "id": "sess-b1b854cce784ed20",
@@ -781,7 +898,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T13:08:34+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-b4f5edf1a2d2caa9": {
       "id": "sess-b4f5edf1a2d2caa9",
@@ -799,7 +916,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:35:07+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-bb35ae8103bec408": {
       "id": "sess-bb35ae8103bec408",
@@ -817,7 +934,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:09:44+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-bb6f7ebb55f81891": {
       "id": "sess-bb6f7ebb55f81891",
@@ -835,7 +952,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-c5dad675c2271ff5": {
       "id": "sess-c5dad675c2271ff5",
@@ -853,7 +970,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T21:26:18+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-c7f2da3d027b9553": {
       "id": "sess-c7f2da3d027b9553",
@@ -871,7 +988,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-c978bb6a298873fb": {
       "id": "sess-c978bb6a298873fb",
@@ -889,7 +1006,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-d1e4faa69ddaad96": {
       "id": "sess-d1e4faa69ddaad96",
@@ -907,7 +1024,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:40:29+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-d2f979f50d051630": {
       "id": "sess-d2f979f50d051630",
@@ -936,7 +1053,7 @@
         }
       ],
       "createdAt": "2026-03-24T14:28:32+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-d71535e689e67271": {
       "id": "sess-d71535e689e67271",
@@ -950,7 +1067,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-df3ee197d04842d0": {
       "id": "sess-df3ee197d04842d0",
@@ -968,7 +1085,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:12:28+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-e59c650e8bd08ef2": {
       "id": "sess-e59c650e8bd08ef2",
@@ -986,7 +1103,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-ec9693cbdf56e520": {
       "id": "sess-ec9693cbdf56e520",
@@ -1004,7 +1121,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-fcf9e8a6043983f9": {
       "id": "sess-fcf9e8a6043983f9",
@@ -1018,7 +1135,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     },
     "sess-fda33226b3f93a47": {
       "id": "sess-fda33226b3f93a47",
@@ -1036,7 +1153,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:27:47+08:00",
-      "lastActivityAt": "2026-03-24T21:26:18+08:00"
+      "lastActivityAt": "2026-03-25T01:37:48+08:00"
     }
   },
   "authSessions": {
@@ -1053,7 +1170,7 @@
         "sess-0212046e61b864f1": {}
       },
       "createdAt": "2026-03-24T13:08:34+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-11ec1ffe487218c6": {
       "id": "auth-sess-11ec1ffe487218c6",
@@ -1072,7 +1189,7 @@
         "sess-11ec1ffe487218c6": {}
       },
       "createdAt": "2026-03-24T14:35:48+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-157c6deac8bd9f98": {
       "id": "auth-sess-157c6deac8bd9f98",
@@ -1091,7 +1208,7 @@
         "sess-157c6deac8bd9f98": {}
       },
       "createdAt": "2026-03-24T14:28:08+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-173640bbae919808": {
       "id": "auth-sess-173640bbae919808",
@@ -1110,7 +1227,7 @@
         "sess-173640bbae919808": {}
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-1f9402ccd8ce545d": {
       "id": "auth-sess-1f9402ccd8ce545d",
@@ -1129,7 +1246,26 @@
         "sess-1f9402ccd8ce545d": {}
       },
       "createdAt": "2026-03-24T14:28:59+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
+    },
+    "auth-sess-2080a7f92fbdb042": {
+      "id": "auth-sess-2080a7f92fbdb042",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "webSessionIds": {
+        "sess-2080a7f92fbdb042": {}
+      },
+      "createdAt": "2026-03-25T01:37:48+08:00",
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-2203add776c38e48": {
       "id": "auth-sess-2203add776c38e48",
@@ -1148,7 +1284,7 @@
         "sess-2203add776c38e48": {}
       },
       "createdAt": "2026-03-24T12:30:10+08:00",
-      "updatedAt": "2026-03-24T22:13:49+08:00"
+      "updatedAt": "2026-03-25T07:28:15+08:00"
     },
     "auth-sess-23ec6c0e11a354b2": {
       "id": "auth-sess-23ec6c0e11a354b2",
@@ -1167,7 +1303,7 @@
         "sess-23ec6c0e11a354b2": {}
       },
       "createdAt": "2026-03-24T16:07:26+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-2585f92caa02ec4c": {
       "id": "auth-sess-2585f92caa02ec4c",
@@ -1186,7 +1322,7 @@
         "sess-2585f92caa02ec4c": {}
       },
       "createdAt": "2026-03-24T14:39:55+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-25f0985e05a15dac": {
       "id": "auth-sess-25f0985e05a15dac",
@@ -1205,7 +1341,7 @@
         "sess-25f0985e05a15dac": {}
       },
       "createdAt": "2026-03-24T14:34:49+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-27b9f9e26b351f68": {
       "id": "auth-sess-27b9f9e26b351f68",
@@ -1224,7 +1360,7 @@
         "sess-27b9f9e26b351f68": {}
       },
       "createdAt": "2026-03-24T14:39:45+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-2a220af9c402a548": {
       "id": "auth-sess-2a220af9c402a548",
@@ -1243,7 +1379,7 @@
         "sess-2a220af9c402a548": {}
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-2c1c7a48281816d4": {
       "id": "auth-sess-2c1c7a48281816d4",
@@ -1262,7 +1398,7 @@
         "sess-2c1c7a48281816d4": {}
       },
       "createdAt": "2026-03-24T14:06:11+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-30303a6f3afeae62": {
       "id": "auth-sess-30303a6f3afeae62",
@@ -1277,7 +1413,7 @@
         "sess-30303a6f3afeae62": {}
       },
       "createdAt": "2026-03-24T12:30:10+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-30760d06c1190d29": {
       "id": "auth-sess-30760d06c1190d29",
@@ -1296,7 +1432,7 @@
         "sess-30760d06c1190d29": {}
       },
       "createdAt": "2026-03-24T14:40:06+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-38bcfc61122a2b98": {
       "id": "auth-sess-38bcfc61122a2b98",
@@ -1315,7 +1451,7 @@
         "sess-38bcfc61122a2b98": {}
       },
       "createdAt": "2026-03-24T14:12:03+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-3dac2f24f2238bc7": {
       "id": "auth-sess-3dac2f24f2238bc7",
@@ -1334,7 +1470,7 @@
         "sess-3dac2f24f2238bc7": {}
       },
       "createdAt": "2026-03-24T14:34:41+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-3f5527a515ea3a55": {
       "id": "auth-sess-3f5527a515ea3a55",
@@ -1353,7 +1489,7 @@
         "sess-3f5527a515ea3a55": {}
       },
       "createdAt": "2026-03-24T14:12:38+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-476f8a697c46c311": {
       "id": "auth-sess-476f8a697c46c311",
@@ -1372,7 +1508,7 @@
         "sess-476f8a697c46c311": {}
       },
       "createdAt": "2026-03-24T14:14:48+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-4804c7f633c21cc2": {
       "id": "auth-sess-4804c7f633c21cc2",
@@ -1391,7 +1527,7 @@
         "sess-4804c7f633c21cc2": {}
       },
       "createdAt": "2026-03-24T14:28:19+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-4e02888072a90bee": {
       "id": "auth-sess-4e02888072a90bee",
@@ -1410,7 +1546,7 @@
         "sess-4e02888072a90bee": {}
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-55a3e097019cdf42": {
       "id": "auth-sess-55a3e097019cdf42",
@@ -1425,7 +1561,7 @@
         "sess-55a3e097019cdf42": {}
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-568a9277e54488ec": {
       "id": "auth-sess-568a9277e54488ec",
@@ -1444,7 +1580,7 @@
         "sess-568a9277e54488ec": {}
       },
       "createdAt": "2026-03-24T14:11:09+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-5d57e22506de725b": {
       "id": "auth-sess-5d57e22506de725b",
@@ -1463,7 +1599,7 @@
         "sess-5d57e22506de725b": {}
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-5e90b66665b67b1e": {
       "id": "auth-sess-5e90b66665b67b1e",
@@ -1482,7 +1618,7 @@
         "sess-5e90b66665b67b1e": {}
       },
       "createdAt": "2026-03-24T12:39:58+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-6030a1253f70212a": {
       "id": "auth-sess-6030a1253f70212a",
@@ -1501,7 +1637,7 @@
         "sess-6030a1253f70212a": {}
       },
       "createdAt": "2026-03-24T12:59:01+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-64086cd2a57a7df7": {
       "id": "auth-sess-64086cd2a57a7df7",
@@ -1520,7 +1656,7 @@
         "sess-64086cd2a57a7df7": {}
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-67458aed88a00067": {
       "id": "auth-sess-67458aed88a00067",
@@ -1539,7 +1675,7 @@
         "sess-67458aed88a00067": {}
       },
       "createdAt": "2026-03-24T14:12:50+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-67aeb6fd60ba113a": {
       "id": "auth-sess-67aeb6fd60ba113a",
@@ -1558,7 +1694,7 @@
         "sess-67aeb6fd60ba113a": {}
       },
       "createdAt": "2026-03-24T14:10:21+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-67d92ab4cebc6cfb": {
       "id": "auth-sess-67d92ab4cebc6cfb",
@@ -1577,7 +1713,7 @@
         "sess-67d92ab4cebc6cfb": {}
       },
       "createdAt": "2026-03-24T14:11:16+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-72b9136a3fa41483": {
       "id": "auth-sess-72b9136a3fa41483",
@@ -1592,7 +1728,7 @@
         "sess-72b9136a3fa41483": {}
       },
       "createdAt": "2026-03-24T14:34:50+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-7916adced5e75866": {
       "id": "auth-sess-7916adced5e75866",
@@ -1611,7 +1747,7 @@
         "sess-7916adced5e75866": {}
       },
       "createdAt": "2026-03-24T14:09:54+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-7aa115de971ceb1d": {
       "id": "auth-sess-7aa115de971ceb1d",
@@ -1626,7 +1762,7 @@
         "sess-7aa115de971ceb1d": {}
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-7c7e4c8c48ad9994": {
       "id": "auth-sess-7c7e4c8c48ad9994",
@@ -1645,7 +1781,7 @@
         "sess-7c7e4c8c48ad9994": {}
       },
       "createdAt": "2026-03-24T14:35:00+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-857b9810ad7f7c1a": {
       "id": "auth-sess-857b9810ad7f7c1a",
@@ -1664,7 +1800,7 @@
         "sess-857b9810ad7f7c1a": {}
       },
       "createdAt": "2026-03-24T13:02:14+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-86886a20aefc9598": {
       "id": "auth-sess-86886a20aefc9598",
@@ -1683,7 +1819,7 @@
         "sess-86886a20aefc9598": {}
       },
       "createdAt": "2026-03-24T14:06:20+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-8906931036c43b51": {
       "id": "auth-sess-8906931036c43b51",
@@ -1702,7 +1838,7 @@
         "sess-8906931036c43b51": {}
       },
       "createdAt": "2026-03-24T14:34:50+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-8ec1a3a42e1120b8": {
       "id": "auth-sess-8ec1a3a42e1120b8",
@@ -1721,7 +1857,7 @@
         "sess-8ec1a3a42e1120b8": {}
       },
       "createdAt": "2026-03-24T16:32:07+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-91226c73cb9aed21": {
       "id": "auth-sess-91226c73cb9aed21",
@@ -1740,7 +1876,7 @@
         "sess-91226c73cb9aed21": {}
       },
       "createdAt": "2026-03-24T16:20:09+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-966d47a2b7fc18f5": {
       "id": "auth-sess-966d47a2b7fc18f5",
@@ -1759,7 +1895,7 @@
         "sess-966d47a2b7fc18f5": {}
       },
       "createdAt": "2026-03-24T14:11:39+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-96837a6cbb000c9d": {
       "id": "auth-sess-96837a6cbb000c9d",
@@ -1778,7 +1914,26 @@
         "sess-96837a6cbb000c9d": {}
       },
       "createdAt": "2026-03-24T12:47:20+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
+    },
+    "auth-sess-9f629635756d1859": {
+      "id": "auth-sess-9f629635756d1859",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "webSessionIds": {
+        "sess-9f629635756d1859": {}
+      },
+      "createdAt": "2026-03-25T00:16:41+08:00",
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-a1889c242ca45ae4": {
       "id": "auth-sess-a1889c242ca45ae4",
@@ -1793,7 +1948,7 @@
         "sess-a1889c242ca45ae4": {}
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-a5d40cafae6d22a0": {
       "id": "auth-sess-a5d40cafae6d22a0",
@@ -1812,7 +1967,7 @@
         "sess-a5d40cafae6d22a0": {}
       },
       "createdAt": "2026-03-24T16:33:35+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-b1b854cce784ed20": {
       "id": "auth-sess-b1b854cce784ed20",
@@ -1831,7 +1986,7 @@
         "sess-b1b854cce784ed20": {}
       },
       "createdAt": "2026-03-24T13:08:34+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-b4f5edf1a2d2caa9": {
       "id": "auth-sess-b4f5edf1a2d2caa9",
@@ -1850,7 +2005,7 @@
         "sess-b4f5edf1a2d2caa9": {}
       },
       "createdAt": "2026-03-24T14:35:07+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-bb35ae8103bec408": {
       "id": "auth-sess-bb35ae8103bec408",
@@ -1869,7 +2024,7 @@
         "sess-bb35ae8103bec408": {}
       },
       "createdAt": "2026-03-24T14:09:44+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-bb6f7ebb55f81891": {
       "id": "auth-sess-bb6f7ebb55f81891",
@@ -1888,7 +2043,7 @@
         "sess-bb6f7ebb55f81891": {}
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-c5dad675c2271ff5": {
       "id": "auth-sess-c5dad675c2271ff5",
@@ -1907,7 +2062,7 @@
         "sess-c5dad675c2271ff5": {}
       },
       "createdAt": "2026-03-24T21:26:18+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-c7f2da3d027b9553": {
       "id": "auth-sess-c7f2da3d027b9553",
@@ -1926,7 +2081,7 @@
         "sess-c7f2da3d027b9553": {}
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-c978bb6a298873fb": {
       "id": "auth-sess-c978bb6a298873fb",
@@ -1945,7 +2100,7 @@
         "sess-c978bb6a298873fb": {}
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-d1e4faa69ddaad96": {
       "id": "auth-sess-d1e4faa69ddaad96",
@@ -1964,7 +2119,7 @@
         "sess-d1e4faa69ddaad96": {}
       },
       "createdAt": "2026-03-24T14:40:29+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-d2f979f50d051630": {
       "id": "auth-sess-d2f979f50d051630",
@@ -1983,7 +2138,7 @@
         "sess-d2f979f50d051630": {}
       },
       "createdAt": "2026-03-24T14:28:32+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-d71535e689e67271": {
       "id": "auth-sess-d71535e689e67271",
@@ -1998,7 +2153,7 @@
         "sess-d71535e689e67271": {}
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-df3ee197d04842d0": {
       "id": "auth-sess-df3ee197d04842d0",
@@ -2017,7 +2172,7 @@
         "sess-df3ee197d04842d0": {}
       },
       "createdAt": "2026-03-24T14:12:28+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-e59c650e8bd08ef2": {
       "id": "auth-sess-e59c650e8bd08ef2",
@@ -2036,7 +2191,7 @@
         "sess-e59c650e8bd08ef2": {}
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-ec9693cbdf56e520": {
       "id": "auth-sess-ec9693cbdf56e520",
@@ -2055,7 +2210,7 @@
         "sess-ec9693cbdf56e520": {}
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-fcf9e8a6043983f9": {
       "id": "auth-sess-fcf9e8a6043983f9",
@@ -2070,7 +2225,7 @@
         "sess-fcf9e8a6043983f9": {}
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     },
     "auth-sess-fda33226b3f93a47": {
       "id": "auth-sess-fda33226b3f93a47",
@@ -2089,7 +2244,7 @@
         "sess-fda33226b3f93a47": {}
       },
       "createdAt": "2026-03-24T14:27:47+08:00",
-      "updatedAt": "2026-03-24T21:26:18+08:00"
+      "updatedAt": "2026-03-25T01:37:48+08:00"
     }
   },
   "threadToSession": {},
@@ -2110,7 +2265,7 @@
       "labels": {
         "env": "dev"
       },
-      "lastHeartbeat": "2026-03-24T22:17:25+08:00"
+      "lastHeartbeat": "2026-03-25T07:37:18+08:00"
     },
     "server-local": {
       "id": "server-local",

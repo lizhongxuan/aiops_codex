@@ -25,7 +25,7 @@ export const useAppStore = defineStore("app", {
     runtime: {
       turn: {
         active: false,
-        phase: "idle", // idle | thinking | planning | waiting_approval | waiting_input | executing | finalizing | completed | failed
+        phase: "idle", // idle | thinking | planning | waiting_approval | waiting_input | executing | finalizing | completed | failed | aborted
         hostId: "",
         startedAt: null,
       },
@@ -53,6 +53,12 @@ export const useAppStore = defineStore("app", {
       chatgptAccountId: "",
       chatgptPlanType: "",
       email: "",
+    },
+    settings: {
+      quota: "",
+      model: "gpt-4-turbo",
+      reasoningEffort: "medium",
+      models: [],
     },
     loading: true,
     errorMessage: "",
@@ -125,7 +131,7 @@ export const useAppStore = defineStore("app", {
       this.loading = false;
     },
     setTurnPhase(phase) {
-      this.runtime.turn.active = phase !== "idle" && phase !== "completed" && phase !== "failed";
+      this.runtime.turn.active = phase !== "idle" && phase !== "completed" && phase !== "failed" && phase !== "aborted";
       this.runtime.turn.phase = phase;
     },
     resetActivity() {
@@ -147,6 +153,37 @@ export const useAppStore = defineStore("app", {
         this.applySnapshot(data);
       } catch (e) {
         console.error("Failed to fetch state:", e);
+      }
+    },
+    async fetchSettings() {
+      try {
+        const response = await fetch("/api/v1/settings", { credentials: "include" });
+        if (response.ok) {
+          const data = await response.json();
+          this.settings = { ...this.settings, ...data };
+        }
+      } catch (e) {
+        console.error("Failed to fetch settings:", e);
+      }
+    },
+    async updateSettings(newSettings) {
+      try {
+        const response = await fetch("/api/v1/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(newSettings),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          this.settings = { ...this.settings, ...data };
+        } else {
+          // Fallback update in case API is completely mocked
+          this.settings = { ...this.settings, ...newSettings };
+        }
+      } catch (e) {
+        console.error("Failed to update settings:", e);
+        this.settings = { ...this.settings, ...newSettings }; // Mock fallback
       }
     },
     async resetThread() {
@@ -172,33 +209,75 @@ export const useAppStore = defineStore("app", {
       }
     },
     connectWs() {
+      if (this._socket && this._socket.readyState === WebSocket.OPEN) {
+        this._socket.close();
+      }
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      const touchHeartbeat = () => {
+        if (this._heartbeatTimer) {
+          window.clearTimeout(this._heartbeatTimer);
+        }
+        this._heartbeatTimer = window.setTimeout(() => {
+          if (this._socket === socket && socket.readyState === WebSocket.OPEN) {
+            this.runtime.codex.lastError = "heartbeat timeout";
+            socket.close();
+          }
+        }, 25000);
+      };
+      const clearSocketTimers = () => {
+        if (this._pingInterval) {
+          window.clearInterval(this._pingInterval);
+          this._pingInterval = null;
+        }
+        if (this._heartbeatTimer) {
+          window.clearTimeout(this._heartbeatTimer);
+          this._heartbeatTimer = null;
+        }
+      };
       this.wsStatus = "connecting";
       this.runtime.codex.status = "reconnecting";
+      this._socket = socket;
 
       socket.onopen = () => {
+        if (this._socket !== socket) return;
         this.wsStatus = "connected";
         this.runtime.codex.status = "connected";
         this.runtime.codex.retryAttempt = 0;
         this.runtime.codex.lastError = "";
+        touchHeartbeat();
+        this._pingInterval = window.setInterval(() => {
+          if (this._socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+          socket.send(JSON.stringify({ type: "ping" }));
+        }, 10000);
       };
 
       socket.onmessage = (event) => {
+        if (this._socket !== socket) return;
+        touchHeartbeat();
         try {
-          this.applySnapshot(JSON.parse(event.data));
+          const data = JSON.parse(event.data);
+          if (data?.type === "heartbeat") {
+            return;
+          }
+          this.applySnapshot(data);
         } catch (e) {
           console.error("Failed to parse websocket message:", e);
         }
       };
 
       socket.onclose = () => {
+        if (this._socket !== socket) return;
+        clearSocketTimers();
         this.wsStatus = "disconnected";
         this.runtime.codex.retryAttempt += 1;
 
         if (this.runtime.codex.retryAttempt > this.runtime.codex.retryMax) {
           this.runtime.codex.status = "stopped";
           this.wsStatus = "error";
+          if (!this.runtime.codex.lastError) {
+            this.runtime.codex.lastError = "connection closed";
+          }
           return;
         }
         this.runtime.codex.status = "reconnecting";
@@ -206,11 +285,10 @@ export const useAppStore = defineStore("app", {
       };
 
       socket.onerror = () => {
+        if (this._socket !== socket) return;
         this.wsStatus = "error";
         this.runtime.codex.lastError = "connection error";
       };
-      
-      this._socket = socket;
     },
     selectHost(hostId) {
       this.snapshot.selectedHostId = hostId;

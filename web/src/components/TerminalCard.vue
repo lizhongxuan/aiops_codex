@@ -22,31 +22,53 @@ let term = null;
 let fitAddon = null;
 
 const isComplete = computed(() => {
-  return props.card.status === "completed" || props.card.status === "error";
+  return props.card.status === "completed" || props.card.status === "error" || props.card.status === "failed";
 });
 
 const isSuccess = computed(() => props.card.status === "completed");
 const isFailed = computed(() => props.card.status === "error" || props.card.status === "failed");
 
 const hasOutput = computed(() => !!props.card.output);
+const isRunning = computed(() => !isComplete.value);
 const canOpenTerminal = computed(() => {
   return store.selectedHost?.executable && store.selectedHost?.status === "online";
+});
+
+const dynamicHeight = computed(() => {
+  if (!props.card.output) return 60;
+  const lines = props.card.output.split('\n').length;
+  const h = Math.max(60, Math.min(250, lines * 20)); // approx 20px per line
+  return h;
 });
 
 /* Human-readable duration */
 const durationLabel = computed(() => {
   const ms = props.card.durationMs;
   if (!ms) return "";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(0)}s`;
+  const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(" ");
 });
 
 function toggleExpand() {
-  if (hasOutput.value) {
-    isExpanded.value = !isExpanded.value;
-    if (isExpanded.value) {
-      setTimeout(() => fitAddon?.fit(), 10);
-    }
+  if (!hasOutput.value && isSuccess.value) {
+    return;
+  }
+  isExpanded.value = !isExpanded.value;
+  if (isExpanded.value) {
+    setTimeout(() => {
+      if (!term && hasOutput.value) {
+        initTerminal();
+        return;
+      }
+      fitAddon?.fit();
+    }, 10);
   }
 }
 
@@ -58,6 +80,8 @@ function openInTerminal(event) {
 
 function initTerminal() {
   if (!terminalContainer.value || !hasOutput.value) return;
+
+  disposeTerminal();
 
   term = new Terminal({
     theme: {
@@ -85,10 +109,35 @@ function initTerminal() {
   term.write(formattedOutput);
 }
 
+function disposeTerminal() {
+  if (term) {
+    term.dispose();
+    term = null;
+    fitAddon = null;
+  }
+}
+
+watch(
+  () => props.card.status,
+  (status) => {
+    if (status === "completed") {
+      isExpanded.value = false;
+      return;
+    }
+    if (status === "failed" || status === "error") {
+      isExpanded.value = true;
+    }
+  }
+);
+
 watch(
   () => isExpanded.value,
   (expanded) => {
-    if (expanded && !term) {
+    if (!expanded) {
+      disposeTerminal();
+      return;
+    }
+    if (!term) {
       setTimeout(initTerminal, 10);
     }
   }
@@ -97,6 +146,10 @@ watch(
 watch(
   () => props.card.output,
   (newOutput) => {
+    if (newOutput && isExpanded.value && !term) {
+      setTimeout(initTerminal, 10);
+      return;
+    }
     if (term) {
       term.clear();
       const cleanOutput = newOutput ? newOutput.replace(/\n?\[?exit code: 0\]?\n?$/i, "").replace(/\n/g, "\r\n") : "";
@@ -107,23 +160,33 @@ watch(
 );
 
 onMounted(() => {
-  if (isComplete.value && isSuccess.value) {
+  if (isSuccess.value) {
     isExpanded.value = false;
+  } else if (isFailed.value) {
+    isExpanded.value = true;
+    setTimeout(initTerminal, 10);
   } else {
     setTimeout(initTerminal, 10);
   }
 });
 
 onBeforeUnmount(() => {
-  if (term) {
-    term.dispose();
-  }
+  disposeTerminal();
 });
 </script>
 
 <template>
-  <!-- Completed success: collapsed timeline summary line -->
-  <div v-if="isComplete && isSuccess && !isExpanded" class="timeline-summary" @click="toggleExpand">
+  <div
+    v-if="isSuccess && !isExpanded"
+    class="timeline-summary"
+    :class="{ clickable: hasOutput }"
+    :title="hasOutput ? '点击查看输出' : ''"
+    @click="toggleExpand"
+    @keydown.enter.prevent="toggleExpand"
+    @keydown.space.prevent="toggleExpand"
+    :tabindex="hasOutput ? 0 : -1"
+    :role="hasOutput ? 'button' : undefined"
+  >
     <div class="timeline-left">
       <CheckIcon size="14" class="timeline-check" />
       <span class="timeline-label">已运行 <code>{{ card.command }}</code></span>
@@ -161,8 +224,12 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="term-body" v-if="isExpanded && hasOutput">
-      <div class="xterm-wrapper" ref="terminalContainer"></div>
+    <div class="term-body" v-if="isExpanded">
+      <div v-if="hasOutput" class="xterm-wrapper" ref="terminalContainer" :style="{ height: dynamicHeight + 'px' }"></div>
+      <div v-else class="terminal-placeholder">
+        <div class="terminal-placeholder-label">{{ isRunning ? "命令执行中，等待输出..." : "该命令没有输出" }}</div>
+        <div class="terminal-placeholder-command mono">{{ card.command || "Executing..." }}</div>
+      </div>
     </div>
   </div>
 </template>
@@ -175,8 +242,20 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 8px 0;
   margin-left: 48px;
-  cursor: pointer;
   max-width: 800px;
+}
+
+.timeline-summary.clickable {
+  cursor: pointer;
+}
+
+.timeline-summary.clickable:hover .timeline-label,
+.timeline-summary.clickable:focus-visible .timeline-label {
+  color: #334155;
+}
+
+.timeline-summary.clickable:focus-visible {
+  outline: none;
 }
 
 .timeline-left {
@@ -190,6 +269,10 @@ onBeforeUnmount(() => {
 
 .timeline-check {
   color: #22c55e;
+}
+
+.timeline-failed {
+  color: #ef4444;
 }
 
 .timeline-label {
@@ -334,7 +417,7 @@ onBeforeUnmount(() => {
 
 .term-body {
   background: #0f172a;
-  padding: 8px;
+  padding: 6px;
   border-top: 1px solid #1e293b;
 }
 
@@ -342,9 +425,37 @@ onBeforeUnmount(() => {
   width: 100%;
   border-radius: 6px;
   overflow: hidden;
+  max-height: 250px;
+}
+
+.terminal-placeholder {
+  min-height: 72px;
+  border-radius: 8px;
+  background: #111827;
+  color: #cbd5e1;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.terminal-placeholder-label {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.terminal-placeholder-command {
+  font-size: 13px;
+  color: #f8fafc;
+  line-height: 1.5;
+  word-break: break-all;
 }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:deep(.xterm-viewport) {
+  overflow-y: auto !important;
 }
 </style>

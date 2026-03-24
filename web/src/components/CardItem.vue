@@ -10,11 +10,17 @@ import NoticeCard from "./NoticeCard.vue";
 import ErrorCard from "./ErrorCard.vue";
 import ChoiceCard from "./ChoiceCard.vue";
 import ResultSummaryCard from "./ResultSummaryCard.vue";
+import ProcessLineCard from "./ProcessLineCard.vue";
+import TaskDividerCard from "./TaskDividerCard.vue";
 
 const props = defineProps({
   card: {
     type: Object,
     required: true,
+  },
+  isOverlay: {
+    type: Boolean,
+    default: false,
   },
 });
 
@@ -69,9 +75,17 @@ const isMessage = computed(() => {
       <PlanCard :card="card" />
     </template>
 
+    <template v-else-if="card.type === 'ProcessLineCard'">
+      <ProcessLineCard :card="card" />
+    </template>
+
+    <template v-else-if="card.type === 'TaskDividerCard'">
+      <TaskDividerCard :card="card" />
+    </template>
+
     <!-- Approval cards -->
     <template v-else-if="card.type === 'CommandApprovalCard' || card.type === 'FileChangeApprovalCard'">
-      <AuthCard :card="card" @approval="handleApproval" />
+      <AuthCard :card="card" :is-overlay="isOverlay" @approval="handleApproval" />
     </template>
 
     <!-- ChoiceCard -->

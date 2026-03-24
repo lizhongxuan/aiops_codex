@@ -1,54 +1,66 @@
 <script setup>
-import { ref, computed } from "vue";
-import { ShieldAlertIcon, ChevronDownIcon, MonitorIcon, ShieldIcon } from "lucide-vue-next";
+import { computed } from "vue";
+import { ShieldAlertIcon } from "lucide-vue-next";
 
 const props = defineProps({
   card: {
     type: Object,
     required: true,
   },
+  isOverlay: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const emit = defineEmits(["approval"]);
 
-const selectedIndex = ref(0);
-
-const isCommand = computed(() => props.card.type === 'CommandApprovalCard' || !!props.card.command);
+const isCommand = computed(() => props.card.type === "CommandApprovalCard" || !!props.card.command);
 
 const options = computed(() => {
   if (isCommand.value) {
-    const cmdPrefix = (props.card.command || '').split(' ')[0];
+    const cmdPrefix = (props.card.command || "").split(" ")[0] || "当前命令";
     return [
-      { value: "accept", label: "是" },
-      { value: "accept_session", label: `是，且对于以后 ${cmdPrefix} 开头的命令不再询问` },
-      { value: "decline", label: "否，请告知 Codex 如何调整" },
+      { value: "accept", label: "同意一次", description: "仅批准当前这次执行。" },
+      { value: "accept_session", label: `同意并记住 ${cmdPrefix}`, description: "本会话内相同前缀命令不再重复询问。" },
+      { value: "decline", label: "拒绝并让 Codex 调整", description: "阻止当前执行，并让 Codex 换一种方式处理。" },
     ];
   }
   return [
-    { value: "accept", label: "是，允许此次修改" },
-    { value: "decline", label: "否，请告知 Codex 如何调整" },
+    { value: "accept", label: "允许此次修改", description: "仅批准当前这次文件变更。" },
+    { value: "decline", label: "拒绝并让 Codex 调整", description: "阻止当前修改，并提示 Codex 改方案。" },
   ];
 });
 
-function onSelect(idx) {
-  selectedIndex.value = idx;
+const resolvedText = computed(() => {
+  if (props.card.status === "accept" || props.card.status === "accepted" || props.card.status === "accepted_for_session") {
+    return "已批准执行";
+  }
+  if (props.card.status === "accepted_for_session_auto") {
+    return "已按本会话规则自动批准";
+  }
+  if (props.card.status === "decline" || props.card.status === "declined") {
+    return "已拒绝";
+  }
+  return "已处理";
+});
+
+function submitDecision(decision) {
   if (!props.card.approval?.requestId) return;
   emit("approval", {
     approvalId: props.card.approval.requestId,
-    decision: options.value[idx].value,
+    decision,
   });
 }
 </script>
 
 <template>
-  <div class="auth-card">
-    <!-- Intent header -->
+  <div class="auth-card" :class="{ 'is-overlay': isOverlay }">
     <div class="auth-intent">
       <ShieldAlertIcon size="18" class="intent-icon" />
-      <span class="intent-text">{{ card.text || '要执行以下操作，你要允许吗？' }}</span>
+      <span class="intent-text">{{ card.text || "要执行以下操作，你要允许吗？" }}</span>
     </div>
 
-    <!-- Command / Code preview -->
     <div class="auth-preview" v-if="card.command || card.changes?.length">
       <div v-if="card.cwd" class="cwd-badge">{{ card.cwd }}</div>
       <pre v-if="card.command" class="command-code">{{ card.command }}</pre>
@@ -61,26 +73,26 @@ function onSelect(idx) {
       </div>
     </div>
 
-    <!-- Radio options (pending only) -->
     <div v-if="card.status === 'pending' && card.approval" class="auth-options">
-      <label
+      <button
         v-for="(opt, idx) in options"
         :key="opt.value"
+        type="button"
         class="option-row"
-        :class="{ selected: selectedIndex === idx }"
-        @click="onSelect(idx)"
+        @click="submitDecision(opt.value)"
       >
-        <span class="option-number">{{ idx + 1 }}。</span>
-        <span class="option-label">{{ opt.label }}</span>
-        <span class="option-arrows" v-if="selectedIndex === idx">↵</span>
-      </label>
+        <span class="option-radio">
+          <span class="option-dot"></span>
+        </span>
+        <span class="option-copy">
+          <span class="option-label">{{ opt.label }}</span>
+          <span class="option-description">{{ opt.description }}</span>
+        </span>
+      </button>
     </div>
 
-
-
-    <!-- Resolved state -->
     <div v-if="card.status !== 'pending'" class="auth-resolved">
-      {{ card.status === 'accepted' || card.status === 'accepted_for_session' ? '已批准执行' : '已拒绝' }}
+      {{ resolvedText }}
     </div>
   </div>
 </template>
@@ -91,20 +103,27 @@ function onSelect(idx) {
   background: #ffffff;
   border: 1px solid var(--border-card, #e5e7eb);
   overflow: hidden;
-  margin-top: 12px;
+  margin-top: 10px;
   margin-left: 48px;
-  max-width: 720px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  max-width: 700px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
 }
 
-/* Intent header */
+.auth-card.is-overlay {
+  margin: 0;
+  max-width: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+
 .auth-intent {
-  padding: 12px 16px;
+  padding: 12px 14px 6px;
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  font-size: 14px;
-  line-height: 1.6;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
   color: #374151;
   font-weight: 600;
 }
@@ -115,50 +134,49 @@ function onSelect(idx) {
   margin-top: 1px;
 }
 
-/* Command preview */
 .auth-preview {
-  margin: 0 20px 16px;
+  margin: 0 14px 12px;
   background: #f3f4f6;
   border-radius: 10px;
-  padding: 14px 16px;
+  padding: 10px 12px;
   overflow-x: auto;
 }
 
 .cwd-badge {
-  font-size: 11px;
+  font-size: 10px;
   color: #6b7280;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .command-code {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
+  font-size: 12px;
   color: #1f2937;
   white-space: pre-wrap;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .changes-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .change-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: 6px;
+  font-size: 12px;
 }
 
 .change-kind {
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 999px;
   background: #e5e7eb;
   color: #6b7280;
 }
@@ -168,62 +186,74 @@ function onSelect(idx) {
   color: #374151;
 }
 
-/* Radio options */
 .auth-options {
   display: flex;
   flex-direction: column;
-  padding: 0 20px 12px;
-  gap: 2px;
+  padding: 0 14px 8px;
+  gap: 6px;
 }
 
 .option-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
   cursor: pointer;
-  font-size: 13px;
-  color: #374151;
-  line-height: 1.4;
-  min-height: 38px;
-  transition: background 0.12s;
-  user-select: none;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  transition: background 0.12s, border-color 0.12s;
+  text-align: left;
 }
 
 .option-row:hover {
-  background: #f9fafb;
+  background: #f8fafc;
+  border-color: #d1d5db;
 }
 
-.option-row.selected {
-  background: #f3f4f6;
-  font-weight: 500;
-  border: 1px solid #d1d5db;
+.option-radio {
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  border: 2px solid #0f172a;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
-.option-number {
-  color: #6b7280;
-  font-weight: 500;
-  min-width: 24px;
+.option-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #0f172a;
+}
+
+.option-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .option-label {
-  flex: 1;
-}
-
-.option-arrows {
   font-size: 12px;
-  color: #9ca3af;
-  margin-left: auto;
+  color: #1f2937;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
+.option-description {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.45;
+}
 
-
-/* Resolved */
 .auth-resolved {
-  padding: 14px 20px;
+  padding: 12px 16px;
   text-align: center;
   color: #6b7280;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   background: #f9fafb;
 }

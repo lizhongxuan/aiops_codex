@@ -11,9 +11,17 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  disabled: {
+    type: Boolean,
+    default: false,
+  },
+  isDockedBottom: {
+    type: Boolean,
+    default: false,
+  },
 });
 
-const emit = defineEmits(["update:modelValue", "send"]);
+const emit = defineEmits(["update:modelValue", "send", "stop"]);
 const store = useAppStore();
 
 const textareaRef = ref(null);
@@ -45,6 +53,10 @@ const activeMentions = computed(() => {
   }
   return mentions;
 });
+
+const canStop = computed(() => store.runtime.turn.active);
+const inputDisabled = computed(() => props.disabled || !store.canSend || store.runtime.turn.active || store.sending);
+const sendDisabled = computed(() => props.disabled || !store.canSend || store.sending || !props.modelValue.trim());
 
 function onInput(e) {
   const text = e.target.value;
@@ -101,7 +113,9 @@ function onKeydown(e) {
   
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
     e.preventDefault();
-    emit("send");
+    if (!canStop.value) {
+      emit("send");
+    }
   }
 }
 
@@ -134,7 +148,7 @@ function getCaretCoordinates(element, position) {
 </script>
 
 <template>
-  <div class="omnibar-wrapper">
+  <div class="omnibar-wrapper" :class="{ 'is-docked-bottom': isDockedBottom }">
     <!-- Popover -->
     <div class="mention-popover" v-if="mentionPopover.visible && mentionOptions.length" :style="{ left: mentionPopover.x + 'px', bottom: '100%' }">
       <div class="popover-header">Hosts</div>
@@ -160,7 +174,7 @@ function getCaretCoordinates(element, position) {
       rows="3"
       class="omnibar-input"
       :placeholder="placeholder"
-      :disabled="!store.canSend || store.sending"
+      :disabled="inputDisabled"
     ></textarea>
     
     <div class="omnibar-tools">
@@ -168,9 +182,15 @@ function getCaretCoordinates(element, position) {
          <span v-for="mention in activeMentions" :key="mention" class="pill-tag"><span class="pill-icon">@</span> {{ mention }}</span>
       </div>
       <div class="tools-right">
-         <span class="hint-text">⌘ ↵ 发送</span>
-         <button class="send-btn" :disabled="!store.canSend || store.sending" @click="emit('send')">
-           <span v-if="store.sending" class="spinner-small"></span>
+         <span class="hint-text">{{ canStop ? "停止当前任务" : "⌘ ↵ 发送" }}</span>
+         <button
+           class="send-btn"
+           :class="{ 'stop-btn': canStop }"
+           :disabled="canStop ? false : sendDisabled"
+           @click="canStop ? emit('stop') : emit('send')"
+         >
+           <span v-if="!canStop && store.sending" class="spinner-small"></span>
+           <span v-else-if="canStop">■</span>
            <span v-else>↑</span>
          </button>
       </div>
@@ -180,18 +200,25 @@ function getCaretCoordinates(element, position) {
 
 <style scoped>
 .omnibar-wrapper {
-  max-width: 900px;
+  width: 100%;
+  max-width: 860px;
   margin: 0 auto;
   background: var(--omnibar-bg);
   border: 1px solid var(--border-color);
-  border-radius: 20px;
-  padding: 12px 14px;
-  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  padding: 12px 14px 11px;
+  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.07);
   display: flex;
   flex-direction: column;
   gap: 8px;
   transition: box-shadow 0.2s, border-color 0.2s;
   position: relative;
+}
+
+.omnibar-wrapper.is-docked-bottom {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-top-color: transparent;
 }
 
 .omnibar-wrapper:focus-within {
@@ -206,9 +233,10 @@ function getCaretCoordinates(element, position) {
   background: transparent;
   resize: none;
   outline: none;
+  min-height: 78px;
   font-size: 15px;
-  line-height: 1.6;
-  padding: 0 4px;
+  line-height: 1.55;
+  padding: 2px 4px 0;
   color: var(--text-main);
   font-family: inherit;
 }
@@ -217,15 +245,21 @@ function getCaretCoordinates(element, position) {
   color: #94a3b8;
 }
 
+.omnibar-input:disabled {
+  color: #64748b;
+}
+
 .omnibar-tools {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
 }
 
 .tools-left {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .pill-tag {
@@ -240,13 +274,8 @@ function getCaretCoordinates(element, position) {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.pill-icon {
-  color: var(--primary);
-  font-weight: 700;
-}
-
 .tools-right {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 12px;
 }
@@ -254,32 +283,38 @@ function getCaretCoordinates(element, position) {
 .hint-text {
   font-size: 11px;
   color: #94a3b8;
-  font-weight: 500;
 }
 
 .send-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--text-main);
-  color: white;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
   border: none;
-  display: flex;
+  background: #0f172a;
+  color: white;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
   cursor: pointer;
-  transition: transform 0.1s, background 0.2s;
-}
-
-.send-btn:hover:not(:disabled) {
-  background: #1e293b;
-  transform: translateY(-1px);
+  transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
 }
 
 .send-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
+}
+
+.send-btn:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.send-btn.stop-btn {
+  background: #dc2626;
+}
+
+.pill-icon {
+  color: var(--primary);
+  font-weight: 700;
 }
 
 .mention-popover {
