@@ -155,9 +155,40 @@ func (s *Store) SetSelectedHost(sessionID, hostID string) {
 func (s *Store) SetThread(sessionID, threadID string) {
 	s.mu.Lock()
 	session, _ := s.ensureSessionLocked(sessionID)
+	if session.ThreadID != "" && session.ThreadID != threadID {
+		delete(s.threadToSession, session.ThreadID)
+	}
 	session.ThreadID = threadID
 	session.LastActivityAt = model.NowString()
 	s.threadToSession[threadID] = sessionID
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
+func (s *Store) ClearThread(sessionID string) {
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	if session.ThreadID != "" {
+		delete(s.threadToSession, session.ThreadID)
+	}
+	session.ThreadID = ""
+	session.LastActivityAt = model.NowString()
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
+func (s *Store) ResetConversation(sessionID string) {
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	if session.ThreadID != "" {
+		delete(s.threadToSession, session.ThreadID)
+	}
+	session.ThreadID = ""
+	session.Cards = nil
+	session.Approvals = make(map[string]model.ApprovalRequest)
+	session.ApprovalGrants = make([]model.ApprovalGrant, 0)
+	session.ItemCache = make(map[string]map[string]any)
+	session.LastActivityAt = model.NowString()
 	s.mu.Unlock()
 	s.SaveStableState("")
 }
@@ -623,7 +654,7 @@ func (s *Store) LoadStableState(path string) error {
 		s.sessions[id] = &SessionState{
 			ID:             session.ID,
 			AuthSessionID:  session.AuthSessionID,
-			ThreadID:       session.ThreadID,
+			ThreadID:       "",
 			SelectedHostID: defaultHostID(session.SelectedHostID),
 			Approvals:      make(map[string]model.ApprovalRequest),
 			ApprovalGrants: append([]model.ApprovalGrant(nil), session.ApprovalGrants...),
@@ -666,7 +697,7 @@ func (s *Store) LoadStableState(path string) error {
 		}
 	}
 
-	s.threadToSession = cloneStringMap(state.ThreadToSession)
+	s.threadToSession = make(map[string]string)
 	s.loginToSession = cloneStringMap(state.LoginToSession)
 	s.lastAuthSession = state.LastAuthSession
 	s.hosts = cloneHostMap(state.Hosts)
@@ -692,7 +723,7 @@ func (s *Store) SaveStableState(path string) error {
 	state := persistentState{
 		Sessions:        make(map[string]*persistentSessionState, len(s.sessions)),
 		AuthSessions:    make(map[string]*persistentAuthSessionState, len(s.authSessions)),
-		ThreadToSession: cloneStringMap(s.threadToSession),
+		ThreadToSession: make(map[string]string),
 		LoginToSession:  cloneStringMap(s.loginToSession),
 		LastAuthSession: s.lastAuthSession,
 		Hosts:           cloneHostMap(s.hosts),
@@ -704,7 +735,7 @@ func (s *Store) SaveStableState(path string) error {
 		state.Sessions[id] = &persistentSessionState{
 			ID:             session.ID,
 			AuthSessionID:  session.AuthSessionID,
-			ThreadID:       session.ThreadID,
+			ThreadID:       "",
 			SelectedHostID: session.SelectedHostID,
 			Auth:           session.Auth,
 			Tokens:         toPersistentTokens(session.Tokens),

@@ -1,465 +1,261 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from "vue";
+import { useAppStore } from "./store";
 import CardItem from "./components/CardItem.vue";
+import LoginModal from "./components/LoginModal.vue";
+import HostModal from "./components/HostModal.vue";
+import Omnibar from "./components/Omnibar.vue";
+import { MessageSquarePlusIcon, AppWindowIcon, SettingsIcon, UserCircleIcon, ServerIcon, PanelsTopLeftIcon, BotIcon } from "lucide-vue-next";
 
-const snapshot = reactive({
-  sessionId: "",
-  selectedHostId: "server-local",
-  auth: {
-    connected: false,
-    pending: false,
-    mode: "",
-    planType: "",
-    email: "",
-    lastError: "",
-  },
-  hosts: [],
-  cards: [],
-  approvals: [],
-  config: {
-    oauthConfigured: false,
-    codexAlive: false,
-  },
-});
+const store = useAppStore();
 
-const authForm = reactive({
-  mode: "chatgpt",
-  apiKey: "",
-  accessToken: "",
-  chatgptAccountId: "",
-  chatgptPlanType: "",
-  email: "",
-});
+const isLoginModalOpen = ref(false);
+const isHostModalOpen = ref(false);
+const isMcpDrawerOpen = ref(false);
 
-const composer = reactive({
-  message: "",
-});
+const composerMessage = ref("");
+const scrollContainer = ref(null);
+let isUserScrolling = false;
 
-const loading = ref(true);
-const errorMessage = ref("");
-const sending = ref(false);
-const wsStatus = ref("disconnected");
-
-let socket;
-
-const loginResultMessages = {
-  success: "GPT 登录成功，当前页面会自动恢复登录态。",
-  oauth_not_configured: "服务端还没有配置 OAuth，请改用本机 ChatGPT 登录或补齐 OAuth 配置。",
-  missing_code: "登录回调缺少 code 参数，请重新发起登录。",
-  invalid_state: "登录状态校验失败，请重新点击 Connect GPT。",
-  exchange_failed: "OAuth code 换取 token 失败，请检查服务端 OAuth 配置。",
-  codex_login_failed: "已完成 OAuth，但注入 Codex 登录态失败，请查看服务端日志。",
-};
-
-const selectedHostId = computed({
-  get() {
-    return snapshot.selectedHostId || "server-local";
-  },
-  set(value) {
-    snapshot.selectedHostId = value;
-  },
-});
-
-async function fetchState() {
-  const response = await fetch("/api/v1/state", {
-    credentials: "include",
-  });
-  const data = await response.json();
-  applySnapshot(data);
+function toggleMcpDrawer() {
+  isMcpDrawerOpen.value = !isMcpDrawerOpen.value;
 }
-
-function applySnapshot(data) {
-  snapshot.sessionId = data.sessionId;
-  snapshot.selectedHostId = data.selectedHostId;
-  snapshot.auth = data.auth || snapshot.auth;
-  snapshot.hosts = data.hosts || [];
-  snapshot.cards = data.cards || [];
-  snapshot.approvals = data.approvals || [];
-  snapshot.config = data.config || snapshot.config;
-  loading.value = false;
-}
-
-function connectWs() {
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
-  wsStatus.value = "connecting";
-
-  socket.onopen = () => {
-    wsStatus.value = "connected";
-  };
-
-  socket.onmessage = (event) => {
-    applySnapshot(JSON.parse(event.data));
-  };
-
-  socket.onclose = () => {
-    wsStatus.value = "disconnected";
-    window.setTimeout(connectWs, 1000);
-  };
-
-  socket.onerror = () => {
-    wsStatus.value = "error";
-  };
-}
-
-async function login() {
-  errorMessage.value = "";
-  const response = await fetch("/api/v1/auth/login", {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(authForm),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    errorMessage.value = data.error || "login failed";
-    return;
-  }
-  await fetchState();
-  if (data.authUrl) {
-    window.open(data.authUrl, "_blank", "noopener,noreferrer");
-  }
-}
-
-async function logout() {
-  await fetch("/api/v1/auth/logout", {
-    method: "POST",
-    credentials: "include",
-  });
-  errorMessage.value = "";
-  await fetchState();
-}
-
-function startConfiguredOAuth() {
-  window.location.href = "/api/v1/auth/oauth/start";
-}
-
-async function sendMessage() {
-  if (!canSend.value || !composer.message.trim()) {
-    return;
-  }
-  sending.value = true;
-  errorMessage.value = "";
-  const response = await fetch("/api/v1/chat/message", {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      message: composer.message,
-      hostId: selectedHostId.value,
-    }),
-  });
-  const data = await response.json();
-  sending.value = false;
-  if (!response.ok) {
-    errorMessage.value = data.error || "message send failed";
-    return;
-  }
-  composer.message = "";
-}
-
-async function decideApproval({ approvalId, decision }) {
-  const response = await fetch(`/api/v1/approvals/${approvalId}/decision`, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ decision }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    errorMessage.value = data.error || "approval failed";
-  }
-}
-
-function selectHost(hostId) {
-  selectedHostId.value = hostId;
-}
-
-const loginHint = computed(() => {
-  const params = new URLSearchParams(window.location.search);
-  return params.get("login");
-});
-
-const loginHintText = computed(() => {
-  if (!loginHint.value) {
-    return "";
-  }
-  return loginResultMessages[loginHint.value] || `登录结果: ${loginHint.value}`;
-});
-
-const loginHintState = computed(() => {
-  if (!loginHint.value) {
-    return "";
-  }
-  return loginHint.value === "success" ? "hint" : "error";
-});
-
-const selectedHost = computed(() => {
-  return (
-    snapshot.hosts.find((host) => host.id === selectedHostId.value) || {
-      id: selectedHostId.value,
-      name: selectedHostId.value,
-      status: "offline",
-      executable: false,
-    }
-  );
-});
 
 const authBadgeLabel = computed(() => {
-  if (snapshot.auth.connected) {
-    return `GPT ${snapshot.auth.planType || "已登录"}`;
+  if (store.snapshot.auth.connected) {
+    return `GPT ${store.snapshot.auth.planType || "接入"}`;
   }
-  if (snapshot.auth.pending) {
-    return "GPT 登录中";
+  if (store.snapshot.auth.pending) {
+    return "登录中";
   }
-  return "GPT 未登录";
-});
-
-const canSend = computed(() => {
-  return (
-    snapshot.auth.connected &&
-    snapshot.config.codexAlive !== false &&
-    selectedHost.value.executable &&
-    selectedHost.value.status === "online"
-  );
+  return "未登录";
 });
 
 const composerPlaceholder = computed(() => {
-  if (!snapshot.auth.connected) {
-    return "请先登录 GPT 账号后再开始对话";
-  }
-  if (!snapshot.config.codexAlive) {
-    return "Codex app-server 当前不可用";
-  }
-  if (!selectedHost.value.executable) {
-    return "当前主机仅展示，不支持执行";
-  }
-  if (selectedHost.value.status !== "online") {
-    return "当前主机离线，暂时不可执行";
-  }
-  return "要求后续变更";
+  if (!store.snapshot.auth.connected) return "请先登录 GPT 账号后再开始对话";
+  if (!store.snapshot.config.codexAlive) return "Codex app-server 当前不可用";
+  if (!store.selectedHost.executable) return "当前主机仅展示，不支持执行";
+  if (store.selectedHost.status !== "online") return "当前主机离线，暂时不可执行";
+  return "Ask Codex to build something";
 });
 
-function onComposerKeydown(event) {
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-    event.preventDefault();
-    sendMessage();
+async function startNewThread() {
+  if (store.sending) return;
+  const ok = await store.resetThread();
+  if (!ok) return;
+  composerMessage.value = "";
+  store.errorMessage = "";
+  isUserScrolling = false;
+}
+
+function handleGlobalKeydown(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
+    e.preventDefault();
+    startNewThread();
   }
 }
 
-onMounted(async () => {
-  await fetchState();
-  connectWs();
+async function sendMessage() {
+  if (!store.canSend || !composerMessage.value.trim()) return;
+  
+  store.sending = true;
+  store.errorMessage = "";
+  
+  try {
+    const response = await fetch("/api/v1/chat/message", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: composerMessage.value,
+        hostId: store.snapshot.selectedHostId,
+      }),
+    });
+    
+    if (!response.ok) {
+      const data = await response.json();
+      store.errorMessage = data.error || "message send failed";
+    } else {
+      composerMessage.value = "";
+      // Reset scroll lock when sending message
+      isUserScrolling = false;
+    }
+  } catch (e) {
+    store.errorMessage = "Network error";
+  } finally {
+    store.sending = false;
+  }
+}
+
+async function decideApproval({ approvalId, decision }) {
+  try {
+    const response = await fetch(`/api/v1/approvals/${approvalId}/decision`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }),
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      store.errorMessage = data.error || "approval failed";
+    } else {
+      isUserScrolling = false; // Scroll down after approval
+    }
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+function handleScroll(e) {
+  const el = e.target;
+  // If user scrolls up from the bottom more than 10px, freeze auto-scroll
+  if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
+    isUserScrolling = true;
+  } else {
+    isUserScrolling = false;
+  }
+}
+
+// Smart Auto-Scroll
+watch(
+  () => store.snapshot.cards,
+  () => {
+    if (!isUserScrolling) {
+      nextTick(() => {
+        if (scrollContainer.value) {
+          scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight;
+        }
+      });
+    }
+  },
+  { deep: true }
+);
+
+onMounted(() => {
+  store.fetchState();
+  store.connectWs();
+  window.addEventListener("keydown", handleGlobalKeydown);
 });
 
 onBeforeUnmount(() => {
-  if (socket) {
-    socket.close();
+  if (store._socket) {
+    store._socket.close();
   }
+  window.removeEventListener("keydown", handleGlobalKeydown);
 });
 </script>
 
 <template>
-  <div class="page">
-    <aside class="sidebar">
-      <section class="panel">
-        <div class="panel-header">
-          <h2>GPT 登录</h2>
-          <span class="badge" :data-state="snapshot.auth.connected ? 'on' : 'off'">
-            {{ snapshot.auth.connected ? "已连接" : "未连接" }}
-          </span>
-        </div>
+  <div class="app-layout">
+    <!-- Left Sidebar: Navigation & Threads -->
+    <aside class="app-sidebar">
+      <div class="sidebar-top">
+        <button class="nav-button new-thread" @click="startNewThread">
+          <MessageSquarePlusIcon size="18" />
+          <span>New Thread</span>
+          <span class="shortcut">⌘ N</span>
+        </button>
+      </div>
 
-        <p v-if="loginHintText" :class="loginHintState">{{ loginHintText }}</p>
-        <p v-if="snapshot.auth.email" class="subtle">账号: {{ snapshot.auth.email }}</p>
-        <p v-if="snapshot.auth.mode" class="subtle">模式: {{ snapshot.auth.mode }}</p>
-        <p v-if="snapshot.auth.planType" class="subtle">计划: {{ snapshot.auth.planType }}</p>
-        <p v-if="snapshot.auth.pending" class="hint">登录流程进行中，请在浏览器完成认证。</p>
-        <p v-if="snapshot.auth.lastError" class="error">{{ snapshot.auth.lastError }}</p>
-
-        <div class="form-row" v-if="snapshot.config.oauthConfigured">
-          <button class="primary" @click="startConfiguredOAuth">使用已配置 OAuth 登录</button>
-        </div>
-
-        <div class="divider"></div>
-
-        <div class="field">
-          <label>登录模式</label>
-          <select v-model="authForm.mode">
-            <option value="chatgpt">ChatGPT 登录</option>
-            <option value="chatgptAuthTokens">外部 Auth Tokens</option>
-            <option value="apiKey">API Key</option>
-          </select>
-        </div>
-
-        <div v-if="authForm.mode === 'chatgptAuthTokens'" class="stack">
-          <div class="field">
-            <label>Access Token</label>
-            <textarea v-model="authForm.accessToken" rows="3"></textarea>
-          </div>
-          <div class="field">
-            <label>ChatGPT Account ID</label>
-            <input v-model="authForm.chatgptAccountId" />
-          </div>
-          <div class="field">
-            <label>Plan Type</label>
-            <input v-model="authForm.chatgptPlanType" placeholder="plus / pro / team" />
-          </div>
-          <div class="field">
-            <label>Email</label>
-            <input v-model="authForm.email" placeholder="optional" />
-          </div>
-        </div>
-
-        <div v-if="authForm.mode === 'apiKey'" class="stack">
-          <div class="field">
-            <label>API Key</label>
-            <input v-model="authForm.apiKey" type="password" />
-          </div>
-          <div class="field">
-            <label>Email</label>
-            <input v-model="authForm.email" placeholder="optional" />
-          </div>
-        </div>
-
-        <div class="form-row">
-          <button class="primary" @click="login">Connect GPT</button>
-          <button @click="logout">Logout</button>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>主机列表</h2>
-          <span class="subtle">WS: {{ wsStatus }}</span>
-        </div>
-
-        <ul class="host-list">
-          <li
-            v-for="host in snapshot.hosts"
-            :key="host.id"
-            class="host-item"
-            :class="{ active: selectedHostId === host.id }"
-            @click="selectHost(host.id)"
-          >
-            <div class="host-main">
-              <strong>{{ host.name }}</strong>
-              <span class="host-kind">{{ host.kind }}</span>
+      <div class="sidebar-scroll">
+        <div class="nav-group">
+          <div class="nav-group-title">线程</div>
+          <button class="nav-item active">
+            <AppWindowIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">Codex Assistant</span>
+              <span class="nav-item-time">Active</span>
             </div>
-            <div class="host-meta">
-              <span class="badge" :data-state="host.status === 'online' ? 'on' : 'off'">
-                {{ host.status }}
-              </span>
-              <span v-if="!host.executable" class="subtle">仅展示</span>
-            </div>
-          </li>
-        </ul>
-      </section>
+          </button>
+        </div>
+      </div>
+
+      <div class="sidebar-bottom">
+        <button class="nav-icon-btn" title="Settings">
+          <SettingsIcon size="20" />
+        </button>
+        <div class="flex-spacer"></div>
+        <div class="ws-badge" :class="store.wsStatus" :title="'WS: ' + store.wsStatus"></div>
+      </div>
     </aside>
 
-    <main class="main">
-      <section class="chat-workspace">
-        <header class="chat-topbar">
-          <div class="chat-topbar-copy">
-            <h1>Codex Workspace</h1>
-            <p class="subtle">像 Cursor Codex 一样的单列聊天工作区</p>
+    <!-- Main Canvas -->
+    <main class="app-main">
+      <header class="main-header">
+        <div class="header-left">
+          <h1 class="header-title">Codex Workspace</h1>
+        </div>
+        
+        <div class="header-right">
+          <button class="header-pill" @click="isHostModalOpen = true">
+            <ServerIcon size="14" />
+            <span class="pill-text">{{ store.selectedHost.name }}</span>
+            <span class="pill-dot" :class="store.selectedHost.status"></span>
+          </button>
+          
+          <button class="header-pill auth-pill" @click="isLoginModalOpen = true" :class="{'connected': store.snapshot.auth.connected}">
+            <UserCircleIcon size="16" />
+            <span class="pill-text">{{ authBadgeLabel }}</span>
+          </button>
+          
+          <button class="header-icon-btn" @click="toggleMcpDrawer" :class="{ 'is-active': isMcpDrawerOpen }" title="Skills & MCP">
+            <PanelsTopLeftIcon size="20" />
+          </button>
+        </div>
+      </header>
+
+      <div class="chat-container" ref="scrollContainer" @scroll="handleScroll">
+        <div class="chat-stream-inner">
+          <div v-if="store.loading" class="chat-banner loading-banner">
+            <span class="spinner"></span> 正在初始化...
           </div>
-          <div class="chat-topbar-pills">
-            <span class="top-pill">{{ authBadgeLabel }}</span>
-            <span class="top-pill">主机 {{ selectedHost.name }}</span>
-            <span class="top-pill">WS {{ wsStatus }}</span>
+          
+          <div v-if="!store.snapshot.cards.length && !store.loading" class="empty-state-canvas">
+            <BotIcon size="48" class="empty-icon" />
+            <h2>What can I help you build?</h2>
+            <p>I can help you write code, manage servers, execute commands, and orchestrate complex tasks.</p>
           </div>
-        </header>
+          
+          <p v-if="store.errorMessage" class="chat-banner error">{{ store.errorMessage }}</p>
 
-        <div class="chat-scroll">
-          <div class="chat-stream-shell">
-            <p v-if="loading" class="hint">加载中...</p>
-
-            <div v-if="!snapshot.cards.length && !loading" class="chat-empty">
-              <p class="chat-empty-label">AIOps Codex</p>
-              <h2>开始一个新任务</h2>
-              <p>
-                在底部输入框里给 Codex 下发任务，它会像 Cursor 插件里的聊天区一样，持续把消息、
-                计划、步骤、审批和结果都堆叠在这里。
-              </p>
-            </div>
-
-            <p v-if="loginHintText" class="chat-banner" :class="loginHintState">{{ loginHintText }}</p>
-            <p v-if="errorMessage" class="chat-banner error">{{ errorMessage }}</p>
-            <p v-if="!snapshot.auth.connected" class="chat-banner hint">
-              先在左侧完成 GPT 登录，登录成功后才能向 Codex 发送任务。
-            </p>
-            <p v-if="snapshot.auth.connected && !snapshot.config.codexAlive" class="chat-banner error">
-              Codex app-server 当前不可用，请先检查后端服务状态。
-            </p>
-            <p
-              v-if="snapshot.auth.connected && snapshot.config.codexAlive && !selectedHost.executable"
-              class="chat-banner hint"
+          <div class="chat-stream">
+            <div
+              v-for="card in store.snapshot.cards"
+              :key="card.id"
+              class="stream-row"
+              :class="{
+                'row-user': card.type === 'MessageCard' && card.role === 'user',
+                'row-assistant': !(card.type === 'MessageCard' && card.role === 'user'),
+              }"
             >
-              当前主机仅在线展示，不支持在 MVP 阶段执行任务。
-            </p>
-
-            <div class="chat-stream">
-              <div
-                v-for="card in snapshot.cards"
-                :key="card.id"
-                class="stream-row"
-                :class="{
-                  'row-user': card.type === 'MessageCard' && card.role === 'user',
-                  'row-assistant': !(card.type === 'MessageCard' && card.role === 'user'),
-                }"
-              >
-                <CardItem :card="card" @approval="decideApproval" />
-              </div>
+              <CardItem :card="card" @approval="decideApproval" />
             </div>
           </div>
         </div>
+      </div>
 
-        <footer class="composer-dock">
-          <div class="composer-card">
-            <textarea
-              v-model="composer.message"
-              rows="4"
-              :placeholder="composerPlaceholder"
-              :disabled="!canSend || sending"
-              @keydown="onComposerKeydown"
-            ></textarea>
-
-            <div class="composer-meta">
-              <div class="composer-tools">
-                <label class="tool-chip tool-select">
-                  <span>主机</span>
-                  <select v-model="selectedHostId">
-                    <option
-                      v-for="host in snapshot.hosts"
-                      :key="host.id"
-                      :value="host.id"
-                      :disabled="!host.executable"
-                    >
-                      {{ host.name }}{{ host.executable ? "" : "（只读展示）" }}
-                    </option>
-                  </select>
-                </label>
-                <span class="tool-chip">{{ snapshot.auth.connected ? "GPT-5.4" : "等待登录" }}</span>
-                <span class="tool-chip">默认工作区 ~/.aiops_codex</span>
-              </div>
-
-              <div class="composer-send">
-                <span class="subtle">Cmd/Ctrl + Enter 发送</span>
-                <button class="send-button" :disabled="!canSend || sending" @click="sendMessage">
-                  {{ sending ? "…" : "↑" }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </footer>
-      </section>
+      <!-- Omnibar Base -->
+      <footer class="omnibar-dock">
+         <Omnibar 
+           v-model="composerMessage"
+           :placeholder="composerPlaceholder"
+           @send="sendMessage"
+         />
+      </footer>
     </main>
+
+    <!-- Right Drawer: MCP & Core Panel -->
+    <aside class="app-mcp-drawer" :class="{ 'is-open': isMcpDrawerOpen }">
+      <div class="mcp-header">
+        <h3>Skills & MCP</h3>
+      </div>
+      <div class="mcp-body">
+         <p class="subtle" style="font-size:13px">No skills configured yet.</p>
+      </div>
+    </aside>
+
+    <!-- Modals -->
+    <LoginModal v-if="isLoginModalOpen" @close="isLoginModalOpen = false" />
+    <HostModal v-if="isHostModalOpen" @close="isHostModalOpen = false" />
   </div>
 </template>

@@ -12,12 +12,11 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T13:08:30+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-11ec1ffe487218c6": {
       "id": "sess-11ec1ffe487218c6",
       "authSessionId": "auth-sess-11ec1ffe487218c6",
-      "threadId": "019d1e8e-8262-79b0-b420-015445ced6ad",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -42,12 +41,11 @@
         }
       ],
       "createdAt": "2026-03-24T14:35:48+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-157c6deac8bd9f98": {
       "id": "sess-157c6deac8bd9f98",
       "authSessionId": "auth-sess-157c6deac8bd9f98",
-      "threadId": "019d1e87-7c2a-70b3-8da3-31d1131f3c21",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -61,12 +59,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:28:08+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-173640bbae919808": {
       "id": "sess-173640bbae919808",
       "authSessionId": "auth-sess-173640bbae919808",
-      "threadId": "019d1e76-87cd-7993-8f88-e826b594e6fc",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -80,12 +77,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-1f9402ccd8ce545d": {
       "id": "sess-1f9402ccd8ce545d",
       "authSessionId": "auth-sess-1f9402ccd8ce545d",
-      "threadId": "019d1e88-40bd-7453-89fd-82df6b64b355",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -99,12 +95,85 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:28:59+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-2203add776c38e48": {
       "id": "sess-2203add776c38e48",
       "authSessionId": "auth-sess-2203add776c38e48",
-      "threadId": "019d1e29-3352-7b42-83b3-9f17e25b46fd",
+      "selectedHostId": "server-local",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "approvalGrants": [
+        {
+          "id": "grant-37e19ef61cdeab3b",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc \"top -l 1 -s 0 | grep '\"'^PhysMem'\"'\"",
+          "command": "/bin/zsh -lc \"top -l 1 -s 0 | grep '\"'^PhysMem'\"'\"",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-24T17:03:59+08:00"
+        },
+        {
+          "id": "grant-e924e78f103cc790",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'sysctl vm.swapusage'",
+          "command": "/bin/zsh -lc 'sysctl vm.swapusage'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-24T17:04:03+08:00"
+        },
+        {
+          "id": "grant-3a85f9b7db82247b",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'sysctl -n hw.memsize'",
+          "command": "/bin/zsh -lc 'sysctl -n hw.memsize'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-24T17:04:06+08:00"
+        },
+        {
+          "id": "grant-6642887ba59851af",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc \"ps -axo pid,%mem,rss,comm -r | awk 'NR==1{printf \\\"%-8s %-6s %-10s %s\\\\n\\\",\\\"PID\\\",\\\"%MEM\\\",\\\"RSS(MB)\\\",\\\"COMMAND\\\"; next} NR\u003c=11{printf \\\"%-8s %-6s %-10.1f %s\\\\n\\\",\"'$1,$2,$3/1024,$4}'\"'\"",
+          "command": "/bin/zsh -lc \"ps -axo pid,%mem,rss,comm -r | awk 'NR==1{printf \\\"%-8s %-6s %-10s %s\\\\n\\\",\\\"PID\\\",\\\"%MEM\\\",\\\"RSS(MB)\\\",\\\"COMMAND\\\"; next} NR\u003c=11{printf \\\"%-8s %-6s %-10.1f %s\\\\n\\\",\"'$1,$2,$3/1024,$4}'\"'\"",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-24T17:04:51+08:00"
+        },
+        {
+          "id": "grant-dcdc90c0b8fc018f",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'top -l 1 -o mem -n 10 | head -n 25'",
+          "command": "/bin/zsh -lc 'top -l 1 -o mem -n 10 | head -n 25'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-24T17:05:16+08:00"
+        },
+        {
+          "id": "grant-247d058f5bb9c330",
+          "hostId": "server-local",
+          "type": "command",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'top -l 1 -s 0 | head -n 25'",
+          "command": "/bin/zsh -lc 'top -l 1 -s 0 | head -n 25'",
+          "cwd": "/Users/lizhongxuan/.aiops_codex",
+          "createdAt": "2026-03-24T17:06:28+08:00"
+        }
+      ],
+      "createdAt": "2026-03-24T12:24:57+08:00",
+      "lastActivityAt": "2026-03-24T17:06:35+08:00"
+    },
+    "sess-23ec6c0e11a354b2": {
+      "id": "sess-23ec6c0e11a354b2",
+      "authSessionId": "auth-sess-23ec6c0e11a354b2",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -117,13 +186,12 @@
         "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MTg3NDk1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzIzNDk1LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImM5NGE1YzA1LWE3MDktNGRjMy1hYzRmLTNlYTEyNmQyMDk5NSIsIm5iZiI6MTc3NDMyMzQ5NSwicHdkX2F1dGhfdGltZSI6MTc3NDMyMzQ5MzQwMCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfVUQxSDVsak9nWnFVd0ZuN1ZNTmFudkJnIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.I72odTPgcNDcEHrSGO32UxW7bGVTaC4nW3-_vG8Hs__k7jKyBAAHHnqXdNe_3vcRRTTi6x3PGk5NtvDmaV2ld98b3MX8POeanEjTqwIutQH3AKsDIt3A8joxdfkyC--H6aKxZ4VkeRQ8gpcwVTTRxLtOW066fRrILckSfntHlme7RXYTgaS3UBUQ53-WExRW6QKO8KVxWIdKKv-MRM3IA1mrmX03i4TR6aEcEvR6cYvK1-WkMtcIN0VR7ioQcb2s_uLamjsMRoOzgcUtKgLRh7VlrIlUYsdBdWlh039vcxi7kQ_SWcZCefz473E-AlBrwNIJEJCkRywubcTh2O4nOcz75SySq1DBPrEA6RqWf2qDjZucsM-wx3-EVerNeQ4_wuskp_gtZaEBOfLTy7q8Bqb8k__s-XdKMT1Y-kYHyFTeE9HrMDy5PHd36UkZhCgbSuxFD17SmZqT2koGU5GuYJWWF4vCWvaSlz9kYsqbbLJsortXRJchTyiVyiyFI6GXfirb2ip643FRznoOt27IFXukhCTNiXh-0qViiY0wGgqOkPE4VEcjqqiZ2rDgKewNJOdNkuRiTYgcNjYQy03gvPim3yw3NgAeIE5P7voS-EHFyvJikLfyL-kkg8JxyzE8na0KGV2vsyEbykI5Kque7eS8_sIyOU2TjsgQUh5GwF8",
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
-      "createdAt": "2026-03-24T12:24:57+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "createdAt": "2026-03-24T16:07:26+08:00",
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-2585f92caa02ec4c": {
       "id": "sess-2585f92caa02ec4c",
       "authSessionId": "auth-sess-2585f92caa02ec4c",
-      "threadId": "019d1e92-43f5-7680-a389-aefb6deaabd8",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -137,7 +205,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:39:55+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-25f0985e05a15dac": {
       "id": "sess-25f0985e05a15dac",
@@ -155,12 +223,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:34:49+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-27b9f9e26b351f68": {
       "id": "sess-27b9f9e26b351f68",
       "authSessionId": "auth-sess-27b9f9e26b351f68",
-      "threadId": "019d1e92-1c15-7443-b8f0-d1ed60c969ea",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -174,12 +241,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:39:45+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-2a220af9c402a548": {
       "id": "sess-2a220af9c402a548",
       "authSessionId": "auth-sess-2a220af9c402a548",
-      "threadId": "019d1e92-000c-7ab1-b2fe-5beaa94148cb",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -193,12 +259,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-2c1c7a48281816d4": {
       "id": "sess-2c1c7a48281816d4",
       "authSessionId": "auth-sess-2c1c7a48281816d4",
-      "threadId": "019d1e73-6292-71c0-a15e-42751f60a0d8",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -212,7 +277,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:06:11+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-30303a6f3afeae62": {
       "id": "sess-30303a6f3afeae62",
@@ -226,12 +291,11 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T12:30:10+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-30760d06c1190d29": {
       "id": "sess-30760d06c1190d29",
       "authSessionId": "auth-sess-30760d06c1190d29",
-      "threadId": "019d1e92-6fb7-7081-b1eb-8b526c89666e",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -256,7 +320,7 @@
         }
       ],
       "createdAt": "2026-03-24T14:40:06+08:00",
-      "lastActivityAt": "2026-03-24T14:40:31+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-38bcfc61122a2b98": {
       "id": "sess-38bcfc61122a2b98",
@@ -274,7 +338,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:12:03+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-3dac2f24f2238bc7": {
       "id": "sess-3dac2f24f2238bc7",
@@ -292,7 +356,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:34:41+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-3f5527a515ea3a55": {
       "id": "sess-3f5527a515ea3a55",
@@ -310,7 +374,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:12:38+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-476f8a697c46c311": {
       "id": "sess-476f8a697c46c311",
@@ -328,12 +392,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:14:48+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-4804c7f633c21cc2": {
       "id": "sess-4804c7f633c21cc2",
       "authSessionId": "auth-sess-4804c7f633c21cc2",
-      "threadId": "019d1e87-a719-7323-a773-81c815316c3e",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -347,12 +410,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:28:19+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-4e02888072a90bee": {
       "id": "sess-4e02888072a90bee",
       "authSessionId": "auth-sess-4e02888072a90bee",
-      "threadId": "019d1e87-5159-7121-8b7f-dcbcb947a0ab",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -366,7 +428,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-55a3e097019cdf42": {
       "id": "sess-55a3e097019cdf42",
@@ -380,12 +442,11 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-568a9277e54488ec": {
       "id": "sess-568a9277e54488ec",
       "authSessionId": "auth-sess-568a9277e54488ec",
-      "threadId": "019d1e77-ed12-7370-8a9a-67767a4422f5",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -399,7 +460,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:09+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-5d57e22506de725b": {
       "id": "sess-5d57e22506de725b",
@@ -417,7 +478,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-5e90b66665b67b1e": {
       "id": "sess-5e90b66665b67b1e",
@@ -435,7 +496,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T12:39:58+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-6030a1253f70212a": {
       "id": "sess-6030a1253f70212a",
@@ -453,7 +514,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T12:59:01+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-64086cd2a57a7df7": {
       "id": "sess-64086cd2a57a7df7",
@@ -471,7 +532,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-67458aed88a00067": {
       "id": "sess-67458aed88a00067",
@@ -489,7 +550,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:12:50+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-67aeb6fd60ba113a": {
       "id": "sess-67aeb6fd60ba113a",
@@ -507,12 +568,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:10:21+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-67d92ab4cebc6cfb": {
       "id": "sess-67d92ab4cebc6cfb",
       "authSessionId": "auth-sess-67d92ab4cebc6cfb",
-      "threadId": "019d1e78-0a15-71b3-bc35-cb41243bfbe0",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -526,7 +586,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:16+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-72b9136a3fa41483": {
       "id": "sess-72b9136a3fa41483",
@@ -540,12 +600,11 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:34:50+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-7916adced5e75866": {
       "id": "sess-7916adced5e75866",
       "authSessionId": "auth-sess-7916adced5e75866",
-      "threadId": "019d1e76-c8be-7bb2-9420-0ce17a591ed3",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -559,7 +618,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:09:54+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-7aa115de971ceb1d": {
       "id": "sess-7aa115de971ceb1d",
@@ -573,12 +632,11 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-7c7e4c8c48ad9994": {
       "id": "sess-7c7e4c8c48ad9994",
       "authSessionId": "auth-sess-7c7e4c8c48ad9994",
-      "threadId": "019d1e8d-c45b-7452-b819-907132c61bda",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -592,12 +650,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:35:00+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-857b9810ad7f7c1a": {
       "id": "sess-857b9810ad7f7c1a",
       "authSessionId": "auth-sess-857b9810ad7f7c1a",
-      "threadId": "019d1e39-1fe0-7451-9446-17dc84206ed5",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -611,12 +668,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T13:02:14+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-86886a20aefc9598": {
       "id": "sess-86886a20aefc9598",
       "authSessionId": "auth-sess-86886a20aefc9598",
-      "threadId": "019d1e73-86c4-79b3-9039-4fbd40cc0b24",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -630,12 +686,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:06:20+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-8906931036c43b51": {
       "id": "sess-8906931036c43b51",
       "authSessionId": "auth-sess-8906931036c43b51",
-      "threadId": "019d1e8d-9ccd-7932-a2b2-084b1b578d7b",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -649,12 +704,47 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:34:50+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
+    },
+    "sess-8ec1a3a42e1120b8": {
+      "id": "sess-8ec1a3a42e1120b8",
+      "authSessionId": "auth-sess-8ec1a3a42e1120b8",
+      "selectedHostId": "server-local",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "createdAt": "2026-03-24T16:32:07+08:00",
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
+    },
+    "sess-91226c73cb9aed21": {
+      "id": "sess-91226c73cb9aed21",
+      "authSessionId": "auth-sess-91226c73cb9aed21",
+      "selectedHostId": "server-local",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "createdAt": "2026-03-24T16:20:09+08:00",
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-966d47a2b7fc18f5": {
       "id": "sess-966d47a2b7fc18f5",
       "authSessionId": "auth-sess-966d47a2b7fc18f5",
-      "threadId": "019d1e78-6440-74c0-893b-18cabc2321e7",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -668,12 +758,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:39+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-96837a6cbb000c9d": {
       "id": "sess-96837a6cbb000c9d",
       "authSessionId": "auth-sess-96837a6cbb000c9d",
-      "threadId": "019d1e2e-2e48-71a0-ad9b-334f8140fbfd",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -687,7 +776,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T12:47:20+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-a1889c242ca45ae4": {
       "id": "sess-a1889c242ca45ae4",
@@ -701,7 +790,25 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
+    },
+    "sess-a5d40cafae6d22a0": {
+      "id": "sess-a5d40cafae6d22a0",
+      "authSessionId": "auth-sess-a5d40cafae6d22a0",
+      "selectedHostId": "server-local",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "createdAt": "2026-03-24T16:33:35+08:00",
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-b1b854cce784ed20": {
       "id": "sess-b1b854cce784ed20",
@@ -719,12 +826,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T13:08:34+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-b4f5edf1a2d2caa9": {
       "id": "sess-b4f5edf1a2d2caa9",
       "authSessionId": "auth-sess-b4f5edf1a2d2caa9",
-      "threadId": "019d1e8d-e0c1-7461-8d1e-bbc107751015",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -738,12 +844,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:35:07+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-bb35ae8103bec408": {
       "id": "sess-bb35ae8103bec408",
       "authSessionId": "auth-sess-bb35ae8103bec408",
-      "threadId": "019d1e76-a42f-7fb1-a1ca-ae67898fbbcd",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -757,7 +862,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:09:44+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-bb6f7ebb55f81891": {
       "id": "sess-bb6f7ebb55f81891",
@@ -775,7 +880,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-c7f2da3d027b9553": {
       "id": "sess-c7f2da3d027b9553",
@@ -793,7 +898,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-c978bb6a298873fb": {
       "id": "sess-c978bb6a298873fb",
@@ -811,12 +916,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-d1e4faa69ddaad96": {
       "id": "sess-d1e4faa69ddaad96",
       "authSessionId": "auth-sess-d1e4faa69ddaad96",
-      "threadId": "019d1e92-cadc-7401-9761-b9ecad996c76",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -830,12 +934,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:40:29+08:00",
-      "lastActivityAt": "2026-03-24T14:40:47+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-d2f979f50d051630": {
       "id": "sess-d2f979f50d051630",
       "authSessionId": "auth-sess-d2f979f50d051630",
-      "threadId": "019d1e87-da61-7423-8b19-58cf825b9e91",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -860,7 +963,7 @@
         }
       ],
       "createdAt": "2026-03-24T14:28:32+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-d71535e689e67271": {
       "id": "sess-d71535e689e67271",
@@ -874,7 +977,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-df3ee197d04842d0": {
       "id": "sess-df3ee197d04842d0",
@@ -892,12 +995,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:12:28+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-e59c650e8bd08ef2": {
       "id": "sess-e59c650e8bd08ef2",
       "authSessionId": "auth-sess-e59c650e8bd08ef2",
-      "threadId": "019d1e73-3e92-7fd2-a7d9-b24cc18c6194",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -911,12 +1013,11 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-ec9693cbdf56e520": {
       "id": "sess-ec9693cbdf56e520",
       "authSessionId": "auth-sess-ec9693cbdf56e520",
-      "threadId": "019d1e77-d04c-79b1-8115-604fdd548197",
       "selectedHostId": "server-local",
       "auth": {
         "connected": true,
@@ -930,7 +1031,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-fcf9e8a6043983f9": {
       "id": "sess-fcf9e8a6043983f9",
@@ -944,7 +1045,7 @@
       },
       "tokens": {},
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     },
     "sess-fda33226b3f93a47": {
       "id": "sess-fda33226b3f93a47",
@@ -962,7 +1063,7 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "createdAt": "2026-03-24T14:27:47+08:00",
-      "lastActivityAt": "2026-03-24T14:40:29+08:00"
+      "lastActivityAt": "2026-03-24T16:33:35+08:00"
     }
   },
   "authSessions": {
@@ -979,7 +1080,7 @@
         "sess-0212046e61b864f1": {}
       },
       "createdAt": "2026-03-24T13:08:34+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-11ec1ffe487218c6": {
       "id": "auth-sess-11ec1ffe487218c6",
@@ -998,7 +1099,7 @@
         "sess-11ec1ffe487218c6": {}
       },
       "createdAt": "2026-03-24T14:35:48+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-157c6deac8bd9f98": {
       "id": "auth-sess-157c6deac8bd9f98",
@@ -1017,7 +1118,7 @@
         "sess-157c6deac8bd9f98": {}
       },
       "createdAt": "2026-03-24T14:28:08+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-173640bbae919808": {
       "id": "auth-sess-173640bbae919808",
@@ -1036,7 +1137,7 @@
         "sess-173640bbae919808": {}
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-1f9402ccd8ce545d": {
       "id": "auth-sess-1f9402ccd8ce545d",
@@ -1055,10 +1156,29 @@
         "sess-1f9402ccd8ce545d": {}
       },
       "createdAt": "2026-03-24T14:28:59+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-2203add776c38e48": {
       "id": "auth-sess-2203add776c38e48",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "webSessionIds": {
+        "sess-2203add776c38e48": {}
+      },
+      "createdAt": "2026-03-24T12:30:10+08:00",
+      "updatedAt": "2026-03-24T17:04:30+08:00"
+    },
+    "auth-sess-23ec6c0e11a354b2": {
+      "id": "auth-sess-23ec6c0e11a354b2",
       "auth": {
         "connected": true,
         "pending": false,
@@ -1071,10 +1191,10 @@
         "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
       },
       "webSessionIds": {
-        "sess-2203add776c38e48": {}
+        "sess-23ec6c0e11a354b2": {}
       },
-      "createdAt": "2026-03-24T12:30:10+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "createdAt": "2026-03-24T16:07:26+08:00",
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-2585f92caa02ec4c": {
       "id": "auth-sess-2585f92caa02ec4c",
@@ -1093,7 +1213,7 @@
         "sess-2585f92caa02ec4c": {}
       },
       "createdAt": "2026-03-24T14:39:55+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-25f0985e05a15dac": {
       "id": "auth-sess-25f0985e05a15dac",
@@ -1112,7 +1232,7 @@
         "sess-25f0985e05a15dac": {}
       },
       "createdAt": "2026-03-24T14:34:49+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-27b9f9e26b351f68": {
       "id": "auth-sess-27b9f9e26b351f68",
@@ -1131,7 +1251,7 @@
         "sess-27b9f9e26b351f68": {}
       },
       "createdAt": "2026-03-24T14:39:45+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-2a220af9c402a548": {
       "id": "auth-sess-2a220af9c402a548",
@@ -1150,7 +1270,7 @@
         "sess-2a220af9c402a548": {}
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-2c1c7a48281816d4": {
       "id": "auth-sess-2c1c7a48281816d4",
@@ -1169,7 +1289,7 @@
         "sess-2c1c7a48281816d4": {}
       },
       "createdAt": "2026-03-24T14:06:11+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-30303a6f3afeae62": {
       "id": "auth-sess-30303a6f3afeae62",
@@ -1184,7 +1304,7 @@
         "sess-30303a6f3afeae62": {}
       },
       "createdAt": "2026-03-24T12:30:10+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-30760d06c1190d29": {
       "id": "auth-sess-30760d06c1190d29",
@@ -1203,7 +1323,7 @@
         "sess-30760d06c1190d29": {}
       },
       "createdAt": "2026-03-24T14:40:06+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-38bcfc61122a2b98": {
       "id": "auth-sess-38bcfc61122a2b98",
@@ -1222,7 +1342,7 @@
         "sess-38bcfc61122a2b98": {}
       },
       "createdAt": "2026-03-24T14:12:03+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-3dac2f24f2238bc7": {
       "id": "auth-sess-3dac2f24f2238bc7",
@@ -1241,7 +1361,7 @@
         "sess-3dac2f24f2238bc7": {}
       },
       "createdAt": "2026-03-24T14:34:41+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-3f5527a515ea3a55": {
       "id": "auth-sess-3f5527a515ea3a55",
@@ -1260,7 +1380,7 @@
         "sess-3f5527a515ea3a55": {}
       },
       "createdAt": "2026-03-24T14:12:38+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-476f8a697c46c311": {
       "id": "auth-sess-476f8a697c46c311",
@@ -1279,7 +1399,7 @@
         "sess-476f8a697c46c311": {}
       },
       "createdAt": "2026-03-24T14:14:48+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-4804c7f633c21cc2": {
       "id": "auth-sess-4804c7f633c21cc2",
@@ -1298,7 +1418,7 @@
         "sess-4804c7f633c21cc2": {}
       },
       "createdAt": "2026-03-24T14:28:19+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-4e02888072a90bee": {
       "id": "auth-sess-4e02888072a90bee",
@@ -1317,7 +1437,7 @@
         "sess-4e02888072a90bee": {}
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-55a3e097019cdf42": {
       "id": "auth-sess-55a3e097019cdf42",
@@ -1332,7 +1452,7 @@
         "sess-55a3e097019cdf42": {}
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-568a9277e54488ec": {
       "id": "auth-sess-568a9277e54488ec",
@@ -1351,7 +1471,7 @@
         "sess-568a9277e54488ec": {}
       },
       "createdAt": "2026-03-24T14:11:09+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-5d57e22506de725b": {
       "id": "auth-sess-5d57e22506de725b",
@@ -1370,7 +1490,7 @@
         "sess-5d57e22506de725b": {}
       },
       "createdAt": "2026-03-24T14:09:37+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-5e90b66665b67b1e": {
       "id": "auth-sess-5e90b66665b67b1e",
@@ -1389,7 +1509,7 @@
         "sess-5e90b66665b67b1e": {}
       },
       "createdAt": "2026-03-24T12:39:58+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-6030a1253f70212a": {
       "id": "auth-sess-6030a1253f70212a",
@@ -1408,7 +1528,7 @@
         "sess-6030a1253f70212a": {}
       },
       "createdAt": "2026-03-24T12:59:01+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-64086cd2a57a7df7": {
       "id": "auth-sess-64086cd2a57a7df7",
@@ -1427,7 +1547,7 @@
         "sess-64086cd2a57a7df7": {}
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-67458aed88a00067": {
       "id": "auth-sess-67458aed88a00067",
@@ -1446,7 +1566,7 @@
         "sess-67458aed88a00067": {}
       },
       "createdAt": "2026-03-24T14:12:50+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-67aeb6fd60ba113a": {
       "id": "auth-sess-67aeb6fd60ba113a",
@@ -1465,7 +1585,7 @@
         "sess-67aeb6fd60ba113a": {}
       },
       "createdAt": "2026-03-24T14:10:21+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-67d92ab4cebc6cfb": {
       "id": "auth-sess-67d92ab4cebc6cfb",
@@ -1484,7 +1604,7 @@
         "sess-67d92ab4cebc6cfb": {}
       },
       "createdAt": "2026-03-24T14:11:16+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-72b9136a3fa41483": {
       "id": "auth-sess-72b9136a3fa41483",
@@ -1499,7 +1619,7 @@
         "sess-72b9136a3fa41483": {}
       },
       "createdAt": "2026-03-24T14:34:50+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-7916adced5e75866": {
       "id": "auth-sess-7916adced5e75866",
@@ -1518,7 +1638,7 @@
         "sess-7916adced5e75866": {}
       },
       "createdAt": "2026-03-24T14:09:54+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-7aa115de971ceb1d": {
       "id": "auth-sess-7aa115de971ceb1d",
@@ -1533,7 +1653,7 @@
         "sess-7aa115de971ceb1d": {}
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-7c7e4c8c48ad9994": {
       "id": "auth-sess-7c7e4c8c48ad9994",
@@ -1552,7 +1672,7 @@
         "sess-7c7e4c8c48ad9994": {}
       },
       "createdAt": "2026-03-24T14:35:00+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-857b9810ad7f7c1a": {
       "id": "auth-sess-857b9810ad7f7c1a",
@@ -1571,7 +1691,7 @@
         "sess-857b9810ad7f7c1a": {}
       },
       "createdAt": "2026-03-24T13:02:14+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-86886a20aefc9598": {
       "id": "auth-sess-86886a20aefc9598",
@@ -1590,7 +1710,7 @@
         "sess-86886a20aefc9598": {}
       },
       "createdAt": "2026-03-24T14:06:20+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-8906931036c43b51": {
       "id": "auth-sess-8906931036c43b51",
@@ -1609,7 +1729,45 @@
         "sess-8906931036c43b51": {}
       },
       "createdAt": "2026-03-24T14:34:50+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
+    },
+    "auth-sess-8ec1a3a42e1120b8": {
+      "id": "auth-sess-8ec1a3a42e1120b8",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "webSessionIds": {
+        "sess-8ec1a3a42e1120b8": {}
+      },
+      "createdAt": "2026-03-24T16:32:07+08:00",
+      "updatedAt": "2026-03-24T16:33:35+08:00"
+    },
+    "auth-sess-91226c73cb9aed21": {
+      "id": "auth-sess-91226c73cb9aed21",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "webSessionIds": {
+        "sess-91226c73cb9aed21": {}
+      },
+      "createdAt": "2026-03-24T16:20:09+08:00",
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-966d47a2b7fc18f5": {
       "id": "auth-sess-966d47a2b7fc18f5",
@@ -1628,7 +1786,7 @@
         "sess-966d47a2b7fc18f5": {}
       },
       "createdAt": "2026-03-24T14:11:39+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-96837a6cbb000c9d": {
       "id": "auth-sess-96837a6cbb000c9d",
@@ -1647,7 +1805,7 @@
         "sess-96837a6cbb000c9d": {}
       },
       "createdAt": "2026-03-24T12:47:20+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-a1889c242ca45ae4": {
       "id": "auth-sess-a1889c242ca45ae4",
@@ -1662,7 +1820,26 @@
         "sess-a1889c242ca45ae4": {}
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
+    },
+    "auth-sess-a5d40cafae6d22a0": {
+      "id": "auth-sess-a5d40cafae6d22a0",
+      "auth": {
+        "connected": true,
+        "pending": false,
+        "mode": "chatgptAuthTokens",
+        "planType": "team"
+      },
+      "tokens": {
+        "idToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImIxZGQzZjhmLTlhYWQtNDdmZS1iMGU3LWVkYjAwOTc3N2Q2YiIsInR5cCI6IkpXVCJ9.eyJhdF9oYXNoIjoieUxjNXJCRTRZRXF0eGRwbXpaSHpFdyIsImF1ZCI6WyJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIl0sImF1dGhfcHJvdmlkZXIiOiJnb29nbGUiLCJhdXRoX3RpbWUiOjE3NzQzMzk3NjIsImVtYWlsIjoiYWF6aG9uZ3h1YW5AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImV4cCI6MTc3NDM0MzM2NCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImQ3YmU5ZmIzLWE1NTMtNGY0Yi1hYjA0LWNhY2YxOGFhZDBhYSIsImNoYXRncHRfcGxhbl90eXBlIjoidGVhbSIsImNoYXRncHRfc3Vic2NyaXB0aW9uX2FjdGl2ZV9zdGFydCI6IjIwMjYtMDMtMDdUMTM6Mzc6MTcrMDA6MDAiLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiIyMDI2LTA0LTA3VDEzOjM3OjE3KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fbGFzdF9jaGVja2VkIjoiMjAyNi0wMy0yNFQwODowOToyMi45MDQzNDYrMDA6MDAiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImdyb3VwcyI6W10sImxvY2FsaG9zdCI6dHJ1ZSwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmctcUpZbEhWREdJUTdDQVZlQmlGY2tuNVNrIiwiaXNfZGVmYXVsdCI6dHJ1ZSwicm9sZSI6Im93bmVyIiwidGl0bGUiOiJraW5nZGVlIn1dLCJ1c2VyX2lkIjoidXNlci1mMnB6eFFFNDNJdU4zdmZPdlFYQTNzdFUifSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjkxZDZiYWNkLWM5NjAtNGE4MS05MDM1LTcyNGY5NDNjMmVmYiIsIm5hbWUiOiJsaXpob25neHVhbiIsInJhdCI6MTc3NDMzOTc1Miwic2lkIjoiNTBiNGIwZjktZTc5MS00NmNhLWJiZmUtZGRhMjIzZTlkYjUzIiwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDM1MDIwMDAwMTM4NzY2NzAyNjEifQ.zmEMfu3u5aJ9fRrL9wypvL3vxZzgRhzJlZq8_VWM1p2B2MWTMUgNq5gFVhn3VUCf6qVMDEEbYSBnDKPqEqRUJEJxJibAIsf1hf35KCSjZ4y7V55JL-Jy0bAOW6_BB0qPCSaUy_7AVXGSnLmHqJreq8HEpGOwCeei09E_Ulekoun58f91U-62uI7rkMjFTTzuu2ousdfy2rnOKv5w3gbMLK14FxLOkQd2ouK8tzChuzDAUUbVae3V_6xFThLX59KR5c6BfXBh4MaU2FVo89nysjRCqht-qWxUFeGho5bY6ZbeAgGrZmj0_IFN0qI1PJz2wzvvjEA9LUjBb5vV1nlkjC900yoDFGIb5nV_UO3P24kSJ3tvAPP-37b-DVR-6IEZ3YQPGJYm3rYa9ShBGH4Ye34aklmbage6GH32-5o5OcbfGyyxdUFm_OJMdjacky5pxlYU-BggzRY9xUs1Ufpk_C9xxlC2wS_LK8vSh4pxXxVBEvlfzbxtzTTgcIXksL60_KY8hHTPL_K2Ub_o9X5MjDNeahWN9vtSYgWfP4DmNdVotdqC3_iM379LoZgv6EFno4CB2HKqCUbuQ_-zrfs8ui0abYp5Q5XgWn7Rw0l2bVUbxuVGMHfV7AoZAoXVTwbQ5An4ShgPagO5m74zNahYEqI5ocriCxWYVo8-9FuprSw",
+        "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiZXhwIjoxNzc1MjAzNzY1LCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VV9fZDdiZTlmYjMtYTU1My00ZjRiLWFiMDQtY2FjZjE4YWFkMGFhIiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InRlYW0iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWYycHp4UUU0M0l1TjN2Zk92UVhBM3N0VSIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItZjJwenhRRTQzSXVOM3ZmT3ZRWEEzc3RVIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImFhemhvbmd4dWFuQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzc0MzM5NzY0LCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6ImI0YzIxNWI1LWIzNTktNDQ3ZS04NmFiLTBiZDgyNTVhMGY2MiIsIm5iZiI6MTc3NDMzOTc2NCwicHdkX2F1dGhfdGltZSI6MTc3NDMzOTc2MjkwNCwic2NwIjpbIm9wZW5pZCIsInByb2ZpbGUiLCJlbWFpbCIsIm9mZmxpbmVfYWNjZXNzIiwiYXBpLmNvbm5lY3RvcnMucmVhZCIsImFwaS5jb25uZWN0b3JzLmludm9rZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfcldsbzVBYnhWUWtqRTlBV01pRExqQjVqIiwic2wiOnRydWUsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAzNTAyMDAwMDEzODc2NjcwMjYxIn0.UgtQvBY7rni8iRKsmVL69SnZmZl9ou8vWo0-KqnoiVX4IIMlkgRTl_KOhwITebxlmxBJagbaN1ySIB7ThuFfGvTnYrPvrv4c6DzQF1TbRh88ezB42tpuFT7R-GVvW33ZG3uTBAK0d8aK9IUVpOmgoiSZ3lAXYGRuzBiGK619hJ_CDY2aBf5iAc_CA6_uzm2xkzNtWW-yfsdJwSeWTMOYzS90q47gEVyMF_sHRPr3p__fY5_saMUNOI-M6PXkb-b4a50np04mNMEfq7y7R1MlcJneIjEtwcjuDnShVDkzLmOCgXuzpihRDosCHzF_6-fjjVHtFb_Jyt1cfe7JH3v78nTdbjHfEcisimEKw8DRDp90-5-vaEDjnbJ5nfyMmhMCR6cvm0BbaGw2Bf4xI9KfRBcwVxuHiRVE-PPEljJ9SQGfloWM3qj9LVxcbI9GryyL1GSvJ7ZX5TWw-su8lr97wAYjYF0HKAebCk4jcwpZdV9wpbfp07TTiU2wGE75FUqJtG1glLt--3m7QUKKqo-Gr4FV6vBZq8y9rP22dDy-nLwjMq0sKgcRs8NtRmPKkmKbnhkeM98KaFgICIlyunuTGmognVXvnx4Dtnp88E3gEcFIxyOWeecLiHdcPn_3ZC8fk3a_a2sIVTb0asC86s11T63B0NzWUT_YWxnekTZ0ChY",
+        "chatgptAccountId": "d7be9fb3-a553-4f4b-ab04-cacf18aad0aa"
+      },
+      "webSessionIds": {
+        "sess-a5d40cafae6d22a0": {}
+      },
+      "createdAt": "2026-03-24T16:33:35+08:00",
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-b1b854cce784ed20": {
       "id": "auth-sess-b1b854cce784ed20",
@@ -1681,7 +1858,7 @@
         "sess-b1b854cce784ed20": {}
       },
       "createdAt": "2026-03-24T13:08:34+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-b4f5edf1a2d2caa9": {
       "id": "auth-sess-b4f5edf1a2d2caa9",
@@ -1700,7 +1877,7 @@
         "sess-b4f5edf1a2d2caa9": {}
       },
       "createdAt": "2026-03-24T14:35:07+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-bb35ae8103bec408": {
       "id": "auth-sess-bb35ae8103bec408",
@@ -1719,7 +1896,7 @@
         "sess-bb35ae8103bec408": {}
       },
       "createdAt": "2026-03-24T14:09:44+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-bb6f7ebb55f81891": {
       "id": "auth-sess-bb6f7ebb55f81891",
@@ -1738,7 +1915,7 @@
         "sess-bb6f7ebb55f81891": {}
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-c7f2da3d027b9553": {
       "id": "auth-sess-c7f2da3d027b9553",
@@ -1757,7 +1934,7 @@
         "sess-c7f2da3d027b9553": {}
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-c978bb6a298873fb": {
       "id": "auth-sess-c978bb6a298873fb",
@@ -1776,7 +1953,7 @@
         "sess-c978bb6a298873fb": {}
       },
       "createdAt": "2026-03-24T14:27:57+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-d1e4faa69ddaad96": {
       "id": "auth-sess-d1e4faa69ddaad96",
@@ -1795,7 +1972,7 @@
         "sess-d1e4faa69ddaad96": {}
       },
       "createdAt": "2026-03-24T14:40:29+08:00",
-      "updatedAt": "2026-03-24T14:40:46+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-d2f979f50d051630": {
       "id": "auth-sess-d2f979f50d051630",
@@ -1814,7 +1991,7 @@
         "sess-d2f979f50d051630": {}
       },
       "createdAt": "2026-03-24T14:28:32+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-d71535e689e67271": {
       "id": "auth-sess-d71535e689e67271",
@@ -1829,7 +2006,7 @@
         "sess-d71535e689e67271": {}
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-df3ee197d04842d0": {
       "id": "auth-sess-df3ee197d04842d0",
@@ -1848,7 +2025,7 @@
         "sess-df3ee197d04842d0": {}
       },
       "createdAt": "2026-03-24T14:12:28+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-e59c650e8bd08ef2": {
       "id": "auth-sess-e59c650e8bd08ef2",
@@ -1867,7 +2044,7 @@
         "sess-e59c650e8bd08ef2": {}
       },
       "createdAt": "2026-03-24T14:06:02+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-ec9693cbdf56e520": {
       "id": "auth-sess-ec9693cbdf56e520",
@@ -1886,7 +2063,7 @@
         "sess-ec9693cbdf56e520": {}
       },
       "createdAt": "2026-03-24T14:11:01+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-fcf9e8a6043983f9": {
       "id": "auth-sess-fcf9e8a6043983f9",
@@ -1901,7 +2078,7 @@
         "sess-fcf9e8a6043983f9": {}
       },
       "createdAt": "2026-03-24T14:39:37+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     },
     "auth-sess-fda33226b3f93a47": {
       "id": "auth-sess-fda33226b3f93a47",
@@ -1920,46 +2097,20 @@
         "sess-fda33226b3f93a47": {}
       },
       "createdAt": "2026-03-24T14:27:47+08:00",
-      "updatedAt": "2026-03-24T14:40:29+08:00"
+      "updatedAt": "2026-03-24T16:33:35+08:00"
     }
   },
-  "threadToSession": {
-    "019d1e29-3352-7b42-83b3-9f17e25b46fd": "sess-2203add776c38e48",
-    "019d1e2e-2e48-71a0-ad9b-334f8140fbfd": "sess-96837a6cbb000c9d",
-    "019d1e39-1fe0-7451-9446-17dc84206ed5": "sess-857b9810ad7f7c1a",
-    "019d1e73-3e92-7fd2-a7d9-b24cc18c6194": "sess-e59c650e8bd08ef2",
-    "019d1e73-6292-71c0-a15e-42751f60a0d8": "sess-2c1c7a48281816d4",
-    "019d1e73-86c4-79b3-9039-4fbd40cc0b24": "sess-86886a20aefc9598",
-    "019d1e76-87cd-7993-8f88-e826b594e6fc": "sess-173640bbae919808",
-    "019d1e76-a42f-7fb1-a1ca-ae67898fbbcd": "sess-bb35ae8103bec408",
-    "019d1e76-c8be-7bb2-9420-0ce17a591ed3": "sess-7916adced5e75866",
-    "019d1e77-d04c-79b1-8115-604fdd548197": "sess-ec9693cbdf56e520",
-    "019d1e77-ed12-7370-8a9a-67767a4422f5": "sess-568a9277e54488ec",
-    "019d1e78-0a15-71b3-bc35-cb41243bfbe0": "sess-67d92ab4cebc6cfb",
-    "019d1e78-6440-74c0-893b-18cabc2321e7": "sess-966d47a2b7fc18f5",
-    "019d1e87-5159-7121-8b7f-dcbcb947a0ab": "sess-4e02888072a90bee",
-    "019d1e87-7c2a-70b3-8da3-31d1131f3c21": "sess-157c6deac8bd9f98",
-    "019d1e87-a719-7323-a773-81c815316c3e": "sess-4804c7f633c21cc2",
-    "019d1e87-da61-7423-8b19-58cf825b9e91": "sess-d2f979f50d051630",
-    "019d1e88-40bd-7453-89fd-82df6b64b355": "sess-1f9402ccd8ce545d",
-    "019d1e8d-9ccd-7932-a2b2-084b1b578d7b": "sess-8906931036c43b51",
-    "019d1e8d-c45b-7452-b819-907132c61bda": "sess-7c7e4c8c48ad9994",
-    "019d1e8d-e0c1-7461-8d1e-bbc107751015": "sess-b4f5edf1a2d2caa9",
-    "019d1e8e-8262-79b0-b420-015445ced6ad": "sess-11ec1ffe487218c6",
-    "019d1e92-000c-7ab1-b2fe-5beaa94148cb": "sess-2a220af9c402a548",
-    "019d1e92-1c15-7443-b8f0-d1ed60c969ea": "sess-27b9f9e26b351f68",
-    "019d1e92-43f5-7680-a389-aefb6deaabd8": "sess-2585f92caa02ec4c",
-    "019d1e92-6fb7-7081-b1eb-8b526c89666e": "sess-30760d06c1190d29",
-    "019d1e92-cadc-7401-9761-b9ecad996c76": "sess-d1e4faa69ddaad96"
+  "threadToSession": {},
+  "loginToSession": {
+    "3a52213a-5702-4d60-b6a3-874c0b5e5825": "sess-2203add776c38e48"
   },
-  "loginToSession": {},
-  "lastAuthSession": "auth-sess-d1e4faa69ddaad96",
+  "lastAuthSession": "auth-sess-2203add776c38e48",
   "hosts": {
     "agent-local": {
       "id": "agent-local",
       "name": "agent-local",
       "kind": "agent",
-      "status": "offline",
+      "status": "online",
       "executable": false,
       "os": "darwin",
       "arch": "arm64",
@@ -1967,7 +2118,7 @@
       "labels": {
         "env": "dev"
       },
-      "lastHeartbeat": "2026-03-24T14:42:43+08:00"
+      "lastHeartbeat": "2026-03-24T17:06:57+08:00"
     },
     "server-local": {
       "id": "server-local",

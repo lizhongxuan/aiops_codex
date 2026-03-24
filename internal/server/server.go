@@ -131,6 +131,7 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/api/v1/healthz", a.handleHealthz)
 	httpMux.HandleFunc("/api/v1/state", a.withSession(a.handleState))
+	httpMux.HandleFunc("/api/v1/thread/reset", a.withSession(a.handleThreadReset))
 	httpMux.HandleFunc("/api/v1/auth/login", a.withSession(a.handleAuthLogin))
 	httpMux.HandleFunc("/api/v1/auth/logout", a.withSession(a.handleAuthLogout))
 	httpMux.HandleFunc("/api/v1/auth/oauth/start", a.withSession(a.handleOAuthStart))
@@ -312,6 +313,20 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request, sessionID stri
 	a.store.TouchSession(sessionID)
 	a.syncAccountState(r.Context(), sessionID)
 	writeJSON(w, http.StatusOK, a.snapshot(sessionID))
+}
+
+func (a *App) handleThreadReset(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	a.store.ResetConversation(sessionID)
+	a.audit("thread.reset", map[string]any{
+		"sessionId": sessionID,
+	})
+	a.broadcastSnapshot(sessionID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -615,33 +630,10 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	a.store.UpsertCard(sessionID, userCard)
 	a.broadcastSnapshot(sessionID)
 
-	threadID, err := a.ensureThread(r.Context(), sessionID)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	var result map[string]any
-	err = a.codex.Request(ctx, "turn/start", map[string]any{
-		"threadId":       threadID,
-		"cwd":            a.cfg.DefaultWorkspace,
-		"approvalPolicy": "untrusted",
-		"developerInstructions": fmt.Sprintf(
-			"Current selected host is %s. Operate only on this host. The default writable workspace is %s. Do not assume access outside the workspace unless explicitly requested and approved.",
-			req.HostID,
-			a.cfg.DefaultWorkspace,
-		),
-		"sandboxPolicy": map[string]any{
-			"type":          "workspaceWrite",
-			"writableRoots": []string{a.cfg.DefaultWorkspace},
-		},
-		"input": []map[string]any{
-			{"type": "text", "text": req.Message},
-		},
-	}, &result)
+	err := a.startTurn(ctx, sessionID, req)
 	if err != nil {
 		resultCard := model.Card{
 			ID:        model.NewID("result"),
@@ -659,6 +651,70 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+}
+
+func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) error {
+	threadID, err := a.ensureThread(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	err = a.requestTurn(ctx, threadID, req)
+	if err == nil {
+		return nil
+	}
+	if !isThreadNotFoundError(err) {
+		return err
+	}
+
+	log.Printf("stale codex thread detected session=%s thread=%s err=%s", sessionID, threadID, truncate(err.Error(), 200))
+	a.store.ClearThread(sessionID)
+	a.appendThreadResetCard(sessionID)
+	a.broadcastSnapshot(sessionID)
+
+	threadID, err = a.ensureThread(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	return a.requestTurn(ctx, threadID, req)
+}
+
+func (a *App) requestTurn(ctx context.Context, threadID string, req chatRequest) error {
+	var result map[string]any
+	return a.codex.Request(ctx, "turn/start", map[string]any{
+		"threadId":       threadID,
+		"cwd":            a.cfg.DefaultWorkspace,
+		"approvalPolicy": "untrusted",
+		"developerInstructions": fmt.Sprintf(
+			"Current selected host is %s. Operate only on this host. The default writable workspace is %s. Do not assume access outside the workspace unless explicitly requested and approved.",
+			req.HostID,
+			a.cfg.DefaultWorkspace,
+		),
+		"sandboxPolicy": map[string]any{
+			"type":          "workspaceWrite",
+			"writableRoots": []string{a.cfg.DefaultWorkspace},
+		},
+		"input": []map[string]any{
+			{"type": "text", "text": req.Message},
+		},
+	}, &result)
+}
+
+func (a *App) appendThreadResetCard(sessionID string) {
+	now := model.NowString()
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("result"),
+		Type:      "ResultCard",
+		Title:     "Thread restarted",
+		Text:      "The previous Codex thread was no longer available, so this request is continuing in a fresh thread.",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+func isThreadNotFoundError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "thread not found")
 }
 
 func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -833,15 +889,26 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			return
 		}
 		itemID := getString(payload, "itemId")
-		now := model.NowString()
-		a.store.UpsertCard(sessionID, model.Card{
-			ID:        itemID,
-			Type:      "MessageCard",
-			Role:      "assistant",
-			Status:    "inProgress",
-			CreatedAt: now,
-			UpdatedAt: now,
-		})
+		if session := a.store.Session(sessionID); session != nil {
+			exists := false
+			for _, card := range session.Cards {
+				if card.ID == itemID {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				now := model.NowString()
+				a.store.UpsertCard(sessionID, model.Card{
+					ID:        itemID,
+					Type:      "MessageCard",
+					Role:      "assistant",
+					Status:    "inProgress",
+					CreatedAt: now,
+					UpdatedAt: now,
+				})
+			}
+		}
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
 			card.Text += getString(payload, "delta")
 			card.UpdatedAt = model.NowString()

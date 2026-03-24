@@ -1,4 +1,11 @@
 <script setup>
+import { computed } from "vue";
+import MessageCard from "./MessageCard.vue";
+import PlanCard from "./PlanCard.vue";
+import TerminalCard from "./TerminalCard.vue";
+import CodeCard from "./CodeCard.vue";
+import AuthCard from "./AuthCard.vue";
+
 const props = defineProps({
   card: {
     type: Object,
@@ -8,124 +15,66 @@ const props = defineProps({
 
 const emit = defineEmits(["approval"]);
 
-function onDecision(decision) {
-  if (!props.card.approval?.requestId) {
-    return;
-  }
-  let resolvedDecision = decision;
-  if (decision === "decline") {
-    const availableDecisions = props.card.approval?.decisions || [];
-    if (!availableDecisions.includes("decline") && availableDecisions.includes("cancel")) {
-      resolvedDecision = "cancel";
-    }
-  }
-  emit("approval", {
-    approvalId: props.card.approval.requestId,
-    decision: resolvedDecision,
-  });
+function handleApproval(payload) {
+  emit("approval", payload);
 }
 
-function lineClass(status) {
-  if (status === "completed") {
-    return "plan-item completed";
-  }
-  if (status === "inProgress") {
-    return "plan-item active";
-  }
-  return "plan-item";
-}
+const isTerminal = computed(() => {
+  return props.card.type === "StepCard" && !!props.card.command;
+});
 
-function cardClass(card) {
-  if (card.type === "MessageCard" && card.role === "user") {
-    return "message-card user-bubble";
-  }
-  if (card.type === "MessageCard") {
-    return "message-card assistant-block";
-  }
-  if (card.type === "PlanCard") {
-    return "plan-card";
-  }
-  if (card.type === "StepCard") {
-    return "step-card";
-  }
-  if (card.type === "ResultCard") {
-    return "result-card";
-  }
-  if (card.type === "CommandApprovalCard" || card.type === "FileChangeApprovalCard") {
-    return "approval-card";
-  }
-  return "generic-card";
-}
-
-function roleLabel(card) {
-  if (card.role === "user") {
-    return "你";
-  }
-  if (card.type === "MessageCard") {
-    return "Codex";
-  }
-  return card.type;
-}
+const isCode = computed(() => {
+  return props.card.type === "StepCard" && !props.card.command && props.card.changes?.length > 0;
+});
 </script>
 
 <template>
-  <article class="card" :class="cardClass(card)" :data-card-type="card.type">
-    <header class="card-header">
-      <span class="card-type">{{ roleLabel(card) }}</span>
-      <span v-if="card.status" class="card-status">{{ card.status }}</span>
-    </header>
-
-    <h3 v-if="card.title" class="card-title">{{ card.title }}</h3>
-
-    <template v-if="card.type === 'PlanCard'">
-      <ul class="plan-list">
-        <li
-          v-for="item in card.items"
-          :key="`${card.id}-${item.step}`"
-          :class="lineClass(item.status)"
-        >
-          {{ item.step }}
-        </li>
-      </ul>
+  <div class="card-root">
+    <template v-if="card.type === 'MessageCard' || (card.type === 'StepCard' && !isTerminal && !isCode)">
+      <MessageCard :card="card" />
     </template>
-
-    <template v-else-if="card.type === 'StepCard'">
-      <p v-if="card.command" class="mono">{{ card.command }}</p>
-      <p v-if="card.cwd" class="subtle">{{ card.cwd }}</p>
-      <pre v-if="card.output" class="output">{{ card.output }}</pre>
-      <ul v-if="card.changes?.length" class="changes">
-        <li v-for="change in card.changes" :key="`${card.id}-${change.path}`">
-          <span class="mono">{{ change.path }}</span>
-          <span class="change-kind">{{ change.kind }}</span>
-        </li>
-      </ul>
+    
+    <template v-else-if="card.type === 'PlanCard'">
+      <PlanCard :card="card" />
     </template>
-
-    <template
-      v-else-if="
-        card.type === 'CommandApprovalCard' || card.type === 'FileChangeApprovalCard'
-      "
-    >
-      <p v-if="card.command" class="mono">{{ card.command }}</p>
-      <p v-if="card.cwd" class="subtle">{{ card.cwd }}</p>
-      <p v-if="card.text" class="card-text">{{ card.text }}</p>
-      <ul v-if="card.changes?.length" class="changes">
-        <li v-for="change in card.changes" :key="`${card.id}-${change.path}`">
-          <div class="change-path mono">{{ change.path }}</div>
-          <div class="change-kind">{{ change.kind }}</div>
-          <pre v-if="change.diff" class="output">{{ change.diff }}</pre>
-        </li>
-      </ul>
-      <div v-if="card.approval && card.status === 'pending'" class="approval-actions">
-        <button class="primary" @click="onDecision('accept')">Approve once</button>
-        <button @click="onDecision('accept_session')">Allow for session</button>
-        <button @click="onDecision('decline')">Decline</button>
+    
+    <template v-else-if="card.type === 'CommandApprovalCard' || card.type === 'FileChangeApprovalCard'">
+      <AuthCard :card="card" @approval="handleApproval" />
+    </template>
+    
+    <template v-else-if="isTerminal">
+      <TerminalCard :card="card" />
+    </template>
+    
+    <template v-else-if="isCode">
+      <CodeCard :card="card" />
+    </template>
+    
+    <template v-else>
+      <!-- Fallback generic renderer -->
+      <div class="generic-card">
+        <p v-if="card.text">{{ card.text }}</p>
+        <pre v-if="card.output" class="mono">{{ card.output }}</pre>
       </div>
     </template>
-
-    <template v-else>
-      <p v-if="card.text" class="card-text">{{ card.text }}</p>
-      <pre v-if="card.output" class="output">{{ card.output }}</pre>
-    </template>
-  </article>
+  </div>
 </template>
+
+<style scoped>
+.card-root {
+  width: 100%;
+}
+
+.generic-card {
+  margin-top: 8px;
+  margin-left: 48px;
+  padding: 16px;
+  background: white;
+  border-radius: 12px;
+  border: 1px dashed #cbd5e1;
+  font-size: 14px;
+}
+.mono {
+  font-family: monospace;
+}
+</style>
