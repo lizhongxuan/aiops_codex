@@ -114,62 +114,17 @@
       },
       "approvalGrants": [
         {
-          "id": "grant-37e19ef61cdeab3b",
+          "id": "grant-e956610b353d1542",
           "hostId": "server-local",
           "type": "command",
-          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc \"top -l 1 -s 0 | grep '\"'^PhysMem'\"'\"",
-          "command": "/bin/zsh -lc \"top -l 1 -s 0 | grep '\"'^PhysMem'\"'\"",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'df -h'",
+          "command": "/bin/zsh -lc 'df -h'",
           "cwd": "/Users/lizhongxuan/.aiops_codex",
-          "createdAt": "2026-03-24T17:03:59+08:00"
-        },
-        {
-          "id": "grant-e924e78f103cc790",
-          "hostId": "server-local",
-          "type": "command",
-          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'sysctl vm.swapusage'",
-          "command": "/bin/zsh -lc 'sysctl vm.swapusage'",
-          "cwd": "/Users/lizhongxuan/.aiops_codex",
-          "createdAt": "2026-03-24T17:04:03+08:00"
-        },
-        {
-          "id": "grant-3a85f9b7db82247b",
-          "hostId": "server-local",
-          "type": "command",
-          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'sysctl -n hw.memsize'",
-          "command": "/bin/zsh -lc 'sysctl -n hw.memsize'",
-          "cwd": "/Users/lizhongxuan/.aiops_codex",
-          "createdAt": "2026-03-24T17:04:06+08:00"
-        },
-        {
-          "id": "grant-6642887ba59851af",
-          "hostId": "server-local",
-          "type": "command",
-          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc \"ps -axo pid,%mem,rss,comm -r | awk 'NR==1{printf \\\"%-8s %-6s %-10s %s\\\\n\\\",\\\"PID\\\",\\\"%MEM\\\",\\\"RSS(MB)\\\",\\\"COMMAND\\\"; next} NR\u003c=11{printf \\\"%-8s %-6s %-10.1f %s\\\\n\\\",\"'$1,$2,$3/1024,$4}'\"'\"",
-          "command": "/bin/zsh -lc \"ps -axo pid,%mem,rss,comm -r | awk 'NR==1{printf \\\"%-8s %-6s %-10s %s\\\\n\\\",\\\"PID\\\",\\\"%MEM\\\",\\\"RSS(MB)\\\",\\\"COMMAND\\\"; next} NR\u003c=11{printf \\\"%-8s %-6s %-10.1f %s\\\\n\\\",\"'$1,$2,$3/1024,$4}'\"'\"",
-          "cwd": "/Users/lizhongxuan/.aiops_codex",
-          "createdAt": "2026-03-24T17:04:51+08:00"
-        },
-        {
-          "id": "grant-dcdc90c0b8fc018f",
-          "hostId": "server-local",
-          "type": "command",
-          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'top -l 1 -o mem -n 10 | head -n 25'",
-          "command": "/bin/zsh -lc 'top -l 1 -o mem -n 10 | head -n 25'",
-          "cwd": "/Users/lizhongxuan/.aiops_codex",
-          "createdAt": "2026-03-24T17:05:16+08:00"
-        },
-        {
-          "id": "grant-247d058f5bb9c330",
-          "hostId": "server-local",
-          "type": "command",
-          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'top -l 1 -s 0 | head -n 25'",
-          "command": "/bin/zsh -lc 'top -l 1 -s 0 | head -n 25'",
-          "cwd": "/Users/lizhongxuan/.aiops_codex",
-          "createdAt": "2026-03-24T17:06:28+08:00"
+          "createdAt": "2026-03-24T18:20:30+08:00"
         }
       ],
       "createdAt": "2026-03-24T12:24:57+08:00",
-      "lastActivityAt": "2026-03-24T17:06:35+08:00"
+      "lastActivityAt": "2026-03-24T18:22:26+08:00"
     },
     "sess-23ec6c0e11a354b2": {
       "id": "sess-23ec6c0e11a354b2",
@@ -1175,7 +1130,7 @@
         "sess-2203add776c38e48": {}
       },
       "createdAt": "2026-03-24T12:30:10+08:00",
-      "updatedAt": "2026-03-24T17:04:30+08:00"
+      "updatedAt": "2026-03-24T18:22:12+08:00"
     },
     "auth-sess-23ec6c0e11a354b2": {
       "id": "auth-sess-23ec6c0e11a354b2",
@@ -2118,7 +2073,7 @@
       "labels": {
         "env": "dev"
       },
-      "lastHeartbeat": "2026-03-24T17:06:57+08:00"
+      "lastHeartbeat": "2026-03-24T18:22:57+08:00"
     },
     "server-local": {
       "id": "server-local",
