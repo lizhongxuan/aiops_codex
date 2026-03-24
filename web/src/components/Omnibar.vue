@@ -180,7 +180,7 @@ function getCaretCoordinates(element, position) {
 
 <style scoped>
 .omnibar-wrapper {
-  max-width: 860px;
+  max-width: 900px;
   margin: 0 auto;
   background: var(--omnibar-bg);
   border: 1px solid var(--border-color);

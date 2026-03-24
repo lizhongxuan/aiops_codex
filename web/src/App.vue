@@ -1,21 +1,17 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { useAppStore } from "./store";
-import CardItem from "./components/CardItem.vue";
 import LoginModal from "./components/LoginModal.vue";
 import HostModal from "./components/HostModal.vue";
-import Omnibar from "./components/Omnibar.vue";
-import { MessageSquarePlusIcon, AppWindowIcon, SettingsIcon, UserCircleIcon, ServerIcon, PanelsTopLeftIcon, BotIcon } from "lucide-vue-next";
+import { MessageSquarePlusIcon, AppWindowIcon, SettingsIcon, UserCircleIcon, ServerIcon, PanelsTopLeftIcon, TerminalIcon } from "lucide-vue-next";
 
 const store = useAppStore();
+const router = useRouter();
 
 const isLoginModalOpen = ref(false);
 const isHostModalOpen = ref(false);
 const isMcpDrawerOpen = ref(false);
-
-const composerMessage = ref("");
-const scrollContainer = ref(null);
-let isUserScrolling = false;
 
 function toggleMcpDrawer() {
   isMcpDrawerOpen.value = !isMcpDrawerOpen.value;
@@ -31,21 +27,11 @@ const authBadgeLabel = computed(() => {
   return "未登录";
 });
 
-const composerPlaceholder = computed(() => {
-  if (!store.snapshot.auth.connected) return "请先登录 GPT 账号后再开始对话";
-  if (!store.snapshot.config.codexAlive) return "Codex app-server 当前不可用";
-  if (!store.selectedHost.executable) return "当前主机仅展示，不支持执行";
-  if (store.selectedHost.status !== "online") return "当前主机离线，暂时不可执行";
-  return "Ask Codex to build something";
-});
-
 async function startNewThread() {
   if (store.sending) return;
   const ok = await store.resetThread();
   if (!ok) return;
-  composerMessage.value = "";
   store.errorMessage = "";
-  isUserScrolling = false;
 }
 
 function handleGlobalKeydown(e) {
@@ -55,81 +41,9 @@ function handleGlobalKeydown(e) {
   }
 }
 
-async function sendMessage() {
-  if (!store.canSend || !composerMessage.value.trim()) return;
-  
-  store.sending = true;
-  store.errorMessage = "";
-  
-  try {
-    const response = await fetch("/api/v1/chat/message", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: composerMessage.value,
-        hostId: store.snapshot.selectedHostId,
-      }),
-    });
-    
-    if (!response.ok) {
-      const data = await response.json();
-      store.errorMessage = data.error || "message send failed";
-    } else {
-      composerMessage.value = "";
-      // Reset scroll lock when sending message
-      isUserScrolling = false;
-    }
-  } catch (e) {
-    store.errorMessage = "Network error";
-  } finally {
-    store.sending = false;
-  }
+function openTerminal() {
+  router.push(`/terminal/${store.snapshot.selectedHostId}`);
 }
-
-async function decideApproval({ approvalId, decision }) {
-  try {
-    const response = await fetch(`/api/v1/approvals/${approvalId}/decision`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision }),
-    });
-    if (!response.ok) {
-      const data = await response.json();
-      store.errorMessage = data.error || "approval failed";
-    } else {
-      isUserScrolling = false; // Scroll down after approval
-    }
-  } catch(e) {
-    console.error(e);
-  }
-}
-
-function handleScroll(e) {
-  const el = e.target;
-  // If user scrolls up from the bottom more than 10px, freeze auto-scroll
-  if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
-    isUserScrolling = true;
-  } else {
-    isUserScrolling = false;
-  }
-}
-
-// Smart Auto-Scroll
-watch(
-  () => store.snapshot.cards,
-  () => {
-    if (!isUserScrolling) {
-      nextTick(() => {
-        if (scrollContainer.value) {
-          scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight;
-        }
-      });
-    }
-  },
-  { deep: true }
-);
 
 onMounted(() => {
   store.fetchState();
@@ -160,11 +74,25 @@ onBeforeUnmount(() => {
       <div class="sidebar-scroll">
         <div class="nav-group">
           <div class="nav-group-title">线程</div>
-          <button class="nav-item active">
+          <button class="nav-item" :class="{ active: $route.name === 'chat' }" @click="router.push('/')">
             <AppWindowIcon size="16" />
             <div class="nav-item-content">
               <span class="nav-item-title">Codex Assistant</span>
               <span class="nav-item-time">Active</span>
+            </div>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-group-title">终端</div>
+          <button class="nav-item" :class="{ active: $route.name === 'terminal' }" @click="openTerminal">
+            <TerminalIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">{{ store.selectedHost.name }}</span>
+              <span class="nav-item-time">
+                <span class="pill-dot-inline" :class="store.selectedHost.status"></span>
+                {{ store.selectedHost.status }}
+              </span>
             </div>
           </button>
         </div>
@@ -187,6 +115,11 @@ onBeforeUnmount(() => {
         </div>
         
         <div class="header-right">
+          <button class="header-pill" @click="openTerminal" title="打开终端">
+            <TerminalIcon size="14" />
+            <span class="pill-text">终端</span>
+          </button>
+
           <button class="header-pill" @click="isHostModalOpen = true">
             <ServerIcon size="14" />
             <span class="pill-text">{{ store.selectedHost.name }}</span>
@@ -204,44 +137,8 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div class="chat-container" ref="scrollContainer" @scroll="handleScroll">
-        <div class="chat-stream-inner">
-          <div v-if="store.loading" class="chat-banner loading-banner">
-            <span class="spinner"></span> 正在初始化...
-          </div>
-          
-          <div v-if="!store.snapshot.cards.length && !store.loading" class="empty-state-canvas">
-            <BotIcon size="48" class="empty-icon" />
-            <h2>What can I help you build?</h2>
-            <p>I can help you write code, manage servers, execute commands, and orchestrate complex tasks.</p>
-          </div>
-          
-          <p v-if="store.errorMessage" class="chat-banner error">{{ store.errorMessage }}</p>
-
-          <div class="chat-stream">
-            <div
-              v-for="card in store.snapshot.cards"
-              :key="card.id"
-              class="stream-row"
-              :class="{
-                'row-user': card.type === 'MessageCard' && card.role === 'user',
-                'row-assistant': !(card.type === 'MessageCard' && card.role === 'user'),
-              }"
-            >
-              <CardItem :card="card" @approval="decideApproval" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Omnibar Base -->
-      <footer class="omnibar-dock">
-         <Omnibar 
-           v-model="composerMessage"
-           :placeholder="composerPlaceholder"
-           @send="sendMessage"
-         />
-      </footer>
+      <!-- Router View: ChatPage or TerminalPage -->
+      <router-view />
     </main>
 
     <!-- Right Drawer: MCP & Core Panel -->
@@ -259,3 +156,16 @@ onBeforeUnmount(() => {
     <HostModal v-if="isHostModalOpen" @close="isHostModalOpen = false" />
   </div>
 </template>
+
+<style scoped>
+.pill-dot-inline {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.pill-dot-inline.online { background: #22c55e; }
+.pill-dot-inline.offline { background: #94a3b8; }
+</style>

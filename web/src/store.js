@@ -21,6 +21,29 @@ export const useAppStore = defineStore("app", {
         codexAlive: false,
       },
     },
+    /* Turn-level and connection-level runtime state */
+    runtime: {
+      turn: {
+        active: false,
+        phase: "idle", // idle | thinking | planning | waiting_approval | executing | finalizing | completed | failed
+        hostId: "",
+        startedAt: null,
+      },
+      codex: {
+        status: "connected", // connected | reconnecting | disconnected | stopped
+        retryAttempt: 0,
+        retryMax: 5,
+        lastError: "",
+      },
+      activity: {
+        filesViewed: 0,
+        searchCount: 0,
+        listCount: 0,
+        commandsRun: 0,
+        currentReadingFile: "",
+        viewedFiles: [],
+      },
+    },
     authForm: {
       mode: "chatgpt",
       apiKey: "",
@@ -69,7 +92,27 @@ export const useAppStore = defineStore("app", {
       this.snapshot.cards = data.cards || [];
       this.snapshot.approvals = data.approvals || [];
       this.snapshot.config = data.config || this.snapshot.config;
+      /* Merge runtime if server sends it */
+      if (data.runtime) {
+        if (data.runtime.turn) Object.assign(this.runtime.turn, data.runtime.turn);
+        if (data.runtime.codex) Object.assign(this.runtime.codex, data.runtime.codex);
+        if (data.runtime.activity) Object.assign(this.runtime.activity, data.runtime.activity);
+      }
       this.loading = false;
+    },
+    setTurnPhase(phase) {
+      this.runtime.turn.active = phase !== "idle" && phase !== "completed" && phase !== "failed";
+      this.runtime.turn.phase = phase;
+    },
+    resetActivity() {
+      this.runtime.activity = {
+        filesViewed: 0,
+        searchCount: 0,
+        listCount: 0,
+        commandsRun: 0,
+        currentReadingFile: "",
+        viewedFiles: [],
+      };
     },
     async fetchState() {
       try {
@@ -92,6 +135,8 @@ export const useAppStore = defineStore("app", {
           return false;
         }
         this.errorMessage = "";
+        this.resetActivity();
+        this.setTurnPhase("idle");
         await this.fetchState();
         return true;
       } catch (e) {
@@ -104,9 +149,13 @@ export const useAppStore = defineStore("app", {
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
       this.wsStatus = "connecting";
+      this.runtime.codex.status = "reconnecting";
 
       socket.onopen = () => {
         this.wsStatus = "connected";
+        this.runtime.codex.status = "connected";
+        this.runtime.codex.retryAttempt = 0;
+        this.runtime.codex.lastError = "";
       };
 
       socket.onmessage = (event) => {
@@ -119,11 +168,20 @@ export const useAppStore = defineStore("app", {
 
       socket.onclose = () => {
         this.wsStatus = "disconnected";
+        this.runtime.codex.retryAttempt += 1;
+
+        if (this.runtime.codex.retryAttempt > this.runtime.codex.retryMax) {
+          this.runtime.codex.status = "stopped";
+          this.wsStatus = "error";
+          return;
+        }
+        this.runtime.codex.status = "reconnecting";
         window.setTimeout(() => this.connectWs(), 1000);
       };
 
       socket.onerror = () => {
         this.wsStatus = "error";
+        this.runtime.codex.lastError = "connection error";
       };
       
       this._socket = socket;

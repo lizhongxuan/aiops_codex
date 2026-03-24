@@ -79,16 +79,16 @@ const avatarIcon = computed(() => {
 }
 
 .message-text {
-  font-size: 15px;
-  line-height: 1.6;
+  font-size: var(--text-body, 15px);
+  line-height: var(--line-height-body, 1.7);
   color: #0f172a;
   white-space: pre-wrap;
 }
 
 .is-user .message-text {
-  background: #f1f5f9;
-  padding: 12px 16px;
-  border-radius: 20px 20px 4px 20px;
+  background: #f3f4f6;
+  padding: 14px 20px;
+  border-radius: var(--radius-card, 16px);
   color: #0f172a;
   display: inline-block;
 }
@@ -105,6 +105,7 @@ const avatarIcon = computed(() => {
   font-size: 13px;
   font-style: italic;
 }
+
 
 .spinner-small {
   display: inline-block;

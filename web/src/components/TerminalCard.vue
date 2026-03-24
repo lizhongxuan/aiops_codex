@@ -2,7 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, watch, computed } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ChevronRightIcon, ChevronDownIcon, TerminalIcon, CheckIcon } from "lucide-vue-next";
+import { ChevronRightIcon, ChevronDownIcon, TerminalIcon, CheckIcon, XIcon } from "lucide-vue-next";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps({
@@ -21,12 +21,22 @@ const isComplete = computed(() => {
   return props.card.status === "completed" || props.card.status === "error";
 });
 
+const isSuccess = computed(() => props.card.status === "completed");
+const isFailed = computed(() => props.card.status === "error" || props.card.status === "failed");
+
 const hasOutput = computed(() => !!props.card.output);
+
+/* Human-readable duration */
+const durationLabel = computed(() => {
+  const ms = props.card.durationMs;
+  if (!ms) return "";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(0)}s`;
+});
 
 function toggleExpand() {
   if (hasOutput.value) {
     isExpanded.value = !isExpanded.value;
-    // Need to let DOM render before fitting
     if (isExpanded.value) {
       setTimeout(() => fitAddon?.fit(), 10);
     }
@@ -55,13 +65,13 @@ function initTerminal() {
   term.loadAddon(fitAddon);
   term.open(terminalContainer.value);
   fitAddon.fit();
-  
-  // Normalize output with xterm formatting
-  const formattedOutput = props.card.output.replace(/\n/g, "\r\n");
+
+  const formattedOutput = props.card.output
+    .replace(/\n?\[?exit code: 0\]?\n?$/i, "")
+    .replace(/\n/g, "\r\n");
   term.write(formattedOutput);
 }
 
-// Watch for DOM creation or Output changes
 watch(
   () => isExpanded.value,
   (expanded) => {
@@ -76,15 +86,15 @@ watch(
   (newOutput) => {
     if (term) {
       term.clear();
-      term.write(newOutput ? newOutput.replace(/\n/g, "\r\n") : "");
+      const cleanOutput = newOutput ? newOutput.replace(/\n?\[?exit code: 0\]?\n?$/i, "").replace(/\n/g, "\r\n") : "";
+      term.write(cleanOutput);
       fitAddon?.fit();
     }
   }
 );
 
 onMounted(() => {
-  // If completed, we auto-collapse it on mount according to user request (minimal state)
-  if (isComplete.value) {
+  if (isComplete.value && isSuccess.value) {
     isExpanded.value = false;
   } else {
     setTimeout(initTerminal, 10);
@@ -99,23 +109,36 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="terminal-card" :class="{'minimal': !isExpanded}">
+  <!-- Completed success: collapsed timeline summary line -->
+  <div v-if="isComplete && isSuccess && !isExpanded" class="timeline-summary" @click="toggleExpand">
+    <div class="timeline-left">
+      <CheckIcon size="14" class="timeline-check" />
+      <span class="timeline-label">已运行 <code>{{ card.command }}</code></span>
+    </div>
+    <div class="timeline-divider"></div>
+    <span class="timeline-duration" v-if="durationLabel">已处理 {{ durationLabel }}</span>
+  </div>
+
+  <!-- Full terminal card (running / failed / manually expanded) -->
+  <div v-else class="terminal-card" :class="{'minimal': isComplete && !isExpanded}">
     <div class="term-header" @click="toggleExpand">
       <div class="term-title-group">
         <component :is="isExpanded ? ChevronDownIcon : ChevronRightIcon" size="16" class="icon-carat" />
         <TerminalIcon size="14" class="icon-term" />
         <span class="term-command mono">{{ card.command || "Executing..." }}</span>
       </div>
-      
+
       <div class="term-meta">
         <span class="term-cwd" v-if="card.cwd">{{ card.cwd }}</span>
-        <span class="term-status-badge success" v-if="card.status === 'completed'">
+        <span class="term-status-badge success" v-if="isSuccess">
           <CheckIcon size="12" /> Success
         </span>
-        <span class="term-status-badge error" v-else-if="card.status === 'error'">Failed</span>
+        <span class="term-status-badge error" v-if="isFailed">
+          <XIcon size="12" /> Failed
+        </span>
       </div>
     </div>
-    
+
     <div class="term-body" v-if="isExpanded && hasOutput">
       <div class="xterm-wrapper" ref="terminalContainer"></div>
     </div>
@@ -123,15 +146,63 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.terminal-card {
-  border-radius: 12px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  overflow: hidden;
-  margin-top: 8px;
-  margin-left: 48px; /* align with message bubble */
+/* ====== Timeline summary line (collapsed success) ====== */
+.timeline-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  margin-left: 48px;
+  cursor: pointer;
   max-width: 800px;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+}
+
+.timeline-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-meta, #9ca3af);
+  font-size: var(--text-meta-size, 12px);
+  white-space: nowrap;
+}
+
+.timeline-check {
+  color: #22c55e;
+}
+
+.timeline-label {
+  color: #6b7280;
+}
+
+.timeline-label code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #374151;
+  font-weight: 500;
+}
+
+.timeline-divider {
+  flex: 1;
+  height: 1px;
+  background: #e5e7eb;
+  min-width: 32px;
+}
+
+.timeline-duration {
+  font-size: var(--text-meta-size, 12px);
+  color: var(--text-meta, #9ca3af);
+  white-space: nowrap;
+}
+
+/* ====== Full terminal card ====== */
+.terminal-card {
+  border-radius: var(--radius-card, 16px);
+  background: #ffffff;
+  border: 1px solid var(--border-card, #e5e7eb);
+  overflow: hidden;
+  margin-top: 4px;
+  margin-left: 48px;
+  max-width: 800px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
   transition: all 0.2s;
 }
 
@@ -146,7 +217,7 @@ onBeforeUnmount(() => {
 }
 
 .term-header {
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -222,7 +293,7 @@ onBeforeUnmount(() => {
 
 .term-body {
   background: #0f172a;
-  padding: 12px;
+  padding: 8px;
   border-top: 1px solid #1e293b;
 }
 

@@ -1,6 +1,6 @@
 <script setup>
-import { computed } from "vue";
-import { CheckCircle2Icon, CircleIcon, Loader2Icon } from "lucide-vue-next";
+import { ref, computed } from "vue";
+import { CheckCircle2Icon, CircleIcon, Loader2Icon, ListTodoIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-vue-next";
 
 const props = defineProps({
   card: {
@@ -9,10 +9,20 @@ const props = defineProps({
   },
 });
 
+const isExpanded = ref(true);
+
 const completedCount = computed(() => {
   return props.card.items?.filter((i) => i.status === "completed").length || 0;
 });
 const totalCount = computed(() => props.card.items?.length || 0);
+
+const summaryText = computed(() => {
+  return `共 ${totalCount.value} 个任务，已完成 ${completedCount.value} 个`;
+});
+
+function toggleExpand() {
+  isExpanded.value = !isExpanded.value;
+}
 
 function getIconForStatus(status) {
   if (status === "completed") return CheckCircle2Icon;
@@ -23,21 +33,25 @@ function getIconForStatus(status) {
 
 <template>
   <div class="plan-card">
-    <div class="plan-header">
-      <span class="plan-title">Task Plan</span>
-      <span class="plan-stats">Total {{ totalCount }} tasks, {{ completedCount }} completed</span>
+    <div class="plan-header" @click="toggleExpand">
+      <div class="plan-left">
+        <ListTodoIcon size="16" class="plan-icon" />
+        <span class="plan-summary">{{ summaryText }}</span>
+      </div>
+      <component :is="isExpanded ? ChevronDownIcon : ChevronRightIcon" size="16" class="plan-toggle" />
     </div>
-    
-    <div class="plan-body">
-      <div 
-        v-for="(item, index) in card.items" 
+
+    <div class="plan-body" v-if="isExpanded">
+      <div
+        v-for="(item, index) in card.items"
         :key="index"
         class="plan-item"
         :class="item.status"
       >
         <div class="item-icon" :class="item.status">
-          <component :is="getIconForStatus(item.status)" size="18" :class="{'spin': item.status === 'inProgress'}" />
+          <component :is="getIconForStatus(item.status)" size="16" :class="{'spin': item.status === 'inProgress'}" />
         </div>
+        <span class="item-number">{{ index + 1 }}.</span>
         <div class="item-text">{{ item.step }}</div>
       </div>
     </div>
@@ -46,53 +60,70 @@ function getIconForStatus(status) {
 
 <style scoped>
 .plan-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  border: 1px solid var(--border-card, #e5e7eb);
+  border-radius: var(--radius-card, 16px);
   background: #ffffff;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.02);
-  margin-top: 8px;
-  margin-left: 48px; /* align with message body */
-  max-width: 600px;
+  margin-top: 4px;
+  margin-left: 48px;
+  max-width: 640px;
 }
 
 .plan-header {
-  padding: 12px 16px;
-  background: #f8fafc;
-  border-bottom: 1px solid #f1f5f9;
+  padding: 10px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
 }
 
-.plan-title {
+.plan-header:hover {
+  background: #fafafa;
+}
+
+.plan-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.plan-icon {
+  color: #6b7280;
+}
+
+.plan-summary {
+  font-size: 14px;
   font-weight: 600;
-  color: #334155;
+  color: #374151;
 }
 
-.plan-stats {
-  color: #64748b;
+.plan-toggle {
+  color: #9ca3af;
 }
 
 .plan-body {
-  padding: 8px 16px;
+  padding: 4px 14px 12px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .plan-item {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 8px 0;
+  gap: 10px;
+  padding: 10px 0;
   font-size: 14px;
+  line-height: 1.6;
 }
 
 .item-icon {
   margin-top: 2px;
-  color: #cbd5e1;
+  color: #d1d5db;
+  flex-shrink: 0;
 }
 
 .item-icon.inProgress {
@@ -103,14 +134,21 @@ function getIconForStatus(status) {
   color: #22c55e;
 }
 
+.item-number {
+  color: #9ca3af;
+  font-weight: 500;
+  min-width: 20px;
+  flex-shrink: 0;
+}
+
 .item-text {
-  color: #334155;
-  line-height: 1.5;
+  color: #374151;
+  line-height: 1.6;
 }
 
 .plan-item.completed .item-text {
   text-decoration: line-through;
-  color: #94a3b8;
+  color: #9ca3af;
 }
 
 .plan-item.inProgress .item-text {
@@ -122,7 +160,7 @@ function getIconForStatus(status) {
   animation: spin 1s linear infinite;
 }
 
-@keyframes spin { 
+@keyframes spin {
   to { transform: rotate(360deg); }
 }
 </style>

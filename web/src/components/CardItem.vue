@@ -5,6 +5,11 @@ import PlanCard from "./PlanCard.vue";
 import TerminalCard from "./TerminalCard.vue";
 import CodeCard from "./CodeCard.vue";
 import AuthCard from "./AuthCard.vue";
+import ThinkingCard from "./ThinkingCard.vue";
+import NoticeCard from "./NoticeCard.vue";
+import ErrorCard from "./ErrorCard.vue";
+import ChoiceCard from "./ChoiceCard.vue";
+import ResultSummaryCard from "./ResultSummaryCard.vue";
 
 const props = defineProps({
   card: {
@@ -13,45 +18,97 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["approval"]);
+const emit = defineEmits(["approval", "choice", "retry", "refresh"]);
 
 function handleApproval(payload) {
   emit("approval", payload);
 }
 
+function handleChoice(payload) {
+  emit("choice", payload);
+}
+
+/* Backward-compatible type detection for StepCard */
 const isTerminal = computed(() => {
-  return props.card.type === "StepCard" && !!props.card.command;
+  return (
+    props.card.type === "CommandCard" ||
+    (props.card.type === "StepCard" && !!props.card.command)
+  );
 });
 
 const isCode = computed(() => {
-  return props.card.type === "StepCard" && !props.card.command && props.card.changes?.length > 0;
+  return (
+    props.card.type === "FileChangeCard" ||
+    (props.card.type === "StepCard" && !props.card.command && props.card.changes?.length > 0)
+  );
+});
+
+const isMessage = computed(() => {
+  return (
+    props.card.type === "MessageCard" ||
+    props.card.type === "UserMessageCard" ||
+    props.card.type === "AssistantMessageCard" ||
+    (props.card.type === "StepCard" && !isTerminal.value && !isCode.value)
+  );
 });
 </script>
 
 <template>
   <div class="card-root">
-    <template v-if="card.type === 'MessageCard' || (card.type === 'StepCard' && !isTerminal && !isCode)">
-      <MessageCard :card="card" />
+    <!-- ThinkingCard -->
+    <template v-if="card.type === 'ThinkingCard'">
+      <ThinkingCard :card="card" />
     </template>
-    
+
+    <template v-else-if="isMessage">
+      <div v-if="card.text === 'status: completed'" class="task-completed-divider">
+        ---- 本次任务执行完毕 ----
+      </div>
+      <MessageCard v-else :card="card" />
+    </template>
+
+    <!-- PlanCard -->
     <template v-else-if="card.type === 'PlanCard'">
       <PlanCard :card="card" />
     </template>
-    
+
+    <!-- Approval cards -->
     <template v-else-if="card.type === 'CommandApprovalCard' || card.type === 'FileChangeApprovalCard'">
       <AuthCard :card="card" @approval="handleApproval" />
     </template>
-    
+
+    <!-- ChoiceCard -->
+    <template v-else-if="card.type === 'ChoiceCard'">
+      <ChoiceCard :card="card" @choice="handleChoice" />
+    </template>
+
+    <!-- Terminal / Command card -->
     <template v-else-if="isTerminal">
       <TerminalCard :card="card" />
     </template>
-    
+
+    <!-- Code / File change card -->
     <template v-else-if="isCode">
       <CodeCard :card="card" />
     </template>
-    
+
+    <!-- ResultSummaryCard -->
+    <template v-else-if="card.type === 'ResultSummaryCard'">
+      <ResultSummaryCard :card="card" />
+    </template>
+
+    <!-- NoticeCard -->
+    <template v-else-if="card.type === 'NoticeCard'">
+      <NoticeCard :card="card" />
+    </template>
+
+    <!-- ErrorCard -->
+    <template v-else-if="card.type === 'ErrorCard'">
+      <ErrorCard :card="card" @retry="emit('retry', $event)" @refresh="emit('refresh')" />
+    </template>
+
+    <!-- Fallback generic renderer -->
     <template v-else>
-      <!-- Fallback generic renderer -->
       <div class="generic-card">
         <p v-if="card.text">{{ card.text }}</p>
         <pre v-if="card.output" class="mono">{{ card.output }}</pre>
@@ -66,15 +123,22 @@ const isCode = computed(() => {
 }
 
 .generic-card {
-  margin-top: 8px;
+  margin-top: 4px;
   margin-left: 48px;
-  padding: 16px;
+  padding: 12px;
   background: white;
   border-radius: 12px;
   border: 1px dashed #cbd5e1;
-  font-size: 14px;
+  font-size: 13px;
 }
 .mono {
-  font-family: monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.task-completed-divider {
+  text-align: center;
+  color: #94a3b8;
+  font-size: 12px;
+  margin: 16px 0;
+  width: 100%;
 }
 </style>

@@ -114,17 +114,17 @@
       },
       "approvalGrants": [
         {
-          "id": "grant-e956610b353d1542",
+          "id": "grant-fef6bc5bb9774f15",
           "hostId": "server-local",
           "type": "command",
-          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'df -h'",
-          "command": "/bin/zsh -lc 'df -h'",
+          "fingerprint": "command|server-local|/Users/lizhongxuan/.aiops_codex|/bin/zsh -lc 'df -h .'",
+          "command": "/bin/zsh -lc 'df -h .'",
           "cwd": "/Users/lizhongxuan/.aiops_codex",
-          "createdAt": "2026-03-24T18:20:30+08:00"
+          "createdAt": "2026-03-24T19:01:10+08:00"
         }
       ],
       "createdAt": "2026-03-24T12:24:57+08:00",
-      "lastActivityAt": "2026-03-24T18:22:26+08:00"
+      "lastActivityAt": "2026-03-24T19:09:55+08:00"
     },
     "sess-23ec6c0e11a354b2": {
       "id": "sess-23ec6c0e11a354b2",
@@ -1130,7 +1130,7 @@
         "sess-2203add776c38e48": {}
       },
       "createdAt": "2026-03-24T12:30:10+08:00",
-      "updatedAt": "2026-03-24T18:22:12+08:00"
+      "updatedAt": "2026-03-24T19:08:23+08:00"
     },
     "auth-sess-23ec6c0e11a354b2": {
       "id": "auth-sess-23ec6c0e11a354b2",
@@ -2073,7 +2073,7 @@
       "labels": {
         "env": "dev"
       },
-      "lastHeartbeat": "2026-03-24T18:22:57+08:00"
+      "lastHeartbeat": "2026-03-24T19:09:57+08:00"
     },
     "server-local": {
       "id": "server-local",

@@ -1,6 +1,6 @@
 <script setup>
-import { ref } from "vue";
-import { ShieldAlertIcon } from "lucide-vue-next";
+import { ref, computed } from "vue";
+import { ShieldAlertIcon, ChevronDownIcon, MonitorIcon, ShieldIcon } from "lucide-vue-next";
 
 const props = defineProps({
   card: {
@@ -11,239 +11,220 @@ const props = defineProps({
 
 const emit = defineEmits(["approval"]);
 
-const decision = ref("accept");
+const selectedIndex = ref(0);
 
-function onSubmit() {
+const isCommand = computed(() => props.card.type === 'CommandApprovalCard' || !!props.card.command);
+
+const options = computed(() => {
+  if (isCommand.value) {
+    const cmdPrefix = (props.card.command || '').split(' ')[0];
+    return [
+      { value: "accept", label: "是" },
+      { value: "accept_session", label: `是，且对于以后 ${cmdPrefix} 开头的命令不再询问` },
+      { value: "decline", label: "否，请告知 Codex 如何调整" },
+    ];
+  }
+  return [
+    { value: "accept", label: "是，允许此次修改" },
+    { value: "decline", label: "否，请告知 Codex 如何调整" },
+  ];
+});
+
+function onSelect(idx) {
+  selectedIndex.value = idx;
   if (!props.card.approval?.requestId) return;
   emit("approval", {
     approvalId: props.card.approval.requestId,
-    decision: decision.value,
+    decision: options.value[idx].value,
   });
 }
 </script>
 
 <template>
   <div class="auth-card">
-    <div class="auth-header">
-      <ShieldAlertIcon size="24" class="auth-icon" />
-      <h3 class="auth-title">Authorization Required</h3>
+    <!-- Intent header -->
+    <div class="auth-intent">
+      <ShieldAlertIcon size="18" class="intent-icon" />
+      <span class="intent-text">{{ card.text || '要执行以下操作，你要允许吗？' }}</span>
     </div>
-    
-    <div class="auth-body">
-      <p class="auth-text" v-if="card.text">{{ card.text }}</p>
-      
-      <!-- Command or Code Preview -->
-      <div class="auth-preview" v-if="card.command || card.changes?.length">
-        <div v-if="card.cwd" class="cwd-badge">DIR: {{ card.cwd }}</div>
-        <pre v-if="card.command" class="mono">{{ card.command }}</pre>
-        
-        <div v-if="card.changes?.length" class="changes-list">
-          <div v-for="change in card.changes" :key="change.path" class="change-item">
-            <span class="change-kind badge">{{ change.kind }}</span>
-            <span class="change-path mono">{{ change.path }}</span>
-            <pre v-if="change.diff" class="diff-block mono">{{ change.diff }}</pre>
-          </div>
+
+    <!-- Command / Code preview -->
+    <div class="auth-preview" v-if="card.command || card.changes?.length">
+      <div v-if="card.cwd" class="cwd-badge">{{ card.cwd }}</div>
+      <pre v-if="card.command" class="command-code">{{ card.command }}</pre>
+
+      <div v-if="card.changes?.length" class="changes-list">
+        <div v-for="change in card.changes" :key="change.path" class="change-item">
+          <span class="change-kind">{{ change.kind }}</span>
+          <span class="change-path">{{ change.path }}</span>
         </div>
       </div>
-      
-      <!-- Actions: Only show if pending -->
-      <div v-if="card.status === 'pending' && card.approval" class="auth-form">
-        <p class="auth-question">Do you want to proceed with this action?</p>
-        
-        <div class="radio-group">
-          <label class="radio-label">
-            <input type="radio" v-model="decision" value="accept" name="decision" />
-            <span class="radio-text">Yes, run this once</span>
-          </label>
-          <label class="radio-label">
-            <input type="radio" v-model="decision" value="accept_session" name="decision" />
-            <span class="radio-text">Always allow in this session</span>
-          </label>
-          <label class="radio-label">
-            <input type="radio" v-model="decision" value="decline" name="decision" />
-            <span class="radio-text">No, decline</span>
-          </label>
-        </div>
-        
-        <button class="submit-btn" :class="{ 'btn-danger': decision === 'decline' }" @click="onSubmit">
-          {{ decision === 'decline' ? 'Decline Execution' : 'Approve Execution' }}
-        </button>
-      </div>
-      
-      <div v-else class="auth-resolved">
-        This request has been resolved ({{ card.status }}).
-      </div>
+    </div>
+
+    <!-- Radio options (pending only) -->
+    <div v-if="card.status === 'pending' && card.approval" class="auth-options">
+      <label
+        v-for="(opt, idx) in options"
+        :key="opt.value"
+        class="option-row"
+        :class="{ selected: selectedIndex === idx }"
+        @click="onSelect(idx)"
+      >
+        <span class="option-number">{{ idx + 1 }}。</span>
+        <span class="option-label">{{ opt.label }}</span>
+        <span class="option-arrows" v-if="selectedIndex === idx">↵</span>
+      </label>
+    </div>
+
+
+
+    <!-- Resolved state -->
+    <div v-if="card.status !== 'pending'" class="auth-resolved">
+      {{ card.status === 'accepted' || card.status === 'accepted_for_session' ? '已批准执行' : '已拒绝' }}
     </div>
   </div>
 </template>
 
 <style scoped>
 .auth-card {
-  border-radius: 16px;
-  background: #fffaf5;
-  border: 1px solid #fed7aa;
+  border-radius: var(--radius-card, 16px);
+  background: #ffffff;
+  border: 1px solid var(--border-card, #e5e7eb);
   overflow: hidden;
   margin-top: 12px;
   margin-left: 48px;
-  max-width: 680px;
-  box-shadow: 0 4px 16px rgba(234, 88, 12, 0.08); /* Orange subtle shadow */
+  max-width: 720px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
-.auth-header {
-  padding: 16px 20px;
-  background: #fff7ed;
-  border-bottom: 1px solid #ffedd5;
+/* Intent header */
+.auth-intent {
+  padding: 12px 16px;
   display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.auth-icon {
-  color: #ea580c;
-}
-
-.auth-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #9a3412;
-}
-
-.auth-body {
-  padding: 20px;
-}
-
-.auth-text {
-  margin: 0 0 16px;
+  align-items: flex-start;
+  gap: 10px;
   font-size: 14px;
   line-height: 1.6;
-  color: #431407;
+  color: #374151;
+  font-weight: 600;
 }
 
+.intent-icon {
+  color: #f59e0b;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* Command preview */
 .auth-preview {
-  background: #1e293b;
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 20px;
-  color: #f8fafc;
-  font-size: 13px;
+  margin: 0 20px 16px;
+  background: #f3f4f6;
+  border-radius: 10px;
+  padding: 14px 16px;
   overflow-x: auto;
 }
 
 .cwd-badge {
-  display: inline-block;
-  font-size: 10px;
-  color: #94a3b8;
-  margin-bottom: 8px;
-  text-transform: uppercase;
-}
-
-.mono {
+  font-size: 11px;
+  color: #6b7280;
+  margin-bottom: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-pre.mono {
+.command-code {
   margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  color: #1f2937;
   white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.changes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .change-item {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #334155;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
 }
 
-.badge {
+.change-kind {
   font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
   padding: 2px 6px;
   border-radius: 4px;
-  background: #334155;
-  color: #cbd5e1;
-  text-transform: uppercase;
-  margin-right: 8px;
+  background: #e5e7eb;
+  color: #6b7280;
 }
 
 .change-path {
-  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #374151;
 }
 
-.diff-block {
-  margin-top: 8px;
-  color: #e2e8f0;
-}
-
-.auth-form {
-  background: white;
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-}
-
-.auth-question {
-  margin: 0 0 12px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.radio-group {
+/* Radio options */
+.auth-options {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-bottom: 16px;
+  padding: 0 20px 12px;
+  gap: 2px;
 }
 
-.radio-label {
+.option-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  padding: 10px 14px;
   cursor: pointer;
-  font-size: 14px;
-  color: #334155;
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.4;
+  min-height: 38px;
+  transition: background 0.12s;
+  user-select: none;
 }
 
-.radio-label input[type="radio"] {
-  width: 16px;
-  height: 16px;
-  accent-color: #ea580c;
+.option-row:hover {
+  background: #f9fafb;
 }
 
-.submit-btn {
-  width: 100%;
-  padding: 12px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  border: none;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-  background: #0f172a;
-  color: white;
+.option-row.selected {
+  background: #f3f4f6;
+  font-weight: 500;
+  border: 1px solid #d1d5db;
 }
 
-.submit-btn:hover {
-  background: #1e293b;
+.option-number {
+  color: #6b7280;
+  font-weight: 500;
+  min-width: 24px;
 }
 
-.submit-btn.btn-danger {
-  background: #ef4444;
+.option-label {
+  flex: 1;
 }
 
-.submit-btn.btn-danger:hover {
-  background: #dc2626;
+.option-arrows {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-left: auto;
 }
 
-.submit-btn:active {
-  transform: translateY(1px);
-}
 
+
+/* Resolved */
 .auth-resolved {
-  background: #f1f5f9;
-  padding: 12px;
-  border-radius: 8px;
+  padding: 14px 20px;
   text-align: center;
-  color: #64748b;
+  color: #6b7280;
   font-size: 13px;
   font-weight: 500;
+  background: #f9fafb;
 }
 </style>
