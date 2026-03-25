@@ -17,6 +17,7 @@ let editor = null;
 const changes = computed(() => props.card.changes || []);
 const selectedChange = computed(() => changes.value[selectedIndex.value] || null);
 const isDiff = computed(() => !!selectedChange.value?.diff);
+const isPreviewCard = computed(() => props.card.type === "FilePreviewCard");
 const content = computed(() => {
   if (selectedChange.value?.diff) return selectedChange.value.diff;
   return props.card.output || props.card.text || "";
@@ -24,12 +25,14 @@ const content = computed(() => {
 const filename = computed(() => selectedChange.value?.path || "snippet.txt");
 const language = computed(() => getLanguageFromFilename(filename.value));
 const changeSummary = computed(() => {
+  if (isPreviewCard.value) return "文件预览";
   if (changes.value.length > 1) return `${changes.value.length} 个文件变更`;
   if (changes.value.length === 1) return "1 个文件变更";
   return "代码片段";
 });
 const statusLabel = computed(() => {
   const status = props.card.status || "";
+  if (isPreviewCard.value && status === "completed") return "已读取";
   if (status === "completed") return "已完成";
   if (status === "failed") return "失败";
   return "处理中";

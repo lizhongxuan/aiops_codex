@@ -27,6 +27,13 @@
 - `APP_STATE_PATH`
 - `APP_AUDIT_LOG_PATH`
 - `HOST_AGENT_BOOTSTRAP_TOKEN`
+- `HOST_AGENT_BOOTSTRAP_TOKENS`
+- `HOST_AGENT_ALLOWED_HOST_IDS`
+- `HOST_AGENT_ALLOWED_CIDRS`
+- `HOST_AGENT_SECURITY_PROFILE`
+- `AIOPS_GRPC_TLS_CERT_FILE`
+- `AIOPS_GRPC_TLS_KEY_FILE`
+- `AIOPS_GRPC_TLS_CLIENT_CA_FILE`
 - `AGENT_HEARTBEAT_TIMEOUT`
 - `GPT_OAUTH_CLIENT_ID`
 - `GPT_OAUTH_CLIENT_SECRET`
@@ -96,6 +103,20 @@ GOCACHE=$PWD/.tools/go-build \
 GOMODCACHE=$PWD/.tools/gomodcache \
 go run ./cmd/host-agent
 ```
+
+### 3.4 远程主机生产安全模式
+
+远程主机生产接入可直接参考：
+
+- `deploy/docker/ai-server.env.example`
+- `deploy/docker/host-agent.env.example`
+
+当 `HOST_AGENT_SECURITY_PROFILE=production` 时，`ai-server` 启动会强制校验：
+
+- `AIOPS_GRPC_ADDR` 不能继续使用 `0.0.0.0` / `::` / `:18090` 这类 wildcard 监听
+- 必须启用 `AIOPS_GRPC_TLS_CERT_FILE` + `AIOPS_GRPC_TLS_KEY_FILE` + `AIOPS_GRPC_TLS_CLIENT_CA_FILE`
+- 必须配置 `HOST_AGENT_ALLOWED_HOST_IDS` 与 `HOST_AGENT_ALLOWED_CIDRS`
+- bootstrap token 不能再包含默认值 `change-me`
 
 ## 4. 当前已验证
 

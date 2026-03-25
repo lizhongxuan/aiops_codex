@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from "vue";
 import { UserIcon, BotIcon, CopyIcon, CheckIcon } from "lucide-vue-next";
+import Modal from "./Modal.vue";
 
 const props = defineProps({
   card: {
@@ -128,6 +129,12 @@ const messageBlocks = computed(() => {
 });
 
 const isCopied = ref(false);
+const previewOpen = ref(false);
+const previewLoading = ref(false);
+const previewError = ref("");
+const previewPath = ref("");
+const previewContent = ref("");
+const previewTruncated = ref(false);
 
 async function handleCopy() {
   if (!messageText.value || isCopied.value) return;
@@ -140,6 +147,75 @@ async function handleCopy() {
   } catch (err) {
     console.error("Failed to copy:", err);
   }
+}
+
+function parseFileLinkTarget(raw) {
+  const value = (raw || "").trim();
+  if (!value) {
+    return { hostId: "server-local", path: "", line: 0 };
+  }
+
+  if (value.startsWith("remote://")) {
+    try {
+      const parsed = new URL(value);
+      const path = decodeURIComponent(parsed.pathname || "");
+      const lineMatch = parsed.hash.match(/^#L(\d+)$/i);
+      return {
+        hostId: parsed.host || "server-local",
+        path,
+        line: lineMatch ? Number(lineMatch[1]) : 0,
+      };
+    } catch (_err) {
+      return { hostId: "server-local", path: value.replace(/^remote:\/\//, ""), line: 0 };
+    }
+  }
+
+  const [pathPart, hashPart] = value.split("#", 2);
+  const lineMatch = (hashPart || "").match(/^L(\d+)$/i);
+  return {
+    hostId: "server-local",
+    path: pathPart,
+    line: lineMatch ? Number(lineMatch[1]) : 0,
+  };
+}
+
+function tooltipPath(raw) {
+  return parseFileLinkTarget(raw).path;
+}
+
+async function openFilePreview(raw) {
+  const target = parseFileLinkTarget(raw);
+  if (!target.path) return;
+
+  previewOpen.value = true;
+  previewLoading.value = true;
+  previewError.value = "";
+  previewPath.value = target.path;
+  previewContent.value = "";
+  previewTruncated.value = false;
+
+  try {
+    const response = await fetch(
+      `/api/v1/files/preview?hostId=${encodeURIComponent(target.hostId)}&path=${encodeURIComponent(target.path)}`,
+      { credentials: "include" }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      previewError.value = data.error || "文件预览失败";
+      return;
+    }
+    previewPath.value = data.path || target.path;
+    previewContent.value = data.content || "";
+    previewTruncated.value = !!data.truncated;
+  } catch (_err) {
+    previewError.value = "文件预览失败";
+  } finally {
+    previewLoading.value = false;
+  }
+}
+
+function closePreview() {
+  previewOpen.value = false;
 }
 </script>
 
@@ -157,19 +233,28 @@ async function handleCopy() {
             <div v-if="block.type === 'text'" class="message-line">
               <template v-for="(chunk, idx) in block.chunks" :key="idx">
                 <span v-if="chunk.type === 'text'">{{ chunk.content }}</span>
-                <span
+                <button
                   v-else-if="chunk.type === 'link'"
+                  type="button"
                   class="file-link-text"
-                  :data-path="chunk.path"
+                  :data-path="tooltipPath(chunk.path)"
+                  @click="openFilePreview(chunk.path)"
                 >
                   {{ chunk.label }}
-                </span>
+                </button>
               </template>
             </div>
 
             <div v-else-if="block.type === 'file-list'" class="file-list-block">
               <div v-for="item in block.items" :key="item.path" class="file-list-item">
-                <span class="file-link-text" :data-path="item.path">{{ item.label }}</span>
+                <button
+                  type="button"
+                  class="file-link-text"
+                  :data-path="tooltipPath(item.path)"
+                  @click="openFilePreview(item.path)"
+                >
+                  {{ item.label }}
+                </button>
               </div>
             </div>
 
@@ -187,13 +272,15 @@ async function handleCopy() {
         <div v-else class="message-text">
           <template v-for="(chunk, idx) in parsedMessageChunks" :key="idx">
             <span v-if="chunk.type === 'text'">{{ chunk.content }}</span>
-            <span
+            <button
               v-else-if="chunk.type === 'link'"
+              type="button"
               class="file-link-text"
-              :data-path="chunk.path"
+              :data-path="tooltipPath(chunk.path)"
+              @click="openFilePreview(chunk.path)"
             >
               {{ chunk.label }}
-            </span>
+            </button>
           </template>
         </div>
       </template>
@@ -207,6 +294,17 @@ async function handleCopy() {
       <UserIcon size="20" />
     </div>
   </div>
+
+  <Modal v-if="previewOpen" :title="previewPath || '文件预览'" @close="closePreview">
+    <div class="preview-modal">
+      <div v-if="previewLoading" class="preview-state">正在读取文件...</div>
+      <div v-else-if="previewError" class="preview-error">{{ previewError }}</div>
+      <template v-else>
+        <pre class="preview-code">{{ previewContent }}</pre>
+        <div v-if="previewTruncated" class="preview-note">文件内容过长，当前仅展示前一部分。</div>
+      </template>
+    </div>
+  </Modal>
 </template>
 
 <style scoped>
@@ -403,11 +501,15 @@ async function handleCopy() {
   position: relative;
   display: inline-flex;
   align-items: center;
+  padding: 0;
+  background: transparent;
+  border: none;
   color: #2563eb;
   font-weight: 500;
-  cursor: default;
+  cursor: pointer;
   text-decoration: none;
   transition: color 0.2s ease, text-decoration-color 0.2s ease;
+  font: inherit;
 }
 
 .file-link-text:hover {
@@ -441,5 +543,38 @@ async function handleCopy() {
 .file-link-text:hover::after {
   opacity: 1;
   transform: translateY(0);
+}
+
+.preview-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.preview-state,
+.preview-error,
+.preview-note {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.preview-error {
+  color: #b91c1c;
+}
+
+.preview-code {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #dbe3ee;
+  color: #0f172a;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  max-height: 60vh;
+  overflow: auto;
 }
 </style>

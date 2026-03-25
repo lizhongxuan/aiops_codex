@@ -44,6 +44,7 @@ function handleGlobalKeydown(e) {
 }
 
 function openTerminal() {
+  if (!store.canOpenTerminal) return;
   router.push(`/terminal/${store.snapshot.selectedHostId}`);
 }
 
@@ -117,7 +118,7 @@ onBeforeUnmount(() => {
         </div>
         
         <div class="header-right">
-          <button class="header-pill" @click="openTerminal" title="打开终端">
+          <button class="header-pill" :disabled="!store.canOpenTerminal" @click="openTerminal" title="打开终端">
             <TerminalIcon size="14" />
             <span class="pill-text">终端</span>
           </button>

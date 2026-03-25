@@ -38,12 +38,19 @@ export const useAppStore = defineStore("app", {
       activity: {
         filesViewed: 0,
         searchCount: 0,
+        searchLocationCount: 0,
         listCount: 0,
         commandsRun: 0,
+        filesChanged: 0,
         currentReadingFile: "",
+        currentChangingFile: "",
+        currentListingPath: "",
+        currentSearchKind: "",
+        currentSearchQuery: "",
         viewedFiles: [],
         currentWebSearchQuery: "",
         searchedWebQueries: [],
+        searchedContentQueries: [],
       },
     },
     authForm: {
@@ -73,6 +80,7 @@ export const useAppStore = defineStore("app", {
           name: state.snapshot.selectedHostId,
           status: "offline",
           executable: false,
+          terminalCapable: false,
         }
       );
     },
@@ -80,6 +88,7 @@ export const useAppStore = defineStore("app", {
       const host = (
         state.snapshot.hosts.find((h) => h.id === state.snapshot.selectedHostId) || {
           executable: false,
+          terminalCapable: false,
           status: "offline",
         }
       );
@@ -89,6 +98,16 @@ export const useAppStore = defineStore("app", {
         host.executable &&
         host.status === "online"
       );
+    },
+    canOpenTerminal: (state) => {
+      const host = (
+        state.snapshot.hosts.find((h) => h.id === state.snapshot.selectedHostId) || {
+          executable: false,
+          terminalCapable: false,
+          status: "offline",
+        }
+      );
+      return host.status === "online" && (host.terminalCapable || host.executable);
     },
   },
   actions: {
@@ -119,12 +138,19 @@ export const useAppStore = defineStore("app", {
         this.runtime.activity = {
           filesViewed: 0,
           searchCount: 0,
+          searchLocationCount: 0,
           listCount: 0,
           commandsRun: 0,
+          filesChanged: 0,
           currentReadingFile: "",
+          currentChangingFile: "",
+          currentListingPath: "",
+          currentSearchKind: "",
+          currentSearchQuery: "",
           viewedFiles: [],
           currentWebSearchQuery: "",
           searchedWebQueries: [],
+          searchedContentQueries: [],
           ...(data.runtime.activity || {}),
         };
       }
@@ -138,12 +164,19 @@ export const useAppStore = defineStore("app", {
       this.runtime.activity = {
         filesViewed: 0,
         searchCount: 0,
+        searchLocationCount: 0,
         listCount: 0,
         commandsRun: 0,
+        filesChanged: 0,
         currentReadingFile: "",
+        currentChangingFile: "",
+        currentListingPath: "",
+        currentSearchKind: "",
+        currentSearchQuery: "",
         viewedFiles: [],
         currentWebSearchQuery: "",
         searchedWebQueries: [],
+        searchedContentQueries: [],
       };
     },
     async fetchState() {
@@ -223,7 +256,7 @@ export const useAppStore = defineStore("app", {
             this.runtime.codex.lastError = "heartbeat timeout";
             socket.close();
           }
-        }, 25000);
+        }, 45000);
       };
       const clearSocketTimers = () => {
         if (this._pingInterval) {

@@ -22,16 +22,33 @@ let term = null;
 let fitAddon = null;
 
 const isComplete = computed(() => {
-  return props.card.status === "completed" || props.card.status === "error" || props.card.status === "failed";
+  return (
+    props.card.status === "completed" ||
+    props.card.status === "error" ||
+    props.card.status === "failed" ||
+    props.card.status === "permission_denied" ||
+    props.card.status === "disconnected" ||
+    props.card.status === "host_timeout" ||
+    props.card.status === "timeout" ||
+    props.card.status === "cancelled"
+  );
 });
 
 const isSuccess = computed(() => props.card.status === "completed");
 const isFailed = computed(() => props.card.status === "error" || props.card.status === "failed");
+const isPermissionDenied = computed(() => props.card.status === "permission_denied");
+const isDisconnected = computed(() => props.card.status === "disconnected");
+const isHostTimeout = computed(() => props.card.status === "host_timeout");
+const isTimeout = computed(() => props.card.status === "timeout");
+const isCancelled = computed(() => props.card.status === "cancelled");
 
 const hasOutput = computed(() => !!props.card.output);
 const isRunning = computed(() => !isComplete.value);
 const canOpenTerminal = computed(() => {
-  return store.selectedHost?.executable && store.selectedHost?.status === "online";
+  return (
+    store.selectedHost?.status === "online" &&
+    (store.selectedHost?.terminalCapable || store.selectedHost?.executable)
+  );
 });
 
 const dynamicHeight = computed(() => {
@@ -40,6 +57,74 @@ const dynamicHeight = computed(() => {
   const h = Math.max(60, Math.min(250, lines * 20)); // approx 20px per line
   return h;
 });
+
+const commandDescriptor = computed(() => describeCommand(props.card.command || ""));
+
+function stripMatchingQuotes(value) {
+  if (!value || value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function shellKindLabel(shellName) {
+  switch ((shellName || "").toLowerCase()) {
+    case "zsh":
+      return "Zsh";
+    case "bash":
+      return "Bash";
+    case "sh":
+      return "Sh";
+    default:
+      return "Shell";
+  }
+}
+
+function normalizeDisplayCommand(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateDisplayCommand(value, max = 108) {
+  if (!value || value.length <= max) return value;
+  return `${value.slice(0, max - 3)}...`;
+}
+
+function describeCommand(command) {
+  const raw = (command || "").trim();
+  if (!raw) {
+    return { kind: "", display: "Executing..." };
+  }
+
+  let kind = "";
+  let display = raw;
+
+  const shellWrapper = raw.match(/^(?:\/bin\/)?(zsh|bash|sh)\s+-lc\s+([\s\S]+)$/i);
+  if (shellWrapper) {
+    kind = shellKindLabel(shellWrapper[1]);
+    display = normalizeDisplayCommand(stripMatchingQuotes(shellWrapper[2].trim()));
+  }
+
+  const lowerDisplay = display.toLowerCase();
+  if (/^(python|python3)\b/.test(lowerDisplay)) {
+    kind = "Python";
+    if (display.includes("<<")) {
+      const binary = lowerDisplay.startsWith("python3") ? "python3" : "python";
+      return { kind, display: `${binary} heredoc` };
+    }
+  } else if (/^(node|nodejs)\b/.test(lowerDisplay)) {
+    kind = "Node";
+  } else if (!kind) {
+    kind = "Shell";
+  }
+
+  return {
+    kind,
+    display: truncateDisplayCommand(display),
+  };
+}
 
 /* Human-readable duration */
 const durationLabel = computed(() => {
@@ -124,7 +209,15 @@ watch(
       isExpanded.value = false;
       return;
     }
-    if (status === "failed" || status === "error") {
+    if (
+      status === "failed" ||
+      status === "error" ||
+      status === "permission_denied" ||
+      status === "disconnected" ||
+      status === "host_timeout" ||
+      status === "timeout" ||
+      status === "cancelled"
+    ) {
       isExpanded.value = true;
     }
   }
@@ -162,7 +255,14 @@ watch(
 onMounted(() => {
   if (isSuccess.value) {
     isExpanded.value = false;
-  } else if (isFailed.value) {
+  } else if (
+    isFailed.value ||
+    isPermissionDenied.value ||
+    isDisconnected.value ||
+    isHostTimeout.value ||
+    isTimeout.value ||
+    isCancelled.value
+  ) {
     isExpanded.value = true;
     setTimeout(initTerminal, 10);
   } else {
@@ -189,7 +289,10 @@ onBeforeUnmount(() => {
   >
     <div class="timeline-left">
       <CheckIcon size="14" class="timeline-check" />
-      <span class="timeline-label">已运行 <code>{{ card.command }}</code></span>
+      <span v-if="commandDescriptor.kind" class="command-kind-badge">{{ commandDescriptor.kind }}</span>
+      <span class="timeline-label">
+        已运行 <code :title="card.command">{{ commandDescriptor.display }}</code>
+      </span>
     </div>
     <div class="timeline-divider"></div>
     <span class="timeline-duration" v-if="durationLabel">已处理 {{ durationLabel }}</span>
@@ -201,7 +304,8 @@ onBeforeUnmount(() => {
       <div class="term-title-group">
         <component :is="isExpanded ? ChevronDownIcon : ChevronRightIcon" size="16" class="icon-carat" />
         <TerminalIcon size="14" class="icon-term" />
-        <span class="term-command mono">{{ card.command || "Executing..." }}</span>
+        <span v-if="commandDescriptor.kind" class="command-kind-badge subtle">{{ commandDescriptor.kind }}</span>
+        <span class="term-command mono" :title="card.command">{{ commandDescriptor.display }}</span>
       </div>
 
       <div class="term-meta">
@@ -221,6 +325,21 @@ onBeforeUnmount(() => {
         <span class="term-status-badge error" v-if="isFailed">
           <XIcon size="12" /> Failed
         </span>
+        <span class="term-status-badge permission" v-if="isPermissionDenied">
+          <XIcon size="12" /> Permission denied
+        </span>
+        <span class="term-status-badge warning" v-if="isDisconnected">
+          <XIcon size="12" /> Host disconnected
+        </span>
+        <span class="term-status-badge warning" v-if="isHostTimeout">
+          <XIcon size="12" /> Heartbeat timed out
+        </span>
+        <span class="term-status-badge timeout" v-if="isTimeout">
+          <XIcon size="12" /> Timed out
+        </span>
+        <span class="term-status-badge cancelled" v-if="isCancelled">
+          <XIcon size="12" /> Cancelled
+        </span>
       </div>
     </div>
 
@@ -237,8 +356,9 @@ onBeforeUnmount(() => {
 <style scoped>
 /* ====== Timeline summary line (collapsed success) ====== */
 .timeline-summary {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 12px;
   padding: 8px 0;
   margin-left: 48px;
@@ -264,7 +384,9 @@ onBeforeUnmount(() => {
   gap: 6px;
   color: var(--text-meta, #9ca3af);
   font-size: var(--text-meta-size, 12px);
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
+  flex-wrap: wrap;
 }
 
 .timeline-check {
@@ -277,12 +399,15 @@ onBeforeUnmount(() => {
 
 .timeline-label {
   color: #6b7280;
+  min-width: 0;
 }
 
 .timeline-label code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: #374151;
   font-weight: 500;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .timeline-divider {
@@ -336,6 +461,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   flex: 1;
   overflow: hidden;
+  min-width: 0;
 }
 
 .icon-carat {
@@ -349,10 +475,11 @@ onBeforeUnmount(() => {
 .term-command {
   font-size: 13px;
   color: #0f172a;
-  white-space: nowrap;
+  white-space: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
   font-weight: 500;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 
 .terminal-card.minimal .term-command {
@@ -365,6 +492,26 @@ onBeforeUnmount(() => {
   gap: 12px;
   margin-left: 12px;
   flex-shrink: 0;
+}
+
+.command-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
+.command-kind-badge.subtle {
+  background: #f8fafc;
+  color: #475569;
+  border-color: #dbe3ee;
 }
 
 .term-open-btn {
@@ -415,6 +562,26 @@ onBeforeUnmount(() => {
   color: #991b1b;
 }
 
+.term-status-badge.permission {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.term-status-badge.warning {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.term-status-badge.timeout {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.term-status-badge.cancelled {
+  background: #e2e8f0;
+  color: #475569;
+}
+
 .term-body {
   background: #0f172a;
   padding: 6px;
@@ -457,5 +624,27 @@ onBeforeUnmount(() => {
 
 :deep(.xterm-viewport) {
   overflow-y: auto !important;
+}
+
+@media (max-width: 900px) {
+  .timeline-summary {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .timeline-divider {
+    display: none;
+  }
+
+  .term-header {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .term-meta {
+    margin-left: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
 }
 </style>

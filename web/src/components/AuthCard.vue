@@ -16,6 +16,7 @@ const props = defineProps({
 const emit = defineEmits(["approval"]);
 
 const isCommand = computed(() => props.card.type === "CommandApprovalCard" || !!props.card.command);
+const decisions = computed(() => props.card.approval?.decisions || []);
 
 const options = computed(() => {
   if (isCommand.value) {
@@ -26,10 +27,14 @@ const options = computed(() => {
       { value: "decline", label: "拒绝并让 Codex 调整", description: "阻止当前执行，并让 Codex 换一种方式处理。" },
     ];
   }
-  return [
+  const rows = [
     { value: "accept", label: "允许此次修改", description: "仅批准当前这次文件变更。" },
-    { value: "decline", label: "拒绝并让 Codex 调整", description: "阻止当前修改，并提示 Codex 改方案。" },
   ];
+  if (decisions.value.includes("accept_session")) {
+    rows.push({ value: "accept_session", label: "允许并记住本目录修改", description: "本会话内同目录下的同类文件修改不再重复询问。" });
+  }
+  rows.push({ value: "decline", label: "拒绝并让 Codex 调整", description: "阻止当前修改，并提示 Codex 改方案。" });
+  return rows;
 });
 
 const resolvedText = computed(() => {
@@ -67,8 +72,11 @@ function submitDecision(decision) {
 
       <div v-if="card.changes?.length" class="changes-list">
         <div v-for="change in card.changes" :key="change.path" class="change-item">
-          <span class="change-kind">{{ change.kind }}</span>
-          <span class="change-path">{{ change.path }}</span>
+          <div class="change-row">
+            <span class="change-kind">{{ change.kind }}</span>
+            <span class="change-path">{{ change.path }}</span>
+          </div>
+          <pre v-if="change.diff" class="change-diff">{{ change.diff }}</pre>
         </div>
       </div>
     </div>
@@ -166,6 +174,13 @@ function submitDecision(decision) {
 
 .change-item {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.change-row {
+  display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
@@ -184,6 +199,20 @@ function submitDecision(decision) {
 .change-path {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: #374151;
+}
+
+.change-diff {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  color: #1f2937;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .auth-options {

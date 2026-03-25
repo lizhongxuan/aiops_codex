@@ -40,11 +40,13 @@ function openTerminal(hostId) {
               {{ host.status }}
             </span>
             <span class="host-kind">{{ host.kind }}</span>
-            <span v-if="!host.executable" class="badge readonly">只读展示</span>
+            <span v-if="host.kind === 'agent' && host.executable" class="badge terminal">远程可管</span>
+            <span v-else-if="host.terminalCapable && !host.executable" class="badge terminal">远程终端</span>
+            <span v-else-if="!host.executable" class="badge readonly">只读展示</span>
           </div>
         </div>
         <button
-          v-if="host.executable && host.status === 'online'"
+          v-if="(host.terminalCapable || host.executable) && host.status === 'online'"
           type="button"
           class="host-action-btn"
           @click.stop="openTerminal(host.id)"
@@ -158,6 +160,12 @@ function openTerminal(hostId) {
   background: #fffedd;
   color: #854d0e;
   border: 1px solid #fef08a;
+}
+
+.badge.terminal {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
 }
 
 .text-blue {

@@ -19,7 +19,7 @@
     <key>AIOPS_HTTP_ADDR</key>
     <string>127.0.0.1:18080</string>
     <key>AIOPS_GRPC_ADDR</key>
-    <string>127.0.0.1:18090</string>
+    <string>0.0.0.0:18090</string>
     <key>DEFAULT_WORKSPACE</key>
     <string>/Users/lizhongxuan/.aiops_codex</string>
     <key>HOST_AGENT_BOOTSTRAP_TOKEN</key>

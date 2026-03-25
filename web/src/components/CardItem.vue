@@ -43,6 +43,7 @@ const isTerminal = computed(() => {
 
 const isCode = computed(() => {
   return (
+    props.card.type === "FilePreviewCard" ||
     props.card.type === "FileChangeCard" ||
     (props.card.type === "StepCard" && !props.card.command && props.card.changes?.length > 0)
   );

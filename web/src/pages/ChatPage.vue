@@ -77,7 +77,7 @@ function queueThinkingPrelude(message) {
   thinkingHintTimer = window.setTimeout(() => {
     if (!showThinking.value) return;
     if (store.runtime.turn.phase !== "thinking" && store.runtime.turn.phase !== prelude.phase) return;
-    if (currentReadingLine.value || currentSearchLine.value || activitySummary.value) return;
+    if (activeActivityLine.value || summaryLine.value) return;
     thinkingHint.value = prelude.hint;
   }, 900);
 }
@@ -92,9 +92,8 @@ watch(
       const shouldPreferLocalPhase =
         phase === "thinking" &&
         !!preferredThinkingPhase.value &&
-        !currentReadingLine.value &&
-        !currentSearchLine.value &&
-        !activitySummary.value;
+        !activeActivityLine.value &&
+        !summaryLine.value;
       thinkingPhase.value = shouldPreferLocalPhase ? preferredThinkingPhase.value : phase;
       showThinking.value = true;
     }
@@ -118,11 +117,22 @@ const activitySummary = computed(() => {
   const a = activity.value;
   const parts = [];
   if (a.filesViewed > 0) parts.push(`${a.filesViewed} 个文件`);
-  if (a.searchCount > 0) parts.push(`${a.searchCount} 个搜索`);
+  if (a.searchCount > 0 && a.searchLocationCount > 0) {
+    parts.push(`${a.searchCount} 次搜索（命中 ${a.searchLocationCount} 个位置）`);
+  } else if (a.searchCount > 0) {
+    parts.push(`${a.searchCount} 次搜索`);
+  }
   if (a.listCount > 0) parts.push(`${a.listCount} 个列表`);
+  if (a.filesChanged > 0) parts.push(`${a.filesChanged} 个文件修改`);
   if (a.commandsRun > 0) parts.push(`${a.commandsRun} 个命令`);
   if (parts.length === 0) return "";
-  if (a.filesViewed > 0) return `已浏览 ${parts.join("，")}`;
+  if (a.filesViewed > 0 && parts.length === 1) return `已浏览 ${parts[0]}`;
+  if (a.searchCount > 0 && parts.length === 1) {
+    return a.searchLocationCount > 0
+      ? `已搜索 ${a.searchCount} 次，命中 ${a.searchLocationCount} 个位置`
+      : `已搜索 ${a.searchCount} 次`;
+  }
+  if (a.filesChanged > 0 && parts.length === 1) return `已修改 ${a.filesChanged} 个文件`;
   return `已处理 ${parts.join("，")}`;
 });
 
@@ -131,16 +141,75 @@ const currentReadingLine = computed(() => {
   return file ? `现在浏览 ${file}` : "";
 });
 
+const currentChangingLine = computed(() => {
+  const file = activity.value.currentChangingFile;
+  return file ? `现在修改 ${truncateLabel(file)}` : "";
+});
+
+const currentListingLine = computed(() => {
+  const path = activity.value.currentListingPath;
+  return path ? `现在列出 ${truncateLabel(path)}` : "";
+});
+
 const currentSearchLine = computed(() => {
   const a = activity.value;
-  if (a.currentWebSearchQuery) {
-    return `现在搜索网页（${truncateLabel(a.currentWebSearchQuery)}）`;
+  const query = a.currentSearchQuery || a.currentWebSearchQuery;
+  if (!query) {
+    return "";
   }
-  return "";
+  if (a.currentSearchKind === "content") {
+    return `现在搜索内容（${truncateLabel(query)}）`;
+  }
+  if (a.currentSearchKind === "web" || a.currentWebSearchQuery) {
+    return `现在搜索网页（${truncateLabel(query)}）`;
+  }
+  return `现在搜索内容（${truncateLabel(query)}）`;
 });
 
 const viewedFileDetails = computed(() => activity.value.viewedFiles || []);
-const searchedQueryDetails = computed(() => activity.value.searchedWebQueries || []);
+const searchedQueryDetails = computed(() => [
+  ...(activity.value.searchedWebQueries || []),
+  ...(activity.value.searchedContentQueries || []),
+]);
+const activeActivityLine = computed(() => currentChangingLine.value || currentReadingLine.value || currentListingLine.value || currentSearchLine.value || "");
+const activeActivityKind = computed(() => {
+  if (currentChangingLine.value) return "change";
+  if (currentReadingLine.value) return "files";
+  if (currentSearchLine.value) return "search";
+  if (currentListingLine.value) return "list";
+  return "";
+});
+const summaryLine = computed(() => {
+  if (activeActivityLine.value) return "";
+  return activitySummary.value;
+});
+const hasTopFeedback = computed(() => !!activeActivityLine.value || !!summaryLine.value);
+const activeLineExpandable = computed(() => {
+  if (activeActivityKind.value === "files") return viewedFileDetails.value.length > 0;
+  if (activeActivityKind.value === "search") return searchedQueryDetails.value.length > 0;
+  return false;
+});
+const summaryExpandable = computed(() => viewedFileDetails.value.length > 0 || searchedQueryDetails.value.length > 0);
+
+function toggleActiveLineDetails() {
+  if (activeActivityKind.value === "files" && viewedFileDetails.value.length) {
+    showFileDetails.value = !showFileDetails.value;
+    return;
+  }
+  if (activeActivityKind.value === "search" && searchedQueryDetails.value.length) {
+    showSearchDetails.value = !showSearchDetails.value;
+  }
+}
+
+function toggleSummaryDetails() {
+  if (viewedFileDetails.value.length) {
+    showFileDetails.value = !showFileDetails.value;
+    return;
+  }
+  if (searchedQueryDetails.value.length) {
+    showSearchDetails.value = !showSearchDetails.value;
+  }
+}
 
 const activePlanCard = computed(() => {
   if (!store.runtime.turn.active) return null;
@@ -195,9 +264,9 @@ const visibleCards = computed(() => {
 });
 
 watch(
-  [currentReadingLine, currentSearchLine, activitySummary, () => store.runtime.turn.phase],
-  ([reading, search, summary, phase]) => {
-    const hasFeedback = !!reading || !!search || !!summary;
+  [activeActivityLine, summaryLine, () => store.runtime.turn.phase],
+  ([currentLine, currentSummary, phase]) => {
+    const hasFeedback = !!currentLine || !!currentSummary;
     const phaseMovedOn =
       phase === "planning" ||
       phase === "waiting_approval" ||
@@ -223,8 +292,8 @@ const showReconnectBanner = computed(() => {
 
 const reconnectLabel = computed(() => {
   const c = store.runtime.codex;
-  if (c.status === "stopped") return "连接已断开，无法恢复";
-  return `Reconnecting... ${c.retryAttempt}/${c.retryMax}`;
+  if (c.status === "stopped") return "与本地 ai-server 的实时连接已断开，无法恢复";
+  return `与本地 ai-server 的实时连接重连中 ${c.retryAttempt}/${c.retryMax}`;
 });
 
 const isStopped = computed(() => store.runtime.codex.status === "stopped");
@@ -247,8 +316,12 @@ const connectionErrorCard = computed(() => {
 const composerPlaceholder = computed(() => {
   if (!store.snapshot.auth.connected) return "请先登录 GPT 账号后再开始对话";
   if (!store.snapshot.config.codexAlive) return "Codex app-server 当前不可用";
+  if (store.selectedHost.terminalCapable && !store.selectedHost.executable) {
+    return "当前主机已接入远程终端，Codex 自动执行链路还未开启";
+  }
   if (!store.selectedHost.executable) return "当前主机仅展示，不支持执行";
   if (store.selectedHost.status !== "online") return "当前主机离线，暂时不可执行";
+  if (store.selectedHost.kind === "agent") return "Ask Codex to manage this host";
   return "Ask Codex to build something";
 });
 
@@ -504,35 +577,25 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <div v-if="showThinking && (currentReadingLine || activitySummary || currentSearchLine)" class="activity-summary">
+        <div v-if="showThinking && hasTopFeedback" class="activity-summary">
           <button
-            v-if="currentReadingLine"
+            v-if="activeActivityLine"
             type="button"
             class="activity-line plain"
-            :disabled="!viewedFileDetails.length"
-            @click="showFileDetails = !showFileDetails"
+            :disabled="!activeLineExpandable"
+            @click="toggleActiveLineDetails"
           >
-            {{ currentReadingLine }}
+            {{ activeActivityLine }}
           </button>
 
           <button
-            v-if="activitySummary"
+            v-else-if="summaryLine"
             type="button"
             class="activity-line"
-            :disabled="!viewedFileDetails.length"
-            @click="showFileDetails = !showFileDetails"
+            :disabled="!summaryExpandable"
+            @click="toggleSummaryDetails"
           >
-            {{ activitySummary }}
-          </button>
-
-          <button
-            v-if="currentSearchLine"
-            type="button"
-            class="activity-line"
-            :disabled="!searchedQueryDetails.length"
-            @click="showSearchDetails = !showSearchDetails"
-          >
-            {{ currentSearchLine }}
+            {{ summaryLine }}
           </button>
 
           <div v-if="showFileDetails && viewedFileDetails.length" class="activity-details">

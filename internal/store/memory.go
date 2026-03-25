@@ -904,8 +904,9 @@ func defaultRuntime(hostID string) model.RuntimeState {
 			RetryMax: 5,
 		},
 		Activity: model.ActivityRuntime{
-			ViewedFiles:        make([]model.ActivityEntry, 0),
-			SearchedWebQueries: make([]model.ActivityEntry, 0),
+			ViewedFiles:            make([]model.ActivityEntry, 0),
+			SearchedWebQueries:     make([]model.ActivityEntry, 0),
+			SearchedContentQueries: make([]model.ActivityEntry, 0),
 		},
 	}
 }
@@ -914,6 +915,7 @@ func cloneRuntime(runtime model.RuntimeState) model.RuntimeState {
 	out := runtime
 	out.Activity.ViewedFiles = append([]model.ActivityEntry(nil), runtime.Activity.ViewedFiles...)
 	out.Activity.SearchedWebQueries = append([]model.ActivityEntry(nil), runtime.Activity.SearchedWebQueries...)
+	out.Activity.SearchedContentQueries = append([]model.ActivityEntry(nil), runtime.Activity.SearchedContentQueries...)
 	return out
 }
 

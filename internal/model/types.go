@@ -12,16 +12,17 @@ const (
 )
 
 type Host struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Kind          string            `json:"kind"`
-	Status        string            `json:"status"`
-	Executable    bool              `json:"executable"`
-	OS            string            `json:"os,omitempty"`
-	Arch          string            `json:"arch,omitempty"`
-	AgentVersion  string            `json:"agentVersion,omitempty"`
-	Labels        map[string]string `json:"labels,omitempty"`
-	LastHeartbeat string            `json:"lastHeartbeat,omitempty"`
+	ID              string            `json:"id"`
+	Name            string            `json:"name"`
+	Kind            string            `json:"kind"`
+	Status          string            `json:"status"`
+	Executable      bool              `json:"executable"`
+	TerminalCapable bool              `json:"terminalCapable,omitempty"`
+	OS              string            `json:"os,omitempty"`
+	Arch            string            `json:"arch,omitempty"`
+	AgentVersion    string            `json:"agentVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	LastHeartbeat   string            `json:"lastHeartbeat,omitempty"`
 }
 
 type AuthState struct {
@@ -84,6 +85,14 @@ type KeyValueRow struct {
 	Value string `json:"value"`
 }
 
+type FileItem struct {
+	Label   string `json:"label"`
+	Path    string `json:"path,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	Meta    string `json:"meta,omitempty"`
+	Preview string `json:"preview,omitempty"`
+}
+
 type ActivityEntry struct {
 	Label string `json:"label,omitempty"`
 	Path  string `json:"path,omitempty"`
@@ -105,14 +114,21 @@ type CodexRuntime struct {
 }
 
 type ActivityRuntime struct {
-	FilesViewed           int             `json:"filesViewed,omitempty"`
-	SearchCount           int             `json:"searchCount,omitempty"`
-	ListCount             int             `json:"listCount,omitempty"`
-	CommandsRun           int             `json:"commandsRun,omitempty"`
-	CurrentReadingFile    string          `json:"currentReadingFile,omitempty"`
-	CurrentWebSearchQuery string          `json:"currentWebSearchQuery,omitempty"`
-	ViewedFiles           []ActivityEntry `json:"viewedFiles,omitempty"`
-	SearchedWebQueries    []ActivityEntry `json:"searchedWebQueries,omitempty"`
+	FilesViewed            int             `json:"filesViewed,omitempty"`
+	SearchCount            int             `json:"searchCount,omitempty"`
+	SearchLocationCount    int             `json:"searchLocationCount,omitempty"`
+	ListCount              int             `json:"listCount,omitempty"`
+	CommandsRun            int             `json:"commandsRun,omitempty"`
+	FilesChanged           int             `json:"filesChanged,omitempty"`
+	CurrentReadingFile     string          `json:"currentReadingFile,omitempty"`
+	CurrentChangingFile    string          `json:"currentChangingFile,omitempty"`
+	CurrentListingPath     string          `json:"currentListingPath,omitempty"`
+	CurrentSearchKind      string          `json:"currentSearchKind,omitempty"`
+	CurrentSearchQuery     string          `json:"currentSearchQuery,omitempty"`
+	CurrentWebSearchQuery  string          `json:"currentWebSearchQuery,omitempty"`
+	ViewedFiles            []ActivityEntry `json:"viewedFiles,omitempty"`
+	SearchedWebQueries     []ActivityEntry `json:"searchedWebQueries,omitempty"`
+	SearchedContentQueries []ActivityEntry `json:"searchedContentQueries,omitempty"`
 }
 
 type RuntimeState struct {
@@ -145,6 +161,7 @@ type Card struct {
 	DurationMS    int64            `json:"durationMs,omitempty"`
 	KVRows        []KeyValueRow    `json:"kvRows,omitempty"`
 	Highlights    []string         `json:"highlights,omitempty"`
+	FileItems     []FileItem       `json:"fileItems,omitempty"`
 	CreatedAt     string           `json:"createdAt"`
 	UpdatedAt     string           `json:"updatedAt"`
 }

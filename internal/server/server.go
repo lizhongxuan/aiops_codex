@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -30,20 +32,30 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"github.com/lizhongxuan/aiops-codex/internal/store"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
 )
+
+const stalledTurnTimeout = 45 * time.Second
 
 type App struct {
 	cfg         config.Config
 	store       *store.Store
 	codex       *codex.Client
 	upgrader    websocket.Upgrader
+	agentMu     sync.Mutex
+	agents      map[string]*agentConnection
 	wsMu        sync.Mutex
 	wsClients   map[string]map[*websocket.Conn]struct{}
 	turnMu      sync.Mutex
 	turnCancels map[string]context.CancelFunc
 	terminalMu  sync.Mutex
 	terminals   map[string]*terminalSession
+	execMu      sync.Mutex
+	execs       map[string]*remoteExecSession
+	fileReqMu   sync.Mutex
+	fileReqs    map[string]*agentResponseWaiter
 	oauthMu     sync.Mutex
 	oauthStates map[string]string
 	auditMu     sync.Mutex
@@ -86,13 +98,14 @@ type loginResponse struct {
 func New(cfg config.Config) *App {
 	st := store.New()
 	st.UpsertHost(model.Host{
-		ID:         model.ServerLocalHostID,
-		Name:       "server-local",
-		Kind:       "server_local",
-		Status:     "online",
-		Executable: true,
-		OS:         runtime.GOOS,
-		Arch:       runtime.GOARCH,
+		ID:              model.ServerLocalHostID,
+		Name:            "server-local",
+		Kind:            "server_local",
+		Status:          "online",
+		Executable:      true,
+		TerminalCapable: true,
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
 	})
 
 	app := &App{
@@ -101,9 +114,12 @@ func New(cfg config.Config) *App {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
+		agents:      make(map[string]*agentConnection),
 		wsClients:   make(map[string]map[*websocket.Conn]struct{}),
 		turnCancels: make(map[string]context.CancelFunc),
 		terminals:   make(map[string]*terminalSession),
+		execs:       make(map[string]*remoteExecSession),
+		fileReqs:    make(map[string]*agentResponseWaiter),
 		oauthStates: make(map[string]string),
 	}
 	app.codex = codex.New(cfg.CodexPath, app.handleCodexNotification, app.handleCodexServerRequest)
@@ -132,14 +148,30 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("load state store: %w", err)
 	}
 	a.store.UpsertHost(model.Host{
-		ID:         model.ServerLocalHostID,
-		Name:       "server-local",
-		Kind:       "server_local",
-		Status:     "online",
-		Executable: true,
-		OS:         runtime.GOOS,
-		Arch:       runtime.GOARCH,
+		ID:              model.ServerLocalHostID,
+		Name:            "server-local",
+		Kind:            "server_local",
+		Status:          "online",
+		Executable:      true,
+		TerminalCapable: true,
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
 	})
+	if err := a.cfg.ValidateHostAgentSecurity(); err != nil {
+		return err
+	}
+	if grpcAddrExposed(a.cfg.GRPCAddr) && a.cfg.UsesDefaultBootstrapToken() {
+		log.Printf("warning: grpc agent endpoint %s is exposed with default bootstrap token; rotate HOST_AGENT_BOOTSTRAP_TOKEN immediately", a.cfg.GRPCAddr)
+	}
+	if grpcAddrExposed(a.cfg.GRPCAddr) && len(a.cfg.AllowedAgentHostIDs) == 0 {
+		log.Printf("warning: grpc agent endpoint %s is exposed without HOST_AGENT_ALLOWED_HOST_IDS allowlist", a.cfg.GRPCAddr)
+	}
+	if grpcAddrExposed(a.cfg.GRPCAddr) && len(a.cfg.AllowedAgentCIDRs) == 0 {
+		log.Printf("warning: grpc agent endpoint %s is exposed without HOST_AGENT_ALLOWED_CIDRS source allowlist", a.cfg.GRPCAddr)
+	}
+	if grpcAddrExposed(a.cfg.GRPCAddr) && (strings.TrimSpace(a.cfg.GRPCTLSCertFile) == "" || strings.TrimSpace(a.cfg.GRPCTLSKeyFile) == "") {
+		log.Printf("warning: grpc agent endpoint %s is exposed without TLS; prefer AIOPS_GRPC_TLS_CERT_FILE/AIOPS_GRPC_TLS_KEY_FILE or keep it behind VPN only", a.cfg.GRPCAddr)
+	}
 
 	if err := a.codex.Start(ctx); err != nil {
 		return err
@@ -159,6 +191,7 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/choices/", a.withSession(a.handleChoiceAnswer))
 	httpMux.HandleFunc("/api/v1/terminal/sessions", a.withSession(a.handleTerminalCreate))
 	httpMux.HandleFunc("/api/v1/terminal/ws", a.withSession(a.handleTerminalWS))
+	httpMux.HandleFunc("/api/v1/files/preview", a.withSession(a.handleFilePreview))
 	httpMux.HandleFunc("/ws", a.withSession(a.handleWS))
 	httpMux.Handle("/", a.serveFrontend())
 
@@ -167,7 +200,13 @@ func (a *App) Start(ctx context.Context) error {
 		Handler: httpMux,
 	}
 
-	a.grpcServer = grpc.NewServer()
+	grpcServerOptions := make([]grpc.ServerOption, 0, 1)
+	if creds, err := a.grpcServerCredentials(); err != nil {
+		return err
+	} else if creds != nil {
+		grpcServerOptions = append(grpcServerOptions, grpc.Creds(creds))
+	}
+	a.grpcServer = grpc.NewServer(grpcServerOptions...)
 	agentrpc.RegisterAgentServiceServer(a.grpcServer, a)
 
 	go a.monitorHosts(ctx)
@@ -215,10 +254,16 @@ func (a *App) Run(ctx context.Context) error {
 
 func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 	var hostID string
+	var conn *agentConnection
 
 	defer func() {
 		if hostID != "" {
+			a.clearAgentConnection(hostID, conn)
+			a.failRemoteTerminalsForHost(hostID, "remote host disconnected")
+			a.failRemoteExecsForHost(hostID, "remote host disconnected")
+			a.failAgentResponseWaitersForHost(hostID, "remote host disconnected")
 			a.store.MarkHostOffline(hostID)
+			a.notifyRemoteHostUnavailable(hostID, "远程主机已断连", "远程主机连接已断开，当前任务可能失败，可稍后重试或刷新。")
 			a.audit("agent.disconnect", map[string]any{
 				"hostId": hostID,
 			})
@@ -241,38 +286,57 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				})
 				continue
 			}
-			if msg.Registration.Token != a.cfg.HostAgentBootstrapToken {
+			sourceAddr := agentPeerRemoteAddress(stream.Context())
+			if !a.cfg.AgentSourceAllowed(sourceAddr) {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: fmt.Sprintf("agent source address %s is not allowed", defaultString(sourceAddr, "unknown")),
+				})
+				continue
+			}
+			if !a.cfg.ValidAgentBootstrapToken(msg.Registration.Token) {
 				_ = stream.Send(&agentrpc.Envelope{
 					Kind:  "error",
 					Error: "invalid bootstrap token",
 				})
 				continue
 			}
+			if !a.cfg.AgentHostAllowed(msg.Registration.HostID) {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "host id is not allowed",
+				})
+				continue
+			}
 
 			hostID = msg.Registration.HostID
-			log.Printf("host-agent register host_id=%s hostname=%s", msg.Registration.HostID, msg.Registration.Hostname)
+			conn = &agentConnection{hostID: hostID, stream: stream}
+			a.setAgentConnection(hostID, conn)
+			log.Printf("host-agent register host_id=%s hostname=%s remote_addr=%s", msg.Registration.HostID, msg.Registration.Hostname, defaultString(sourceAddr, "unknown"))
 			a.audit("agent.register", map[string]any{
 				"hostId":       msg.Registration.HostID,
 				"hostname":     msg.Registration.Hostname,
 				"os":           msg.Registration.OS,
 				"arch":         msg.Registration.Arch,
 				"agentVersion": msg.Registration.AgentVersion,
+				"remoteAddr":   sourceAddr,
 			})
 			a.store.UpsertHost(model.Host{
-				ID:            msg.Registration.HostID,
-				Name:          msg.Registration.Hostname,
-				Kind:          "agent",
-				Status:        "online",
-				Executable:    false,
-				OS:            msg.Registration.OS,
-				Arch:          msg.Registration.Arch,
-				AgentVersion:  msg.Registration.AgentVersion,
-				Labels:        msg.Registration.Labels,
-				LastHeartbeat: model.NowString(),
+				ID:              msg.Registration.HostID,
+				Name:            msg.Registration.Hostname,
+				Kind:            "agent",
+				Status:          "online",
+				Executable:      true,
+				TerminalCapable: true,
+				OS:              msg.Registration.OS,
+				Arch:            msg.Registration.Arch,
+				AgentVersion:    msg.Registration.AgentVersion,
+				Labels:          msg.Registration.Labels,
+				LastHeartbeat:   model.NowString(),
 			})
 			a.broadcastAllSnapshots()
 
-			_ = stream.Send(&agentrpc.Envelope{
+			_ = conn.send(&agentrpc.Envelope{
 				Kind: "ack",
 				Ack: &agentrpc.Ack{
 					Message:   "registered",
@@ -287,10 +351,16 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 			log.Printf("host-agent heartbeat host_id=%s", msg.Heartbeat.HostID)
 			host := a.findHost(hostID)
 			host.Status = "online"
+			host.Executable = true
+			host.TerminalCapable = true
 			host.LastHeartbeat = model.NowString()
 			a.store.UpsertHost(host)
 			a.broadcastAllSnapshots()
-			_ = stream.Send(&agentrpc.Envelope{
+			target := conn
+			if target == nil {
+				target = &agentConnection{hostID: hostID, stream: stream}
+			}
+			_ = target.send(&agentrpc.Envelope{
 				Kind: "ack",
 				Ack: &agentrpc.Ack{
 					Message:   "heartbeat",
@@ -298,24 +368,149 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				},
 			})
 		case "ping":
-			_ = stream.Send(&agentrpc.Envelope{
+			target := conn
+			if target == nil {
+				target = &agentConnection{hostID: hostID, stream: stream}
+			}
+			_ = target.send(&agentrpc.Envelope{
 				Kind: "pong",
 				Ack: &agentrpc.Ack{
 					Message:   "pong",
 					Timestamp: time.Now().Unix(),
 				},
 			})
+		case "terminal/ready":
+			a.handleAgentTerminalReady(hostID, msg.TerminalReady)
+		case "terminal/output":
+			a.handleAgentTerminalOutput(hostID, msg.TerminalOutput)
+		case "terminal/exit":
+			a.handleAgentTerminalExit(hostID, msg.TerminalExit)
+		case "terminal/status", "terminal/error":
+			a.handleAgentTerminalStatus(hostID, msg.TerminalStatus)
+		case "exec/output":
+			a.handleAgentExecOutput(hostID, msg.ExecOutput)
+		case "exec/exit":
+			a.handleAgentExecExit(hostID, msg.ExecExit)
+		case "file/list/result":
+			a.handleAgentFileListResult(hostID, msg.FileListResult)
+		case "file/read/result":
+			a.handleAgentFileReadResult(hostID, msg.FileReadResult)
+		case "file/search/result":
+			a.handleAgentFileSearchResult(hostID, msg.FileSearchResult)
+		case "file/write/result":
+			a.handleAgentFileWriteResult(hostID, msg.FileWriteResult)
 		}
 	}
 }
 
 func DialAgent(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+	dialCreds, err := agentDialCredentialsFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if dialCreds == nil {
+		dialCreds = insecure.NewCredentials()
+	}
 	return grpc.DialContext(
 		ctx,
 		addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(dialCreds),
 		grpc.WithDefaultCallOptions(grpc.CallContentSubtype("json")),
 	)
+}
+
+func (a *App) grpcServerCredentials() (credentials.TransportCredentials, error) {
+	certFile := strings.TrimSpace(a.cfg.GRPCTLSCertFile)
+	keyFile := strings.TrimSpace(a.cfg.GRPCTLSKeyFile)
+	if certFile == "" || keyFile == "" {
+		return nil, nil
+	}
+
+	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load grpc tls key pair: %w", err)
+	}
+	tlsConfig := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{certificate},
+	}
+
+	clientCAFile := strings.TrimSpace(a.cfg.GRPCTLSClientCAFile)
+	if clientCAFile != "" {
+		caBytes, err := os.ReadFile(clientCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read grpc client ca file: %w", err)
+		}
+		clientPool := x509.NewCertPool()
+		if !clientPool.AppendCertsFromPEM(caBytes) {
+			return nil, errors.New("append grpc client ca pem failed")
+		}
+		tlsConfig.ClientCAs = clientPool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return credentials.NewTLS(tlsConfig), nil
+}
+
+func agentDialCredentialsFromEnv() (credentials.TransportCredentials, error) {
+	caFile := strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_CA_FILE"))
+	certFile := strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_CERT_FILE"))
+	keyFile := strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_KEY_FILE"))
+	serverName := strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_SERVER_NAME"))
+	skipVerify := strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_INSECURE_SKIP_VERIFY")), "true")
+
+	if caFile == "" && certFile == "" && keyFile == "" && serverName == "" && !skipVerify {
+		return nil, nil
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         serverName,
+		InsecureSkipVerify: skipVerify,
+	}
+	if caFile != "" {
+		caBytes, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read agent ca file: %w", err)
+		}
+		rootPool := x509.NewCertPool()
+		if !rootPool.AppendCertsFromPEM(caBytes) {
+			return nil, errors.New("append agent ca pem failed")
+		}
+		tlsConfig.RootCAs = rootPool
+	}
+	if certFile != "" || keyFile != "" {
+		if certFile == "" || keyFile == "" {
+			return nil, errors.New("both AIOPS_AGENT_TLS_CERT_FILE and AIOPS_AGENT_TLS_KEY_FILE are required for mTLS")
+		}
+		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load agent tls key pair: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{certificate}
+	}
+	return credentials.NewTLS(tlsConfig), nil
+}
+
+func grpcAddrExposed(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		host = strings.TrimSpace(addr)
+	}
+	switch host {
+	case "", "127.0.0.1", "::1", "localhost":
+		return false
+	default:
+		return true
+	}
+}
+
+func agentPeerRemoteAddress(ctx context.Context) string {
+	info, ok := peer.FromContext(ctx)
+	if !ok || info.Addr == nil {
+		return ""
+	}
+	return info.Addr.String()
 }
 
 func (a *App) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -625,12 +820,22 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录 GPT 账号"})
 		return
 	}
-	if req.HostID != model.ServerLocalHostID {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "MVP only supports server-local execution"})
+	host := a.findHost(req.HostID)
+	if host.Status != "online" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "选中的主机当前离线"})
+		return
+	}
+	if !host.Executable {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "选中的主机暂不支持 Codex 执行"})
 		return
 	}
 
-	a.store.EnsureSession(sessionID)
+	session := a.store.EnsureSession(sessionID)
+	previousHostID := defaultHostID(session.SelectedHostID)
+	if previousHostID != req.HostID && session.ThreadID != "" {
+		a.store.ClearThread(sessionID)
+		a.appendHostSwitchCard(sessionID, previousHostID, req.HostID)
+	}
 	a.store.TouchSession(sessionID)
 	a.store.SetSelectedHost(sessionID, req.HostID)
 	log.Printf("chat message session=%s host=%s text=%q", sessionID, req.HostID, truncate(req.Message, 120))
@@ -765,15 +970,19 @@ func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) 
 
 func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req chatRequest) error {
 	var result map[string]any
+	developerInstructions := fmt.Sprintf(
+		"Current selected host is %s. Operate only on this host. The default writable workspace is %s. Do not assume access outside the workspace unless explicitly requested and approved.",
+		req.HostID,
+		a.cfg.DefaultWorkspace,
+	)
+	if isRemoteHostID(req.HostID) {
+		developerInstructions = remoteTurnDeveloperInstructions(req.HostID)
+	}
 	err := a.codex.Request(ctx, "turn/start", map[string]any{
-		"threadId":       threadID,
-		"cwd":            a.cfg.DefaultWorkspace,
-		"approvalPolicy": "untrusted",
-		"developerInstructions": fmt.Sprintf(
-			"Current selected host is %s. Operate only on this host. The default writable workspace is %s. Do not assume access outside the workspace unless explicitly requested and approved.",
-			req.HostID,
-			a.cfg.DefaultWorkspace,
-		),
+		"threadId":              threadID,
+		"cwd":                   a.cfg.DefaultWorkspace,
+		"approvalPolicy":        "untrusted",
+		"developerInstructions": developerInstructions,
 		"sandboxPolicy": map[string]any{
 			"type":          "workspaceWrite",
 			"writableRoots": []string{a.cfg.DefaultWorkspace},
@@ -787,6 +996,7 @@ func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req c
 	}
 	if turnID := getTurnID(result); turnID != "" {
 		a.store.SetTurn(sessionID, turnID)
+		a.scheduleTurnStallMonitor(sessionID, stalledTurnTimeout)
 	}
 	return nil
 }
@@ -798,6 +1008,19 @@ func (a *App) appendThreadResetCard(sessionID string) {
 		Type:      "NoticeCard",
 		Title:     "Thread restarted",
 		Text:      "The previous Codex thread was no longer available, so this request is continuing in a fresh thread.",
+		Status:    "notice",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+func (a *App) appendHostSwitchCard(sessionID, fromHostID, toHostID string) {
+	now := model.NowString()
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("notice"),
+		Type:      "NoticeCard",
+		Title:     "Host context switched",
+		Text:      fmt.Sprintf("已从 %s 切换到 %s，后续请求会在新的主机线程中继续。", fromHostID, toHostID),
 		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -834,6 +1057,75 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	log.Printf("approval decision session=%s approval=%s decision=%s", sessionID, approvalID, decision)
 	if decision == "accept_session" {
 		a.store.AddApprovalGrant(sessionID, approvalGrantFromApproval(approval))
+	}
+	if approval.Type == "remote_command" || approval.Type == "remote_file_change" {
+		now := model.NowString()
+		cardStatus := approvalStatusFromDecision(decision)
+		a.store.ResolveApproval(sessionID, approvalID, cardStatus, now)
+		a.store.UpsertCard(sessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
+
+		if decision == "decline" {
+			a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
+				card.Status = cardStatus
+				card.UpdatedAt = now
+			})
+			a.setRuntimeTurnPhase(sessionID, "thinking")
+			a.audit("approval.decision", map[string]any{
+				"sessionId":  sessionID,
+				"approvalId": approvalID,
+				"type":       approval.Type,
+				"hostId":     approval.HostID,
+				"decision":   cardStatus,
+			})
+			a.broadcastSnapshot(sessionID)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := a.codex.Respond(ctx, approval.RequestIDRaw, toolResponse("User declined the requested system mutation.", false)); err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+
+		createdAt := now
+		if existing := a.cardByID(sessionID, approval.ItemID); existing != nil && existing.CreatedAt != "" {
+			createdAt = existing.CreatedAt
+		}
+		if approval.Type == "remote_file_change" {
+			a.store.UpsertCard(sessionID, model.Card{
+				ID:        approval.ItemID,
+				Type:      "FileChangeCard",
+				Title:     "Remote file change",
+				Status:    "inProgress",
+				Changes:   approval.Changes,
+				CreatedAt: createdAt,
+				UpdatedAt: now,
+			})
+		} else {
+			a.store.UpsertCard(sessionID, model.Card{
+				ID:        approval.ItemID,
+				Type:      "CommandCard",
+				Title:     "Command execution",
+				Command:   approval.Command,
+				Cwd:       approval.Cwd,
+				Status:    "inProgress",
+				CreatedAt: createdAt,
+				UpdatedAt: now,
+			})
+		}
+		a.setRuntimeTurnPhase(sessionID, "executing")
+		a.audit("approval.decision", map[string]any{
+			"sessionId":  sessionID,
+			"approvalId": approvalID,
+			"type":       approval.Type,
+			"hostId":     approval.HostID,
+			"decision":   cardStatus,
+		})
+		a.broadcastSnapshot(sessionID)
+		go a.executeApprovedRemoteOperation(sessionID, approval)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
 	}
 
 	codexDecision := mapApprovalDecision(decision, approval)
@@ -1363,7 +1655,7 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		}
 		a.store.UpsertCard(sessionID, card)
 		a.broadcastSnapshot(sessionID)
-	case "request_user_input":
+	case "item/tool/requestUserInput", "request_user_input":
 		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			_ = a.codex.RespondError(context.Background(), string(rawID), -32000, "session not found for request_user_input")
@@ -1408,6 +1700,8 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			"questions": len(questions),
 		})
 		a.broadcastSnapshot(sessionID)
+	case "item/tool/call":
+		a.handleDynamicToolCall(string(rawID), payload)
 	}
 }
 
@@ -1592,8 +1886,9 @@ func (a *App) startRuntimeTurn(sessionID, hostID string) {
 		runtime.Turn.HostID = defaultHostID(hostID)
 		runtime.Turn.StartedAt = startedAt
 		runtime.Activity = model.ActivityRuntime{
-			ViewedFiles:        make([]model.ActivityEntry, 0),
-			SearchedWebQueries: make([]model.ActivityEntry, 0),
+			ViewedFiles:            make([]model.ActivityEntry, 0),
+			SearchedWebQueries:     make([]model.ActivityEntry, 0),
+			SearchedContentQueries: make([]model.ActivityEntry, 0),
 		}
 	})
 }
@@ -1616,8 +1911,103 @@ func (a *App) finishRuntimeTurn(sessionID, phase string) {
 		runtime.Turn.Active = false
 		runtime.Turn.Phase = phase
 		runtime.Activity.CurrentReadingFile = ""
+		runtime.Activity.CurrentChangingFile = ""
+		runtime.Activity.CurrentListingPath = ""
+		runtime.Activity.CurrentSearchKind = ""
+		runtime.Activity.CurrentSearchQuery = ""
 		runtime.Activity.CurrentWebSearchQuery = ""
 	})
+}
+
+func (a *App) scheduleTurnStallMonitor(sessionID string, delay time.Duration) {
+	session := a.store.Session(sessionID)
+	if session == nil || session.TurnID == "" {
+		return
+	}
+	turnID := session.TurnID
+
+	go func() {
+		ticker := time.NewTicker(delay)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			current := a.store.Session(sessionID)
+			if current == nil || current.TurnID != turnID {
+				return
+			}
+			if !current.Runtime.Turn.Active {
+				return
+			}
+			if !isStallWatchPhase(current.Runtime.Turn.Phase) {
+				continue
+			}
+			if a.hasPendingApprovals(sessionID) || a.hasPendingChoices(sessionID) {
+				continue
+			}
+
+			lastActivityAt, err := time.Parse(time.RFC3339, current.LastActivityAt)
+			if err != nil || time.Since(lastActivityAt) < delay {
+				continue
+			}
+
+			a.failStalledTurn(sessionID, turnID, delay)
+			return
+		}
+	}()
+}
+
+func isStallWatchPhase(phase string) bool {
+	switch phase {
+	case "thinking", "planning", "finalizing":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) failStalledTurn(sessionID, turnID string, delay time.Duration) {
+	current := a.store.Session(sessionID)
+	if current == nil || current.TurnID != turnID || !current.Runtime.Turn.Active {
+		return
+	}
+	if !isStallWatchPhase(current.Runtime.Turn.Phase) {
+		return
+	}
+
+	now := model.NowString()
+	a.finishRuntimeTurn(sessionID, "failed")
+	a.finalizeOpenTurnCards(sessionID, "failed")
+	a.resolvePendingTurnRequests(sessionID, now)
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("error"),
+		Type:      "ErrorCard",
+		Title:     "Codex 响应超时",
+		Message:   fmt.Sprintf("这次请求在 %.0f 秒内没有返回任何进展，已自动结束。请重试；如果频繁出现，多半是 Codex 到 GPT 的连接不稳定。", delay.Seconds()),
+		Text:      fmt.Sprintf("这次请求在 %.0f 秒内没有返回任何进展，已自动结束。请重试；如果频繁出现，多半是 Codex 到 GPT 的连接不稳定。", delay.Seconds()),
+		Status:    "failed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.broadcastSnapshot(sessionID)
+
+	if current.ThreadID == "" || !a.codex.Alive() {
+		return
+	}
+	go func(threadID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		params := map[string]any{
+			"threadId":                   threadID,
+			"clean_background_terminals": true,
+		}
+		if turnID != "" {
+			params["turnId"] = turnID
+		}
+		var result map[string]any
+		if err := a.codex.Request(ctx, "turn/interrupt", params, &result); err != nil {
+			log.Printf("stalled turn interrupt failed session=%s turn=%s err=%s", sessionID, turnID, truncate(err.Error(), 200))
+		}
+	}(current.ThreadID)
 }
 
 func (a *App) resumeThinkingAfterExecution(sessionID string) {
@@ -1874,7 +2264,7 @@ func (a *App) shouldIgnoreTurnPayload(sessionID string, payload map[string]any) 
 	if session == nil {
 		return false
 	}
-	if session.Runtime.Turn.Active || session.Runtime.Turn.Phase != "aborted" {
+	if session.Runtime.Turn.Active || (session.Runtime.Turn.Phase != "aborted" && session.Runtime.Turn.Phase != "failed") {
 		return false
 	}
 	turnID := getTurnID(payload)
@@ -1942,6 +2332,10 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 			runtime.Activity.CurrentReadingFile = currentLabel
 		case "web_search":
 			if completed {
+				if runtime.Activity.CurrentSearchKind == "web" && runtime.Activity.CurrentSearchQuery == currentLabel {
+					runtime.Activity.CurrentSearchKind = ""
+					runtime.Activity.CurrentSearchQuery = ""
+				}
 				if runtime.Activity.CurrentWebSearchQuery == currentLabel {
 					runtime.Activity.CurrentWebSearchQuery = ""
 				}
@@ -1951,11 +2345,18 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 				runtime.Activity.SearchCount = len(runtime.Activity.SearchedWebQueries)
 				return
 			}
+			runtime.Activity.CurrentSearchKind = "web"
+			runtime.Activity.CurrentSearchQuery = currentLabel
 			runtime.Activity.CurrentWebSearchQuery = currentLabel
 		case "list":
 			if completed {
+				if runtime.Activity.CurrentListingPath == currentLabel {
+					runtime.Activity.CurrentListingPath = ""
+				}
 				runtime.Activity.ListCount++
+				return
 			}
+			runtime.Activity.CurrentListingPath = currentLabel
 		}
 	})
 }
@@ -1998,6 +2399,7 @@ func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any,
 
 func (a *App) markTurnInterrupted(sessionID, turnID string) {
 	now := model.NowString()
+	a.cancelRemoteExecsForSession(sessionID, "任务已中断")
 	a.finishRuntimeTurn(sessionID, "aborted")
 	a.finalizeOpenTurnCards(sessionID, "failed")
 	a.resolvePendingTurnRequests(sessionID, now)
@@ -2164,13 +2566,60 @@ func durationBetween(startedAt, endedAt string) int64 {
 }
 
 func autoApprovalNoticeText(approval model.ApprovalRequest) string {
-	if approval.Type == "command" && approval.Command != "" {
+	if (approval.Type == "command" || approval.Type == "remote_command") && approval.Command != "" {
 		return fmt.Sprintf("已自动批准本会话内同类命令：%s", truncate(approval.Command, 72))
 	}
-	if approval.Type == "file_change" {
+	if approval.Type == "file_change" || approval.Type == "remote_file_change" {
 		return "已自动批准本会话内同类文件修改。"
 	}
 	return "已自动批准本会话内同类操作。"
+}
+
+func approvalMemoCard(host model.Host, approval model.ApprovalRequest, decision, now string) model.Card {
+	return model.Card{
+		ID:        "approval-memo-" + approval.ID,
+		Type:      "NoticeCard",
+		Text:      approvalMemoText(host, approval, decision),
+		Status:    approvalStatusFromDecision(decision),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func approvalMemoText(host model.Host, approval model.ApprovalRequest, decision string) string {
+	hostName := strings.TrimSpace(host.Name)
+	if hostName == "" {
+		hostName = strings.TrimSpace(approval.HostID)
+	}
+	if hostName == "" {
+		hostName = "当前主机"
+	}
+
+	prefix := "已同意在"
+	switch decision {
+	case "accept_session":
+		prefix = "已同意并记住在"
+	case "decline":
+		prefix = "已拒绝在"
+	}
+
+	action := "执行远程操作"
+	switch approval.Type {
+	case "remote_command", "command":
+		if approval.Command != "" {
+			action = "执行：" + truncate(approval.Command, 88)
+		}
+	case "remote_file_change", "file_change":
+		if len(approval.Changes) == 1 {
+			action = "修改文件：" + truncate(approval.Changes[0].Path, 88)
+		} else if len(approval.Changes) > 1 {
+			action = fmt.Sprintf("修改 %d 个文件（%s 等）", len(approval.Changes), truncate(approval.Changes[0].Path, 48))
+		} else {
+			action = "修改远程文件"
+		}
+	}
+
+	return fmt.Sprintf("%s %s %s", prefix, hostName, action)
 }
 
 func approvalGrantFromApproval(approval model.ApprovalRequest) model.ApprovalGrant {
@@ -2235,7 +2684,7 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	err := a.codex.Request(ctx, "thread/start", map[string]any{
+	params := map[string]any{
 		"model":          "gpt-5.4",
 		"cwd":            a.cfg.DefaultWorkspace,
 		"approvalPolicy": "untrusted",
@@ -2246,7 +2695,12 @@ Operate only on the selected host %q.
 Use the working directory as the default root and keep writes inside it unless the user explicitly requests otherwise.
 Summarize command results clearly for the web UI.
 `), selectedHostID),
-	}, &result)
+	}
+	if isRemoteHostID(selectedHostID) {
+		params["developerInstructions"] = remoteThreadDeveloperInstructions(selectedHostID)
+		params["dynamicTools"] = remoteDynamicTools()
+	}
+	err := a.codex.Request(ctx, "thread/start", params, &result)
 	if err != nil {
 		return "", err
 	}
@@ -2454,6 +2908,11 @@ func (a *App) monitorHosts(ctx context.Context) {
 			}
 			for _, hostID := range changed {
 				log.Printf("host-agent timeout host_id=%s marked offline", hostID)
+				a.clearAgentConnection(hostID, nil)
+				a.failRemoteTerminalsForHost(hostID, "remote host heartbeat timed out")
+				a.failRemoteExecsForHost(hostID, "remote host heartbeat timed out")
+				a.failAgentResponseWaitersForHost(hostID, "remote host heartbeat timed out")
+				a.notifyRemoteHostUnavailable(hostID, "远程主机连接超时", "远程主机心跳超时，当前操作已中断，可重试或刷新主机状态。")
 				a.audit("agent.timeout", map[string]any{
 					"hostId": hostID,
 				})
@@ -2588,6 +3047,34 @@ func (a *App) audit(event string, fields map[string]any) {
 	}
 }
 
+func (a *App) notifyRemoteHostUnavailable(hostID, title, message string) {
+	now := model.NowString()
+	retryable := true
+	for _, sessionID := range a.store.SessionIDs() {
+		session := a.store.Session(sessionID)
+		if session == nil {
+			continue
+		}
+		if defaultHostID(session.SelectedHostID) != hostID && defaultHostID(session.Runtime.Turn.HostID) != hostID {
+			continue
+		}
+		if session.Runtime.Turn.Active {
+			a.finishRuntimeTurn(sessionID, "failed")
+		}
+		a.store.UpsertCard(sessionID, model.Card{
+			ID:        fmt.Sprintf("remote-host-error-%s", hostID),
+			Type:      "ErrorCard",
+			Title:     title,
+			Message:   message,
+			Text:      message,
+			Status:    "failed",
+			Retryable: &retryable,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+}
+
 type oauthTokenResponse struct {
 	AccessToken string `json:"access_token"`
 	IDToken     string `json:"id_token"`
@@ -2662,11 +3149,12 @@ func (a *App) findHost(hostID string) model.Host {
 		}
 	}
 	return model.Host{
-		ID:         hostID,
-		Name:       hostID,
-		Kind:       "agent",
-		Status:     "online",
-		Executable: false,
+		ID:              hostID,
+		Name:            hostID,
+		Kind:            "agent",
+		Status:          "online",
+		Executable:      false,
+		TerminalCapable: false,
 	}
 }
 
