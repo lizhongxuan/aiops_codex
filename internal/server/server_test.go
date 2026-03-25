@@ -8,6 +8,7 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
 	"github.com/lizhongxuan/aiops-codex/internal/config"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
+	"github.com/lizhongxuan/aiops-codex/internal/store"
 )
 
 func TestCompletedCommandStatusTreatsShellErrorsAsFailed(t *testing.T) {
@@ -291,4 +292,51 @@ func TestFailStalledTurnMarksSessionFailed(t *testing.T) {
 	if !found {
 		t.Fatalf("expected stalled turn error card to be recorded")
 	}
+}
+
+func TestParseCodexReconnectProgress(t *testing.T) {
+	attempt, retryMax, ok := parseCodexReconnectProgress("Reconnecting... 2/5")
+	if !ok {
+		t.Fatalf("expected reconnect progress to be parsed")
+	}
+	if attempt != 2 || retryMax != 5 {
+		t.Fatalf("unexpected reconnect progress %d/%d", attempt, retryMax)
+	}
+
+	if _, _, ok := parseCodexReconnectProgress("connection closed"); ok {
+		t.Fatalf("expected non-reconnect message to be ignored")
+	}
+}
+
+func TestShouldAutoResetThread(t *testing.T) {
+	app := New(config.Config{})
+
+	t.Run("resets idle thread", func(t *testing.T) {
+		session := &store.SessionState{
+			ThreadID:       "thread-1",
+			LastActivityAt: time.Now().Add(-(autoThreadResetIdleThreshold + time.Minute)).Format(time.RFC3339),
+		}
+
+		if !app.shouldAutoResetThread(session, "你好") {
+			t.Fatalf("expected idle thread to reset")
+		}
+	})
+
+	t.Run("resets short prompt on long conversation", func(t *testing.T) {
+		session := &store.SessionState{
+			ThreadID:       "thread-2",
+			LastActivityAt: time.Now().Format(time.RFC3339),
+			Cards:          make([]model.Card, 0, autoThreadResetConversationThreshold),
+		}
+		for i := 0; i < autoThreadResetConversationThreshold; i++ {
+			session.Cards = append(session.Cards, model.Card{ID: model.NewID("msg"), Type: "UserMessageCard"})
+		}
+
+		if !app.shouldAutoResetThread(session, "你好") {
+			t.Fatalf("expected long conversation short prompt to reset")
+		}
+		if app.shouldAutoResetThread(session, "继续按刚才的方案把第 3 步展开说清楚") {
+			t.Fatalf("expected richer follow-up to keep current thread")
+		}
+	})
 }

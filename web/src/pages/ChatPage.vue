@@ -229,6 +229,8 @@ const pendingApprovals = computed(() => {
   return (store.snapshot.approvals || []).filter((approval) => approval.status === "pending");
 });
 
+const reconnectErrorPattern = /^Reconnecting\.\.\.\s*\d+\s*\/\s*\d+$/i;
+
 const activeApprovalCard = computed(() => {
   const nextApproval = pendingApprovals.value[0];
   if (!nextApproval) {
@@ -259,6 +261,13 @@ const visibleCards = computed(() => {
     if (card.status === "pending" && (card.type === "CommandApprovalCard" || card.type === "FileChangeApprovalCard")) {
       return false;
     }
+    if (card.id === "__codex_reconnect__") {
+      return false;
+    }
+    const reconnectText = (card.message || card.text || "").trim();
+    if (card.type === "ErrorCard" && reconnectErrorPattern.test(reconnectText)) {
+      return false;
+    }
     return true;
   });
 });
@@ -287,7 +296,7 @@ watch(
 
 /* ---- Reconnection ---- */
 const showReconnectBanner = computed(() => {
-  return store.runtime.codex.status === "reconnecting";
+  return store.runtime.codex.status === "reconnecting" || isStopped.value;
 });
 
 const reconnectLabel = computed(() => {
@@ -298,19 +307,18 @@ const reconnectLabel = computed(() => {
 
 const isStopped = computed(() => store.runtime.codex.status === "stopped");
 
-const connectionErrorCard = computed(() => {
-  if (!isStopped.value) return null;
-  const retryMax = store.runtime.codex.retryMax || 5;
-  const lastError = store.runtime.codex.lastError;
-  return {
-    id: "__codex_stopped__",
-    type: "ErrorCard",
-    title: "Codex app-server 已断开",
-    message: lastError
-      ? `连接恢复失败，已尝试 ${retryMax} 次。最后错误：${lastError}`
-      : `连接恢复失败，已达到 ${retryMax} 次重试上限。`,
-    retryable: true,
-  };
+const codexReconnectNotice = computed(() => {
+  return (
+    store.snapshot.cards.find((card) => card.id === "__codex_reconnect__" && card.status === "inProgress") || null
+  );
+});
+
+const showCodexReconnectBanner = computed(() => {
+  return !!codexReconnectNotice.value && store.runtime.codex.status === "connected";
+});
+
+const codexReconnectLabel = computed(() => {
+  return codexReconnectNotice.value?.message || codexReconnectNotice.value?.text || "与 GPT 的连接波动，正在自动恢复";
 });
 
 const composerPlaceholder = computed(() => {
@@ -539,13 +547,18 @@ onBeforeUnmount(() => {
     </button>
   </div>
 
+  <div class="reconnect-banner subtle" v-if="showCodexReconnectBanner">
+    <WifiOffIcon size="14" />
+    <span>{{ codexReconnectLabel }}</span>
+  </div>
+
   <div class="chat-container" ref="scrollContainer" @scroll="handleScroll">
     <div class="chat-stream-inner">
       <div v-if="store.loading" class="chat-banner loading-banner">
         <span class="spinner"></span> 正在初始化...
       </div>
 
-      <div v-if="!store.snapshot.cards.length && !store.loading && !showThinking" class="empty-state-canvas">
+      <div v-if="!visibleCards.length && !store.loading && !showThinking" class="empty-state-canvas">
         <BotIcon size="48" class="empty-icon" />
         <h2>What can I help you build?</h2>
         <p>I can help you write code, manage servers, execute commands, and orchestrate complex tasks.</p>
@@ -554,14 +567,6 @@ onBeforeUnmount(() => {
       <p v-if="store.errorMessage" class="chat-banner error">{{ store.errorMessage }}</p>
 
       <div class="chat-stream">
-        <div v-if="connectionErrorCard" class="stream-row row-assistant">
-          <CardItem
-            :card="connectionErrorCard"
-            @retry="handleRetry"
-            @refresh="handleRefresh"
-          />
-        </div>
-
         <div
           v-for="card in visibleCards"
           :key="card.id"
@@ -664,6 +669,12 @@ onBeforeUnmount(() => {
   font-size: 13px;
   font-weight: 500;
   border-bottom: 1px solid #fde68a;
+}
+
+.reconnect-banner.subtle {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-bottom-color: #bfdbfe;
 }
 
 .reconnect-btn {

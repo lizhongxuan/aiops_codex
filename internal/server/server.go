@@ -18,8 +18,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +39,17 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-const stalledTurnTimeout = 45 * time.Second
+const (
+	stalledTurnTimeout                    = 45 * time.Second
+	autoThreadResetIdleThreshold          = 4 * time.Hour
+	autoThreadResetCardThreshold          = 80
+	autoThreadResetConversationThreshold  = 24
+	autoThreadResetShortPromptRuneLimit   = 32
+	codexReconnectNoticeCardID            = "__codex_reconnect__"
+)
+
+var codexReconnectMessagePattern = regexp.MustCompile(`(?i)^reconnecting\.\.\.\s*(\d+)\s*/\s*(\d+)\s*$`)
+var contextualFollowupPattern = regexp.MustCompile(`(?i)(继续|刚才|上面|前面|前文|上一|这个|那个|第\s*\d+\s*步|same|above|previous|continue|earlier|step\s*\d+)`)
 
 type App struct {
 	cfg         config.Config
@@ -835,7 +847,21 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	if previousHostID != req.HostID && session.ThreadID != "" {
 		a.store.ClearThread(sessionID)
 		a.appendHostSwitchCard(sessionID, previousHostID, req.HostID)
+		session.ThreadID = ""
+	} else if a.shouldAutoResetThread(session, req.Message) {
+		log.Printf(
+			"auto thread reset session=%s host=%s cards=%d conversationCards=%d lastActivityAt=%s",
+			sessionID,
+			req.HostID,
+			len(session.Cards),
+			conversationCardCount(session.Cards),
+			session.LastActivityAt,
+		)
+		a.store.ClearThread(sessionID)
+		a.appendAutoThreadRefreshCard(sessionID)
+		session.ThreadID = ""
 	}
+	a.clearTransientCodexReconnectNotice(sessionID)
 	a.store.TouchSession(sessionID)
 	a.store.SetSelectedHost(sessionID, req.HostID)
 	log.Printf("chat message session=%s host=%s text=%q", sessionID, req.HostID, truncate(req.Message, 120))
@@ -1014,6 +1040,19 @@ func (a *App) appendThreadResetCard(sessionID string) {
 	})
 }
 
+func (a *App) appendAutoThreadRefreshCard(sessionID string) {
+	now := model.NowString()
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("notice"),
+		Type:      "NoticeCard",
+		Title:     "Thread refreshed",
+		Text:      "当前会话历史较长或间隔过久，已自动切换到新的线程以保持响应速度。",
+		Status:    "notice",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
 func (a *App) appendHostSwitchCard(sessionID, fromHostID, toHostID string) {
 	now := model.NowString()
 	a.store.UpsertCard(sessionID, model.Card{
@@ -1029,6 +1068,44 @@ func (a *App) appendHostSwitchCard(sessionID, fromHostID, toHostID string) {
 
 func isThreadNotFoundError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "thread not found")
+}
+
+func (a *App) shouldAutoResetThread(session *store.SessionState, message string) bool {
+	if session == nil || session.ThreadID == "" || session.Runtime.Turn.Active {
+		return false
+	}
+	if len(session.Cards) >= autoThreadResetCardThreshold {
+		return true
+	}
+	if conversationCardCount(session.Cards) >= autoThreadResetConversationThreshold && isShortStandalonePrompt(message) {
+		return true
+	}
+	lastActivityAt, err := time.Parse(time.RFC3339, session.LastActivityAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(lastActivityAt) >= autoThreadResetIdleThreshold
+}
+
+func conversationCardCount(cards []model.Card) int {
+	count := 0
+	for _, card := range cards {
+		if card.Type == "UserMessageCard" || card.Type == "MessageCard" {
+			count++
+		}
+	}
+	return count
+}
+
+func isShortStandalonePrompt(message string) bool {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" || strings.Contains(trimmed, "\n") {
+		return false
+	}
+	if contextualFollowupPattern.MatchString(trimmed) {
+		return false
+	}
+	return len([]rune(trimmed)) <= autoThreadResetShortPromptRuneLimit
 }
 
 func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -1297,6 +1374,11 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string)
 func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 	var payload map[string]any
 	_ = json.Unmarshal(params, &payload)
+	if method != "error" {
+		if sessionID := a.sessionIDFromPayload(payload); sessionID != "" {
+			a.clearTransientCodexReconnectNotice(sessionID)
+		}
+	}
 
 	switch method {
 	case "account/updated":
@@ -1505,6 +1587,13 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 				sessionIDs = []string{sessionID}
 			}
 		}
+		if attempt, retryMax, ok := parseCodexReconnectProgress(text); ok {
+			for _, id := range sessionIDs {
+				a.upsertTransientCodexReconnectNotice(id, attempt, retryMax)
+				a.broadcastSnapshot(id)
+			}
+			return
+		}
 		for _, id := range sessionIDs {
 			a.finishRuntimeTurn(id, "failed")
 			a.store.UpsertCard(id, model.Card{
@@ -1520,6 +1609,51 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			a.broadcastSnapshot(id)
 		}
 	}
+}
+
+func parseCodexReconnectProgress(message string) (int, int, bool) {
+	matches := codexReconnectMessagePattern.FindStringSubmatch(strings.TrimSpace(message))
+	if len(matches) != 3 {
+		return 0, 0, false
+	}
+	attempt, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	retryMax, err := strconv.Atoi(matches[2])
+	if err != nil {
+		return 0, 0, false
+	}
+	if attempt <= 0 || retryMax <= 0 {
+		return 0, 0, false
+	}
+	return attempt, retryMax, true
+}
+
+func (a *App) upsertTransientCodexReconnectNotice(sessionID string, attempt, retryMax int) {
+	now := model.NowString()
+	createdAt := now
+	if existing := a.cardByID(sessionID, codexReconnectNoticeCardID); existing != nil && existing.CreatedAt != "" {
+		createdAt = existing.CreatedAt
+	}
+	text := fmt.Sprintf("与 GPT 的连接波动，正在自动重连 %d/%d", attempt, retryMax)
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        codexReconnectNoticeCardID,
+		Type:      "NoticeCard",
+		Title:     "连接恢复中",
+		Text:      text,
+		Message:   text,
+		Status:    "inProgress",
+		CreatedAt: createdAt,
+		UpdatedAt: now,
+	})
+}
+
+func (a *App) clearTransientCodexReconnectNotice(sessionID string) {
+	a.store.UpdateCard(sessionID, codexReconnectNoticeCardID, func(card *model.Card) {
+		card.Status = "completed"
+		card.UpdatedAt = model.NowString()
+	})
 }
 
 func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, params json.RawMessage) {
