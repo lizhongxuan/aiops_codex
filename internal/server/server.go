@@ -191,6 +191,8 @@ func (a *App) Start(ctx context.Context) error {
 
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/api/v1/healthz", a.handleHealthz)
+	httpMux.HandleFunc("/api/v1/sessions", a.withBrowserSession(a.handleSessions))
+	httpMux.HandleFunc("/api/v1/sessions/", a.withBrowserSession(a.handleSessionActivation))
 	httpMux.HandleFunc("/api/v1/state", a.withSession(a.handleState))
 	httpMux.HandleFunc("/api/v1/thread/reset", a.withSession(a.handleThreadReset))
 	httpMux.HandleFunc("/api/v1/auth/login", a.withSession(a.handleAuthLogin))
@@ -534,6 +536,65 @@ func (a *App) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		"ok":            status == http.StatusOK,
 		"codexAlive":    a.codex.Alive(),
 		"codexLastExit": a.codex.LastExitError(),
+	})
+}
+
+func (a *App) handleSessions(w http.ResponseWriter, r *http.Request, browserID string) {
+	activeSessionID := a.store.EnsureActiveSession(browserID)
+	switch r.Method {
+	case http.MethodGet:
+		a.syncAccountState(r.Context(), activeSessionID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"activeSessionId": activeSessionID,
+			"sessions":        a.store.SessionSummaries(browserID),
+		})
+	case http.MethodPost:
+		if current := a.store.Session(activeSessionID); current != nil && current.Runtime.Turn.Active {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "当前任务执行中，暂时无法新建会话"})
+			return
+		}
+		session := a.store.CreateSession(browserID)
+		a.syncAccountState(r.Context(), session.ID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"activeSessionId": session.ID,
+			"sessions":        a.store.SessionSummaries(browserID),
+			"snapshot":        a.snapshot(session.ID),
+		})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (a *App) handleSessionActivation(w http.ResponseWriter, r *http.Request, browserID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	targetSessionID := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+	targetSessionID = strings.TrimSuffix(targetSessionID, "/activate")
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	if targetSessionID == "" || !strings.HasSuffix(r.URL.Path, "/activate") {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+
+	currentSessionID := a.store.EnsureActiveSession(browserID)
+	if currentSessionID != targetSessionID {
+		if current := a.store.Session(currentSessionID); current != nil && current.Runtime.Turn.Active {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "当前任务执行中，完成后再切换会话"})
+			return
+		}
+	}
+	if err := a.store.ActivateSession(browserID, targetSessionID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	a.syncAccountState(r.Context(), targetSessionID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"activeSessionId": targetSessionID,
+		"sessions":        a.store.SessionSummaries(browserID),
+		"snapshot":        a.snapshot(targetSessionID),
 	})
 }
 
@@ -2897,30 +2958,46 @@ func (a *App) serveFrontend() http.Handler {
 
 func (a *App) withSession(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionID := a.getOrCreateSessionID(w, r)
+		browserID := a.getOrCreateBrowserSessionID(w, r)
+		sessionID := a.store.EnsureActiveSession(browserID)
 		next(w, r, sessionID)
 	}
 }
 
-func (a *App) getOrCreateSessionID(w http.ResponseWriter, r *http.Request) string {
+func (a *App) withBrowserSession(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		browserID := a.getOrCreateBrowserSessionID(w, r)
+		next(w, r, browserID)
+	}
+}
+
+func (a *App) getOrCreateBrowserSessionID(w http.ResponseWriter, r *http.Request) string {
 	if cookie, err := r.Cookie(a.cfg.SessionCookieName); err == nil && cookie.Value != "" {
-		if sessionID, ok := a.verifySessionCookie(cookie.Value); ok {
-			a.store.EnsureSession(sessionID)
-			return sessionID
+		if browserID, ok := a.verifySessionCookie(cookie.Value); ok {
+			if a.store.BrowserSessionExists(browserID) {
+				a.store.EnsureBrowserSession(browserID)
+				return browserID
+			}
+			if a.store.SessionExists(browserID) {
+				a.store.AttachLegacySessionToBrowser(browserID, browserID)
+				return browserID
+			}
+			a.store.EnsureBrowserSession(browserID)
+			return browserID
 		}
 	}
-	sessionID := model.NewID("sess")
+	browserID := model.NewID("browser")
 	http.SetCookie(w, &http.Cookie{
 		Name:     a.cfg.SessionCookieName,
-		Value:    a.signSessionCookie(sessionID),
+		Value:    a.signSessionCookie(browserID),
 		Path:     "/",
 		HttpOnly: true,
 		Expires:  time.Now().Add(a.cfg.SessionCookieTTL),
 		MaxAge:   int(a.cfg.SessionCookieTTL / time.Second),
 		SameSite: http.SameSiteLaxMode,
 	})
-	a.store.EnsureSession(sessionID)
-	return sessionID
+	a.store.EnsureBrowserSession(browserID)
+	return browserID
 }
 
 func (a *App) syncAccountState(ctx context.Context, sessionID string) {

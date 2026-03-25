@@ -221,3 +221,78 @@ func TestChoiceLifecycleInMemory(t *testing.T) {
 		t.Fatalf("expected choice to be resolved, got %#v", resolved)
 	}
 }
+
+func TestBrowserSessionTracksMultipleChatSessions(t *testing.T) {
+	st := New()
+	browserID := "browser-test"
+
+	first := st.CreateSession(browserID)
+	second := st.CreateSession(browserID)
+
+	browser := st.BrowserSession(browserID)
+	if browser == nil {
+		t.Fatalf("expected browser session to exist")
+	}
+	if len(browser.SessionIDs) != 2 {
+		t.Fatalf("expected 2 chat sessions, got %d", len(browser.SessionIDs))
+	}
+	if browser.ActiveSessionID != second.ID {
+		t.Fatalf("expected latest session to be active, got %q", browser.ActiveSessionID)
+	}
+
+	if err := st.ActivateSession(browserID, first.ID); err != nil {
+		t.Fatalf("activate session: %v", err)
+	}
+	browser = st.BrowserSession(browserID)
+	if browser.ActiveSessionID != first.ID {
+		t.Fatalf("expected first session to become active, got %q", browser.ActiveSessionID)
+	}
+
+	summaries := st.SessionSummaries(browserID)
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 summaries, got %d", len(summaries))
+	}
+}
+
+func TestSessionTranscriptRestoresAfterReload(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	st := New()
+	st.SetStatePath(statePath)
+
+	browserID := "browser-persist"
+	session := st.CreateSession(browserID)
+	st.UpsertCard(session.ID, model.Card{
+		ID:        "card-1",
+		Type:      "AssistantMessageCard",
+		Text:      "hello history",
+		Status:    "completed",
+		CreatedAt: model.NowString(),
+		UpdatedAt: model.NowString(),
+	})
+	st.flushSessionPersistence(session.ID)
+
+	reloaded := New()
+	reloaded.SetStatePath(statePath)
+	if err := reloaded.LoadStableState(statePath); err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	restoredBrowser := reloaded.BrowserSession(browserID)
+	if restoredBrowser == nil {
+		t.Fatalf("expected browser session to be restored")
+	}
+	if restoredBrowser.ActiveSessionID != session.ID {
+		t.Fatalf("expected active session %q, got %q", session.ID, restoredBrowser.ActiveSessionID)
+	}
+
+	restoredSession := reloaded.Session(session.ID)
+	if restoredSession == nil {
+		t.Fatalf("expected session to be restored")
+	}
+	if len(restoredSession.Cards) != 1 {
+		t.Fatalf("expected 1 restored card, got %d", len(restoredSession.Cards))
+	}
+	if restoredSession.Cards[0].Text != "hello history" {
+		t.Fatalf("unexpected restored card: %#v", restoredSession.Cards[0])
+	}
+}

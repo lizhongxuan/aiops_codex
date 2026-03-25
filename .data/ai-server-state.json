@@ -458,7 +458,7 @@
         "chatgptAccountId": "00fb2540-c8a8-4e64-b39a-89a6c7ad793d"
       },
       "createdAt": "2026-03-25T23:32:33+08:00",
-      "lastActivityAt": "2026-03-25T23:34:06+08:00"
+      "lastActivityAt": "2026-03-25T23:34:28+08:00"
     },
     "sess-5d57e22506de725b": {
       "id": "sess-5d57e22506de725b",
@@ -2545,7 +2545,7 @@
       "labels": {
         "env": "dev"
       },
-      "lastHeartbeat": "2026-03-25T23:34:25+08:00"
+      "lastHeartbeat": "2026-03-26T00:17:55+08:00"
     },
     "server-local": {
       "id": "server-local",

@@ -57,6 +57,12 @@ button, input, textarea, select {
   padding: 16px;
 }
 
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .nav-button.new-thread {
   width: 100%;
   display: flex;
@@ -76,6 +82,27 @@ button, input, textarea, select {
 
 .nav-button.new-thread:hover {
   background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.nav-button.secondary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid var(--sidebar-border);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-main);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.nav-button.secondary:hover {
+  background: white;
   border-color: #cbd5e1;
 }
 
