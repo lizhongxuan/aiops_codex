@@ -245,3 +245,24 @@
 {"event":"agent.timeout","hostId":"agent-local","ts":"2026-03-25T03:10:39+08:00"}
 {"event":"agent.timeout","hostId":"agent-local","ts":"2026-03-25T07:06:38+08:00"}
 {"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"分析一下今天A股走势","ts":"2026-03-25T07:28:15+08:00"}
+{"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"agent-local","hostname":"agent-local","os":"darwin","ts":"2026-03-25T07:42:20+08:00"}
+{"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"agent-local","hostname":"agent-local","os":"darwin","ts":"2026-03-25T07:48:31+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"帮我看下A股","ts":"2026-03-25T07:48:59+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"看下本地有什么文件","ts":"2026-03-25T07:53:39+08:00"}
+{"approvalId":"approval-0cef79035954640e","command":"/bin/zsh -lc 'find . -maxdepth 2 -print | sort'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T07:53:52+08:00","type":"command"}
+{"approvalId":"approval-940f7ad3e6f46335","command":"/bin/zsh -lc 'find ./sftp-upload -maxdepth 3 -print | sort'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T07:53:52+08:00","type":"command"}
+{"approvalId":"approval-0cef79035954640e","decision":"accepted_for_session","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T07:53:55+08:00","type":"command"}
+{"approvalId":"approval-940f7ad3e6f46335","decision":"accepted_for_session","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T07:53:56+08:00","type":"command"}
+{"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"agent-local","hostname":"agent-local","os":"darwin","ts":"2026-03-25T07:55:03+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"看下A股行情","ts":"2026-03-25T07:56:07+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"查看本地有什么文件?","ts":"2026-03-25T08:03:27+08:00"}
+{"approvalId":"approval-4a3975d86652b438","command":"/bin/zsh -lc 'find /Users/lizhongxuan/.aiops_codex -maxdepth 3 -type f | sort'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T08:03:45+08:00","type":"command"}
+{"approvalId":"approval-4a3975d86652b438","decision":"accepted_for_session","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T08:03:50+08:00","type":"command"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"查看本地有什么文件?","ts":"2026-03-25T08:12:40+08:00"}
+{"approvalId":"approval-fe8d09c5698a4afc","command":"/bin/zsh -lc \"find /Users/lizhongxuan/.aiops_codex -maxdepth 3 \\\\( -type f -o -type d \\\\) | sort\"","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T08:12:52+08:00","type":"command"}
+{"approvalId":"approval-b55b91ea4e880b06","command":"/bin/zsh -lc 'find /Users/lizhongxuan -maxdepth 1 -mindepth 1 | sort'","cwd":"/Users/lizhongxuan/.aiops_codex","event":"approval.requested","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T08:12:52+08:00","type":"command"}
+{"approvalId":"approval-fe8d09c5698a4afc","decision":"accepted_for_session","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T08:14:33+08:00","type":"command"}
+{"approvalId":"approval-b55b91ea4e880b06","decision":"accepted_for_session","event":"approval.decision","hostId":"server-local","sessionId":"sess-2203add776c38e48","ts":"2026-03-25T08:14:34+08:00","type":"command"}
+{"event":"agent.timeout","hostId":"agent-local","ts":"2026-03-25T08:56:11+08:00"}
+{"event":"agent.timeout","hostId":"agent-local","ts":"2026-03-25T09:16:57+08:00"}
+{"event":"agent.timeout","hostId":"agent-local","ts":"2026-03-25T09:20:16+08:00"}

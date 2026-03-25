@@ -9124,3 +9124,335 @@
 2026/03/25 07:36:58 host-agent heartbeat host_id=agent-local
 2026/03/25 07:37:08 host-agent heartbeat host_id=agent-local
 2026/03/25 07:37:18 host-agent heartbeat host_id=agent-local
+2026/03/25 07:37:28 host-agent heartbeat host_id=agent-local
+2026/03/25 07:37:38 host-agent heartbeat host_id=agent-local
+2026/03/25 07:37:48 host-agent heartbeat host_id=agent-local
+2026/03/25 07:37:58 host-agent heartbeat host_id=agent-local
+2026/03/25 07:38:08 host-agent heartbeat host_id=agent-local
+2026/03/25 07:38:18 host-agent heartbeat host_id=agent-local
+2026/03/25 07:38:28 host-agent heartbeat host_id=agent-local
+2026/03/25 07:38:38 host-agent heartbeat host_id=agent-local
+2026/03/25 07:38:48 host-agent heartbeat host_id=agent-local
+2026/03/25 07:38:58 host-agent heartbeat host_id=agent-local
+2026/03/25 07:39:08 host-agent heartbeat host_id=agent-local
+2026/03/25 07:39:18 host-agent heartbeat host_id=agent-local
+2026/03/25 07:39:28 host-agent heartbeat host_id=agent-local
+2026/03/25 07:39:38 host-agent heartbeat host_id=agent-local
+2026/03/25 07:39:48 host-agent heartbeat host_id=agent-local
+2026/03/25 07:39:58 host-agent heartbeat host_id=agent-local
+2026/03/25 07:40:08 host-agent heartbeat host_id=agent-local
+2026/03/25 07:40:18 host-agent heartbeat host_id=agent-local
+2026/03/25 07:40:28 host-agent heartbeat host_id=agent-local
+2026/03/25 07:40:38 host-agent heartbeat host_id=agent-local
+2026/03/25 07:40:48 host-agent heartbeat host_id=agent-local
+2026/03/25 07:40:58 host-agent heartbeat host_id=agent-local
+2026/03/25 07:41:08 host-agent heartbeat host_id=agent-local
+2026/03/25 07:41:18 host-agent heartbeat host_id=agent-local
+2026/03/25 07:41:28 host-agent heartbeat host_id=agent-local
+2026/03/25 07:41:38 host-agent heartbeat host_id=agent-local
+2026/03/25 07:41:48 host-agent heartbeat host_id=agent-local
+2026/03/25 07:41:58 host-agent heartbeat host_id=agent-local
+2026/03/25 07:42:08 host-agent heartbeat host_id=agent-local
+2026/03/25 07:42:12 codex app-server exited with error: signal: killed
+2026/03/25 07:42:19 http server listening on 127.0.0.1:18080
+2026/03/25 07:42:19 grpc server listening on 127.0.0.1:18090
+2026/03/25 07:42:20 host-agent register host_id=agent-local hostname=agent-local
+2026/03/25 07:42:30 host-agent heartbeat host_id=agent-local
+2026/03/25 07:42:40 host-agent heartbeat host_id=agent-local
+2026/03/25 07:42:50 host-agent heartbeat host_id=agent-local
+2026/03/25 07:43:00 host-agent heartbeat host_id=agent-local
+2026/03/25 07:43:10 host-agent heartbeat host_id=agent-local
+2026/03/25 07:43:20 host-agent heartbeat host_id=agent-local
+2026/03/25 07:43:30 host-agent heartbeat host_id=agent-local
+2026/03/25 07:43:40 host-agent heartbeat host_id=agent-local
+2026/03/25 07:43:50 host-agent heartbeat host_id=agent-local
+2026/03/25 07:44:00 host-agent heartbeat host_id=agent-local
+2026/03/25 07:44:10 host-agent heartbeat host_id=agent-local
+2026/03/25 07:44:20 host-agent heartbeat host_id=agent-local
+2026/03/25 07:44:30 host-agent heartbeat host_id=agent-local
+2026/03/25 07:44:40 host-agent heartbeat host_id=agent-local
+2026/03/25 07:44:50 host-agent heartbeat host_id=agent-local
+2026/03/25 07:45:00 host-agent heartbeat host_id=agent-local
+2026/03/25 07:45:10 host-agent heartbeat host_id=agent-local
+2026/03/25 07:45:20 host-agent heartbeat host_id=agent-local
+2026/03/25 07:45:30 host-agent heartbeat host_id=agent-local
+2026/03/25 07:45:40 host-agent heartbeat host_id=agent-local
+2026/03/25 07:45:50 host-agent heartbeat host_id=agent-local
+2026/03/25 07:46:00 host-agent heartbeat host_id=agent-local
+2026/03/25 07:46:10 host-agent heartbeat host_id=agent-local
+2026/03/25 07:46:20 host-agent heartbeat host_id=agent-local
+2026/03/25 07:46:30 host-agent heartbeat host_id=agent-local
+2026/03/25 07:46:40 host-agent heartbeat host_id=agent-local
+2026/03/25 07:46:50 host-agent heartbeat host_id=agent-local
+2026/03/25 07:47:00 host-agent heartbeat host_id=agent-local
+2026/03/25 07:47:10 host-agent heartbeat host_id=agent-local
+2026/03/25 07:47:20 host-agent heartbeat host_id=agent-local
+2026/03/25 07:47:30 host-agent heartbeat host_id=agent-local
+2026/03/25 07:47:40 host-agent heartbeat host_id=agent-local
+2026/03/25 07:47:50 host-agent heartbeat host_id=agent-local
+2026/03/25 07:48:00 host-agent heartbeat host_id=agent-local
+2026/03/25 07:48:10 host-agent heartbeat host_id=agent-local
+2026/03/25 07:48:20 host-agent heartbeat host_id=agent-local
+2026/03/25 07:48:20 codex app-server exited with error: signal: killed
+2026/03/25 07:48:29 http server listening on 127.0.0.1:18080
+2026/03/25 07:48:29 grpc server listening on 127.0.0.1:18090
+2026/03/25 07:48:31 host-agent register host_id=agent-local hostname=agent-local
+2026/03/25 07:48:41 host-agent heartbeat host_id=agent-local
+2026/03/25 07:48:51 host-agent heartbeat host_id=agent-local
+2026/03/25 07:48:59 chat message session=sess-2203add776c38e48 host=server-local text="帮我看下A股"
+2026/03/25 07:49:01 host-agent heartbeat host_id=agent-local
+2026/03/25 07:49:11 host-agent heartbeat host_id=agent-local
+2026/03/25 07:49:21 host-agent heartbeat host_id=agent-local
+2026/03/25 07:49:31 host-agent heartbeat host_id=agent-local
+2026/03/25 07:49:41 host-agent heartbeat host_id=agent-local
+2026/03/25 07:49:51 host-agent heartbeat host_id=agent-local
+2026/03/25 07:50:01 host-agent heartbeat host_id=agent-local
+2026/03/25 07:50:11 host-agent heartbeat host_id=agent-local
+2026/03/25 07:50:21 host-agent heartbeat host_id=agent-local
+2026/03/25 07:50:31 host-agent heartbeat host_id=agent-local
+2026/03/25 07:50:41 host-agent heartbeat host_id=agent-local
+2026/03/25 07:50:51 host-agent heartbeat host_id=agent-local
+2026/03/25 07:51:01 host-agent heartbeat host_id=agent-local
+2026/03/25 07:51:11 host-agent heartbeat host_id=agent-local
+2026/03/25 07:51:21 host-agent heartbeat host_id=agent-local
+2026/03/25 07:51:31 host-agent heartbeat host_id=agent-local
+2026/03/25 07:51:37 background terminal cleanup skipped thread=019d2240-675a-7341-b3d6-892861cb2c54 err=context deadline exceeded
+2026/03/25 07:51:37 turn completed session=sess-2203add776c38e48 turn=019d2240-6765-7e03-9db6-b7913ea0dbdb status=completed
+2026/03/25 07:51:41 host-agent heartbeat host_id=agent-local
+2026/03/25 07:51:51 host-agent heartbeat host_id=agent-local
+2026/03/25 07:52:01 host-agent heartbeat host_id=agent-local
+2026/03/25 07:52:11 host-agent heartbeat host_id=agent-local
+2026/03/25 07:52:21 host-agent heartbeat host_id=agent-local
+2026/03/25 07:52:31 host-agent heartbeat host_id=agent-local
+2026/03/25 07:52:41 host-agent heartbeat host_id=agent-local
+2026/03/25 07:52:51 host-agent heartbeat host_id=agent-local
+2026/03/25 07:53:01 host-agent heartbeat host_id=agent-local
+2026/03/25 07:53:11 host-agent heartbeat host_id=agent-local
+2026/03/25 07:53:21 host-agent heartbeat host_id=agent-local
+2026/03/25 07:53:31 host-agent heartbeat host_id=agent-local
+2026/03/25 07:53:39 chat message session=sess-2203add776c38e48 host=server-local text="看下本地有什么文件"
+2026/03/25 07:53:41 host-agent heartbeat host_id=agent-local
+2026/03/25 07:53:51 host-agent heartbeat host_id=agent-local
+2026/03/25 07:53:52 approval requested type=command session=sess-2203add776c38e48 item=call_zg0oGKNc1Np3cE9BATod9lhp command="/bin/zsh -lc 'find . -maxdepth 2 -print | sort'"
+2026/03/25 07:53:52 approval requested type=command session=sess-2203add776c38e48 item=call_JnaDrtA5tIB9JeSJtJgcc12K command="/bin/zsh -lc 'find ./sftp-upload -maxdepth 3 -print | sort'"
+2026/03/25 07:53:55 approval decision session=sess-2203add776c38e48 approval=approval-0cef79035954640e decision=accept_session
+2026/03/25 07:53:56 approval decision session=sess-2203add776c38e48 approval=approval-940f7ad3e6f46335 decision=accept_session
+2026/03/25 07:54:01 host-agent heartbeat host_id=agent-local
+2026/03/25 07:54:11 host-agent heartbeat host_id=agent-local
+2026/03/25 07:54:17 background terminal cleanup skipped thread=019d2240-675a-7341-b3d6-892861cb2c54 err=context deadline exceeded
+2026/03/25 07:54:17 turn completed session=sess-2203add776c38e48 turn=019d2244-aed1-7de3-967e-8c64a1f42356 status=completed
+2026/03/25 07:54:21 host-agent heartbeat host_id=agent-local
+2026/03/25 07:54:31 host-agent heartbeat host_id=agent-local
+2026/03/25 07:54:41 host-agent heartbeat host_id=agent-local
+2026/03/25 07:54:51 host-agent heartbeat host_id=agent-local
+2026/03/25 07:54:55 codex app-server exited with error: signal: killed
+2026/03/25 07:55:02 http server listening on 127.0.0.1:18080
+2026/03/25 07:55:02 grpc server listening on 127.0.0.1:18090
+2026/03/25 07:55:03 host-agent register host_id=agent-local hostname=agent-local
+2026/03/25 07:55:13 host-agent heartbeat host_id=agent-local
+2026/03/25 07:55:23 host-agent heartbeat host_id=agent-local
+2026/03/25 07:55:33 host-agent heartbeat host_id=agent-local
+2026/03/25 07:55:43 host-agent heartbeat host_id=agent-local
+2026/03/25 07:55:53 host-agent heartbeat host_id=agent-local
+2026/03/25 07:56:03 host-agent heartbeat host_id=agent-local
+2026/03/25 07:56:07 chat message session=sess-2203add776c38e48 host=server-local text="看下A股行情"
+2026/03/25 07:56:13 host-agent heartbeat host_id=agent-local
+2026/03/25 07:56:23 host-agent heartbeat host_id=agent-local
+2026/03/25 07:56:33 host-agent heartbeat host_id=agent-local
+2026/03/25 07:56:43 host-agent heartbeat host_id=agent-local
+2026/03/25 07:56:53 host-agent heartbeat host_id=agent-local
+2026/03/25 07:57:03 host-agent heartbeat host_id=agent-local
+2026/03/25 07:57:13 host-agent heartbeat host_id=agent-local
+2026/03/25 07:57:23 host-agent heartbeat host_id=agent-local
+2026/03/25 07:57:33 host-agent heartbeat host_id=agent-local
+2026/03/25 07:57:43 host-agent heartbeat host_id=agent-local
+2026/03/25 07:57:53 host-agent heartbeat host_id=agent-local
+2026/03/25 07:58:03 background terminal cleanup skipped thread=019d2246-f0fb-7c43-af6e-ee0f9234665e err=context deadline exceeded
+2026/03/25 07:58:03 turn completed session=sess-2203add776c38e48 turn=019d2246-f10d-7761-b427-66379f392833 status=completed
+2026/03/25 07:58:03 host-agent heartbeat host_id=agent-local
+2026/03/25 07:58:13 host-agent heartbeat host_id=agent-local
+2026/03/25 07:58:23 host-agent heartbeat host_id=agent-local
+2026/03/25 07:58:33 host-agent heartbeat host_id=agent-local
+2026/03/25 07:58:43 host-agent heartbeat host_id=agent-local
+2026/03/25 07:58:53 host-agent heartbeat host_id=agent-local
+2026/03/25 07:59:03 host-agent heartbeat host_id=agent-local
+2026/03/25 07:59:13 host-agent heartbeat host_id=agent-local
+2026/03/25 07:59:23 host-agent heartbeat host_id=agent-local
+2026/03/25 07:59:33 host-agent heartbeat host_id=agent-local
+2026/03/25 07:59:43 host-agent heartbeat host_id=agent-local
+2026/03/25 07:59:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:00:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:00:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:00:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:00:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:00:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:00:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:01:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:01:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:01:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:01:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:01:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:01:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:02:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:02:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:02:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:02:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:02:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:02:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:03:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:03:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:03:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:03:27 chat message session=sess-2203add776c38e48 host=server-local text="查看本地有什么文件?"
+2026/03/25 08:03:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:03:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:03:45 approval requested type=command session=sess-2203add776c38e48 item=call_enTXVZ2YcqBHcTVFhQgzfeGr command="/bin/zsh -lc 'find /Users/lizhongxuan/.aiops_codex -maxdepth 3 -type f | sort'"
+2026/03/25 08:03:50 approval decision session=sess-2203add776c38e48 approval=approval-4a3975d86652b438 decision=accept_session
+2026/03/25 08:03:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:04:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:04:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:04:19 background terminal cleanup skipped thread=019d2246-f0fb-7c43-af6e-ee0f9234665e err=context deadline exceeded
+2026/03/25 08:04:19 turn completed session=sess-2203add776c38e48 turn=019d224d-a6c5-7a93-8ccf-c711df547bf9 status=completed
+2026/03/25 08:04:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:04:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:04:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:04:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:05:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:05:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:05:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:05:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:05:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:05:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:06:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:06:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:06:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:06:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:06:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:06:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:07:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:07:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:07:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:07:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:07:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:07:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:08:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:08:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:08:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:08:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:08:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:08:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:09:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:09:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:09:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:09:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:09:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:09:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:10:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:10:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:10:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:10:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:10:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:10:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:11:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:11:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:11:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:11:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:11:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:11:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:12:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:12:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:12:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:12:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:12:40 chat message session=sess-2203add776c38e48 host=server-local text="查看本地有什么文件?"
+2026/03/25 08:12:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:12:52 approval requested type=command session=sess-2203add776c38e48 item=call_jZTiuJ3VIGozIo3ou6uZDrCS command="/bin/zsh -lc \"find /Users/lizhongxuan/.aiops_codex -maxdepth 3 \\\\( -type f -o -type d \\\\) | sort\""
+2026/03/25 08:12:52 approval requested type=command session=sess-2203add776c38e48 item=call_9pgFB2jZ6ifBRlf4dMZ0o23z command="/bin/zsh -lc 'find /Users/lizhongxuan -maxdepth 1 -mindepth 1 | sort'"
+2026/03/25 08:12:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:13:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:13:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:13:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:13:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:13:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:13:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:14:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:14:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:14:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:14:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:14:33 approval decision session=sess-2203add776c38e48 approval=approval-fe8d09c5698a4afc decision=accept_session
+2026/03/25 08:14:34 approval decision session=sess-2203add776c38e48 approval=approval-b55b91ea4e880b06 decision=accept_session
+2026/03/25 08:14:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:14:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:14:56 background terminal cleanup skipped thread=019d2246-f0fb-7c43-af6e-ee0f9234665e err=context deadline exceeded
+2026/03/25 08:14:56 turn completed session=sess-2203add776c38e48 turn=019d2256-1665-7412-b7a9-b270b838b508 status=completed
+2026/03/25 08:15:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:15:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:15:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:15:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:15:43 host-agent heartbeat host_id=agent-local
+2026/03/25 08:15:53 host-agent heartbeat host_id=agent-local
+2026/03/25 08:16:03 host-agent heartbeat host_id=agent-local
+2026/03/25 08:16:13 host-agent heartbeat host_id=agent-local
+2026/03/25 08:16:23 host-agent heartbeat host_id=agent-local
+2026/03/25 08:16:33 host-agent heartbeat host_id=agent-local
+2026/03/25 08:21:10 host-agent heartbeat host_id=agent-local
+2026/03/25 08:21:20 host-agent heartbeat host_id=agent-local
+2026/03/25 08:21:30 host-agent heartbeat host_id=agent-local
+2026/03/25 08:21:40 host-agent heartbeat host_id=agent-local
+2026/03/25 08:22:20 host-agent heartbeat host_id=agent-local
+2026/03/25 08:22:30 host-agent heartbeat host_id=agent-local
+2026/03/25 08:22:40 host-agent heartbeat host_id=agent-local
+2026/03/25 08:22:50 host-agent heartbeat host_id=agent-local
+2026/03/25 08:23:00 host-agent heartbeat host_id=agent-local
+2026/03/25 08:40:49 host-agent heartbeat host_id=agent-local
+2026/03/25 08:56:11 host-agent timeout host_id=agent-local marked offline
+2026/03/25 09:12:46 host-agent heartbeat host_id=agent-local
+2026/03/25 09:16:57 host-agent timeout host_id=agent-local marked offline
+2026/03/25 09:16:58 host-agent heartbeat host_id=agent-local
+2026/03/25 09:17:08 host-agent heartbeat host_id=agent-local
+2026/03/25 09:17:18 host-agent heartbeat host_id=agent-local
+2026/03/25 09:17:28 host-agent heartbeat host_id=agent-local
+2026/03/25 09:18:34 host-agent heartbeat host_id=agent-local
+2026/03/25 09:18:44 host-agent heartbeat host_id=agent-local
+2026/03/25 09:18:54 host-agent heartbeat host_id=agent-local
+2026/03/25 09:19:04 host-agent heartbeat host_id=agent-local
+2026/03/25 09:19:14 host-agent heartbeat host_id=agent-local
+2026/03/25 09:20:16 host-agent timeout host_id=agent-local marked offline
+2026/03/25 09:20:17 host-agent heartbeat host_id=agent-local
+2026/03/25 09:20:27 host-agent heartbeat host_id=agent-local
+2026/03/25 09:20:37 host-agent heartbeat host_id=agent-local
+2026/03/25 09:20:47 host-agent heartbeat host_id=agent-local
+2026/03/25 09:20:57 host-agent heartbeat host_id=agent-local
+2026/03/25 09:21:07 host-agent heartbeat host_id=agent-local
+2026/03/25 09:21:17 host-agent heartbeat host_id=agent-local
+2026/03/25 09:21:27 host-agent heartbeat host_id=agent-local
+2026/03/25 09:21:37 host-agent heartbeat host_id=agent-local
+2026/03/25 09:21:47 host-agent heartbeat host_id=agent-local
+2026/03/25 09:21:57 host-agent heartbeat host_id=agent-local
+2026/03/25 09:22:07 host-agent heartbeat host_id=agent-local
+2026/03/25 09:22:17 host-agent heartbeat host_id=agent-local
+2026/03/25 09:22:27 host-agent heartbeat host_id=agent-local
+2026/03/25 09:22:37 host-agent heartbeat host_id=agent-local
+2026/03/25 09:22:47 host-agent heartbeat host_id=agent-local
+2026/03/25 09:22:57 host-agent heartbeat host_id=agent-local
+2026/03/25 09:23:07 host-agent heartbeat host_id=agent-local
+2026/03/25 09:23:17 host-agent heartbeat host_id=agent-local
+2026/03/25 09:23:27 host-agent heartbeat host_id=agent-local
+2026/03/25 09:23:37 host-agent heartbeat host_id=agent-local
+2026/03/25 09:23:47 host-agent heartbeat host_id=agent-local
+2026/03/25 09:23:57 host-agent heartbeat host_id=agent-local
+2026/03/25 09:24:07 host-agent heartbeat host_id=agent-local
+2026/03/25 09:24:17 host-agent heartbeat host_id=agent-local
+2026/03/25 09:24:27 host-agent heartbeat host_id=agent-local
+2026/03/25 09:24:37 host-agent heartbeat host_id=agent-local
+2026/03/25 09:24:47 host-agent heartbeat host_id=agent-local
+2026/03/25 09:24:57 host-agent heartbeat host_id=agent-local
+2026/03/25 09:25:07 host-agent heartbeat host_id=agent-local
+2026/03/25 09:25:17 host-agent heartbeat host_id=agent-local
+2026/03/25 09:25:27 host-agent heartbeat host_id=agent-local
+2026/03/25 09:25:37 host-agent heartbeat host_id=agent-local
+2026/03/25 09:25:47 host-agent heartbeat host_id=agent-local
+2026/03/25 09:25:57 host-agent heartbeat host_id=agent-local
+2026/03/25 09:26:07 host-agent heartbeat host_id=agent-local
+2026/03/25 09:26:17 host-agent heartbeat host_id=agent-local
+2026/03/25 09:26:27 host-agent heartbeat host_id=agent-local
+2026/03/25 09:26:37 host-agent heartbeat host_id=agent-local
+2026/03/25 09:26:47 host-agent heartbeat host_id=agent-local
