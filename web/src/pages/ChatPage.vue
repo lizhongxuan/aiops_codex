@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch, nextTick } from "vue";
+import { computed, ref, watch, nextTick, onBeforeUnmount } from "vue";
 import { useAppStore } from "../store";
 import CardItem from "../components/CardItem.vue";
 import Omnibar from "../components/Omnibar.vue";
@@ -19,20 +19,83 @@ let isUserScrolling = false;
 /* ---- ThinkingCard local state ---- */
 const showThinking = ref(false);
 const thinkingPhase = ref("thinking");
+const thinkingHint = ref("");
+const preferredThinkingPhase = ref("");
+let thinkingHintTimer = null;
 
 const thinkingCard = computed(() => ({
   id: "__thinking__",
   type: "ThinkingCard",
   phase: thinkingPhase.value,
+  hint: thinkingHint.value,
 }));
+
+function clearThinkingPrelude() {
+  if (thinkingHintTimer) {
+    window.clearTimeout(thinkingHintTimer);
+    thinkingHintTimer = null;
+  }
+  thinkingHint.value = "";
+  preferredThinkingPhase.value = "";
+}
+
+function inferThinkingPrelude(message) {
+  const text = (message || "").trim();
+  const lower = text.toLowerCase();
+
+  const searchLike =
+    /a股|股市|行情|指数|港股|美股|财报|新闻|汇率|价格|走势|最新|今天|实时|网页|搜索|查一下|查下|盘面/i.test(text) ||
+    /(market|stock|price|latest|news|search|web)/i.test(text);
+  if (searchLike) {
+    return {
+      phase: "searching",
+      hint: "我先查一下最新网页信息，再给你一个简洁结论。",
+    };
+  }
+
+  const browseLike =
+    /文件|文档|代码|配置|日志|目录|文件夹|打开|浏览|读取|读一下|看看.*文件|列出/i.test(text) ||
+    /(file|folder|directory|read|open|browse|list)/i.test(lower);
+  if (browseLike) {
+    return {
+      phase: "browsing",
+      hint: "我先快速浏览相关文件，再给你结论。",
+    };
+  }
+
+  return {
+    phase: "thinking",
+    hint: "我先快速理一下思路，再继续处理。",
+  };
+}
+
+function queueThinkingPrelude(message) {
+  clearThinkingPrelude();
+  const prelude = inferThinkingPrelude(message);
+  preferredThinkingPhase.value = prelude.phase;
+  thinkingPhase.value = prelude.phase;
+  thinkingHintTimer = window.setTimeout(() => {
+    if (!showThinking.value) return;
+    if (store.runtime.turn.phase !== "thinking" && store.runtime.turn.phase !== prelude.phase) return;
+    if (currentReadingLine.value || currentSearchLine.value || activitySummary.value) return;
+    thinkingHint.value = prelude.hint;
+  }, 900);
+}
 
 watch(
   () => store.runtime.turn.phase,
   (phase) => {
     if (phase === "idle" || phase === "completed" || phase === "failed" || phase === "aborted") {
       showThinking.value = false;
+      clearThinkingPrelude();
     } else {
-      thinkingPhase.value = phase;
+      const shouldPreferLocalPhase =
+        phase === "thinking" &&
+        !!preferredThinkingPhase.value &&
+        !currentReadingLine.value &&
+        !currentSearchLine.value &&
+        !activitySummary.value;
+      thinkingPhase.value = shouldPreferLocalPhase ? preferredThinkingPhase.value : phase;
       showThinking.value = true;
     }
     
@@ -73,11 +136,7 @@ const currentSearchLine = computed(() => {
   if (a.currentWebSearchQuery) {
     return `现在搜索网页（${truncateLabel(a.currentWebSearchQuery)}）`;
   }
-  if (!a.searchedWebQueries?.length) return "";
-  const latest = a.searchedWebQueries[a.searchedWebQueries.length - 1];
-  const label = latest?.query || latest?.label || "";
-  if (!label) return "";
-  return `已搜索网页（${truncateLabel(label)}）`;
+  return "";
 });
 
 const viewedFileDetails = computed(() => activity.value.viewedFiles || []);
@@ -135,6 +194,28 @@ const visibleCards = computed(() => {
   });
 });
 
+watch(
+  [currentReadingLine, currentSearchLine, activitySummary, () => store.runtime.turn.phase],
+  ([reading, search, summary, phase]) => {
+    const hasFeedback = !!reading || !!search || !!summary;
+    const phaseMovedOn =
+      phase === "planning" ||
+      phase === "waiting_approval" ||
+      phase === "waiting_input" ||
+      phase === "executing" ||
+      phase === "finalizing";
+
+    if (hasFeedback || phaseMovedOn) {
+      clearThinkingPrelude();
+      if (showThinking.value) {
+        thinkingPhase.value = phase;
+      }
+    } else if (phase === "thinking" && preferredThinkingPhase.value) {
+      thinkingPhase.value = preferredThinkingPhase.value;
+    }
+  }
+);
+
 /* ---- Reconnection ---- */
 const showReconnectBanner = computed(() => {
   return store.runtime.codex.status === "reconnecting";
@@ -184,11 +265,12 @@ function getRowClass(card) {
 async function sendMessage() {
   if (!store.canSend || !composerMessage.value.trim() || store.runtime.turn.active) return;
 
+  const message = composerMessage.value.trim();
   store.sending = true;
   store.errorMessage = "";
   showThinking.value = true;
-  thinkingPhase.value = "thinking";
-  store.setTurnPhase("thinking");
+  queueThinkingPrelude(message);
+  store.setTurnPhase(preferredThinkingPhase.value || "thinking");
   store.resetActivity();
 
   try {
@@ -197,7 +279,7 @@ async function sendMessage() {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        message: composerMessage.value,
+        message,
         hostId: store.snapshot.selectedHostId,
       }),
     });
@@ -206,6 +288,7 @@ async function sendMessage() {
       store.errorMessage = data.error || "message send failed";
       showThinking.value = false;
       store.setTurnPhase("failed");
+      clearThinkingPrelude();
     } else {
       composerMessage.value = "";
       isUserScrolling = false;
@@ -214,6 +297,7 @@ async function sendMessage() {
     store.errorMessage = "Network error";
     showThinking.value = false;
     store.setTurnPhase("failed");
+    clearThinkingPrelude();
   } finally {
     store.sending = false;
   }
@@ -234,6 +318,7 @@ async function stopMessage() {
     store.errorMessage = "";
     showThinking.value = false;
     store.setTurnPhase("aborted");
+    clearThinkingPrelude();
   } catch (e) {
     console.error(e);
     store.errorMessage = "stop failed";
@@ -348,8 +433,27 @@ watch(
     authCardCollapsed.value = false;
     thinkingPhase.value = "waiting_approval";
     showThinking.value = true;
+    clearThinkingPrelude();
   }
 );
+
+watch(
+  () => store.snapshot.cards[store.snapshot.cards.length - 1]?.id,
+  (cardID, previousID) => {
+    if (!cardID || cardID === previousID || !showThinking.value) return;
+    const lastCard = store.snapshot.cards[store.snapshot.cards.length - 1];
+    if (!lastCard) return;
+    const isUserCard =
+      lastCard.type === "UserMessageCard" ||
+      (lastCard.type === "MessageCard" && lastCard.role === "user");
+    if (isUserCard) return;
+    clearThinkingPrelude();
+  }
+);
+
+onBeforeUnmount(() => {
+  clearThinkingPrelude();
+});
 </script>
 
 <template>

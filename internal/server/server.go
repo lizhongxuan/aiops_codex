@@ -1992,14 +1992,7 @@ func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any,
 	})
 
 	if completed {
-		a.store.UpsertCard(sessionID, model.Card{
-			ID:         "divider-" + cardID,
-			Type:       "TaskDividerCard",
-			Status:     "completed",
-			DurationMS: durationMS,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		})
+		return
 	}
 }
 
@@ -2111,13 +2104,30 @@ func (a *App) cardDurationMS(sessionID, cardID, endedAt string) int64 {
 
 func processLineText(kind string, entry model.ActivityEntry, currentLabel string, completed bool) string {
 	if completed {
-		return strings.TrimSpace(entry.Label)
+		switch kind {
+		case "file_read":
+			return "已浏览 " + currentLabel
+		case "web_search":
+			return "已搜索网页（" + currentLabel + "）"
+		case "web_open":
+			return "已打开网页（" + currentLabel + "）"
+		case "web_find":
+			return "已页内查找（" + currentLabel + "）"
+		case "list":
+			return "已列出 " + currentLabel
+		default:
+			return strings.TrimSpace(entry.Label)
+		}
 	}
 	switch kind {
 	case "file_read":
 		return "现在浏览 " + currentLabel
 	case "web_search":
 		return "现在搜索网页（" + currentLabel + "）"
+	case "web_open":
+		return "现在打开网页（" + currentLabel + "）"
+	case "web_find":
+		return "现在页内查找（" + currentLabel + "）"
 	case "list":
 		return "现在列出 " + currentLabel
 	default:
@@ -2894,6 +2904,10 @@ type stringHit struct {
 }
 
 func detectActivitySignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	if protocolKind, protocolEntry, protocolLabel, protocolOK := detectProtocolActivitySignal(item); protocolOK {
+		return protocolKind, protocolEntry, protocolLabel, true
+	}
+
 	hits := make([]stringHit, 0, 24)
 	collectStringHits("", item, &hits)
 
@@ -2944,6 +2958,74 @@ func detectActivitySignal(item map[string]any) (kind string, entry model.Activit
 		}, display, true
 	default:
 		return "", model.ActivityEntry{}, "", false
+	}
+}
+
+func detectProtocolActivitySignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	switch strings.ToLower(getString(item, "type")) {
+	case "websearch":
+		return detectWebSearchSignal(item)
+	default:
+		return "", model.ActivityEntry{}, "", false
+	}
+}
+
+func detectWebSearchSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	action := getMap(item, "action")
+	actionType := strings.ToLower(getString(action, "type"))
+	query := strings.TrimSpace(getString(action, "query"))
+	if query == "" {
+		query = strings.TrimSpace(getString(item, "query"))
+	}
+	if query == "" {
+		query = firstNonEmptyString(toStringSlice(action["queries"]))
+	}
+
+	switch actionType {
+	case "", "search":
+		if query == "" {
+			return "", model.ActivityEntry{}, "", false
+		}
+		return "web_search", model.ActivityEntry{
+			Label: "Search the web: " + query,
+			Query: query,
+		}, query, true
+	case "openpage":
+		rawURL := strings.TrimSpace(getString(action, "url"))
+		if rawURL == "" {
+			return "", model.ActivityEntry{}, "", false
+		}
+		display := summarizeWebLocation(rawURL)
+		return "web_open", model.ActivityEntry{
+			Label: "Open web page: " + rawURL,
+			Query: rawURL,
+		}, display, true
+	case "findinpage":
+		pattern := strings.TrimSpace(getString(action, "pattern"))
+		rawURL := strings.TrimSpace(getString(action, "url"))
+		if pattern == "" && rawURL == "" {
+			return "", model.ActivityEntry{}, "", false
+		}
+		display := pattern
+		if display == "" {
+			display = summarizeWebLocation(rawURL)
+		}
+		label := "Find in page: " + display
+		if rawURL != "" && pattern != "" {
+			label = "Find in page: " + pattern + " @ " + rawURL
+		}
+		return "web_find", model.ActivityEntry{
+			Label: label,
+			Query: display,
+		}, display, true
+	default:
+		if query == "" {
+			return "", model.ActivityEntry{}, "", false
+		}
+		return "web_search", model.ActivityEntry{
+			Label: "Search the web: " + query,
+			Query: query,
+		}, query, true
 	}
 }
 
@@ -3009,6 +3091,7 @@ func looksLikePath(value string) bool {
 func isWebSearchDescriptor(text string) bool {
 	return strings.Contains(text, "search the web") ||
 		strings.Contains(text, "search_query") ||
+		strings.Contains(text, "websearch") ||
 		strings.Contains(text, "web_search") ||
 		strings.Contains(text, "web search")
 }
@@ -3035,6 +3118,30 @@ func descriptorHasToken(text, token string) bool {
 	}), func(field string) bool {
 		return field == token
 	})
+}
+
+func firstNonEmptyString(values []string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func summarizeWebLocation(rawURL string) string {
+	if strings.TrimSpace(rawURL) == "" {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return rawURL
+	}
+	path := strings.Trim(parsed.Path, "/")
+	if path == "" {
+		return parsed.Host
+	}
+	return parsed.Host + "/" + path
 }
 
 func getMap(payload map[string]any, key string) map[string]any {

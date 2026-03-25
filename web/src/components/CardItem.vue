@@ -11,7 +11,6 @@ import ErrorCard from "./ErrorCard.vue";
 import ChoiceCard from "./ChoiceCard.vue";
 import ResultSummaryCard from "./ResultSummaryCard.vue";
 import ProcessLineCard from "./ProcessLineCard.vue";
-import TaskDividerCard from "./TaskDividerCard.vue";
 
 const props = defineProps({
   card: {
@@ -77,10 +76,6 @@ const isMessage = computed(() => {
 
     <template v-else-if="card.type === 'ProcessLineCard'">
       <ProcessLineCard :card="card" />
-    </template>
-
-    <template v-else-if="card.type === 'TaskDividerCard'">
-      <TaskDividerCard :card="card" />
     </template>
 
     <!-- Approval cards -->
