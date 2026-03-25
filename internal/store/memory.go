@@ -29,6 +29,14 @@ type SessionState struct {
 	LastActivityAt string
 }
 
+type BrowserSessionState struct {
+	ID              string
+	ActiveSessionID string
+	SessionIDs      []string
+	CreatedAt       string
+	UpdatedAt       string
+}
+
 type AuthSessionState struct {
 	ID            string
 	Auth          model.AuthState
@@ -40,6 +48,7 @@ type AuthSessionState struct {
 
 type Store struct {
 	mu              sync.RWMutex
+	browserSessions map[string]*BrowserSessionState
 	sessions        map[string]*SessionState
 	authSessions    map[string]*AuthSessionState
 	threadToSession map[string]string
@@ -48,6 +57,7 @@ type Store struct {
 	lastAuthSession string
 	hosts           map[string]model.Host
 	statePath       string
+	persistTimers   map[string]*time.Timer
 }
 
 type persistentSessionState struct {
@@ -71,6 +81,14 @@ type persistentAuthSessionState struct {
 	UpdatedAt     string                       `json:"updatedAt,omitempty"`
 }
 
+type persistentBrowserSessionState struct {
+	ID              string   `json:"id"`
+	ActiveSessionID string   `json:"activeSessionId,omitempty"`
+	SessionIDs      []string `json:"sessionIds,omitempty"`
+	CreatedAt       string   `json:"createdAt,omitempty"`
+	UpdatedAt       string   `json:"updatedAt,omitempty"`
+}
+
 type persistentExternalAuthTokens struct {
 	IDToken          string `json:"idToken,omitempty"`
 	AccessToken      string `json:"accessToken,omitempty"`
@@ -80,21 +98,24 @@ type persistentExternalAuthTokens struct {
 }
 
 type persistentState struct {
-	Sessions        map[string]*persistentSessionState     `json:"sessions"`
-	AuthSessions    map[string]*persistentAuthSessionState `json:"authSessions"`
-	ThreadToSession map[string]string                      `json:"threadToSession"`
-	LoginToSession  map[string]string                      `json:"loginToSession"`
-	LastAuthSession string                                 `json:"lastAuthSession,omitempty"`
-	Hosts           map[string]model.Host                  `json:"hosts"`
+	BrowserSessions map[string]*persistentBrowserSessionState `json:"browserSessions"`
+	Sessions        map[string]*persistentSessionState        `json:"sessions"`
+	AuthSessions    map[string]*persistentAuthSessionState    `json:"authSessions"`
+	ThreadToSession map[string]string                         `json:"threadToSession"`
+	LoginToSession  map[string]string                         `json:"loginToSession"`
+	LastAuthSession string                                    `json:"lastAuthSession,omitempty"`
+	Hosts           map[string]model.Host                     `json:"hosts"`
 }
 
 func New() *Store {
 	return &Store{
+		browserSessions: make(map[string]*BrowserSessionState),
 		sessions:        make(map[string]*SessionState),
 		authSessions:    make(map[string]*AuthSessionState),
 		threadToSession: make(map[string]string),
 		turnToSession:   make(map[string]string),
 		loginToSession:  make(map[string]string),
+		persistTimers:   make(map[string]*time.Timer),
 		hosts: map[string]model.Host{
 			model.ServerLocalHostID: {
 				ID:         model.ServerLocalHostID,
@@ -229,6 +250,7 @@ func (s *Store) ResetConversation(sessionID string) {
 	session.LastActivityAt = model.NowString()
 	s.mu.Unlock()
 	s.SaveStableState("")
+	_ = s.SaveSessionTranscript(sessionID)
 }
 
 func (s *Store) SessionIDByThread(threadID string) string {
@@ -400,30 +422,35 @@ func (s *Store) PendingSessionIDs() []string {
 
 func (s *Store) UpsertCard(sessionID string, card model.Card) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	session, _ := s.ensureSessionLocked(sessionID)
 	for i := range session.Cards {
 		if session.Cards[i].ID == card.ID {
 			session.Cards[i] = card
 			session.LastActivityAt = model.NowString()
+			s.mu.Unlock()
+			s.scheduleSessionPersistence(sessionID)
 			return
 		}
 	}
 	session.Cards = append(session.Cards, card)
 	session.LastActivityAt = model.NowString()
+	s.mu.Unlock()
+	s.scheduleSessionPersistence(sessionID)
 }
 
 func (s *Store) UpdateCard(sessionID, cardID string, fn func(*model.Card)) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	session, _ := s.ensureSessionLocked(sessionID)
 	for i := range session.Cards {
 		if session.Cards[i].ID == cardID {
 			fn(&session.Cards[i])
 			session.LastActivityAt = model.NowString()
+			s.mu.Unlock()
+			s.scheduleSessionPersistence(sessionID)
 			return
 		}
 	}
+	s.mu.Unlock()
 }
 
 func (s *Store) RememberItem(sessionID, itemID string, item map[string]any) {
@@ -734,6 +761,7 @@ func (s *Store) LoadStableState(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.browserSessions = make(map[string]*BrowserSessionState, len(state.BrowserSessions))
 	s.sessions = make(map[string]*SessionState, len(state.Sessions))
 	for id, session := range state.Sessions {
 		if session == nil {
@@ -764,6 +792,31 @@ func (s *Store) LoadStableState(path string) error {
 		if s.sessions[id].LastActivityAt == "" {
 			s.sessions[id].LastActivityAt = s.sessions[id].CreatedAt
 		}
+		if err := s.loadSessionTranscriptLocked(path, id); err != nil {
+			return err
+		}
+	}
+
+	for id, browserSession := range state.BrowserSessions {
+		if browserSession == nil {
+			continue
+		}
+		s.browserSessions[id] = &BrowserSessionState{
+			ID:              browserSession.ID,
+			ActiveSessionID: browserSession.ActiveSessionID,
+			SessionIDs:      append([]string(nil), browserSession.SessionIDs...),
+			CreatedAt:       browserSession.CreatedAt,
+			UpdatedAt:       browserSession.UpdatedAt,
+		}
+		if s.browserSessions[id].ID == "" {
+			s.browserSessions[id].ID = id
+		}
+		if s.browserSessions[id].CreatedAt == "" {
+			s.browserSessions[id].CreatedAt = model.NowString()
+		}
+		if s.browserSessions[id].UpdatedAt == "" {
+			s.browserSessions[id].UpdatedAt = s.browserSessions[id].CreatedAt
+		}
 	}
 
 	s.authSessions = make(map[string]*AuthSessionState, len(state.AuthSessions))
@@ -792,6 +845,7 @@ func (s *Store) LoadStableState(path string) error {
 	s.turnToSession = make(map[string]string)
 	s.loginToSession = cloneStringMap(state.LoginToSession)
 	s.lastAuthSession = state.LastAuthSession
+	s.persistTimers = make(map[string]*time.Timer)
 	s.hosts = cloneHostMap(state.Hosts)
 	if s.hosts == nil {
 		s.hosts = make(map[string]model.Host)
@@ -813,12 +867,25 @@ func (s *Store) SaveStableState(path string) error {
 
 	s.mu.RLock()
 	state := persistentState{
+		BrowserSessions: make(map[string]*persistentBrowserSessionState, len(s.browserSessions)),
 		Sessions:        make(map[string]*persistentSessionState, len(s.sessions)),
 		AuthSessions:    make(map[string]*persistentAuthSessionState, len(s.authSessions)),
 		ThreadToSession: make(map[string]string),
 		LoginToSession:  cloneStringMap(s.loginToSession),
 		LastAuthSession: s.lastAuthSession,
 		Hosts:           cloneHostMap(s.hosts),
+	}
+	for id, browserSession := range s.browserSessions {
+		if browserSession == nil {
+			continue
+		}
+		state.BrowserSessions[id] = &persistentBrowserSessionState{
+			ID:              browserSession.ID,
+			ActiveSessionID: browserSession.ActiveSessionID,
+			SessionIDs:      append([]string(nil), browserSession.SessionIDs...),
+			CreatedAt:       browserSession.CreatedAt,
+			UpdatedAt:       browserSession.UpdatedAt,
+		}
 	}
 	for id, session := range s.sessions {
 		if session == nil {

@@ -1,5 +1,70 @@
 import { defineStore } from "pinia";
 
+function normalizeCardText(card) {
+  const candidates = [card?.text, card?.message, card?.summary, card?.title];
+  for (const candidate of candidates) {
+    const text = (candidate || "").trim().replace(/\s+/g, " ");
+    if (text) return text;
+  }
+  return "";
+}
+
+function isUserCard(card) {
+  return card?.type === "UserMessageCard" || (card?.type === "MessageCard" && card?.role === "user");
+}
+
+function isAssistantCard(card) {
+  return card?.type === "AssistantMessageCard" || (card?.type === "MessageCard" && card?.role === "assistant");
+}
+
+function deriveSessionStatus(cards, runtime) {
+  if (runtime?.turn?.active) {
+    return runtime.turn.phase === "waiting_approval" ? "waiting_approval" : "running";
+  }
+  if (!cards?.length) return "empty";
+  for (let i = cards.length - 1; i >= 0; i -= 1) {
+    const card = cards[i];
+    if (card?.type === "ErrorCard" || card?.status === "failed") return "failed";
+    if (isUserCard(card) || isAssistantCard(card) || card?.type === "NoticeCard") break;
+  }
+  return "completed";
+}
+
+function deriveSessionSummary(snapshot, runtime) {
+  const cards = snapshot?.cards || [];
+  let title = "New Thread";
+  let preview = "暂无消息";
+  let messageCount = 0;
+
+  for (const card of cards) {
+    if (isUserCard(card) || isAssistantCard(card)) {
+      messageCount += 1;
+    }
+    if (title === "New Thread" && isUserCard(card)) {
+      const text = normalizeCardText(card);
+      if (text) title = text.slice(0, 24);
+    }
+  }
+
+  for (let i = cards.length - 1; i >= 0; i -= 1) {
+    const text = normalizeCardText(cards[i]);
+    if (text) {
+      preview = text.slice(0, 60);
+      break;
+    }
+  }
+
+  return {
+    id: snapshot?.sessionId || "",
+    title,
+    preview,
+    selectedHostId: snapshot?.selectedHostId || "server-local",
+    status: deriveSessionStatus(cards, runtime),
+    messageCount,
+    lastActivityAt: snapshot?.lastActivityAt || "",
+  };
+}
+
 export const useAppStore = defineStore("app", {
   state: () => ({
     snapshot: {
@@ -60,6 +125,9 @@ export const useAppStore = defineStore("app", {
       reasoningEffort: "medium",
       models: [],
     },
+    sessionList: [],
+    activeSessionId: "",
+    historyLoading: false,
     loading: true,
     errorMessage: "",
     sending: false,
@@ -90,10 +158,14 @@ export const useAppStore = defineStore("app", {
         host.status === "online"
       );
     },
+    activeSessionSummary: (state) => {
+      return state.sessionList.find((session) => session.id === state.activeSessionId) || null;
+    },
   },
   actions: {
     applySnapshot(data) {
       this.snapshot.sessionId = data.sessionId || this.snapshot.sessionId;
+      this.activeSessionId = this.snapshot.sessionId;
       this.snapshot.selectedHostId = data.selectedHostId || this.snapshot.selectedHostId;
       this.snapshot.auth = data.auth || this.snapshot.auth;
       this.snapshot.hosts = data.hosts || [];
@@ -128,7 +200,16 @@ export const useAppStore = defineStore("app", {
           ...(data.runtime.activity || {}),
         };
       }
+      const summary = deriveSessionSummary(this.snapshot, this.runtime);
+      const index = this.sessionList.findIndex((session) => session.id === summary.id);
+      if (index >= 0) {
+        this.sessionList[index] = { ...this.sessionList[index], ...summary };
+      }
       this.loading = false;
+    },
+    applySessions(data) {
+      this.activeSessionId = data.activeSessionId || this.activeSessionId || this.snapshot.sessionId;
+      this.sessionList = data.sessions || [];
     },
     setTurnPhase(phase) {
       this.runtime.turn.active = phase !== "idle" && phase !== "completed" && phase !== "failed" && phase !== "aborted";
@@ -153,6 +234,25 @@ export const useAppStore = defineStore("app", {
         this.applySnapshot(data);
       } catch (e) {
         console.error("Failed to fetch state:", e);
+      }
+    },
+    async fetchSessions() {
+      this.historyLoading = true;
+      try {
+        const response = await fetch("/api/v1/sessions", { credentials: "include" });
+        const data = await response.json();
+        if (!response.ok) {
+          this.errorMessage = data.error || "load sessions failed";
+          return false;
+        }
+        this.applySessions(data);
+        return true;
+      } catch (e) {
+        console.error("Failed to fetch sessions:", e);
+        this.errorMessage = "Load sessions failed";
+        return false;
+      } finally {
+        this.historyLoading = false;
       }
     },
     async fetchSettings() {
@@ -201,6 +301,7 @@ export const useAppStore = defineStore("app", {
         this.resetActivity();
         this.setTurnPhase("idle");
         await this.fetchState();
+        await this.fetchSessions();
         return true;
       } catch (e) {
         console.error("Failed to reset thread:", e);
@@ -208,10 +309,100 @@ export const useAppStore = defineStore("app", {
         return false;
       }
     },
-    connectWs() {
-      if (this._socket && this._socket.readyState === WebSocket.OPEN) {
-        this._socket.close();
+    clearSocketTimers() {
+      if (this._pingInterval) {
+        window.clearInterval(this._pingInterval);
+        this._pingInterval = null;
       }
+      if (this._heartbeatTimer) {
+        window.clearTimeout(this._heartbeatTimer);
+        this._heartbeatTimer = null;
+      }
+    },
+    disconnectWs() {
+      const socket = this._socket;
+      this._socket = null;
+      this.clearSocketTimers();
+      if (socket) {
+        try {
+          socket.close();
+        } catch (e) {
+          console.error("Failed to close websocket:", e);
+        }
+      }
+    },
+    reconnectWs() {
+      this.disconnectWs();
+      this.runtime.codex.retryAttempt = 0;
+      this.connectWs();
+    },
+    async createSession() {
+      if (this.runtime.turn.active) {
+        this.errorMessage = "当前任务执行中，完成后再新建会话";
+        return false;
+      }
+      try {
+        const response = await fetch("/api/v1/sessions", {
+          method: "POST",
+          credentials: "include",
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          this.errorMessage = data.error || "create session failed";
+          return false;
+        }
+        this.errorMessage = "";
+        this.applySessions(data);
+        if (data.snapshot) {
+          this.applySnapshot(data.snapshot);
+        } else {
+          await this.fetchState();
+        }
+        this.resetActivity();
+        this.setTurnPhase("idle");
+        this.reconnectWs();
+        return true;
+      } catch (e) {
+        console.error("Failed to create session:", e);
+        this.errorMessage = "Create session failed";
+        return false;
+      }
+    },
+    async activateSession(sessionId) {
+      if (!sessionId || sessionId === this.activeSessionId) {
+        return true;
+      }
+      if (this.runtime.turn.active) {
+        this.errorMessage = "当前任务执行中，完成后再切换会话";
+        return false;
+      }
+      try {
+        const response = await fetch(`/api/v1/sessions/${sessionId}/activate`, {
+          method: "POST",
+          credentials: "include",
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          this.errorMessage = data.error || "switch session failed";
+          return false;
+        }
+        this.errorMessage = "";
+        this.applySessions(data);
+        if (data.snapshot) {
+          this.applySnapshot(data.snapshot);
+        } else {
+          await this.fetchState();
+        }
+        this.reconnectWs();
+        return true;
+      } catch (e) {
+        console.error("Failed to activate session:", e);
+        this.errorMessage = "Switch session failed";
+        return false;
+      }
+    },
+    connectWs() {
+      this.disconnectWs();
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
       const touchHeartbeat = () => {
@@ -224,16 +415,6 @@ export const useAppStore = defineStore("app", {
             socket.close();
           }
         }, 25000);
-      };
-      const clearSocketTimers = () => {
-        if (this._pingInterval) {
-          window.clearInterval(this._pingInterval);
-          this._pingInterval = null;
-        }
-        if (this._heartbeatTimer) {
-          window.clearTimeout(this._heartbeatTimer);
-          this._heartbeatTimer = null;
-        }
       };
       this.wsStatus = "connecting";
       this.runtime.codex.status = "reconnecting";
@@ -268,7 +449,8 @@ export const useAppStore = defineStore("app", {
 
       socket.onclose = () => {
         if (this._socket !== socket) return;
-        clearSocketTimers();
+        this.clearSocketTimers();
+        this._socket = null;
         this.wsStatus = "disconnected";
         this.runtime.codex.retryAttempt += 1;
 

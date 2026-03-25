@@ -203,6 +203,17 @@ type Snapshot struct {
 	Config         UIConfig          `json:"config"`
 }
 
+type SessionSummary struct {
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	Preview        string `json:"preview"`
+	SelectedHostID string `json:"selectedHostId"`
+	Status         string `json:"status"`
+	MessageCount   int    `json:"messageCount"`
+	CreatedAt      string `json:"createdAt"`
+	LastActivityAt string `json:"lastActivityAt"`
+}
+
 type UIConfig struct {
 	OAuthConfigured bool `json:"oauthConfigured"`
 	CodexAlive      bool `json:"codexAlive"`

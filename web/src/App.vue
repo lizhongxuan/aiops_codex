@@ -5,7 +5,8 @@ import { useAppStore } from "./store";
 import LoginModal from "./components/LoginModal.vue";
 import HostModal from "./components/HostModal.vue";
 import SettingsModal from "./components/SettingsModal.vue";
-import { MessageSquarePlusIcon, AppWindowIcon, SettingsIcon, UserCircleIcon, ServerIcon, PanelsTopLeftIcon, TerminalIcon } from "lucide-vue-next";
+import SessionHistoryDrawer from "./components/SessionHistoryDrawer.vue";
+import { MessageSquarePlusIcon, AppWindowIcon, SettingsIcon, UserCircleIcon, ServerIcon, PanelsTopLeftIcon, TerminalIcon, HistoryIcon } from "lucide-vue-next";
 
 const store = useAppStore();
 const router = useRouter();
@@ -14,6 +15,7 @@ const isLoginModalOpen = ref(false);
 const isHostModalOpen = ref(false);
 const isSettingsModalOpen = ref(false);
 const isMcpDrawerOpen = ref(false);
+const isHistoryDrawerOpen = ref(false);
 
 function toggleMcpDrawer() {
   isMcpDrawerOpen.value = !isMcpDrawerOpen.value;
@@ -31,9 +33,22 @@ const authBadgeLabel = computed(() => {
 
 async function startNewThread() {
   if (store.sending) return;
-  const ok = await store.resetThread();
+  const ok = await store.createSession();
   if (!ok) return;
   store.errorMessage = "";
+  isHistoryDrawerOpen.value = false;
+}
+
+async function openHistoryDrawer() {
+  await store.fetchSessions();
+  isHistoryDrawerOpen.value = true;
+}
+
+async function switchSession(sessionId) {
+  const ok = await store.activateSession(sessionId);
+  if (ok) {
+    isHistoryDrawerOpen.value = false;
+  }
 }
 
 function handleGlobalKeydown(e) {
@@ -47,16 +62,29 @@ function openTerminal() {
   router.push(`/terminal/${store.snapshot.selectedHostId}`);
 }
 
+const currentSession = computed(() => {
+  return store.activeSessionSummary || {
+    title: "New Thread",
+    status: "empty",
+  };
+});
+
+const currentSessionStatus = computed(() => {
+  if (store.runtime.turn.active) return "执行中";
+  if (currentSession.value.status === "failed") return "失败";
+  if (currentSession.value.status === "completed") return "已保存";
+  return "空白";
+});
+
 onMounted(() => {
   store.fetchState();
+  store.fetchSessions();
   store.connectWs();
   window.addEventListener("keydown", handleGlobalKeydown);
 });
 
 onBeforeUnmount(() => {
-  if (store._socket) {
-    store._socket.close();
-  }
+  store.disconnectWs();
   window.removeEventListener("keydown", handleGlobalKeydown);
 });
 </script>
@@ -66,21 +94,27 @@ onBeforeUnmount(() => {
     <!-- Left Sidebar: Navigation & Threads -->
     <aside class="app-sidebar">
       <div class="sidebar-top">
-        <button class="nav-button new-thread" @click="startNewThread">
-          <MessageSquarePlusIcon size="18" />
-          <span>New Thread</span>
-          <span class="shortcut">⌘ N</span>
-        </button>
+        <div class="sidebar-actions">
+          <button class="nav-button new-thread" @click="startNewThread">
+            <MessageSquarePlusIcon size="18" />
+            <span>New Thread</span>
+            <span class="shortcut">⌘ N</span>
+          </button>
+          <button class="nav-button secondary" @click="openHistoryDrawer">
+            <HistoryIcon size="18" />
+            <span>History</span>
+          </button>
+        </div>
       </div>
 
       <div class="sidebar-scroll">
         <div class="nav-group">
-          <div class="nav-group-title">线程</div>
+          <div class="nav-group-title">会话</div>
           <button class="nav-item" :class="{ active: $route.name === 'chat' }" @click="router.push('/')">
             <AppWindowIcon size="16" />
             <div class="nav-item-content">
-              <span class="nav-item-title">Codex Assistant</span>
-              <span class="nav-item-time">Active</span>
+              <span class="nav-item-title">{{ currentSession.title }}</span>
+              <span class="nav-item-time">{{ currentSessionStatus }}</span>
             </div>
           </button>
         </div>
@@ -152,6 +186,17 @@ onBeforeUnmount(() => {
          <p class="subtle" style="font-size:13px">No skills configured yet.</p>
       </div>
     </aside>
+
+    <SessionHistoryDrawer
+      v-if="isHistoryDrawerOpen"
+      :sessions="store.sessionList"
+      :active-session-id="store.activeSessionId"
+      :loading="store.historyLoading"
+      :switching-disabled="store.runtime.turn.active"
+      @close="isHistoryDrawerOpen = false"
+      @create="startNewThread"
+      @select="switchSession"
+    />
 
     <!-- Modals -->
     <LoginModal v-if="isLoginModalOpen" @close="isLoginModalOpen = false" />
