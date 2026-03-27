@@ -300,14 +300,14 @@ func (s *Store) loadSessionTranscriptLocked(statePath, sessionID string) error {
 }
 
 func summarizeSession(session *SessionState) model.SessionSummary {
-	title := "New Thread"
+	title := "新建会话"
 	preview := "暂无消息"
 	messageCount := 0
 	for _, card := range session.Cards {
 		if isConversationCard(card) {
 			messageCount++
 		}
-		if title == "New Thread" && isUserCard(card) {
+		if title == "新建会话" && isUserCard(card) {
 			if text := summarizeCardText(card); text != "" {
 				title = truncateRunes(text, 24)
 			}

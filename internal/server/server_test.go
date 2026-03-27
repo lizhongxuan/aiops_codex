@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -242,6 +245,133 @@ func TestBuildFileSearchCardProducesStructuredEntries(t *testing.T) {
 	}
 	if card.FileItems[0].Preview != "server_name example.com;" {
 		t.Fatalf("unexpected preview %q", card.FileItems[0].Preview)
+	}
+}
+
+func TestThreadResetOnlyAffectsActiveSession(t *testing.T) {
+	app := New(config.Config{
+		SessionCookieName: "aiops_codex_session",
+		SessionSecret:     "test-session-secret",
+		SessionCookieTTL:  time.Hour,
+	})
+	sessionsHandler := app.withBrowserSession(app.handleSessions)
+	activateHandler := app.withBrowserSession(app.handleSessionActivation)
+	resetHandler := app.withSession(app.handleThreadReset)
+
+	decodeResponse := func(t *testing.T, recorder *httptest.ResponseRecorder, out any) {
+		t.Helper()
+		if err := json.NewDecoder(recorder.Result().Body).Decode(out); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+	}
+
+	getSessionCookie := func(t *testing.T, recorder *httptest.ResponseRecorder) *http.Cookie {
+		t.Helper()
+		for _, cookie := range recorder.Result().Cookies() {
+			if cookie.Name == app.cfg.SessionCookieName {
+				return cookie
+			}
+		}
+		t.Fatalf("expected session cookie %q to be set", app.cfg.SessionCookieName)
+		return nil
+	}
+
+	type sessionsResponse struct {
+		ActiveSessionID string                 `json:"activeSessionId"`
+		Sessions        []model.SessionSummary `json:"sessions"`
+	}
+
+	initialReq := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	initialRecorder := httptest.NewRecorder()
+	sessionsHandler(initialRecorder, initialReq)
+	if initialRecorder.Code != http.StatusOK {
+		t.Fatalf("expected initial sessions request to succeed, got %d", initialRecorder.Code)
+	}
+
+	var initial sessionsResponse
+	decodeResponse(t, initialRecorder, &initial)
+	cookie := getSessionCookie(t, initialRecorder)
+	firstSessionID := initial.ActiveSessionID
+	if firstSessionID == "" {
+		t.Fatalf("expected initial active session to be created")
+	}
+
+	app.store.UpsertCard(firstSessionID, model.Card{
+		ID:        "card-first",
+		Type:      "UserMessageCard",
+		Text:      "first session history",
+		CreatedAt: model.NowString(),
+		UpdatedAt: model.NowString(),
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", nil)
+	createReq.AddCookie(cookie)
+	createRecorder := httptest.NewRecorder()
+	sessionsHandler(createRecorder, createReq)
+	if createRecorder.Code != http.StatusOK {
+		t.Fatalf("expected session creation to succeed, got %d", createRecorder.Code)
+	}
+
+	var created sessionsResponse
+	decodeResponse(t, createRecorder, &created)
+	secondSessionID := created.ActiveSessionID
+	if secondSessionID == "" || secondSessionID == firstSessionID {
+		t.Fatalf("expected a new active session, got %q", secondSessionID)
+	}
+
+	app.store.UpsertCard(secondSessionID, model.Card{
+		ID:        "card-second",
+		Type:      "AssistantMessageCard",
+		Text:      "second session keeps history",
+		CreatedAt: model.NowString(),
+		UpdatedAt: model.NowString(),
+	})
+
+	activateReq := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+firstSessionID+"/activate", nil)
+	activateReq.AddCookie(cookie)
+	activateRecorder := httptest.NewRecorder()
+	activateHandler(activateRecorder, activateReq)
+	if activateRecorder.Code != http.StatusOK {
+		t.Fatalf("expected activation to succeed, got %d", activateRecorder.Code)
+	}
+
+	resetReq := httptest.NewRequest(http.MethodPost, "/api/v1/thread/reset", nil)
+	resetReq.AddCookie(cookie)
+	resetRecorder := httptest.NewRecorder()
+	resetHandler(resetRecorder, resetReq)
+	if resetRecorder.Code != http.StatusOK {
+		t.Fatalf("expected reset to succeed, got %d", resetRecorder.Code)
+	}
+
+	firstSession := app.store.Session(firstSessionID)
+	if firstSession == nil {
+		t.Fatalf("expected first session to exist")
+	}
+	if len(firstSession.Cards) != 0 {
+		t.Fatalf("expected active session cards to be cleared, got %d", len(firstSession.Cards))
+	}
+
+	secondSession := app.store.Session(secondSessionID)
+	if secondSession == nil {
+		t.Fatalf("expected second session to exist")
+	}
+	if len(secondSession.Cards) != 1 {
+		t.Fatalf("expected inactive session history to remain, got %d cards", len(secondSession.Cards))
+	}
+	if secondSession.Cards[0].Text != "second session keeps history" {
+		t.Fatalf("unexpected inactive session card: %#v", secondSession.Cards[0])
+	}
+
+	browserID, ok := app.verifySessionCookie(cookie.Value)
+	if !ok {
+		t.Fatalf("expected session cookie to be valid")
+	}
+	browser := app.store.BrowserSession(browserID)
+	if browser == nil {
+		t.Fatalf("expected browser session to exist")
+	}
+	if browser.ActiveSessionID != firstSessionID {
+		t.Fatalf("expected active session to remain %q after reset, got %q", firstSessionID, browser.ActiveSessionID)
 	}
 }
 

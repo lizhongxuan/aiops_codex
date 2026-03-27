@@ -1,0 +1,5 @@
+./main.go
+./acceptance_checklist_test.go
+./acceptance_live_test.go
+./kme_integration_test.go
+./test_server_test.go

@@ -564,6 +564,8 @@ onBeforeUnmount(() => {
         <p>I can help you write code, manage servers, execute commands, and orchestrate complex tasks.</p>
       </div>
 
+      <p v-if="store.noticeMessage" class="chat-banner info">{{ store.noticeMessage }}</p>
+
       <p v-if="store.errorMessage" class="chat-banner error">{{ store.errorMessage }}</p>
 
       <div class="chat-stream">

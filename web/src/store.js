@@ -32,7 +32,7 @@ function deriveSessionStatus(cards, runtime) {
 
 function deriveSessionSummary(snapshot, runtime) {
   const cards = snapshot?.cards || [];
-  let title = "New Thread";
+  let title = "新建会话";
   let preview = "暂无消息";
   let messageCount = 0;
 
@@ -40,7 +40,7 @@ function deriveSessionSummary(snapshot, runtime) {
     if (isUserCard(card) || isAssistantCard(card)) {
       messageCount += 1;
     }
-    if (title === "New Thread" && isUserCard(card)) {
+    if (title === "新建会话" && isUserCard(card)) {
       const text = normalizeCardText(card);
       if (text) title = text.slice(0, 24);
     }
@@ -137,6 +137,7 @@ export const useAppStore = defineStore("app", {
     historyLoading: false,
     loading: true,
     errorMessage: "",
+    noticeMessage: "",
     sending: false,
     wsStatus: "disconnected",
   }),
@@ -320,6 +321,11 @@ export const useAppStore = defineStore("app", {
       }
     },
     async resetThread() {
+      if (this.runtime.turn.active) {
+        this.noticeMessage = "";
+        this.errorMessage = "当前任务执行中，完成后再清空上下文";
+        return false;
+      }
       try {
         const response = await fetch("/api/v1/thread/reset", {
           method: "POST",
@@ -327,7 +333,8 @@ export const useAppStore = defineStore("app", {
         });
         const data = await response.json();
         if (!response.ok) {
-          this.errorMessage = data.error || "new thread failed";
+          this.noticeMessage = "";
+          this.errorMessage = data.error || "清空当前上下文失败";
           return false;
         }
         this.errorMessage = "";
@@ -338,7 +345,8 @@ export const useAppStore = defineStore("app", {
         return true;
       } catch (e) {
         console.error("Failed to reset thread:", e);
-        this.errorMessage = "New thread failed";
+        this.noticeMessage = "";
+        this.errorMessage = "清空当前上下文失败";
         return false;
       }
     },

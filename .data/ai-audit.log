@@ -381,3 +381,14 @@
 {"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"agent-local","hostname":"agent-local","os":"darwin","remoteAddr":"127.0.0.1:64321","ts":"2026-03-25T23:26:35+08:00"}
 {"event":"chat.message","hostId":"server-local","sessionId":"sess-68f7e190e3e274de","text":"你好","ts":"2026-03-25T23:30:10+08:00"}
 {"event":"chat.message","hostId":"server-local","sessionId":"sess-5b6edd1e748fbf9d","text":"你好","ts":"2026-03-25T23:32:33+08:00"}
+{"event":"agent.timeout","hostId":"agent-local","ts":"2026-03-26T00:42:19+08:00"}
+{"event":"agent.timeout","hostId":"agent-local","ts":"2026-03-26T01:19:02+08:00"}
+{"event":"agent.disconnect","hostId":"agent-local","ts":"2026-03-26T01:34:47+08:00"}
+{"agentVersion":"0.1.0","arch":"arm64","event":"agent.register","hostId":"local-mac","hostname":"local-mac","os":"darwin","remoteAddr":"127.0.0.1:50818","ts":"2026-03-27T11:59:46+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"你好呀","ts":"2026-03-27T12:00:47+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"你好","ts":"2026-03-27T12:15:49+08:00"}
+{"event":"auth.login_started","loginId":"7bcfaa5c-edb3-4aa8-8bf1-547d84d578ae","mode":"chatgpt","sessionId":"sess-2203add776c38e48","ts":"2026-03-27T13:16:15+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"nihao","ts":"2026-03-27T13:17:03+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-2203add776c38e48","text":"怎么查看gpt账号额度?","ts":"2026-03-27T13:17:36+08:00"}
+{"event":"chat.message","hostId":"server-local","sessionId":"sess-b713efeec1da4951","text":"第二次会话了, 我们聊过吗?","ts":"2026-03-27T13:43:10+08:00"}
+{"event":"auth.logout","sessionId":"sess-b713efeec1da4951","ts":"2026-03-27T14:06:12+08:00"}

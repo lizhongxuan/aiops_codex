@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "sessionId": "sess-b713efeec1da4951",
+  "cards": [
+    {
+      "id": "msg-0577f42ea61ac74d",
+      "type": "UserMessageCard",
+      "role": "user",
+      "text": "第二次会话了, 我们聊过吗?",
+      "status": "completed",
+      "createdAt": "2026-03-27T13:43:10+08:00",
+      "updatedAt": "2026-03-27T13:43:10+08:00"
+    },
+    {
+      "id": "msg_08912bac6c955abd0169c618f77eac819bb9ed6fe944961477",
+      "type": "AssistantMessageCard",
+      "role": "assistant",
+      "text": "我不能确定“上一次”的内容。\n\n通常我只能看到当前这个会话里提供给我的上下文；如果这是新开的会话，我一般不会自动记得上次聊过什么。就这次来看，我只看到你现在这句。\n\n如果你愿意，直接给我一句上次聊到哪里，我可以立刻接着。",
+      "status": "completed",
+      "durationMs": 1000,
+      "createdAt": "2026-03-27T13:43:19+08:00",
+      "updatedAt": "2026-03-27T13:43:20+08:00"
+    }
+  ]
+}

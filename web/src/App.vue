@@ -6,7 +6,7 @@ import LoginModal from "./components/LoginModal.vue";
 import HostModal from "./components/HostModal.vue";
 import SettingsModal from "./components/SettingsModal.vue";
 import SessionHistoryDrawer from "./components/SessionHistoryDrawer.vue";
-import { MessageSquarePlusIcon, AppWindowIcon, SettingsIcon, UserCircleIcon, ServerIcon, PanelsTopLeftIcon, TerminalIcon, HistoryIcon } from "lucide-vue-next";
+import { MessageSquarePlusIcon, AppWindowIcon, SettingsIcon, UserCircleIcon, ServerIcon, PanelsTopLeftIcon, TerminalIcon, HistoryIcon, EraserIcon } from "lucide-vue-next";
 
 const store = useAppStore();
 const router = useRouter();
@@ -16,6 +16,7 @@ const isHostModalOpen = ref(false);
 const isSettingsModalOpen = ref(false);
 const isMcpDrawerOpen = ref(false);
 const isHistoryDrawerOpen = ref(false);
+let noticeTimer = null;
 
 function toggleMcpDrawer() {
   isMcpDrawerOpen.value = !isMcpDrawerOpen.value;
@@ -36,6 +37,7 @@ async function startNewThread() {
   const ok = await store.createSession();
   if (!ok) return;
   store.errorMessage = "";
+  store.noticeMessage = "";
   isHistoryDrawerOpen.value = false;
 }
 
@@ -65,10 +67,42 @@ function openTerminal() {
 
 const currentSession = computed(() => {
   return store.activeSessionSummary || {
-    title: "New Thread",
+    title: "新建会话",
     status: "empty",
   };
 });
+
+const canResetCurrentSession = computed(() => {
+  if (store.loading || store.sending || store.runtime.turn.active) return false;
+  return store.snapshot.cards.length > 0 || (store.snapshot.approvals || []).length > 0;
+});
+
+const resetButtonTitle = computed(() => {
+  if (store.loading) return "正在加载当前会话";
+  if (store.runtime.turn.active) return "当前任务执行中，暂不能清空上下文";
+  if (!canResetCurrentSession.value) return "当前会话已经是空白";
+  return "清空当前会话的消息、审批和运行态";
+});
+
+function pushNotice(message) {
+  store.noticeMessage = message;
+  if (noticeTimer) {
+    window.clearTimeout(noticeTimer);
+  }
+  noticeTimer = window.setTimeout(() => {
+    store.noticeMessage = "";
+    noticeTimer = null;
+  }, 3000);
+}
+
+async function resetCurrentSession() {
+  if (!canResetCurrentSession.value) return;
+  const confirmed = window.confirm("确认清空当前会话上下文吗？这会移除当前会话的消息、审批和运行态，其他历史会话不会受影响。");
+  if (!confirmed) return;
+  const ok = await store.resetThread();
+  if (!ok) return;
+  pushNotice("已清空当前会话上下文");
+}
 
 const currentSessionStatus = computed(() => {
   if (store.runtime.turn.active) return "执行中";
@@ -87,6 +121,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   store.disconnectWs();
   window.removeEventListener("keydown", handleGlobalKeydown);
+  if (noticeTimer) {
+    window.clearTimeout(noticeTimer);
+  }
 });
 </script>
 
@@ -98,12 +135,12 @@ onBeforeUnmount(() => {
         <div class="sidebar-actions">
           <button class="nav-button new-thread" @click="startNewThread">
             <MessageSquarePlusIcon size="18" />
-            <span>New Thread</span>
+            <span>新建会话</span>
             <span class="shortcut">⌘ N</span>
           </button>
           <button class="nav-button secondary" @click="openHistoryDrawer">
             <HistoryIcon size="18" />
-            <span>History</span>
+            <span>历史会话</span>
           </button>
         </div>
       </div>
@@ -152,6 +189,11 @@ onBeforeUnmount(() => {
         </div>
         
         <div class="header-right">
+          <button class="header-pill subtle-pill" :disabled="!canResetCurrentSession" :title="resetButtonTitle" @click="resetCurrentSession">
+            <EraserIcon size="14" />
+            <span class="pill-text">清空上下文</span>
+          </button>
+
           <button class="header-pill" :disabled="!store.canOpenTerminal" @click="openTerminal" title="打开终端">
             <TerminalIcon size="14" />
             <span class="pill-text">终端</span>
