@@ -490,7 +490,7 @@ func localCommandCardResult(item map[string]any, output string) remoteExecResult
 }
 
 func execSuccessSummary(exec *remoteExecSession, result remoteExecResult) string {
-	if line := firstMeaningfulExecLine(result.Stdout, result.Output, result.Stderr); line != "" {
+	if line := firstMeaningfulExecLine(result.Stdout, stripShellInitNoise(result.Output), stripShellInitNoise(result.Stderr)); line != "" {
 		return truncate(line, 140)
 	}
 	if exec != nil {
@@ -518,7 +518,7 @@ func execFailureSummary(finalStatus string, result remoteExecResult) string {
 		return "执行失败：远程主机心跳超时"
 	}
 
-	detail := firstMeaningfulExecLine(result.Stderr, result.Error, result.Message, result.Output)
+	detail := firstMeaningfulExecLine(stripShellInitNoise(result.Stderr), result.Error, result.Message, stripShellInitNoise(result.Output))
 	if detail == "" {
 		if result.ExitCode != 0 {
 			return fmt.Sprintf("执行失败（退出码 %d）", result.ExitCode)
@@ -534,10 +534,10 @@ func execFailureSummary(finalStatus string, result remoteExecResult) string {
 func execSummaryHighlights(finalStatus, summary string, result remoteExecResult) []string {
 	source := result.Stdout
 	if finalStatus != "completed" || strings.TrimSpace(source) == "" {
-		source = result.Stderr
+		source = stripShellInitNoise(result.Stderr)
 	}
 	if strings.TrimSpace(source) == "" {
-		source = result.Output
+		source = stripShellInitNoise(result.Output)
 	}
 	lines := meaningfulExecLines(source, 4)
 	if len(lines) == 0 {
@@ -601,6 +601,64 @@ func meaningfulExecLines(text string, limit int) []string {
 	return lines
 }
 
+func shellInitNoiseOnly(text string) bool {
+	lines := meaningfulExecLines(text, 0)
+	if len(lines) == 0 {
+		return false
+	}
+	for _, line := range lines {
+		if !shellInitNoiseLine(line) {
+			return false
+		}
+	}
+	return true
+}
+
+func shellInitNoiseLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+
+	lower := strings.ToLower(trimmed)
+	if !strings.Contains(lower, "cargo/env") && !strings.Contains(lower, "no such file or directory") && !strings.Contains(lower, "command not found") && !strings.Contains(lower, "permission denied") {
+		return false
+	}
+
+	markers := []string{
+		".bashrc: line ",
+		".bash_profile: line ",
+		".bash_login: line ",
+		".profile: line ",
+		".zshrc: line ",
+		".zprofile: line ",
+		".zlogin: line ",
+	}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+
+	return strings.HasPrefix(lower, "bash:") || strings.HasPrefix(lower, "zsh:") || strings.HasPrefix(lower, "sh:")
+}
+
+func stripShellInitNoise(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, raw := range lines {
+		if shellInitNoiseLine(raw) {
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	return strings.Join(kept, "\n")
+}
+
 func execResultCardStatus(result remoteExecResult) string {
 	errorText := strings.ToLower(strings.TrimSpace(result.Error + "\n" + result.Message + "\n" + result.Stderr + "\n" + result.Output))
 	switch {
@@ -610,6 +668,9 @@ func execResultCardStatus(result remoteExecResult) string {
 		return "timeout"
 	case result.Status == "completed":
 		if result.ExitCode == 0 && !commandOutputLooksFailed(result.Output) {
+			return "completed"
+		}
+		if result.ExitCode == 0 && shellInitNoiseOnly(result.Stderr) && !commandOutputLooksFailed(stripShellInitNoise(result.Output)) {
 			return "completed"
 		}
 	default:

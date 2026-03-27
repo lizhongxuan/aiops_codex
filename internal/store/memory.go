@@ -67,7 +67,6 @@ type persistentSessionState struct {
 	SelectedHostID string                       `json:"selectedHostId,omitempty"`
 	Auth           model.AuthState              `json:"auth"`
 	Tokens         persistentExternalAuthTokens `json:"tokens"`
-	ApprovalGrants []model.ApprovalGrant        `json:"approvalGrants,omitempty"`
 	CreatedAt      string                       `json:"createdAt,omitempty"`
 	LastActivityAt string                       `json:"lastActivityAt,omitempty"`
 }
@@ -164,8 +163,13 @@ func (s *Store) TouchSession(sessionID string) {
 }
 
 func (s *Store) SetSelectedHost(sessionID, hostID string) {
+	hostID = defaultHostID(hostID)
 	s.mu.Lock()
 	session, _ := s.ensureSessionLocked(sessionID)
+	previousHostID := defaultHostID(session.SelectedHostID)
+	if previousHostID != hostID {
+		session.ApprovalGrants = nil
+	}
 	session.SelectedHostID = hostID
 	session.Runtime.Turn.HostID = defaultHostID(hostID)
 	session.LastActivityAt = model.NowString()
@@ -776,7 +780,7 @@ func (s *Store) LoadStableState(path string) error {
 			SelectedHostID: defaultHostID(session.SelectedHostID),
 			Approvals:      make(map[string]model.ApprovalRequest),
 			Choices:        make(map[string]model.ChoiceRequest),
-			ApprovalGrants: append([]model.ApprovalGrant(nil), session.ApprovalGrants...),
+			ApprovalGrants: make([]model.ApprovalGrant, 0),
 			ItemCache:      make(map[string]map[string]any),
 			Auth:           session.Auth,
 			Tokens:         fromPersistentTokens(session.Tokens),
@@ -899,7 +903,6 @@ func (s *Store) SaveStableState(path string) error {
 			SelectedHostID: session.SelectedHostID,
 			Auth:           session.Auth,
 			Tokens:         toPersistentTokens(session.Tokens),
-			ApprovalGrants: append([]model.ApprovalGrant(nil), session.ApprovalGrants...),
 			CreatedAt:      session.CreatedAt,
 			LastActivityAt: session.LastActivityAt,
 		}

@@ -32,7 +32,7 @@ func TestMarkStaleHostsMarksOffline(t *testing.T) {
 	}
 }
 
-func TestApprovalGrantPersistsAndRestores(t *testing.T) {
+func TestApprovalGrantDoesNotPersistAcrossStableState(t *testing.T) {
 	st := New()
 	sessionID := "sess-test"
 	st.EnsureSession(sessionID)
@@ -64,12 +64,33 @@ func TestApprovalGrantPersistsAndRestores(t *testing.T) {
 		t.Fatalf("load state: %v", err)
 	}
 
-	got, ok := reloaded.ApprovalGrant(sessionID, grant.Fingerprint)
-	if !ok {
-		t.Fatalf("expected approval grant to be restored")
+	if got, ok := reloaded.ApprovalGrant(sessionID, grant.Fingerprint); ok {
+		t.Fatalf("expected approval grant not to be restored, got %#v", got)
 	}
-	if got.Command != grant.Command || got.HostID != grant.HostID {
-		t.Fatalf("unexpected restored grant: %#v", got)
+}
+
+func TestApprovalGrantIsClearedOnHostSwitch(t *testing.T) {
+	st := New()
+	sessionID := "sess-host-switch"
+	st.EnsureSession(sessionID)
+	st.AddApprovalGrant(sessionID, model.ApprovalGrant{
+		ID:          "grant-1",
+		HostID:      model.ServerLocalHostID,
+		Type:        "command",
+		Fingerprint: "command|server-local|/tmp|rm /tmp/demo.txt",
+		Command:     "rm /tmp/demo.txt",
+		Cwd:         "/tmp",
+		CreatedAt:   model.NowString(),
+	})
+
+	if _, ok := st.ApprovalGrant(sessionID, "command|server-local|/tmp|rm /tmp/demo.txt"); !ok {
+		t.Fatalf("expected approval grant to exist before host switch")
+	}
+
+	st.SetSelectedHost(sessionID, "linux-01")
+
+	if _, ok := st.ApprovalGrant(sessionID, "command|server-local|/tmp|rm /tmp/demo.txt"); ok {
+		t.Fatalf("expected approval grant to be cleared after host switch")
 	}
 }
 

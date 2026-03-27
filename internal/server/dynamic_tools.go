@@ -454,8 +454,6 @@ func (a *App) executeRemoteListFilesTool(sessionID, hostID, rawID string, params
 		"startedAt": startedAt,
 		"endedAt":   model.NowString(),
 	})
-	now := model.NowString()
-	a.store.UpsertCard(sessionID, buildFileListCardWithRecursive("toolmsg-"+params.CallID, hostID, result, args.Recursive, now))
 	a.setRuntimeTurnPhase(sessionID, "thinking")
 	a.broadcastSnapshot(sessionID)
 	_ = a.respondCodex(context.Background(), rawID, toolResponse(renderFileListMessage(hostID, result.Path, result.Entries, result.Truncated), true))
@@ -515,8 +513,6 @@ func (a *App) executeRemoteReadFileTool(sessionID, hostID, rawID string, params 
 		"startedAt": startedAt,
 		"endedAt":   model.NowString(),
 	})
-	now := model.NowString()
-	a.store.UpsertCard(sessionID, buildFileReadCard("toolpreview-"+params.CallID, hostID, result, now))
 	a.setRuntimeTurnPhase(sessionID, "thinking")
 	a.broadcastSnapshot(sessionID)
 	toolText := fmt.Sprintf("Read file %s:\n\n%s", result.Path, result.Content)
@@ -590,8 +586,6 @@ func (a *App) executeRemoteSearchFilesTool(sessionID, hostID, rawID string, para
 		"startedAt": startedAt,
 		"endedAt":   model.NowString(),
 	})
-	now := model.NowString()
-	a.store.UpsertCard(sessionID, buildFileSearchCard("toolmsg-"+params.CallID, hostID, result, now))
 	a.setRuntimeTurnPhase(sessionID, "thinking")
 	a.broadcastSnapshot(sessionID)
 	_ = a.respondCodex(context.Background(), rawID, toolResponse(renderFileSearchMessage(hostID, result.Path, result.Query, result.Matches, result.Truncated), true))
