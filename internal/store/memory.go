@@ -117,13 +117,7 @@ func New() *Store {
 		loginToSession:  make(map[string]string),
 		persistTimers:   make(map[string]*time.Timer),
 		hosts: map[string]model.Host{
-			model.ServerLocalHostID: {
-				ID:         model.ServerLocalHostID,
-				Name:       "server-local",
-				Kind:       "server_local",
-				Status:     "online",
-				Executable: true,
-			},
+			model.ServerLocalHostID: serverLocalHost(),
 		},
 	}
 }
@@ -588,7 +582,11 @@ func (s *Store) ResolveApproval(sessionID, approvalID, status, resolvedAt string
 
 func (s *Store) UpsertHost(host model.Host) {
 	s.mu.Lock()
-	s.hosts[host.ID] = host
+	host.ID = defaultHostID(host.ID)
+	if existing, ok := s.hosts[host.ID]; ok {
+		host = mergeStoredHost(existing, host)
+	}
+	s.hosts[host.ID] = normalizeStoredHost(host)
 	s.mu.Unlock()
 	s.SaveStableState("")
 }
@@ -601,6 +599,9 @@ func (s *Store) MarkHostOffline(hostID string) {
 		return
 	}
 	host.Status = "offline"
+	if host.InstallState == "" {
+		host.InstallState = "installed"
+	}
 	s.hosts[hostID] = host
 	s.mu.Unlock()
 	s.SaveStableState("")
@@ -636,7 +637,7 @@ func (s *Store) Hosts() []model.Host {
 	defer s.mu.RUnlock()
 	out := make([]model.Host, 0, len(s.hosts))
 	for _, host := range s.hosts {
-		out = append(out, host)
+		out = append(out, normalizeStoredHost(host))
 	}
 	model.SortHosts(out)
 	return out
@@ -1028,11 +1029,16 @@ func defaultHostID(hostID string) string {
 
 func serverLocalHost() model.Host {
 	return model.Host{
-		ID:         model.ServerLocalHostID,
-		Name:       "server-local",
-		Kind:       "server_local",
-		Status:     "online",
-		Executable: true,
+		ID:              model.ServerLocalHostID,
+		Name:            "server-local",
+		Kind:            "server_local",
+		Address:         "127.0.0.1",
+		Transport:       "local",
+		Status:          "online",
+		Executable:      true,
+		TerminalCapable: true,
+		InstallState:    "installed",
+		ControlMode:     "local",
 	}
 }
 

@@ -17,6 +17,7 @@ const props = defineProps({
 const router = useRouter();
 const store = useAppStore();
 const isExpanded = ref(true);
+const showCommandDetails = ref(false);
 const terminalContainer = ref(null);
 let term = null;
 let fitAddon = null;
@@ -44,6 +45,37 @@ const isCancelled = computed(() => props.card.status === "cancelled");
 
 const hasOutput = computed(() => !!props.card.output);
 const isRunning = computed(() => !isComplete.value);
+const summaryText = computed(() => (props.card.summary || "").trim());
+const summaryHighlights = computed(() => props.card.highlights || []);
+const summaryMetaRows = computed(() => props.card.kvRows || []);
+const failureTypeLabel = computed(() => {
+  if (isPermissionDenied.value) return "OS 权限不足";
+  if (isDisconnected.value) return "Agent 断连";
+  if (isHostTimeout.value) return "网络 / 心跳超时";
+  if (isTimeout.value) return "命令执行超时";
+  if (isCancelled.value) return "任务已停止";
+  if (isFailed.value) return "命令退出失败";
+  return "";
+});
+const failureHint = computed(() => {
+  if (isPermissionDenied.value) return "建议切换更高权限用户，或先改成只读检查确认范围。";
+  if (isDisconnected.value) return "建议刷新主机状态，待 host-agent 恢复在线后重试。";
+  if (isHostTimeout.value) return "建议确认远程主机心跳恢复，再重新执行。";
+  if (isTimeout.value) return "建议缩小命令范围，或在确认风险后适当延长 timeout。";
+  if (isCancelled.value) return "这是一次主动中断，不代表命令执行成功。";
+  if (isFailed.value) return "建议查看 stderr 和退出码，修正命令后再试。";
+  return "";
+});
+const hasPresentation = computed(() => {
+  return (
+    !!summaryText.value ||
+    summaryHighlights.value.length > 0 ||
+    summaryMetaRows.value.length > 0 ||
+    !!failureTypeLabel.value ||
+    !!failureHint.value
+  );
+});
+const showExitCode = computed(() => typeof props.card.exitCode === "number" && isComplete.value);
 const canOpenTerminal = computed(() => {
   return (
     store.selectedHost?.status === "online" &&
@@ -59,6 +91,27 @@ const dynamicHeight = computed(() => {
 });
 
 const commandDescriptor = computed(() => describeCommand(props.card.command || ""));
+const hostCaption = computed(() => {
+  const name = (props.card.hostName || "").trim();
+  const id = (props.card.hostId || "").trim();
+  if (!name && !id) return "";
+  if (!id || id === name) return `目标主机 ${name || id}`;
+  return `${name} · ${id}`;
+});
+const rawCommand = computed(() => (props.card.command || "").trim());
+const hasFoldedCommand = computed(() => {
+  return rawCommand.value.includes("\n") || rawCommand.value.includes("<<") || rawCommand.value.length > 140;
+});
+const commandDetailsLabel = computed(() => (showCommandDetails.value ? "收起脚本" : "展开脚本"));
+const commandDetailsMeta = computed(() => {
+  if (!hasFoldedCommand.value) return "";
+  const lineCount = rawCommand.value ? rawCommand.value.split("\n").length : 0;
+  const kind = commandDescriptor.value.kind || "Shell";
+  if (lineCount > 1) {
+    return `${kind} 脚本已折叠 · ${lineCount} 行 · ${rawCommand.value.length} 字符`;
+  }
+  return `${kind} 命令已折叠 · ${rawCommand.value.length} 字符`;
+});
 
 function stripMatchingQuotes(value) {
   if (!value || value.length < 2) return value;
@@ -161,6 +214,11 @@ function openInTerminal(event) {
   event.stopPropagation();
   if (!canOpenTerminal.value) return;
   router.push(`/terminal/${store.snapshot.selectedHostId}`);
+}
+
+function toggleCommandDetails(event) {
+  event.stopPropagation();
+  showCommandDetails.value = !showCommandDetails.value;
 }
 
 function initTerminal() {
@@ -289,10 +347,14 @@ onBeforeUnmount(() => {
   >
     <div class="timeline-left">
       <CheckIcon size="14" class="timeline-check" />
+      <span v-if="hostCaption" class="term-host-badge">{{ hostCaption }}</span>
       <span v-if="commandDescriptor.kind" class="command-kind-badge">{{ commandDescriptor.kind }}</span>
-      <span class="timeline-label">
-        已运行 <code :title="card.command">{{ commandDescriptor.display }}</code>
-      </span>
+      <div class="timeline-copy">
+        <span class="timeline-label">
+          已运行 <code :title="card.command">{{ commandDescriptor.display }}</code>
+        </span>
+        <span v-if="summaryText" class="timeline-summary-copy">{{ summaryText }}</span>
+      </div>
     </div>
     <div class="timeline-divider"></div>
     <span class="timeline-duration" v-if="durationLabel">已处理 {{ durationLabel }}</span>
@@ -304,6 +366,7 @@ onBeforeUnmount(() => {
       <div class="term-title-group">
         <component :is="isExpanded ? ChevronDownIcon : ChevronRightIcon" size="16" class="icon-carat" />
         <TerminalIcon size="14" class="icon-term" />
+        <span v-if="hostCaption" class="term-host-badge">{{ hostCaption }}</span>
         <span v-if="commandDescriptor.kind" class="command-kind-badge subtle">{{ commandDescriptor.kind }}</span>
         <span class="term-command mono" :title="card.command">{{ commandDescriptor.display }}</span>
       </div>
@@ -320,26 +383,55 @@ onBeforeUnmount(() => {
         </button>
         <span class="term-cwd" v-if="card.cwd">{{ card.cwd }}</span>
         <span class="term-status-badge success" v-if="isSuccess">
-          <CheckIcon size="12" /> Success
+          <CheckIcon size="12" /> 成功
+        </span>
+        <span class="term-status-badge neutral" v-if="showExitCode">
+          退出码 {{ card.exitCode }}
         </span>
         <span class="term-status-badge error" v-if="isFailed">
-          <XIcon size="12" /> Failed
+          <XIcon size="12" /> 失败
         </span>
         <span class="term-status-badge permission" v-if="isPermissionDenied">
-          <XIcon size="12" /> Permission denied
+          <XIcon size="12" /> 权限不足
         </span>
         <span class="term-status-badge warning" v-if="isDisconnected">
-          <XIcon size="12" /> Host disconnected
+          <XIcon size="12" /> 主机断连
         </span>
         <span class="term-status-badge warning" v-if="isHostTimeout">
-          <XIcon size="12" /> Heartbeat timed out
+          <XIcon size="12" /> 心跳超时
         </span>
         <span class="term-status-badge timeout" v-if="isTimeout">
-          <XIcon size="12" /> Timed out
+          <XIcon size="12" /> 执行超时
         </span>
         <span class="term-status-badge cancelled" v-if="isCancelled">
-          <XIcon size="12" /> Cancelled
+          <XIcon size="12" /> 已取消
         </span>
+      </div>
+    </div>
+
+    <div v-if="hasPresentation || hasFoldedCommand" class="term-summary-panel">
+      <div v-if="hasFoldedCommand" class="term-command-panel">
+        <div class="term-command-panel-head">
+          <span class="term-command-caption">{{ commandDetailsMeta }}</span>
+          <button type="button" class="term-command-toggle" @click="toggleCommandDetails">
+            {{ commandDetailsLabel }}
+          </button>
+        </div>
+        <pre v-if="showCommandDetails" class="term-command-source">{{ rawCommand }}</pre>
+      </div>
+      <p v-if="failureTypeLabel" class="term-error-copy">{{ failureTypeLabel }}</p>
+      <p v-if="summaryText" class="term-summary-copy">{{ summaryText }}</p>
+      <p v-if="failureHint" class="term-error-hint">{{ failureHint }}</p>
+      <div v-if="summaryMetaRows.length" class="term-meta-grid">
+        <span v-for="row in summaryMetaRows" :key="`${row.key}-${row.value}`" class="term-meta-chip">
+          <strong>{{ row.key }}</strong>
+          <span>{{ row.value }}</span>
+        </span>
+      </div>
+      <div v-if="summaryHighlights.length" class="term-highlight-list">
+        <div v-for="line in summaryHighlights" :key="line" class="term-highlight-line">
+          {{ line }}
+        </div>
       </div>
     </div>
 
@@ -347,7 +439,7 @@ onBeforeUnmount(() => {
       <div v-if="hasOutput" class="xterm-wrapper" ref="terminalContainer" :style="{ height: dynamicHeight + 'px' }"></div>
       <div v-else class="terminal-placeholder">
         <div class="terminal-placeholder-label">{{ isRunning ? "命令执行中，等待输出..." : "该命令没有输出" }}</div>
-        <div class="terminal-placeholder-command mono">{{ card.command || "Executing..." }}</div>
+        <div class="terminal-placeholder-command mono">{{ hasFoldedCommand ? commandDescriptor.display : (card.command || "Executing...") }}</div>
       </div>
     </div>
   </div>
@@ -380,13 +472,20 @@ onBeforeUnmount(() => {
 
 .timeline-left {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   color: var(--text-meta, #9ca3af);
   font-size: var(--text-meta-size, 12px);
   min-width: 0;
   white-space: normal;
   flex-wrap: wrap;
+}
+
+.timeline-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .timeline-check {
@@ -408,6 +507,11 @@ onBeforeUnmount(() => {
   font-weight: 500;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.timeline-summary-copy {
+  color: #475569;
+  line-height: 1.4;
 }
 
 .timeline-divider {
@@ -508,6 +612,20 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
+.term-host-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #dbe3ee;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
 .command-kind-badge.subtle {
   background: #f8fafc;
   color: #475569;
@@ -557,6 +675,11 @@ onBeforeUnmount(() => {
   color: #166534;
 }
 
+.term-status-badge.neutral {
+  background: #f1f5f9;
+  color: #334155;
+}
+
 .term-status-badge.error {
   background: #fee2e2;
   color: #991b1b;
@@ -586,6 +709,122 @@ onBeforeUnmount(() => {
   background: #0f172a;
   padding: 6px;
   border-top: 1px solid #1e293b;
+}
+
+.term-summary-panel {
+  padding: 12px;
+  border-top: 1px solid #e5e7eb;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.term-command-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+}
+
+.term-command-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.term-command-caption {
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.term-command-toggle {
+  border: 1px solid #dbe3ee;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.term-command-toggle:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.term-command-source {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.term-summary-copy {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #0f172a;
+}
+
+.term-error-copy {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #b91c1c;
+}
+
+.term-error-hint {
+  margin: -4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #92400e;
+}
+
+.term-meta-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.term-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+  color: #334155;
+  font-size: 11px;
+}
+
+.term-highlight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.term-highlight-line {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #475569;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 8px 10px;
 }
 
 .xterm-wrapper {
@@ -645,6 +884,11 @@ onBeforeUnmount(() => {
     margin-left: 0;
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .term-command-panel-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

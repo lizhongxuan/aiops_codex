@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
@@ -26,15 +27,25 @@ type remoteExecSession struct {
 	done     chan remoteExecResult
 	doneOnce sync.Once
 
-	mu     sync.Mutex
-	output string
+	mu                sync.Mutex
+	output            string
+	stdout            string
+	stderr            string
+	cancelRequested   bool
+	cancelMessage     string
+	cancelRequestedAt time.Time
 }
 
 type remoteExecResult struct {
-	Output   string
-	ExitCode int
-	Status   string
-	Message  string
+	Output    string
+	Stdout    string
+	Stderr    string
+	ExitCode  int
+	Status    string
+	Message   string
+	Error     string
+	Timeout   bool
+	Cancelled bool
 }
 
 type execSpec struct {
@@ -46,17 +57,40 @@ type execSpec struct {
 	Approval   string
 }
 
-func (e *remoteExecSession) appendOutput(chunk string) string {
+func (e *remoteExecSession) appendOutput(stream, chunk string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.output += chunk
+	if stream == "stderr" {
+		e.stderr += chunk
+	} else {
+		e.stdout += chunk
+	}
 	return e.output
 }
 
-func (e *remoteExecSession) snapshotOutput() string {
+func (e *remoteExecSession) snapshotResult() remoteExecResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.output
+	return remoteExecResult{
+		Output:    e.output,
+		Stdout:    e.stdout,
+		Stderr:    e.stderr,
+		Cancelled: e.cancelRequested,
+		Message:   e.cancelMessage,
+	}
+}
+
+func (e *remoteExecSession) requestCancel(message string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cancelRequested {
+		return false
+	}
+	e.cancelRequested = true
+	e.cancelMessage = strings.TrimSpace(message)
+	e.cancelRequestedAt = time.Now()
+	return true
 }
 
 func (e *remoteExecSession) finish(result remoteExecResult) bool {
@@ -98,19 +132,13 @@ func (a *App) failRemoteExecsForHost(hostID, message string) {
 	a.execMu.Unlock()
 
 	for _, exec := range sessions {
-		output := exec.snapshotOutput()
-		if message != "" {
-			if output != "" && !strings.HasSuffix(output, "\n") {
-				output += "\n"
-			}
-			output += message
-		}
-		exec.finish(remoteExecResult{
-			Output:   output,
-			ExitCode: 255,
-			Status:   "failed",
-			Message:  message,
-		})
+		result := exec.snapshotResult()
+		result.Output = appendExecMessage(result.Output, message)
+		result.ExitCode = 255
+		result.Status = "failed"
+		result.Message = strings.TrimSpace(message)
+		result.Error = strings.TrimSpace(message)
+		exec.finish(result)
 	}
 }
 
@@ -131,20 +159,42 @@ func (a *App) cancelRemoteExecsForSession(sessionID, message string) {
 				ExecID: exec.ID,
 			},
 		})
-		output := exec.snapshotOutput()
-		if message != "" {
-			if output != "" && !strings.HasSuffix(output, "\n") {
-				output += "\n"
-			}
-			output += message
+		if !exec.requestCancel(message) {
+			continue
 		}
-		exec.finish(remoteExecResult{
-			Output:   output,
-			ExitCode: 130,
-			Status:   "cancelled",
-			Message:  message,
+		now := model.NowString()
+		a.store.UpdateCard(exec.SessionID, exec.CardID, func(card *model.Card) {
+			card.Status = "cancelled"
+			card.ExitCode = 130
+			card.Cancelled = true
+			card.UpdatedAt = now
 		})
+		go a.forceCancelRemoteExec(exec.ID, 3*time.Second)
 	}
+	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) forceCancelRemoteExec(execID string, delay time.Duration) {
+	if delay <= 0 {
+		delay = 3 * time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	<-timer.C
+
+	exec, ok := a.execSession(execID)
+	if !ok {
+		return
+	}
+	result := exec.snapshotResult()
+	if !result.Cancelled {
+		return
+	}
+	result.Output = appendExecMessage(result.Output, result.Message)
+	result.ExitCode = 130
+	result.Status = "cancelled"
+	result.Cancelled = true
+	exec.finish(result)
 }
 
 func (a *App) handleAgentExecOutput(hostID string, payload *agentrpc.ExecOutput) {
@@ -160,9 +210,18 @@ func (a *App) handleAgentExecOutput(hostID string, payload *agentrpc.ExecOutput)
 	if chunk == "" {
 		return
 	}
-	exec.appendOutput(chunk)
+	stream := strings.ToLower(strings.TrimSpace(payload.Stream))
+	if stream != "stderr" {
+		stream = "stdout"
+	}
+	exec.appendOutput(stream, chunk)
 	a.store.UpdateCard(exec.SessionID, exec.CardID, func(card *model.Card) {
 		card.Output += chunk
+		if stream == "stderr" {
+			card.Stderr += chunk
+		} else {
+			card.Stdout += chunk
+		}
 		card.UpdatedAt = model.NowString()
 	})
 	a.broadcastSnapshot(exec.SessionID)
@@ -177,29 +236,39 @@ func (a *App) handleAgentExecExit(hostID string, payload *agentrpc.ExecExit) {
 		return
 	}
 
-	output := exec.snapshotOutput()
-	if payload.Message != "" {
-		if output != "" && !strings.HasSuffix(output, "\n") {
-			output += "\n"
-		}
-		output += payload.Message
+	result := exec.snapshotResult()
+	if payload.Stdout != "" && len(payload.Stdout) >= len(result.Stdout) {
+		result.Stdout = payload.Stdout
+	}
+	if payload.Stderr != "" && len(payload.Stderr) >= len(result.Stderr) {
+		result.Stderr = payload.Stderr
+	}
+	if len(result.Output) < len(result.Stdout)+len(result.Stderr) {
+		result.Output = result.Stdout + result.Stderr
 	}
 
 	status := strings.TrimSpace(payload.Status)
 	if status == "" {
-		if payload.Code == 0 {
+		if payload.Cancelled {
+			status = "cancelled"
+		} else if payload.Timeout {
+			status = "timeout"
+		} else if execCancelRequested(exec) {
+			status = "cancelled"
+		} else if execExitCode(payload) == 0 {
 			status = "completed"
 		} else {
 			status = "failed"
 		}
 	}
-
-	exec.finish(remoteExecResult{
-		Output:   output,
-		ExitCode: payload.Code,
-		Status:   status,
-		Message:  payload.Message,
-	})
+	result.Output = appendExecMessage(result.Output, defaultString(strings.TrimSpace(payload.Message), strings.TrimSpace(payload.Error)))
+	result.ExitCode = execExitCode(payload)
+	result.Status = status
+	result.Message = strings.TrimSpace(payload.Message)
+	result.Error = strings.TrimSpace(payload.Error)
+	result.Timeout = payload.Timeout || status == "timeout"
+	result.Cancelled = payload.Cancelled || status == "cancelled"
+	exec.finish(result)
 }
 
 func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID string, spec execSpec) (remoteExecResult, error) {
@@ -220,7 +289,7 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 
 	a.setRuntimeTurnPhase(sessionID, "executing")
 	a.incrementCommandCount(sessionID)
-	a.store.UpsertCard(sessionID, model.Card{
+	card := model.Card{
 		ID:        cardID,
 		Type:      "CommandCard",
 		Title:     "Command execution",
@@ -229,7 +298,9 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 		Status:    "inProgress",
 		CreatedAt: createdAt,
 		UpdatedAt: now,
-	})
+	}
+	applyCardHost(&card, host)
+	a.store.UpsertCard(sessionID, card)
 	a.broadcastSnapshot(sessionID)
 	a.auditRemoteToolEvent("remote.exec.started", sessionID, hostID, func() string {
 		if spec.Readonly {
@@ -240,6 +311,9 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 		"command":          spec.Command,
 		"cwd":              spec.Cwd,
 		"startedAt":        now,
+		"endedAt":          nil,
+		"status":           "inProgress",
+		"exitCode":         nil,
 		"approvalDecision": spec.Approval,
 	})
 
@@ -288,12 +362,6 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 
 	select {
 	case <-ctx.Done():
-		_ = a.sendAgentEnvelope(hostID, &agentrpc.Envelope{
-			Kind: "exec/cancel",
-			ExecCancel: &agentrpc.ExecCancel{
-				ExecID: exec.ID,
-			},
-		})
 		status := "cancelled"
 		message := "command cancelled"
 		exitCode := 130
@@ -302,12 +370,22 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 			message = "command timed out"
 			exitCode = 124
 		}
-		exec.finish(remoteExecResult{
-			Output:   exec.snapshotOutput(),
-			ExitCode: exitCode,
-			Status:   status,
-			Message:  message,
+		_ = a.sendAgentEnvelope(hostID, &agentrpc.Envelope{
+			Kind: "exec/cancel",
+			ExecCancel: &agentrpc.ExecCancel{
+				ExecID: exec.ID,
+			},
 		})
+		exec.requestCancel(message)
+		go a.forceCancelRemoteExec(exec.ID, 2*time.Second)
+		a.store.UpdateCard(sessionID, cardID, func(card *model.Card) {
+			card.Status = status
+			card.ExitCode = exitCode
+			card.Cancelled = status == "cancelled"
+			card.Timeout = status == "timeout"
+			card.UpdatedAt = model.NowString()
+		})
+		a.broadcastSnapshot(sessionID)
 		result := <-exec.done
 		a.clearExecSession(exec.ID)
 		a.finalizeExecCard(exec, createdAt, result)
@@ -322,8 +400,18 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 func (a *App) finalizeExecCard(exec *remoteExecSession, createdAt string, result remoteExecResult) {
 	now := model.NowString()
 	finalStatus := execResultCardStatus(result)
+	summary, highlights, kvRows := buildExecCardPresentation(exec, result, finalStatus)
 	a.store.UpdateCard(exec.SessionID, exec.CardID, func(card *model.Card) {
 		card.Output = result.Output
+		card.Stdout = result.Stdout
+		card.Stderr = result.Stderr
+		card.ExitCode = result.ExitCode
+		card.Timeout = result.Timeout
+		card.Cancelled = result.Cancelled
+		card.Error = result.Error
+		card.Summary = summary
+		card.Highlights = highlights
+		card.KVRows = kvRows
 		card.Status = finalStatus
 		card.DurationMS = durationBetween(createdAt, now)
 		card.UpdatedAt = now
@@ -337,18 +425,190 @@ func (a *App) finalizeExecCard(exec *remoteExecSession, createdAt string, result
 		"endedAt":          now,
 		"status":           finalStatus,
 		"exitCode":         result.ExitCode,
+		"timeout":          result.Timeout,
+		"cancelled":        result.Cancelled,
+		"error":            truncate(result.Error, 200),
 		"approvalDecision": exec.Approval,
 	})
 }
 
-func execResultCardStatus(result remoteExecResult) string {
-	errorText := strings.ToLower(strings.TrimSpace(result.Message + "\n" + result.Output))
-	switch result.Status {
+func buildExecCardPresentation(exec *remoteExecSession, result remoteExecResult, finalStatus string) (string, []string, []model.KeyValueRow) {
+	summary := execFailureSummary(finalStatus, result)
+	if finalStatus == "completed" {
+		summary = execSuccessSummary(exec, result)
+	}
+	highlights := execSummaryHighlights(finalStatus, summary, result)
+	return summary, highlights, execResultKVRows(result)
+}
+
+func buildLocalCommandCardPresentation(item map[string]any, output string) (remoteExecResult, string, string, []string, []model.KeyValueRow) {
+	result := localCommandCardResult(item, output)
+	finalStatus := execResultCardStatus(result)
+	summary, highlights, kvRows := buildExecCardPresentation(&remoteExecSession{ToolName: "commandExecution"}, result, finalStatus)
+	return result, finalStatus, summary, highlights, kvRows
+}
+
+func localCommandCardResult(item map[string]any, output string) remoteExecResult {
+	status := normalizeCardStatus(getString(item, "status"))
+	if status == "inProgress" {
+		status = "completed"
+	}
+
+	exitCode, _ := getIntAny(item, "exitCode", "exit_code")
+	stdout := getStringAny(item, "stdout", "stdoutText", "stdout_text")
+	stderr := getStringAny(item, "stderr", "stderrText", "stderr_text")
+	errorText := strings.TrimSpace(getStringAny(item, "error", "errorMessage", "error_message"))
+	messageText := strings.TrimSpace(getStringAny(item, "message", "statusMessage", "status_message"))
+
+	result := remoteExecResult{
+		Output:    output,
+		Stdout:    stdout,
+		Stderr:    stderr,
+		ExitCode:  exitCode,
+		Status:    status,
+		Message:   messageText,
+		Error:     errorText,
+		Timeout:   getBool(item, "timeout"),
+		Cancelled: getBool(item, "cancelled") || status == "cancelled",
+	}
+	if result.Timeout && result.Status == "completed" {
+		result.Status = "timeout"
+	}
+	if result.Cancelled && result.Status == "completed" {
+		result.Status = "cancelled"
+	}
+
+	if strings.TrimSpace(result.Stdout) == "" && strings.TrimSpace(result.Stderr) == "" {
+		if result.ExitCode != 0 || commandOutputLooksFailed(output) || strings.TrimSpace(result.Error) != "" {
+			result.Stderr = output
+		} else {
+			result.Stdout = output
+		}
+	}
+
+	return result
+}
+
+func execSuccessSummary(exec *remoteExecSession, result remoteExecResult) string {
+	if line := firstMeaningfulExecLine(result.Stdout, result.Output, result.Stderr); line != "" {
+		return truncate(line, 140)
+	}
+	if exec != nil {
+		switch exec.ToolName {
+		case "execute_system_mutation":
+			return "远程变更命令已执行成功"
+		case "execute_readonly_query":
+			return "远程只读检查已完成"
+		}
+	}
+	return "命令已执行完成"
+}
+
+func execFailureSummary(finalStatus string, result remoteExecResult) string {
+	switch finalStatus {
 	case "cancelled":
-		return "cancelled"
+		return fmt.Sprintf("命令已取消（退出码 %d）", result.ExitCode)
 	case "timeout":
+		return fmt.Sprintf("命令已超时（退出码 %d）", result.ExitCode)
+	case "permission_denied":
+		return fmt.Sprintf("执行失败：权限不足（退出码 %d）", result.ExitCode)
+	case "disconnected":
+		return "执行失败：远程主机已断连"
+	case "host_timeout":
+		return "执行失败：远程主机心跳超时"
+	}
+
+	detail := firstMeaningfulExecLine(result.Stderr, result.Error, result.Message, result.Output)
+	if detail == "" {
+		if result.ExitCode != 0 {
+			return fmt.Sprintf("执行失败（退出码 %d）", result.ExitCode)
+		}
+		return "执行失败"
+	}
+	if result.ExitCode != 0 {
+		return fmt.Sprintf("执行失败（退出码 %d）：%s", result.ExitCode, truncate(detail, 120))
+	}
+	return "执行失败：" + truncate(detail, 120)
+}
+
+func execSummaryHighlights(finalStatus, summary string, result remoteExecResult) []string {
+	source := result.Stdout
+	if finalStatus != "completed" || strings.TrimSpace(source) == "" {
+		source = result.Stderr
+	}
+	if strings.TrimSpace(source) == "" {
+		source = result.Output
+	}
+	lines := meaningfulExecLines(source, 4)
+	if len(lines) == 0 {
+		return nil
+	}
+	if summary != "" && lines[0] == summary {
+		lines = lines[1:]
+	}
+	if len(lines) > 3 {
+		lines = lines[:3]
+	}
+	return lines
+}
+
+func execResultKVRows(result remoteExecResult) []model.KeyValueRow {
+	rows := []model.KeyValueRow{{
+		Key:   "退出码",
+		Value: fmt.Sprintf("%d", result.ExitCode),
+	}}
+	if stdoutLines := countMeaningfulExecLines(result.Stdout); stdoutLines > 0 {
+		rows = append(rows, model.KeyValueRow{Key: "标准输出", Value: fmt.Sprintf("%d 行", stdoutLines)})
+	}
+	if stderrLines := countMeaningfulExecLines(result.Stderr); stderrLines > 0 {
+		rows = append(rows, model.KeyValueRow{Key: "标准错误", Value: fmt.Sprintf("%d 行", stderrLines)})
+	}
+	if result.Timeout {
+		rows = append(rows, model.KeyValueRow{Key: "超时", Value: "是"})
+	}
+	if result.Cancelled {
+		rows = append(rows, model.KeyValueRow{Key: "已取消", Value: "是"})
+	}
+	return rows
+}
+
+func firstMeaningfulExecLine(texts ...string) string {
+	for _, text := range texts {
+		lines := meaningfulExecLines(text, 1)
+		if len(lines) > 0 {
+			return lines[0]
+		}
+	}
+	return ""
+}
+
+func countMeaningfulExecLines(text string) int {
+	return len(meaningfulExecLines(text, 0))
+}
+
+func meaningfulExecLines(text string, limit int) []string {
+	lines := make([]string, 0, 4)
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, truncate(line, 140))
+		if limit > 0 && len(lines) >= limit {
+			return lines
+		}
+	}
+	return lines
+}
+
+func execResultCardStatus(result remoteExecResult) string {
+	errorText := strings.ToLower(strings.TrimSpace(result.Error + "\n" + result.Message + "\n" + result.Stderr + "\n" + result.Output))
+	switch {
+	case result.Cancelled || result.Status == "cancelled":
+		return "cancelled"
+	case result.Timeout || result.Status == "timeout":
 		return "timeout"
-	case "completed":
+	case result.Status == "completed":
 		if result.ExitCode == 0 && !commandOutputLooksFailed(result.Output) {
 			return "completed"
 		}
@@ -403,7 +663,33 @@ func formatExecToolResult(command string, result remoteExecResult) string {
 		statusLabel = result.Status
 	}
 	builder.WriteString(fmt.Sprintf("Host command `%s` %s with exit code %d.", truncate(command, 180), statusLabel, result.ExitCode))
-	if strings.TrimSpace(result.Output) != "" {
+	if result.Timeout {
+		builder.WriteString("\nTimeout: true")
+	}
+	if result.Cancelled {
+		builder.WriteString("\nCancelled: true")
+	}
+	if strings.TrimSpace(result.Error) != "" {
+		builder.WriteString("\nError: ")
+		builder.WriteString(truncate(result.Error, 400))
+	}
+	if strings.TrimSpace(result.Stdout) != "" {
+		builder.WriteString("\n\nStdout:\n```text\n")
+		builder.WriteString(truncateToolOutput(result.Stdout, 12000))
+		if !strings.HasSuffix(result.Stdout, "\n") {
+			builder.WriteString("\n")
+		}
+		builder.WriteString("```")
+	}
+	if strings.TrimSpace(result.Stderr) != "" {
+		builder.WriteString("\n\nStderr:\n```text\n")
+		builder.WriteString(truncateToolOutput(result.Stderr, 8000))
+		if !strings.HasSuffix(result.Stderr, "\n") {
+			builder.WriteString("\n")
+		}
+		builder.WriteString("```")
+	}
+	if strings.TrimSpace(result.Stdout) == "" && strings.TrimSpace(result.Stderr) == "" && strings.TrimSpace(result.Output) != "" {
 		builder.WriteString("\n\nOutput:\n```text\n")
 		builder.WriteString(truncateToolOutput(result.Output, 16000))
 		if !strings.HasSuffix(result.Output, "\n") {
@@ -412,6 +698,42 @@ func formatExecToolResult(command string, result remoteExecResult) string {
 		builder.WriteString("```")
 	}
 	return builder.String()
+}
+
+func execExitCode(payload *agentrpc.ExecExit) int {
+	if payload == nil {
+		return 0
+	}
+	if payload.ExitCode != 0 || payload.Code == 0 {
+		return payload.ExitCode
+	}
+	return payload.Code
+}
+
+func execCancelRequested(exec *remoteExecSession) bool {
+	if exec == nil {
+		return false
+	}
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	return exec.cancelRequested
+}
+
+func appendExecMessage(output, message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return output
+	}
+	if strings.TrimSpace(output) == "" {
+		return message
+	}
+	if strings.Contains(output, message) {
+		return output
+	}
+	if strings.HasSuffix(output, "\n") {
+		return output + message
+	}
+	return output + "\n" + message
 }
 
 func truncateToolOutput(output string, max int) string {

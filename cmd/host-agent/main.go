@@ -146,10 +146,12 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 					_ = sender.send(&agentrpc.Envelope{
 						Kind: "exec/exit",
 						ExecExit: &agentrpc.ExecExit{
-							ExecID:  safeExecID(msg.ExecStart),
-							Code:    1,
-							Status:  "failed",
-							Message: err.Error(),
+							ExecID:   safeExecID(msg.ExecStart),
+							Code:     1,
+							ExitCode: 1,
+							Status:   "failed",
+							Message:  err.Error(),
+							Error:    err.Error(),
 						},
 					})
 				}
@@ -158,10 +160,12 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 					_ = sender.send(&agentrpc.Envelope{
 						Kind: "exec/exit",
 						ExecExit: &agentrpc.ExecExit{
-							ExecID:  safeExecIDFromCancel(msg.ExecCancel),
-							Code:    1,
-							Status:  "failed",
-							Message: err.Error(),
+							ExecID:   safeExecIDFromCancel(msg.ExecCancel),
+							Code:     1,
+							ExitCode: 1,
+							Status:   "failed",
+							Message:  err.Error(),
+							Error:    err.Error(),
 						},
 					})
 				}

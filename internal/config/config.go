@@ -11,6 +11,7 @@ import (
 type Config struct {
 	HTTPAddr                 string
 	GRPCAddr                 string
+	GRPCAdvertiseAddr        string
 	GRPCTLSCertFile          string
 	GRPCTLSKeyFile           string
 	GRPCTLSClientCAFile      string
@@ -54,6 +55,7 @@ func Load() Config {
 	return Config{
 		HTTPAddr:                 env("AIOPS_HTTP_ADDR", "127.0.0.1:8080"),
 		GRPCAddr:                 env("AIOPS_GRPC_ADDR", "127.0.0.1:19090"),
+		GRPCAdvertiseAddr:        env("AIOPS_GRPC_ADVERTISE_ADDR", ""),
 		GRPCTLSCertFile:          env("AIOPS_GRPC_TLS_CERT_FILE", ""),
 		GRPCTLSKeyFile:           env("AIOPS_GRPC_TLS_KEY_FILE", ""),
 		GRPCTLSClientCAFile:      env("AIOPS_GRPC_TLS_CLIENT_CA_FILE", ""),

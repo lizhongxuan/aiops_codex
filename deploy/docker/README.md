@@ -95,6 +95,33 @@ docker compose ps
 - 健康检查: http://127.0.0.1:18080/api/v1/healthz
 - gRPC: 127.0.0.1:18090 (host-agent 接入)
 
+开发态可以把 `18090` 临时绑定到 `0.0.0.0:18090` 做受控联调，但只限本机或受控测试网段，不能作为长期对外入口。
+不要在开发态使用默认 token 或长期不轮转的 token 把这个端口长期开口；如果只是本机验证，优先保留在 `127.0.0.1:18090`。
+跨主机测试时必须同时限制来源网段和暴露时长。
+
+## host-agent 必填环境变量
+
+以下 4 个变量是 host-agent 最低接入要求，缺任意一个都无法稳定注册到 ai-server：
+
+```bash
+AIOPS_SERVER_GRPC_ADDR=192.168.1.10:18090
+AIOPS_AGENT_HOST_ID=linux-01
+AIOPS_AGENT_HOSTNAME=linux-01
+AIOPS_AGENT_BOOTSTRAP_TOKEN=replace-with-real-token
+```
+
+字段说明：
+
+- `AIOPS_SERVER_GRPC_ADDR`: host-agent 回连 ai-server 的 gRPC 地址，必须是 agent 宿主机可达的地址。
+- `AIOPS_AGENT_HOST_ID`: 稳定且唯一的主机标识；会进入 UI、审批、审计和会话绑定。
+- `AIOPS_AGENT_HOSTNAME`: 展示给用户看的主机名；建议与机器实际 hostname 或 CMDB 名称一致。
+- `AIOPS_AGENT_BOOTSTRAP_TOKEN`: 必须和 ai-server 侧 `HOST_AGENT_BOOTSTRAP_TOKEN` 或 `HOST_AGENT_BOOTSTRAP_TOKENS` 匹配。
+
+推荐额外补充：
+
+- `AIOPS_AGENT_LABELS`: 如 `env=prod,role=web`，便于筛选和审计。
+- `AIOPS_AGENT_TLS_CA_FILE` / `AIOPS_AGENT_TLS_CERT_FILE` / `AIOPS_AGENT_TLS_KEY_FILE`: 生产态启用 TLS / mTLS 时必填。
+
 ## 认证方式
 
 codex app-server 需要 OpenAI 认证才能工作。三种方式：
@@ -240,6 +267,35 @@ docker run --rm -v ai-data:/data -v $(pwd):/backup \
 
 docker-compose.yml 里已经包含一个 `host-agent-local` 服务用于测试。
 
+### host-agent 镜像最低运行要求校验
+
+`host-agent` 镜像至少要满足 3 组要求：
+
+- Shell 能力：镜像里必须有 `/bin/sh`，并最好提供 `bash`，否则只读命令和交互终端的 shell 选择会退化。
+- Pseudo-TTY 能力：镜像里必须提供 `script`（来自 `util-linux`），否则远程终端无法稳定建立伪终端。
+- 回连能力：运行时必须显式提供 `AIOPS_SERVER_GRPC_ADDR / AIOPS_AGENT_HOST_ID / AIOPS_AGENT_HOSTNAME / AIOPS_AGENT_BOOTSTRAP_TOKEN`，否则 agent 无法稳定注册回 ai-server。
+
+仓库已提供一个最低要求自检脚本：
+
+```bash
+chmod +x deploy/docker/validate_host_agent_image.sh
+deploy/docker/validate_host_agent_image.sh aiops-codex-host-agent:latest
+```
+
+脚本会检查：
+
+- 镜像内存在 `/bin/sh`、`bash`、`script`、`/usr/local/bin/host-agent`
+- 镜像默认环境变量占位已写入
+- `script` 可执行，满足 pseudo-TTY 依赖
+- `host-agent` 二进制能在缺少真实 gRPC 目标时快速启动并失败退出，而不是因为镜像依赖缺失直接崩掉
+
+对应到当前 `deploy/docker/host-agent.Dockerfile`：
+
+- `bash` 满足命令执行和 shell 选择回退需求
+- `util-linux` 提供 `script`，满足终端伪 TTY
+- `ca-certificates` 满足 TLS / mTLS 回连场景
+- `tzdata` 便于日志和审计时间与 Linux 宿主机一致
+
 ### 二进制方式（生产环境，推荐）
 
 host-agent 应该直接装在目标主机上，不要装在容器里，
@@ -289,7 +345,63 @@ WantedBy=multi-user.target
 sudo systemctl enable --now aiops-host-agent
 ```
 
+### Linux 主机升级步骤
+
+```bash
+# 1. 拉取新二进制
+sudo install -m 0755 ./host-agent /usr/local/bin/host-agent
+
+# 2. 重启服务
+sudo systemctl restart aiops-host-agent
+
+# 3. 确认重启成功
+sudo systemctl status aiops-host-agent --no-pager
+```
+
+如果你是用容器方式运行 host-agent：
+
+```bash
+docker compose build host-agent-local
+docker compose up -d host-agent-local
+docker compose logs --tail=100 host-agent-local
+```
+
+### 最小 smoke 检查
+
+建议每次新部署或升级后至少跑完下面 6 步：
+
+```bash
+# 1. ai-server 健康
+curl -fsSL http://127.0.0.1:18080/api/v1/healthz
+
+# 2. host-agent 进程或容器在线
+sudo systemctl status aiops-host-agent --no-pager
+# 或 docker compose ps host-agent-local
+
+# 3. UI 状态里能看到目标主机上线
+curl -fsSL http://127.0.0.1:18080/api/v1/state | jq '.hosts[] | {id, name, status, executable, terminalCapable}'
+
+# 4. 在页面里选中该主机，执行一次只读命令
+#    示例：uptime / df -h / systemctl status nginx
+
+# 5. 执行一次需要审批的命令
+#    示例：systemctl restart nginx
+
+# 6. 进入同一台主机终端，确认聊天与终端指向一致
+```
+
+通过标准：
+
+- 主机在 `/api/v1/state` 里是 `online`，且 `executable=true`。
+- 只读命令能返回输出，不会静默回退到本地。
+- 变更命令会弹审批，审批后能继续执行。
+- 终端页显示的主机和聊天当前选中的主机一致。
+
 ## 生产环境安全加固
+
+生产态必须把 host-agent 接入面放在私网或 VPN 内，不允许直接暴露到公网。
+建议全链路启用 TLS / mTLS，并且同时配置 host allowlist、CIDR allowlist 和 bootstrap token 轮转。
+`HOST_AGENT_SECURITY_PROFILE=production` 只是生产配置开关，不代表已经满足网络隔离、证书校验和身份约束。
 
 ### 启用 TLS
 
@@ -318,6 +430,10 @@ AIOPS_AGENT_TLS_KEY_FILE=/certs/agent-key.pem
 AIOPS_AGENT_TLS_SERVER_NAME=aiops-server.internal
 ```
 
+生产态里，`AIOPS_AGENT_HOST_ID` 必须保持固定、稳定、全局唯一，不能因为重装、迁移或容器重建而变化。
+`AIOPS_AGENT_HOSTNAME` 只是展示名，不应作为身份判断依据。
+启用 mTLS 时，证书 SAN / CN 需要与 `AIOPS_AGENT_TLS_SERVER_NAME` 和实际访问域名一致。
+
 ### 更换 bootstrap token
 
 ```bash
@@ -327,6 +443,10 @@ openssl rand -hex 32
 # 支持多 token 轮转
 HOST_AGENT_BOOTSTRAP_TOKENS=new-token-2026-04,old-token-2026-03
 ```
+
+生产态不要长期只保留单一 bootstrap token。
+滚动更新时应先下发新 token、完成 agent 切换，再移除旧 token。
+开发态如果临时开放 `0.0.0.0:18090`，也必须使用短期可回收的测试 token，不能直接沿用生产 token。
 
 ## 故障排查
 
@@ -367,6 +487,23 @@ curl http://127.0.0.1:18080/api/v1/state | jq '.hosts'
 - bootstrap token 不匹配
 - gRPC 端口没暴露或被防火墙拦截
 - TLS 配置不一致
+
+### 升级后主机不在线
+
+```bash
+# 看 systemd 或容器日志
+sudo journalctl -u aiops-host-agent -n 100 --no-pager
+# 或 docker compose logs --tail=100 host-agent-local
+
+# 核对 4 个必填变量
+env | grep '^AIOPS_'
+```
+
+优先检查：
+
+- `AIOPS_SERVER_GRPC_ADDR` 是否写成了 agent 宿主机可访问的地址，而不是容器内部地址。
+- `AIOPS_AGENT_HOST_ID` 是否和旧实例冲突，导致 UI 上看起来像“同一台主机反复上下线”。
+- `AIOPS_AGENT_BOOTSTRAP_TOKEN` 是否和 ai-server 当前允许的 token 集合一致。
 
 ## 文件清单
 

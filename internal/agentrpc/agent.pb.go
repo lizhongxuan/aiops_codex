@@ -95,14 +95,21 @@ type ExecCancel struct {
 
 type ExecOutput struct {
 	ExecID string `json:"execId,omitempty"`
+	Stream string `json:"stream,omitempty"`
 	Data   string `json:"data,omitempty"`
 }
 
 type ExecExit struct {
-	ExecID  string `json:"execId,omitempty"`
-	Code    int    `json:"code,omitempty"`
-	Status  string `json:"status,omitempty"`
-	Message string `json:"message,omitempty"`
+	ExecID    string `json:"execId,omitempty"`
+	Code      int    `json:"code,omitempty"`
+	ExitCode  int    `json:"exitCode,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Stdout    string `json:"stdout,omitempty"`
+	Stderr    string `json:"stderr,omitempty"`
+	Timeout   bool   `json:"timeout,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 type FileEntry struct {

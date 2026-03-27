@@ -40,39 +40,46 @@ import (
 )
 
 const (
-	stalledTurnTimeout                    = 45 * time.Second
-	autoThreadResetIdleThreshold          = 4 * time.Hour
-	autoThreadResetCardThreshold          = 80
-	autoThreadResetConversationThreshold  = 24
-	autoThreadResetShortPromptRuneLimit   = 32
-	codexReconnectNoticeCardID            = "__codex_reconnect__"
+	stalledTurnTimeout                   = 45 * time.Second
+	autoThreadResetIdleThreshold         = 4 * time.Hour
+	autoThreadResetCardThreshold         = 80
+	autoThreadResetConversationThreshold = 24
+	autoThreadResetShortPromptRuneLimit  = 32
+	codexReconnectNoticeCardID           = "__codex_reconnect__"
+	terminalSubscriberGraceTTL           = 20 * time.Second
+	terminalConnectTimeout               = 15 * time.Second
+	terminalExitRetention                = 30 * time.Second
 )
 
 var codexReconnectMessagePattern = regexp.MustCompile(`(?i)^reconnecting\.\.\.\s*(\d+)\s*/\s*(\d+)\s*$`)
 var contextualFollowupPattern = regexp.MustCompile(`(?i)(继续|刚才|上面|前面|前文|上一|这个|那个|第\s*\d+\s*步|same|above|previous|continue|earlier|step\s*\d+)`)
 
 type App struct {
-	cfg         config.Config
-	store       *store.Store
-	codex       *codex.Client
-	upgrader    websocket.Upgrader
-	agentMu     sync.Mutex
-	agents      map[string]*agentConnection
-	wsMu        sync.Mutex
-	wsClients   map[string]map[*websocket.Conn]struct{}
-	turnMu      sync.Mutex
-	turnCancels map[string]context.CancelFunc
-	terminalMu  sync.Mutex
-	terminals   map[string]*terminalSession
-	execMu      sync.Mutex
-	execs       map[string]*remoteExecSession
-	fileReqMu   sync.Mutex
-	fileReqs    map[string]*agentResponseWaiter
-	oauthMu     sync.Mutex
-	oauthStates map[string]string
-	auditMu     sync.Mutex
-	httpServer  *http.Server
-	grpcServer  *grpc.Server
+	cfg              config.Config
+	store            *store.Store
+	codex            *codex.Client
+	codexRespondFunc func(context.Context, string, any) error
+	upgrader         websocket.Upgrader
+	agentMu          sync.Mutex
+	agents           map[string]*agentConnection
+	wsMu             sync.Mutex
+	wsClients        map[string]map[*websocket.Conn]struct{}
+	turnMu           sync.Mutex
+	turnCancels      map[string]context.CancelFunc
+	terminalMu       sync.Mutex
+	terminals        map[string]*terminalSession
+	execMu           sync.Mutex
+	execs            map[string]*remoteExecSession
+	fileReqMu        sync.Mutex
+	fileReqs         map[string]*agentResponseWaiter
+	approvalMu       sync.Mutex
+	fileChangeClaims map[string]struct{}
+	oauthMu          sync.Mutex
+	oauthStates      map[string]string
+	auditMu          sync.Mutex
+	httpServer       *http.Server
+	grpcServer       *grpc.Server
+	commandRunner    commandRunner
 }
 
 type authLoginRequest struct {
@@ -87,6 +94,10 @@ type authLoginRequest struct {
 type chatRequest struct {
 	Message string `json:"message"`
 	HostID  string `json:"hostId"`
+}
+
+type hostSelectionRequest struct {
+	HostID string `json:"hostId"`
 }
 
 type approvalDecisionRequest struct {
@@ -126,13 +137,15 @@ func New(cfg config.Config) *App {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
-		agents:      make(map[string]*agentConnection),
-		wsClients:   make(map[string]map[*websocket.Conn]struct{}),
-		turnCancels: make(map[string]context.CancelFunc),
-		terminals:   make(map[string]*terminalSession),
-		execs:       make(map[string]*remoteExecSession),
-		fileReqs:    make(map[string]*agentResponseWaiter),
-		oauthStates: make(map[string]string),
+		agents:           make(map[string]*agentConnection),
+		wsClients:        make(map[string]map[*websocket.Conn]struct{}),
+		turnCancels:      make(map[string]context.CancelFunc),
+		terminals:        make(map[string]*terminalSession),
+		execs:            make(map[string]*remoteExecSession),
+		fileReqs:         make(map[string]*agentResponseWaiter),
+		fileChangeClaims: make(map[string]struct{}),
+		oauthStates:      make(map[string]string),
+		commandRunner:    defaultCommandRunner,
 	}
 	app.codex = codex.New(cfg.CodexPath, app.handleCodexNotification, app.handleCodexServerRequest)
 	return app
@@ -194,6 +207,9 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/sessions", a.withBrowserSession(a.handleSessions))
 	httpMux.HandleFunc("/api/v1/sessions/", a.withBrowserSession(a.handleSessionActivation))
 	httpMux.HandleFunc("/api/v1/state", a.withSession(a.handleState))
+	httpMux.HandleFunc("/api/v1/host/select", a.withSession(a.handleHostSelection))
+	httpMux.HandleFunc("/api/v1/hosts", a.withSession(a.handleHosts))
+	httpMux.HandleFunc("/api/v1/hosts/", a.withSession(a.handleHostByID))
 	httpMux.HandleFunc("/api/v1/thread/reset", a.withSession(a.handleThreadReset))
 	httpMux.HandleFunc("/api/v1/auth/login", a.withSession(a.handleAuthLogin))
 	httpMux.HandleFunc("/api/v1/auth/logout", a.withSession(a.handleAuthLogout))
@@ -308,6 +324,21 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				})
 				continue
 			}
+			registeredHostID := strings.TrimSpace(msg.Registration.HostID)
+			if registeredHostID == "" {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "host id is required",
+				})
+				continue
+			}
+			if hostID != "" {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "host identity is already established for this stream",
+				})
+				continue
+			}
 			if !a.cfg.ValidAgentBootstrapToken(msg.Registration.Token) {
 				_ = stream.Send(&agentrpc.Envelope{
 					Kind:  "error",
@@ -315,7 +346,7 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				})
 				continue
 			}
-			if !a.cfg.AgentHostAllowed(msg.Registration.HostID) {
+			if !a.cfg.AgentHostAllowed(registeredHostID) {
 				_ = stream.Send(&agentrpc.Envelope{
 					Kind:  "error",
 					Error: "host id is not allowed",
@@ -323,12 +354,12 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				continue
 			}
 
-			hostID = msg.Registration.HostID
+			hostID = registeredHostID
 			conn = &agentConnection{hostID: hostID, stream: stream}
 			a.setAgentConnection(hostID, conn)
 			log.Printf("host-agent register host_id=%s hostname=%s remote_addr=%s", msg.Registration.HostID, msg.Registration.Hostname, defaultString(sourceAddr, "unknown"))
 			a.audit("agent.register", map[string]any{
-				"hostId":       msg.Registration.HostID,
+				"hostId":       hostID,
 				"hostname":     msg.Registration.Hostname,
 				"os":           msg.Registration.OS,
 				"arch":         msg.Registration.Arch,
@@ -336,7 +367,7 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				"remoteAddr":   sourceAddr,
 			})
 			a.store.UpsertHost(model.Host{
-				ID:              msg.Registration.HostID,
+				ID:              hostID,
 				Name:            msg.Registration.Hostname,
 				Kind:            "agent",
 				Status:          "online",
@@ -361,8 +392,22 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 			if msg.Heartbeat == nil {
 				continue
 			}
-			hostID = msg.Heartbeat.HostID
-			log.Printf("host-agent heartbeat host_id=%s", msg.Heartbeat.HostID)
+			heartbeatHostID := strings.TrimSpace(msg.Heartbeat.HostID)
+			if hostID == "" {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "agent is not registered",
+				})
+				continue
+			}
+			if heartbeatHostID != "" && heartbeatHostID != hostID {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "host identity mismatch",
+				})
+				continue
+			}
+			log.Printf("host-agent heartbeat host_id=%s", hostID)
 			host := a.findHost(hostID)
 			host.Status = "online"
 			host.Executable = true
@@ -906,7 +951,7 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	session := a.store.EnsureSession(sessionID)
 	previousHostID := defaultHostID(session.SelectedHostID)
 	if previousHostID != req.HostID && session.ThreadID != "" {
-		a.store.ClearThread(sessionID)
+		a.clearSessionThreadBinding(sessionID)
 		a.appendHostSwitchCard(sessionID, previousHostID, req.HostID)
 		session.ThreadID = ""
 	} else if a.shouldAutoResetThread(session, req.Message) {
@@ -918,7 +963,7 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 			conversationCardCount(session.Cards),
 			session.LastActivityAt,
 		)
-		a.store.ClearThread(sessionID)
+		a.clearSessionThreadBinding(sessionID)
 		a.appendAutoThreadRefreshCard(sessionID)
 		session.ThreadID = ""
 	}
@@ -978,6 +1023,38 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+}
+
+func (a *App) handleHostSelection(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var req hostSelectionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	host, switched, err := a.switchSelectedHost(sessionID, req.HostID, true)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "执行中") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	a.audit("host.selected", map[string]any{
+		"sessionId": sessionID,
+		"hostId":    host.ID,
+		"hostName":  host.Name,
+		"switched":  switched,
+	})
+	a.broadcastSnapshot(sessionID)
+	writeJSON(w, http.StatusOK, a.snapshot(sessionID))
 }
 
 func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -1127,6 +1204,74 @@ func (a *App) appendHostSwitchCard(sessionID, fromHostID, toHostID string) {
 	})
 }
 
+func (a *App) clearSessionThreadBinding(sessionID string) {
+	a.store.ClearThread(sessionID)
+	a.store.ClearTurn(sessionID)
+}
+
+func (a *App) knownHost(hostID string) (model.Host, bool) {
+	hostID = defaultHostID(strings.TrimSpace(hostID))
+	for _, host := range a.store.Hosts() {
+		if host.ID == hostID {
+			return host, true
+		}
+	}
+	return model.Host{}, false
+}
+
+func hostNameOrID(host model.Host) string {
+	if name := strings.TrimSpace(host.Name); name != "" {
+		return name
+	}
+	return defaultHostID(strings.TrimSpace(host.ID))
+}
+
+func applyCardHost(card *model.Card, host model.Host) {
+	card.HostID = defaultHostID(strings.TrimSpace(host.ID))
+	card.HostName = hostNameOrID(host)
+}
+
+func (a *App) sessionTargetHost(sessionID string) model.Host {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return a.findHost(model.ServerLocalHostID)
+	}
+	hostID := defaultHostID(session.Runtime.Turn.HostID)
+	if hostID == model.ServerLocalHostID && session.SelectedHostID != "" {
+		hostID = defaultHostID(session.SelectedHostID)
+	}
+	return a.findHost(hostID)
+}
+
+func (a *App) switchSelectedHost(sessionID, hostID string, appendSwitchCard bool) (model.Host, bool, error) {
+	hostID = defaultHostID(strings.TrimSpace(hostID))
+	if hostID == "" {
+		hostID = model.ServerLocalHostID
+	}
+	host, ok := a.knownHost(hostID)
+	if !ok {
+		return model.Host{}, false, errors.New("selected host not found")
+	}
+
+	session := a.store.EnsureSession(sessionID)
+	currentHostID := defaultHostID(session.SelectedHostID)
+	if currentHostID == hostID {
+		a.store.SetSelectedHost(sessionID, hostID)
+		return host, false, nil
+	}
+	if session.Runtime.Turn.Active {
+		return model.Host{}, false, errors.New("当前任务执行中，完成后再切换主机")
+	}
+
+	hadThreadBinding := session.ThreadID != "" || session.TurnID != ""
+	a.clearSessionThreadBinding(sessionID)
+	a.store.SetSelectedHost(sessionID, hostID)
+	if appendSwitchCard && hadThreadBinding {
+		a.appendHostSwitchCard(sessionID, currentHostID, hostID)
+	}
+	return host, true, nil
+}
+
 func isThreadNotFoundError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "thread not found")
 }
@@ -1188,18 +1333,27 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	decision := req.Decision
-	if decision == "" {
-		decision = "accept"
-	}
+	decision := normalizeApprovalDecisionInput(req.Decision)
 	log.Printf("approval decision session=%s approval=%s decision=%s", sessionID, approvalID, decision)
 	if decision == "accept_session" {
 		a.store.AddApprovalGrant(sessionID, approvalGrantFromApproval(approval))
 	}
 	if approval.Type == "remote_command" || approval.Type == "remote_file_change" {
+		if approval.Type == "remote_file_change" && approval.Status != "pending" {
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+		if approval.Type == "remote_file_change" && (decision == "accept" || decision == "accept_session") {
+			if !a.claimRemoteFileChangeExecution(sessionID, approval.ID) {
+				writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+				return
+			}
+		}
 		now := model.NowString()
 		cardStatus := approvalStatusFromDecision(decision)
 		a.store.ResolveApproval(sessionID, approvalID, cardStatus, now)
+		approval.Status = cardStatus
+		approval.ResolvedAt = now
 		a.store.UpsertCard(sessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
 
 		if decision == "decline" {
@@ -1208,17 +1362,11 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				card.UpdatedAt = now
 			})
 			a.setRuntimeTurnPhase(sessionID, "thinking")
-			a.audit("approval.decision", map[string]any{
-				"sessionId":  sessionID,
-				"approvalId": approvalID,
-				"type":       approval.Type,
-				"hostId":     approval.HostID,
-				"decision":   cardStatus,
-			})
+			a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
 			a.broadcastSnapshot(sessionID)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			if err := a.codex.Respond(ctx, approval.RequestIDRaw, toolResponse("User declined the requested system mutation.", false)); err != nil {
+			if err := a.respondCodex(ctx, approval.RequestIDRaw, toolResponse("User declined the requested system mutation.", false)); err != nil {
 				writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 				return
 			}
@@ -1231,7 +1379,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 			createdAt = existing.CreatedAt
 		}
 		if approval.Type == "remote_file_change" {
-			a.store.UpsertCard(sessionID, model.Card{
+			card := model.Card{
 				ID:        approval.ItemID,
 				Type:      "FileChangeCard",
 				Title:     "Remote file change",
@@ -1239,9 +1387,11 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				Changes:   approval.Changes,
 				CreatedAt: createdAt,
 				UpdatedAt: now,
-			})
+			}
+			applyCardHost(&card, a.findHost(approval.HostID))
+			a.store.UpsertCard(sessionID, card)
 		} else {
-			a.store.UpsertCard(sessionID, model.Card{
+			card := model.Card{
 				ID:        approval.ItemID,
 				Type:      "CommandCard",
 				Title:     "Command execution",
@@ -1250,16 +1400,12 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				Status:    "inProgress",
 				CreatedAt: createdAt,
 				UpdatedAt: now,
-			})
+			}
+			applyCardHost(&card, a.findHost(approval.HostID))
+			a.store.UpsertCard(sessionID, card)
 		}
 		a.setRuntimeTurnPhase(sessionID, "executing")
-		a.audit("approval.decision", map[string]any{
-			"sessionId":  sessionID,
-			"approvalId": approvalID,
-			"type":       approval.Type,
-			"hostId":     approval.HostID,
-			"decision":   cardStatus,
-		})
+		a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
 		a.broadcastSnapshot(sessionID)
 		go a.executeApprovedRemoteOperation(sessionID, approval)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -1270,7 +1416,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	err := a.codex.Respond(ctx, approval.RequestIDRaw, map[string]any{
+	err := a.respondCodex(ctx, approval.RequestIDRaw, map[string]any{
 		"decision": codexDecision,
 	})
 	if err != nil {
@@ -1279,7 +1425,10 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	cardStatus := approvalStatusFromDecision(decision)
-	a.store.ResolveApproval(sessionID, approvalID, cardStatus, model.NowString())
+	resolvedAt := model.NowString()
+	a.store.ResolveApproval(sessionID, approvalID, cardStatus, resolvedAt)
+	approval.Status = cardStatus
+	approval.ResolvedAt = resolvedAt
 	nextPhase := "thinking"
 	if a.hasPendingApprovals(sessionID) {
 		nextPhase = "waiting_approval"
@@ -1287,13 +1436,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		nextPhase = "executing"
 	}
 	a.setRuntimeTurnPhase(sessionID, nextPhase)
-	a.audit("approval.decision", map[string]any{
-		"sessionId":  sessionID,
-		"approvalId": approvalID,
-		"type":       approval.Type,
-		"hostId":     approval.HostID,
-		"decision":   cardStatus,
-	})
+	a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, decision, cardStatus, approval.RequestedAt, model.NowString(), nil)
 	if approval.Type == "command" {
 		a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
 			card.Status = cardStatus
@@ -1430,6 +1573,17 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string)
 			}
 		}
 	}
+}
+
+func (a *App) claimRemoteFileChangeExecution(sessionID string, approvalID string) bool {
+	key := sessionID + ":" + approvalID
+	a.approvalMu.Lock()
+	defer a.approvalMu.Unlock()
+	if _, ok := a.fileChangeClaims[key]; ok {
+		return false
+	}
+	a.fileChangeClaims[key] = struct{}{}
+	return true
 }
 
 func (a *App) handleCodexNotification(method string, params json.RawMessage) {
@@ -1738,6 +1892,10 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		if sessionID == "" {
 			return
 		}
+		if host, ok := a.selectedRemoteHostForSession(sessionID); ok {
+			a.rejectUnexpectedLocalApproval(sessionID, string(rawID), "commandExecution", getString(payload, "command"), host)
+			return
+		}
 		a.bindTurnToSession(sessionID, payload)
 		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
 		hostID := model.ServerLocalHostID
@@ -1764,14 +1922,7 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			return
 		}
 		log.Printf("approval requested type=command session=%s item=%s command=%q", sessionID, approval.ItemID, approval.Command)
-		a.audit("approval.requested", map[string]any{
-			"sessionId":  sessionID,
-			"approvalId": approval.ID,
-			"type":       approval.Type,
-			"hostId":     approval.HostID,
-			"command":    approval.Command,
-			"cwd":        approval.Cwd,
-		})
+		a.auditApprovalRequested(sessionID, approval, nil)
 		a.store.AddApproval(sessionID, approval)
 		card := model.Card{
 			ID:      approval.ItemID,
@@ -1789,11 +1940,22 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			CreatedAt: model.NowString(),
 			UpdatedAt: model.NowString(),
 		}
+		applyCardHost(&card, a.findHost(approval.HostID))
 		a.store.UpsertCard(sessionID, card)
 		a.broadcastSnapshot(sessionID)
 	case "item/fileChange/requestApproval":
 		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
+			return
+		}
+		if host, ok := a.selectedRemoteHostForSession(sessionID); ok {
+			filePath := ""
+			cachedItem := a.store.Item(sessionID, getString(payload, "itemId"))
+			changes := toChanges(cachedItem["changes"])
+			if len(changes) > 0 {
+				filePath = changes[0].Path
+			}
+			a.rejectUnexpectedLocalApproval(sessionID, string(rawID), "fileChange", filePath, host)
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
@@ -1825,12 +1987,12 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			return
 		}
 		log.Printf("approval requested type=file_change session=%s item=%s", sessionID, itemID)
-		a.audit("approval.requested", map[string]any{
-			"sessionId":  sessionID,
-			"approvalId": approval.ID,
-			"type":       approval.Type,
-			"hostId":     approval.HostID,
-			"grantRoot":  approval.GrantRoot,
+		filePath := ""
+		if len(approval.Changes) > 0 {
+			filePath = approval.Changes[0].Path
+		}
+		a.auditApprovalRequested(sessionID, approval, map[string]any{
+			"filePath": emptyToNil(strings.TrimSpace(filePath)),
 		})
 		a.store.AddApproval(sessionID, approval)
 		card := model.Card{
@@ -1848,6 +2010,7 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			CreatedAt: model.NowString(),
 			UpdatedAt: model.NowString(),
 		}
+		applyCardHost(&card, a.findHost(approval.HostID))
 		a.store.UpsertCard(sessionID, card)
 		a.broadcastSnapshot(sessionID)
 	case "item/tool/requestUserInput", "request_user_input":
@@ -1912,11 +2075,16 @@ func (a *App) handleItemStarted(payload map[string]any) {
 	item := getMap(payload, "item")
 	itemID := getString(item, "id")
 	itemType := getString(item, "type")
+	if host, ok := a.selectedRemoteHostForSession(sessionID); ok && (itemType == "commandExecution" || itemType == "fileChange") {
+		a.blockUnexpectedLocalExecution(sessionID, payload, item, host)
+		return
+	}
 	a.store.RememberItem(sessionID, itemID, item)
 	a.updateActivityFromItem(sessionID, item, false)
 	a.syncProcessLineCard(sessionID, itemID, item, false)
 
 	now := model.NowString()
+	host := a.sessionTargetHost(sessionID)
 	switch itemType {
 	case "commandExecution":
 		a.setRuntimeTurnPhase(sessionID, "executing")
@@ -1931,6 +2099,7 @@ func (a *App) handleItemStarted(payload map[string]any) {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
+		applyCardHost(&card, host)
 		a.store.UpsertCard(sessionID, card)
 	case "fileChange":
 		a.setRuntimeTurnPhase(sessionID, "executing")
@@ -1943,6 +2112,7 @@ func (a *App) handleItemStarted(payload map[string]any) {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
+		applyCardHost(&card, host)
 		a.store.UpsertCard(sessionID, card)
 	case "agentMessage":
 		a.setRuntimeTurnPhase(sessionID, "finalizing")
@@ -2003,8 +2173,18 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			if aggregated := getString(item, "aggregatedOutput"); aggregated != "" && len(aggregated) >= len(output) {
 				output = aggregated
 			}
+			result, finalStatus, summary, highlights, kvRows := buildLocalCommandCardPresentation(item, output)
 			card.Output = output
-			card.Status = completedCommandStatus(item, output)
+			card.Stdout = result.Stdout
+			card.Stderr = result.Stderr
+			card.ExitCode = result.ExitCode
+			card.Timeout = result.Timeout
+			card.Cancelled = result.Cancelled
+			card.Error = result.Error
+			card.Summary = summary
+			card.Highlights = highlights
+			card.KVRows = kvRows
+			card.Status = finalStatus
 			if itemDuration, ok := getIntAny(item, "durationMs", "duration_ms"); ok && itemDuration > 0 {
 				card.DurationMS = int64(itemDuration)
 			} else {
@@ -2061,11 +2241,7 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 		UpdatedAt: now,
 	})
 	log.Printf("approval auto accepted by session grant session=%s approval=%s type=%s", sessionID, approval.ID, approval.Type)
-	a.audit("approval.auto_accepted", map[string]any{
-		"sessionId":   sessionID,
-		"approvalId":  approval.ID,
-		"type":        approval.Type,
-		"hostId":      approval.HostID,
+	a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, "accept_session", approval.Status, approval.RequestedAt, now, map[string]any{
 		"fingerprint": approval.Fingerprint,
 	})
 	a.broadcastSnapshot(sessionID)
@@ -2089,8 +2265,17 @@ func (a *App) startRuntimeTurn(sessionID, hostID string) {
 }
 
 func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
+	phase = normalizeRuntimeTurnPhase(phase)
+	session := a.store.Session(sessionID)
+	if session != nil && session.Runtime.Turn.Phase == phase {
+		currentActive := phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
+		if session.Runtime.Turn.Active == currentActive && (session.Runtime.Turn.StartedAt != "" || !currentActive) {
+			return
+		}
+	}
+
 	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
-		runtime.Turn.Active = phase != "" && phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
+		runtime.Turn.Active = phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
 		runtime.Turn.Phase = phase
 		if runtime.Turn.StartedAt == "" && runtime.Turn.Active {
 			runtime.Turn.StartedAt = model.NowString()
@@ -2099,6 +2284,18 @@ func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
 			runtime.Turn.HostID = model.ServerLocalHostID
 		}
 	})
+}
+
+func normalizeRuntimeTurnPhase(phase string) string {
+	phase = strings.TrimSpace(phase)
+	switch phase {
+	case "", "idle":
+		return "idle"
+	case "thinking", "planning", "waiting_approval", "waiting_input", "executing", "finalizing", "completed", "failed", "aborted":
+		return phase
+	default:
+		return "thinking"
+	}
 }
 
 func (a *App) finishRuntimeTurn(sessionID, phase string) {
@@ -2313,9 +2510,18 @@ func (a *App) finalizeLingeringExecutionCards(sessionID string) bool {
 					durationMS = durationBetween(existing.CreatedAt, now)
 				}
 			}
-			status := completedCommandStatus(item, output)
+			result, status, summary, highlights, kvRows := buildLocalCommandCardPresentation(item, output)
 			a.store.UpdateCard(sessionID, existing.ID, func(card *model.Card) {
 				card.Output = output
+				card.Stdout = result.Stdout
+				card.Stderr = result.Stderr
+				card.ExitCode = result.ExitCode
+				card.Timeout = result.Timeout
+				card.Cancelled = result.Cancelled
+				card.Error = result.Error
+				card.Summary = summary
+				card.Highlights = highlights
+				card.KVRows = kvRows
 				card.Status = status
 				card.DurationMS = durationMS
 				card.UpdatedAt = now
@@ -2515,6 +2721,12 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 		switch kind {
 		case "file_read":
 			if completed {
+				if activityItemStatus(kind, item) != "completed" {
+					if runtime.Activity.CurrentReadingFile == currentLabel {
+						runtime.Activity.CurrentReadingFile = ""
+					}
+					return
+				}
 				if runtime.Activity.CurrentReadingFile == currentLabel {
 					runtime.Activity.CurrentReadingFile = ""
 				}
@@ -2525,8 +2737,39 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 				return
 			}
 			runtime.Activity.CurrentReadingFile = currentLabel
+		case "file_search":
+			if completed {
+				if activityItemStatus(kind, item) != "completed" {
+					if runtime.Activity.CurrentSearchKind == "content" && runtime.Activity.CurrentSearchQuery == currentLabel {
+						runtime.Activity.CurrentSearchKind = ""
+						runtime.Activity.CurrentSearchQuery = ""
+					}
+					return
+				}
+				if runtime.Activity.CurrentSearchKind == "content" && runtime.Activity.CurrentSearchQuery == currentLabel {
+					runtime.Activity.CurrentSearchKind = ""
+					runtime.Activity.CurrentSearchQuery = ""
+				}
+				appendUniqueActivityEntry(&runtime.Activity.SearchedContentQueries, entry, func(existing, next model.ActivityEntry) bool {
+					return existing.Query != "" && existing.Query == next.Query && existing.Path == next.Path
+				})
+				runtime.Activity.SearchCount = len(runtime.Activity.SearchedWebQueries) + len(runtime.Activity.SearchedContentQueries)
+				return
+			}
+			runtime.Activity.CurrentSearchKind = "content"
+			runtime.Activity.CurrentSearchQuery = currentLabel
 		case "web_search":
 			if completed {
+				if activityItemStatus(kind, item) != "completed" {
+					if runtime.Activity.CurrentSearchKind == "web" && runtime.Activity.CurrentSearchQuery == currentLabel {
+						runtime.Activity.CurrentSearchKind = ""
+						runtime.Activity.CurrentSearchQuery = ""
+					}
+					if runtime.Activity.CurrentWebSearchQuery == currentLabel {
+						runtime.Activity.CurrentWebSearchQuery = ""
+					}
+					return
+				}
 				if runtime.Activity.CurrentSearchKind == "web" && runtime.Activity.CurrentSearchQuery == currentLabel {
 					runtime.Activity.CurrentSearchKind = ""
 					runtime.Activity.CurrentSearchQuery = ""
@@ -2537,7 +2780,7 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 				appendUniqueActivityEntry(&runtime.Activity.SearchedWebQueries, entry, func(existing, next model.ActivityEntry) bool {
 					return existing.Query != "" && existing.Query == next.Query
 				})
-				runtime.Activity.SearchCount = len(runtime.Activity.SearchedWebQueries)
+				runtime.Activity.SearchCount = len(runtime.Activity.SearchedWebQueries) + len(runtime.Activity.SearchedContentQueries)
 				return
 			}
 			runtime.Activity.CurrentSearchKind = "web"
@@ -2545,6 +2788,12 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 			runtime.Activity.CurrentWebSearchQuery = currentLabel
 		case "list":
 			if completed {
+				if activityItemStatus(kind, item) != "completed" {
+					if runtime.Activity.CurrentListingPath == currentLabel {
+						runtime.Activity.CurrentListingPath = ""
+					}
+					return
+				}
 				if runtime.Activity.CurrentListingPath == currentLabel {
 					runtime.Activity.CurrentListingPath = ""
 				}
@@ -2554,6 +2803,16 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 			runtime.Activity.CurrentListingPath = currentLabel
 		}
 	})
+}
+
+func activityItemStatus(kind string, item map[string]any) string {
+	switch kind {
+	case "command":
+		output := getStringAny(item, "aggregatedOutput", "output", "stdout", "stderr")
+		return completedCommandStatus(item, output)
+	default:
+		return completedItemStatus(item)
+	}
 }
 
 func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any, completed bool) {
@@ -2573,7 +2832,7 @@ func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any,
 	status := "inProgress"
 	durationMS := int64(0)
 	if completed {
-		status = "completed"
+		status = activityItemStatus(kind, item)
 		durationMS = durationBetween(createdAt, now)
 	}
 
@@ -2649,14 +2908,45 @@ func (a *App) finalizeOpenTurnCards(sessionID, finalStatus string) {
 		case "CommandCard", "FileChangeCard", "ProcessLineCard", "CommandApprovalCard", "FileChangeApprovalCard", "ChoiceCard":
 			cardID := existing.ID
 			durationMS := durationBetween(existing.CreatedAt, now)
+			cardStatus, terminalText := finalizeOpenTurnCardStatus(existing, finalStatus)
 			a.store.UpdateCard(sessionID, cardID, func(card *model.Card) {
-				card.Status = finalStatus
+				card.Status = cardStatus
+				if terminalText != "" {
+					switch card.Type {
+					case "CommandCard":
+						card.Output = appendExecMessage(card.Output, terminalText)
+						if card.Summary == "" {
+							card.Summary = terminalText
+						}
+					case "FileChangeCard":
+						if strings.TrimSpace(card.Text) == "" {
+							card.Text = terminalText
+						}
+					}
+				}
 				if card.DurationMS == 0 {
 					card.DurationMS = durationMS
 				}
 				card.UpdatedAt = now
 			})
 		}
+	}
+}
+
+func finalizeOpenTurnCardStatus(card model.Card, finalStatus string) (string, string) {
+	if finalStatus != "completed" {
+		return finalStatus, ""
+	}
+	if normalizeCardStatus(card.Status) != "inProgress" {
+		return finalStatus, ""
+	}
+	switch card.Type {
+	case "CommandCard":
+		return "failed", "任务已结束，但这条命令没有返回最终结果，已按失败处理。"
+	case "FileChangeCard":
+		return "failed", "任务已结束，但这次文件修改没有返回最终结果，已按失败处理。"
+	default:
+		return finalStatus, ""
 	}
 }
 
@@ -2704,6 +2994,8 @@ func processLineText(kind string, entry model.ActivityEntry, currentLabel string
 		switch kind {
 		case "file_read":
 			return "已浏览 " + currentLabel
+		case "file_search":
+			return "已搜索文件（" + currentLabel + "）"
 		case "web_search":
 			return "已搜索网页（" + currentLabel + "）"
 		case "web_open":
@@ -2712,6 +3004,8 @@ func processLineText(kind string, entry model.ActivityEntry, currentLabel string
 			return "已页内查找（" + currentLabel + "）"
 		case "list":
 			return "已列出 " + currentLabel
+		case "command":
+			return "已处理 1 个命令"
 		default:
 			return strings.TrimSpace(entry.Label)
 		}
@@ -2719,6 +3013,8 @@ func processLineText(kind string, entry model.ActivityEntry, currentLabel string
 	switch kind {
 	case "file_read":
 		return "现在浏览 " + currentLabel
+	case "file_search":
+		return "现在搜索文件（" + currentLabel + "）"
 	case "web_search":
 		return "现在搜索网页（" + currentLabel + "）"
 	case "web_open":
@@ -2727,6 +3023,8 @@ func processLineText(kind string, entry model.ActivityEntry, currentLabel string
 		return "现在页内查找（" + currentLabel + "）"
 	case "list":
 		return "现在列出 " + currentLabel
+	case "command":
+		return "现在执行命令（" + currentLabel + "）"
 	default:
 		return strings.TrimSpace(entry.Label)
 	}
@@ -2817,6 +3115,125 @@ func approvalMemoText(host model.Host, approval model.ApprovalRequest, decision 
 	return fmt.Sprintf("%s %s %s", prefix, hostName, action)
 }
 
+func (a *App) auditApprovalRequested(sessionID string, approval model.ApprovalRequest, fields map[string]any) {
+	a.auditApprovalLifecycleEvent("approval.requested", sessionID, approval, "", approval.Status, approval.RequestedAt, "", fields)
+}
+
+func (a *App) auditApprovalLifecycleEvent(event, sessionID string, approval model.ApprovalRequest, approvalDecision, status, startedAt, endedAt string, fields map[string]any) {
+	payload := map[string]any{
+		"sessionId":        sessionID,
+		"approvalId":       approval.ID,
+		"type":             approval.Type,
+		"threadId":         firstNonEmptyString([]string{approval.ThreadID, a.sessionThreadID(sessionID)}),
+		"turnId":           firstNonEmptyString([]string{approval.TurnID, a.sessionTurnID(sessionID)}),
+		"hostId":           defaultHostID(strings.TrimSpace(approval.HostID)),
+		"hostName":         hostNameOrID(a.findHost(approval.HostID)),
+		"operator":         a.auditOperator(sessionID),
+		"toolName":         approvalAuditToolName(approval),
+		"command":          emptyToNil(strings.TrimSpace(approval.Command)),
+		"filePath":         approvalAuditFilePath(approval, fields),
+		"cwd":              a.approvalAuditCwd(approval),
+		"approvalDecision": emptyToNil(strings.TrimSpace(approvalDecision)),
+		"startedAt":        emptyToNil(strings.TrimSpace(startedAt)),
+		"endedAt":          emptyToNil(strings.TrimSpace(endedAt)),
+		"status":           emptyToNil(strings.TrimSpace(status)),
+		"exitCode":         nil,
+	}
+	if approval.Reason != "" {
+		payload["reason"] = emptyToNil(strings.TrimSpace(approval.Reason))
+	}
+	if approval.GrantRoot != "" {
+		payload["grantRoot"] = emptyToNil(strings.TrimSpace(approval.GrantRoot))
+	}
+	if approval.Fingerprint != "" {
+		payload["fingerprint"] = emptyToNil(strings.TrimSpace(approval.Fingerprint))
+	}
+	for key, value := range fields {
+		payload[key] = value
+	}
+	a.audit(event, payload)
+}
+
+func (a *App) sessionThreadID(sessionID string) string {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return ""
+	}
+	return strings.TrimSpace(session.ThreadID)
+}
+
+func (a *App) sessionTurnID(sessionID string) string {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return ""
+	}
+	return strings.TrimSpace(session.TurnID)
+}
+
+func (a *App) auditOperator(sessionID string) string {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return "unknown"
+	}
+	if email := strings.TrimSpace(session.Auth.Email); email != "" {
+		return email
+	}
+	if email := strings.TrimSpace(session.Tokens.Email); email != "" {
+		return email
+	}
+	if mode := strings.TrimSpace(session.Auth.Mode); mode != "" {
+		return mode
+	}
+	if session.AuthSessionID != "" {
+		return session.AuthSessionID
+	}
+	return "unknown"
+}
+
+func approvalAuditToolName(approval model.ApprovalRequest) string {
+	switch approval.Type {
+	case "command":
+		return "commandExecution"
+	case "file_change":
+		return "fileChange"
+	case "remote_command", "remote_file_change":
+		return "execute_system_mutation"
+	default:
+		return approval.Type
+	}
+}
+
+func approvalAuditFilePath(approval model.ApprovalRequest, fields map[string]any) any {
+	if fields != nil {
+		if value, ok := fields["filePath"]; ok {
+			return value
+		}
+	}
+	if approval.Type == "file_change" || approval.Type == "remote_file_change" {
+		if len(approval.Changes) > 0 {
+			return emptyToNil(strings.TrimSpace(approval.Changes[0].Path))
+		}
+	}
+	return nil
+}
+
+func (a *App) approvalAuditCwd(approval model.ApprovalRequest) any {
+	switch approval.Type {
+	case "file_change", "remote_file_change":
+		if cwd := strings.TrimSpace(approval.Cwd); cwd != "" {
+			return emptyToNil(cwd)
+		}
+		if grantRoot := strings.TrimSpace(approval.GrantRoot); grantRoot != "" {
+			return emptyToNil(grantRoot)
+		}
+	case "command", "remote_command":
+		if cwd := strings.TrimSpace(approval.Cwd); cwd != "" {
+			return emptyToNil(cwd)
+		}
+	}
+	return emptyToNil(strings.TrimSpace(approval.Cwd))
+}
+
 func approvalGrantFromApproval(approval model.ApprovalRequest) model.ApprovalGrant {
 	return model.ApprovalGrant{
 		ID:          model.NewID("grant"),
@@ -2833,7 +3250,7 @@ func mapApprovalDecision(decision string, approval model.ApprovalRequest) string
 	switch decision {
 	case "accept", "accept_session":
 		return "accept"
-	case "decline":
+	case "decline", "reject":
 		if slices.Contains(approval.Decisions, "decline") {
 			return "decline"
 		}
@@ -2845,6 +3262,9 @@ func mapApprovalDecision(decision string, approval model.ApprovalRequest) string
 }
 
 func approvalStatusFromDecision(decision string) string {
+	if decision == "reject" {
+		return "decline"
+	}
 	if decision == "accept_session" {
 		return "accepted_for_session"
 	}
@@ -2907,15 +3327,17 @@ Summarize command results clearly for the web UI.
 func (a *App) snapshot(sessionID string) model.Snapshot {
 	snapshot := a.store.Snapshot(sessionID, model.UIConfig{
 		OAuthConfigured: a.cfg.OAuthConfigured(),
-		CodexAlive:      a.codex.Alive(),
+		CodexAlive:      a.codex != nil && a.codex.Alive(),
 	})
 	snapshot.Runtime.Codex.RetryMax = 5
-	if a.codex.Alive() {
+	if a.codex != nil && a.codex.Alive() {
 		snapshot.Runtime.Codex.Status = "connected"
 		snapshot.Runtime.Codex.LastError = ""
 	} else {
 		snapshot.Runtime.Codex.Status = "stopped"
-		snapshot.Runtime.Codex.LastError = a.codex.LastExitError()
+		if a.codex != nil {
+			snapshot.Runtime.Codex.LastError = a.codex.LastExitError()
+		}
 	}
 	if snapshot.Runtime.Turn.Phase == "" {
 		snapshot.Runtime.Turn.Phase = "idle"
@@ -3203,6 +3625,163 @@ func (a *App) signSessionCookie(sessionID string) string {
 	return sessionID + "." + a.signatureForSession(sessionID)
 }
 
+func (a *App) respondCodex(ctx context.Context, rawID string, result any) error {
+	if a.codexRespondFunc != nil {
+		return a.codexRespondFunc(ctx, rawID, result)
+	}
+	if a.codex == nil {
+		return errors.New("codex app-server not ready")
+	}
+	return a.codex.Respond(ctx, rawID, result)
+}
+
+func (a *App) selectedRemoteHostForSession(sessionID string) (model.Host, bool) {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return model.Host{}, false
+	}
+	hostID := defaultHostID(session.SelectedHostID)
+	if !isRemoteHostID(hostID) {
+		return model.Host{}, false
+	}
+	return a.findHost(hostID), true
+}
+
+func localToolDisplayName(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "commandExecution":
+		return "commandExecution"
+	case "fileChange":
+		return "fileChange"
+	default:
+		return defaultHostID(strings.TrimSpace(toolName))
+	}
+}
+
+func remoteLocalFallbackMessage(host model.Host, toolName, target string) string {
+	detail := strings.TrimSpace(target)
+	if detail == "" {
+		detail = "当前操作"
+	}
+	return fmt.Sprintf("当前选中的是远程主机 %s（%s），已阻止本地 %s 回退：%s。请改用携带 host=%s 的远程 execute_* 工具，系统不会静默回退到 server-local。",
+		hostNameOrID(host),
+		defaultHostID(host.ID),
+		localToolDisplayName(toolName),
+		detail,
+		defaultHostID(host.ID),
+	)
+}
+
+func (a *App) upsertRemoteFallbackErrorCard(sessionID string, host model.Host, title, message string) {
+	now := model.NowString()
+	retryable := true
+	card := model.Card{
+		ID:        model.NewID("error"),
+		Type:      "ErrorCard",
+		Title:     title,
+		Message:   message,
+		Text:      message,
+		Status:    "failed",
+		Retryable: &retryable,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	applyCardHost(&card, host)
+	a.store.UpsertCard(sessionID, card)
+}
+
+func (a *App) rejectUnexpectedLocalApproval(sessionID, rawID, toolName, target string, host model.Host) {
+	message := remoteLocalFallbackMessage(host, toolName, target)
+	a.setRuntimeTurnPhase(sessionID, "thinking")
+	a.upsertRemoteFallbackErrorCard(sessionID, host, "已阻止回退到本地执行", message)
+	a.audit("remote.local_fallback_blocked", map[string]any{
+		"sessionId": sessionID,
+		"hostId":    host.ID,
+		"hostName":  hostNameOrID(host),
+		"toolName":  toolName,
+		"target":    emptyToNil(strings.TrimSpace(target)),
+		"phase":     "approval",
+	})
+	a.broadcastSnapshot(sessionID)
+	_ = a.respondCodex(context.Background(), rawID, map[string]any{
+		"decision": "decline",
+	})
+}
+
+func (a *App) interruptTurnAsync(threadID, turnID string) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" || a.codex == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		params := map[string]any{
+			"threadId":                   threadID,
+			"clean_background_terminals": true,
+		}
+		if turnID = strings.TrimSpace(turnID); turnID != "" {
+			params["turnId"] = turnID
+		}
+		var result map[string]any
+		if err := a.codex.Request(ctx, "turn/interrupt", params, &result); err != nil {
+			log.Printf("interrupt unexpected local fallback failed thread=%s turn=%s err=%s", threadID, turnID, truncate(err.Error(), 200))
+		}
+	}()
+}
+
+func (a *App) blockUnexpectedLocalExecution(sessionID string, payload, item map[string]any, host model.Host) {
+	itemID := getString(item, "id")
+	itemType := getString(item, "type")
+	target := getString(item, "command")
+	title := "已阻止回退到本地执行"
+	if itemType == "fileChange" {
+		title = "已阻止本地文件修改回退"
+		changes := toChanges(item["changes"])
+		if len(changes) > 0 {
+			target = changes[0].Path
+		}
+	}
+	message := remoteLocalFallbackMessage(host, itemType, target)
+	now := model.NowString()
+
+	if itemID != "" {
+		card := model.Card{
+			ID:        itemID,
+			Type:      "CommandCard",
+			Title:     title,
+			Status:    "failed",
+			Command:   target,
+			Output:    message,
+			Text:      message,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if itemType == "fileChange" {
+			card.Type = "FileChangeCard"
+			card.Command = ""
+			card.Changes = toChanges(item["changes"])
+		}
+		applyCardHost(&card, host)
+		a.store.UpsertCard(sessionID, card)
+	}
+
+	a.finishRuntimeTurn(sessionID, "failed")
+	a.upsertRemoteFallbackErrorCard(sessionID, host, title, message)
+	a.audit("remote.local_fallback_blocked", map[string]any{
+		"sessionId": sessionID,
+		"threadId":  getStringAny(payload, "threadId", "thread_id"),
+		"turnId":    getTurnID(payload),
+		"hostId":    host.ID,
+		"hostName":  hostNameOrID(host),
+		"toolName":  itemType,
+		"target":    emptyToNil(strings.TrimSpace(target)),
+		"phase":     "started",
+	})
+	a.broadcastSnapshot(sessionID)
+	a.interruptTurnAsync(getStringAny(payload, "threadId", "thread_id"), getTurnID(payload))
+}
+
 func (a *App) verifySessionCookie(value string) (string, bool) {
 	sessionID, signature, ok := strings.Cut(value, ".")
 	if !ok || sessionID == "" || signature == "" {
@@ -3261,6 +3840,11 @@ func (a *App) audit(event string, fields map[string]any) {
 func (a *App) notifyRemoteHostUnavailable(hostID, title, message string) {
 	now := model.NowString()
 	retryable := true
+	host := a.findHost(hostID)
+	fullMessage := strings.TrimSpace(message)
+	if !strings.Contains(fullMessage, "server-local") {
+		fullMessage += " 系统不会静默回退到 server-local。"
+	}
 	for _, sessionID := range a.store.SessionIDs() {
 		session := a.store.Session(sessionID)
 		if session == nil {
@@ -3276,10 +3860,12 @@ func (a *App) notifyRemoteHostUnavailable(hostID, title, message string) {
 			ID:        fmt.Sprintf("remote-host-error-%s", hostID),
 			Type:      "ErrorCard",
 			Title:     title,
-			Message:   message,
-			Text:      message,
+			Message:   fullMessage,
+			Text:      fullMessage,
 			Status:    "failed",
 			Retryable: &retryable,
+			HostID:    defaultHostID(host.ID),
+			HostName:  hostNameOrID(host),
 			CreatedAt: now,
 			UpdatedAt: now,
 		})
@@ -3362,8 +3948,8 @@ func (a *App) findHost(hostID string) model.Host {
 	return model.Host{
 		ID:              hostID,
 		Name:            hostID,
-		Kind:            "agent",
-		Status:          "online",
+		Kind:            "inventory",
+		Status:          "offline",
 		Executable:      false,
 		TerminalCapable: false,
 	}
@@ -3538,6 +4124,18 @@ func normalizeCardStatus(status string) string {
 	}
 }
 
+func normalizeApprovalDecisionInput(decision string) string {
+	normalized := strings.ToLower(strings.TrimSpace(decision))
+	switch normalized {
+	case "", "accept":
+		return "accept"
+	case "reject":
+		return "decline"
+	default:
+		return normalized
+	}
+}
+
 func completedItemStatus(item map[string]any) string {
 	status := normalizeCardStatus(getString(item, "status"))
 	if status != "inProgress" {
@@ -3641,6 +4239,12 @@ func detectActivitySignal(item map[string]any) (kind string, entry model.Activit
 			Label: "Search the web: " + query,
 			Query: query,
 		}, query, true
+	case query != "" && filePath != "" && isFileSearchDescriptor(descriptorText):
+		return "file_search", model.ActivityEntry{
+			Label: "Search files in " + filePath + " for " + query,
+			Path:  filePath,
+			Query: query,
+		}, query, true
 	case filePath != "" && isListDescriptor(descriptorText):
 		return "list", model.ActivityEntry{
 			Label: "List " + filePath,
@@ -3664,9 +4268,75 @@ func detectProtocolActivitySignal(item map[string]any) (kind string, entry model
 	switch strings.ToLower(getString(item, "type")) {
 	case "websearch":
 		return detectWebSearchSignal(item)
+	case "filesearch":
+		return detectFileSearchSignal(item)
+	case "filelist":
+		return detectFileListSignal(item)
+	case "fileread":
+		return detectFileReadSignal(item)
+	case "commandexecution":
+		return detectCommandExecutionSignal(item)
 	default:
 		return "", model.ActivityEntry{}, "", false
 	}
+}
+
+func detectCommandExecutionSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	command := strings.TrimSpace(getStringAny(item, "command", "commandLine", "command_line"))
+	if command == "" {
+		command = strings.TrimSpace(composeCommandFromProgramArgs(item))
+	}
+	if command == "" {
+		return "", model.ActivityEntry{}, "", false
+	}
+	label := truncate(command, 96)
+	return "command", model.ActivityEntry{
+		Label: "Execute command: " + command,
+		Query: command,
+	}, label, true
+}
+
+func detectFileSearchSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	path := strings.TrimSpace(getStringAny(item, "path", "directory", "root", "scope"))
+	query := strings.TrimSpace(getStringAny(item, "query", "searchQuery", "search_query", "pattern"))
+	if query == "" || path == "" {
+		return "", model.ActivityEntry{}, "", false
+	}
+	return "file_search", model.ActivityEntry{
+		Label: "Search files in " + path + " for " + query,
+		Path:  path,
+		Query: query,
+	}, query, true
+}
+
+func detectFileListSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	path := strings.TrimSpace(getStringAny(item, "path", "directory", "root"))
+	if path == "" {
+		return "", model.ActivityEntry{}, "", false
+	}
+	label := filepath.Base(path)
+	if label == "." || label == "/" || label == "" {
+		label = path
+	}
+	return "list", model.ActivityEntry{
+		Label: "List " + path,
+		Path:  path,
+	}, label, true
+}
+
+func detectFileReadSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	path := strings.TrimSpace(getStringAny(item, "path", "file", "filePath"))
+	if path == "" {
+		return "", model.ActivityEntry{}, "", false
+	}
+	label := filepath.Base(path)
+	if label == "." || label == "/" || label == "" {
+		label = path
+	}
+	return "file_read", model.ActivityEntry{
+		Label: "Read " + label,
+		Path:  path,
+	}, label, true
 }
 
 func detectWebSearchSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
@@ -3793,6 +4463,14 @@ func isWebSearchDescriptor(text string) bool {
 		strings.Contains(text, "websearch") ||
 		strings.Contains(text, "web_search") ||
 		strings.Contains(text, "web search")
+}
+
+func isFileSearchDescriptor(text string) bool {
+	return descriptorHasToken(text, "search") ||
+		descriptorHasToken(text, "find") ||
+		descriptorHasToken(text, "grep") ||
+		strings.Contains(text, "file search") ||
+		strings.Contains(text, "search files")
 }
 
 func isListDescriptor(text string) bool {

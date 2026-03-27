@@ -22,6 +22,7 @@ type dynamicToolCallParams struct {
 }
 
 type execToolArgs struct {
+	HostID     string
 	Command    string
 	Cwd        string
 	Reason     string
@@ -30,6 +31,7 @@ type execToolArgs struct {
 }
 
 type remoteListFilesArgs struct {
+	HostID     string `json:"host"`
 	Path       string `json:"path"`
 	Recursive  bool   `json:"recursive"`
 	MaxEntries int    `json:"max_entries"`
@@ -37,12 +39,14 @@ type remoteListFilesArgs struct {
 }
 
 type remoteReadFileArgs struct {
+	HostID   string `json:"host"`
 	Path     string `json:"path"`
 	MaxBytes int    `json:"max_bytes"`
 	Reason   string `json:"reason"`
 }
 
 type remoteSearchFilesArgs struct {
+	HostID     string `json:"host"`
 	Path       string `json:"path"`
 	Query      string `json:"query"`
 	MaxMatches int    `json:"max_matches"`
@@ -50,6 +54,7 @@ type remoteSearchFilesArgs struct {
 }
 
 type remoteFileChangeArgs struct {
+	HostID    string `json:"host"`
 	Mode      string `json:"mode"`
 	Path      string `json:"path"`
 	Content   string `json:"content"`
@@ -65,6 +70,10 @@ func remoteDynamicTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"host": map[string]any{
+						"type":        "string",
+						"description": "Required selected remote host ID. Must exactly match the current selected host.",
+					},
 					"command": map[string]any{
 						"type":        "string",
 						"description": "Read-only shell command to run on the selected remote host.",
@@ -84,7 +93,7 @@ func remoteDynamicTools() []map[string]any {
 						"description": "One-sentence explanation of what you are checking.",
 					},
 				},
-				"required":             []string{"command", "reason"},
+				"required":             []string{"host", "command", "reason"},
 				"additionalProperties": false,
 			},
 		},
@@ -94,6 +103,10 @@ func remoteDynamicTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"host": map[string]any{
+						"type":        "string",
+						"description": "Required selected remote host ID. Must exactly match the current selected host.",
+					},
 					"path": map[string]any{
 						"type":        "string",
 						"description": "Directory path to inspect on the selected remote host.",
@@ -113,7 +126,7 @@ func remoteDynamicTools() []map[string]any {
 						"description": "One-sentence explanation of what you are trying to inspect.",
 					},
 				},
-				"required":             []string{"path", "reason"},
+				"required":             []string{"host", "path", "reason"},
 				"additionalProperties": false,
 			},
 		},
@@ -123,6 +136,10 @@ func remoteDynamicTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"host": map[string]any{
+						"type":        "string",
+						"description": "Required selected remote host ID. Must exactly match the current selected host.",
+					},
 					"path": map[string]any{
 						"type":        "string",
 						"description": "Absolute or relative file path on the selected remote host.",
@@ -138,7 +155,7 @@ func remoteDynamicTools() []map[string]any {
 						"description": "One-sentence explanation of what you are checking in this file.",
 					},
 				},
-				"required":             []string{"path", "reason"},
+				"required":             []string{"host", "path", "reason"},
 				"additionalProperties": false,
 			},
 		},
@@ -148,6 +165,10 @@ func remoteDynamicTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"host": map[string]any{
+						"type":        "string",
+						"description": "Required selected remote host ID. Must exactly match the current selected host.",
+					},
 					"path": map[string]any{
 						"type":        "string",
 						"description": "File or directory path to search.",
@@ -167,7 +188,7 @@ func remoteDynamicTools() []map[string]any {
 						"description": "One-sentence explanation of what you are searching for.",
 					},
 				},
-				"required":             []string{"path", "query", "reason"},
+				"required":             []string{"host", "path", "query", "reason"},
 				"additionalProperties": false,
 			},
 		},
@@ -177,6 +198,10 @@ func remoteDynamicTools() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"host": map[string]any{
+						"type":        "string",
+						"description": "Required selected remote host ID. Must exactly match the current selected host.",
+					},
 					"mode": map[string]any{
 						"type":        "string",
 						"enum":        []string{"command", "file_change"},
@@ -214,7 +239,7 @@ func remoteDynamicTools() []map[string]any {
 						"description": "Short explanation of why this change is needed.",
 					},
 				},
-				"required":             []string{"mode", "reason"},
+				"required":             []string{"host", "mode", "reason"},
 				"additionalProperties": false,
 			},
 		},
@@ -226,17 +251,18 @@ func remoteThreadDeveloperInstructions(selectedHostID string) string {
 You are embedded inside a web AI ops console.
 The selected target host for this thread is %q.
 This host is remote. Do not use built-in local commandExecution or fileChange tools, because those affect the ai-server machine rather than the selected remote host.
+Every remote tool call must include host=%q exactly. Never omit it and never substitute another host ID.
 Use list_remote_files, read_remote_file, and search_remote_files for remote filesystem inspection.
 Use execute_readonly_query for general read-only system inspection that is not a file browse operation.
 Use execute_system_mutation(mode=command) for state-changing commands and execute_system_mutation(mode=file_change) for direct file edits.
 Keep each tool call narrow, explain what you are checking, and summarize results clearly for the web UI.
-`), selectedHostID)
+`), selectedHostID, selectedHostID)
 }
 
 func remoteTurnDeveloperInstructions(hostID string) string {
 	return fmt.Sprintf(
-		"Current selected host is %s. This is a remote host. Do not use local built-in commandExecution or fileChange tools. Prefer list_remote_files, read_remote_file, and search_remote_files for filesystem inspection. Use execute_readonly_query for other read-only checks, execute_system_mutation(mode=command) for state-changing commands, and execute_system_mutation(mode=file_change) for remote file edits on the selected host only.",
-		hostID,
+		"Current selected host is %s. This is a remote host. Do not use local built-in commandExecution or fileChange tools. Every remote tool call must include host=%s exactly. Prefer list_remote_files, read_remote_file, and search_remote_files for filesystem inspection. Use execute_readonly_query for other read-only checks, execute_system_mutation(mode=command) for state-changing commands, and execute_system_mutation(mode=file_change) for remote file edits on the selected host only.",
+		hostID, hostID,
 	)
 }
 
@@ -248,10 +274,25 @@ func dynamicToolCardID(callID string) string {
 	return "toolcmd-" + strings.TrimSpace(callID)
 }
 
+func remoteToolTargetHost(arguments map[string]any) string {
+	return strings.TrimSpace(getStringAny(arguments, "host", "hostId"))
+}
+
+func validateSelectedRemoteToolHost(arguments map[string]any, selectedHostID string) error {
+	targetHostID := remoteToolTargetHost(arguments)
+	if targetHostID == "" {
+		return fmt.Errorf("tool requires host and it must equal selected host %s", selectedHostID)
+	}
+	if targetHostID != selectedHostID {
+		return fmt.Errorf("tool host %s does not match selected host %s", targetHostID, selectedHostID)
+	}
+	return nil
+}
+
 func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 	var params dynamicToolCallParams
 	if err := remarshalInto(payload, &params); err != nil {
-		_ = a.codex.Respond(context.Background(), rawID, toolResponse("Dynamic tool payload was invalid.", false))
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("Dynamic tool payload was invalid.", false))
 		return
 	}
 
@@ -269,7 +310,11 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 	}
 	hostID := defaultHostID(session.SelectedHostID)
 	if !isRemoteHostID(hostID) {
-		_ = a.codex.Respond(context.Background(), rawID, toolResponse("The selected host is server-local. Use Codex built-in local tools instead of remote execute_* tools.", false))
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("The selected host is server-local. Use Codex built-in local tools instead of remote execute_* tools.", false))
+		return
+	}
+	if err := validateSelectedRemoteToolHost(params.Arguments, hostID); err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 		return
 	}
 
@@ -277,58 +322,62 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 	case "execute_readonly_query":
 		args, err := parseExecToolArgs(params.Arguments)
 		if err != nil {
-			_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 			return
 		}
 		if err := validateReadonlyCommand(args.Command); err != nil {
-			_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 			return
 		}
 		a.executeReadonlyDynamicTool(sessionID, hostID, rawID, params, args)
 	case "list_remote_files":
 		args, err := parseRemoteListFilesArgs(params.Arguments)
 		if err != nil {
-			_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 			return
 		}
 		a.executeRemoteListFilesTool(sessionID, hostID, rawID, params, args)
 	case "read_remote_file":
 		args, err := parseRemoteReadFileArgs(params.Arguments)
 		if err != nil {
-			_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 			return
 		}
 		a.executeRemoteReadFileTool(sessionID, hostID, rawID, params, args)
 	case "search_remote_files":
 		args, err := parseRemoteSearchFilesArgs(params.Arguments)
 		if err != nil {
-			_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 			return
 		}
 		a.executeRemoteSearchFilesTool(sessionID, hostID, rawID, params, args)
 	case "execute_system_mutation":
 		mode := strings.TrimSpace(getString(params.Arguments, "mode"))
 		switch mode {
-		case "", "command":
+		case "command":
 			args, err := parseExecToolArgs(params.Arguments)
 			if err != nil {
-				_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 				return
 			}
 			a.requestRemoteCommandApproval(sessionID, hostID, rawID, params, args)
 		case "file_change":
+			if err := validateRemoteFileChangeArguments(params.Arguments); err != nil {
+				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+				return
+			}
 			args, err := parseRemoteFileChangeArgs(params.Arguments)
 			if err != nil {
-				_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 				return
 			}
 			a.requestRemoteFileChangeApproval(sessionID, hostID, rawID, params, args)
 		default:
-			_ = a.codex.Respond(context.Background(), rawID, toolResponse("Only command and file_change modes are supported for remote system mutation right now.", false))
+			_ = a.respondCodex(context.Background(), rawID, toolResponse("execute_system_mutation requires mode=command or mode=file_change.", false))
 			return
 		}
 	default:
-		_ = a.codex.Respond(context.Background(), rawID, toolResponse("Unknown dynamic tool request.", false))
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("Unknown dynamic tool request.", false))
 	}
 }
 
@@ -344,7 +393,7 @@ func (a *App) executeReadonlyDynamicTool(sessionID, hostID, rawID string, params
 		Readonly:   true,
 	})
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 		return
 	}
 	if a.turnWasInterrupted(sessionID) {
@@ -352,7 +401,7 @@ func (a *App) executeReadonlyDynamicTool(sessionID, hostID, rawID string, params
 	}
 
 	success := execResultCardStatus(result) == "completed"
-	_ = a.codex.Respond(context.Background(), rawID, toolResponse(formatExecToolResult(args.Command, result), success))
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(formatExecToolResult(args.Command, result), success))
 }
 
 func (a *App) executeRemoteListFilesTool(sessionID, hostID, rawID string, params dynamicToolCallParams, args remoteListFilesArgs) {
@@ -384,7 +433,7 @@ func (a *App) executeRemoteListFilesTool(sessionID, hostID, rawID string, params
 			"startedAt": startedAt,
 			"endedAt":   model.NowString(),
 		})
-		_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 		return
 	}
 	if a.turnWasInterrupted(sessionID) {
@@ -406,10 +455,10 @@ func (a *App) executeRemoteListFilesTool(sessionID, hostID, rawID string, params
 		"endedAt":   model.NowString(),
 	})
 	now := model.NowString()
-	a.store.UpsertCard(sessionID, buildFileListCard("toolmsg-"+params.CallID, hostID, result, now))
+	a.store.UpsertCard(sessionID, buildFileListCardWithRecursive("toolmsg-"+params.CallID, hostID, result, args.Recursive, now))
 	a.setRuntimeTurnPhase(sessionID, "thinking")
 	a.broadcastSnapshot(sessionID)
-	_ = a.codex.Respond(context.Background(), rawID, toolResponse(renderFileListMessage(hostID, result.Path, result.Entries, result.Truncated), true))
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(renderFileListMessage(hostID, result.Path, result.Entries, result.Truncated), true))
 }
 
 func (a *App) executeRemoteReadFileTool(sessionID, hostID, rawID string, params dynamicToolCallParams, args remoteReadFileArgs) {
@@ -441,7 +490,7 @@ func (a *App) executeRemoteReadFileTool(sessionID, hostID, rawID string, params 
 			"startedAt": startedAt,
 			"endedAt":   model.NowString(),
 		})
-		_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 		return
 	}
 	if a.turnWasInterrupted(sessionID) {
@@ -467,26 +516,14 @@ func (a *App) executeRemoteReadFileTool(sessionID, hostID, rawID string, params 
 		"endedAt":   model.NowString(),
 	})
 	now := model.NowString()
-	a.store.UpsertCard(sessionID, model.Card{
-		ID:     "toolpreview-" + params.CallID,
-		Type:   "FilePreviewCard",
-		Title:  "远程文件预览",
-		Output: result.Content,
-		Text:   result.Content,
-		Status: "completed",
-		Changes: []model.FileChange{
-			{Path: result.Path, Kind: "preview"},
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
+	a.store.UpsertCard(sessionID, buildFileReadCard("toolpreview-"+params.CallID, hostID, result, now))
 	a.setRuntimeTurnPhase(sessionID, "thinking")
 	a.broadcastSnapshot(sessionID)
 	toolText := fmt.Sprintf("Read file %s:\n\n%s", result.Path, result.Content)
 	if result.Truncated {
 		toolText += "\n\n[truncated]"
 	}
-	_ = a.codex.Respond(context.Background(), rawID, toolResponse(toolText, true))
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(toolText, true))
 }
 
 func (a *App) executeRemoteSearchFilesTool(sessionID, hostID, rawID string, params dynamicToolCallParams, args remoteSearchFilesArgs) {
@@ -522,7 +559,7 @@ func (a *App) executeRemoteSearchFilesTool(sessionID, hostID, rawID string, para
 			"startedAt": startedAt,
 			"endedAt":   model.NowString(),
 		})
-		_ = a.codex.Respond(context.Background(), rawID, toolResponse(err.Error(), false))
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 		return
 	}
 	if a.turnWasInterrupted(sessionID) {
@@ -557,12 +594,13 @@ func (a *App) executeRemoteSearchFilesTool(sessionID, hostID, rawID string, para
 	a.store.UpsertCard(sessionID, buildFileSearchCard("toolmsg-"+params.CallID, hostID, result, now))
 	a.setRuntimeTurnPhase(sessionID, "thinking")
 	a.broadcastSnapshot(sessionID)
-	_ = a.codex.Respond(context.Background(), rawID, toolResponse(renderFileSearchMessage(hostID, result.Path, result.Query, result.Matches, result.Truncated), true))
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(renderFileSearchMessage(hostID, result.Path, result.Query, result.Matches, result.Truncated), true))
 }
 
 func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, params dynamicToolCallParams, args execToolArgs) {
 	cardID := dynamicToolCardID(params.CallID)
 	now := model.NowString()
+	host := a.findHost(hostID)
 	a.store.RememberItem(sessionID, cardID, map[string]any{
 		"tool":       params.Tool,
 		"threadId":   params.ThreadID,
@@ -598,7 +636,7 @@ func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, para
 
 	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
 	a.store.AddApproval(sessionID, approval)
-	a.store.UpsertCard(sessionID, model.Card{
+	card := model.Card{
 		ID:      cardID,
 		Type:    "CommandApprovalCard",
 		Title:   "Remote command approval required",
@@ -613,21 +651,17 @@ func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, para
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
-	a.audit("approval.requested", map[string]any{
-		"sessionId":  sessionID,
-		"approvalId": approval.ID,
-		"type":       approval.Type,
-		"hostId":     approval.HostID,
-		"command":    approval.Command,
-		"cwd":        approval.Cwd,
-	})
+	}
+	applyCardHost(&card, host)
+	a.store.UpsertCard(sessionID, card)
+	a.auditApprovalRequested(sessionID, approval, nil)
 	a.broadcastSnapshot(sessionID)
 }
 
 func (a *App) requestRemoteFileChangeApproval(sessionID, hostID, rawID string, params dynamicToolCallParams, args remoteFileChangeArgs) {
 	cardID := dynamicToolCardID(params.CallID)
 	now := model.NowString()
+	host := a.findHost(hostID)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -648,16 +682,18 @@ func (a *App) requestRemoteFileChangeApproval(sessionID, hostID, rawID string, p
 		Diff: diff,
 	}
 	a.store.RememberItem(sessionID, cardID, map[string]any{
-		"tool":      params.Tool,
-		"threadId":  params.ThreadID,
-		"turnId":    params.TurnID,
-		"callId":    params.CallID,
-		"mode":      "file_change",
-		"path":      args.Path,
-		"content":   args.Content,
-		"writeMode": args.WriteMode,
-		"reason":    args.Reason,
-		"diff":      diff,
+		"tool":       params.Tool,
+		"threadId":   params.ThreadID,
+		"turnId":     params.TurnID,
+		"callId":     params.CallID,
+		"host":       hostID,
+		"mode":       "file_change",
+		"path":       args.Path,
+		"content":    args.Content,
+		"write_mode": args.WriteMode,
+		"writeMode":  args.WriteMode,
+		"reason":     args.Reason,
+		"diff":       diff,
 	})
 
 	approval := model.ApprovalRequest{
@@ -683,7 +719,7 @@ func (a *App) requestRemoteFileChangeApproval(sessionID, hostID, rawID string, p
 
 	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
 	a.store.AddApproval(sessionID, approval)
-	a.store.UpsertCard(sessionID, model.Card{
+	card := model.Card{
 		ID:      cardID,
 		Type:    "FileChangeApprovalCard",
 		Title:   "Remote file change approval required",
@@ -697,13 +733,11 @@ func (a *App) requestRemoteFileChangeApproval(sessionID, hostID, rawID string, p
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
-	a.audit("approval.requested", map[string]any{
-		"sessionId":  sessionID,
-		"approvalId": approval.ID,
-		"type":       approval.Type,
-		"hostId":     approval.HostID,
-		"filePath":   args.Path,
+	}
+	applyCardHost(&card, host)
+	a.store.UpsertCard(sessionID, card)
+	a.auditApprovalRequested(sessionID, approval, map[string]any{
+		"filePath": args.Path,
 	})
 	a.broadcastSnapshot(sessionID)
 }
@@ -759,7 +793,7 @@ func (a *App) executeApprovedRemoteMutation(sessionID string, approval model.App
 			card.UpdatedAt = model.NowString()
 		})
 		a.broadcastSnapshot(sessionID)
-		_ = a.codex.Respond(context.Background(), approval.RequestIDRaw, toolResponse(err.Error(), false))
+		_ = a.respondCodex(context.Background(), approval.RequestIDRaw, toolResponse(err.Error(), false))
 		return
 	}
 
@@ -776,11 +810,11 @@ func (a *App) executeApprovedRemoteMutation(sessionID string, approval model.App
 		return
 	}
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
-		_ = a.codex.Respond(context.Background(), approval.RequestIDRaw, toolResponse(runErr.Error(), false))
+		_ = a.respondCodex(context.Background(), approval.RequestIDRaw, toolResponse(runErr.Error(), false))
 		return
 	}
 	success := execResultCardStatus(result) == "completed"
-	_ = a.codex.Respond(context.Background(), approval.RequestIDRaw, toolResponse(formatExecToolResult(args.Command, result), success))
+	_ = a.respondCodex(context.Background(), approval.RequestIDRaw, toolResponse(formatExecToolResult(args.Command, result), success))
 }
 
 func (a *App) executeApprovedRemoteFileChange(sessionID string, approval model.ApprovalRequest) {
@@ -798,13 +832,15 @@ func (a *App) executeApprovedRemoteFileChange(sessionID string, approval model.A
 		a.broadcastSnapshot(sessionID)
 		a.auditRemoteToolEvent("remote.file_change.finished", sessionID, approval.HostID, "execute_system_mutation", map[string]any{
 			"filePath":         args.Path,
+			"cwd":              filepath.Dir(args.Path),
 			"status":           "failed",
 			"approvalDecision": approval.Status,
 			"error":            truncate(err.Error(), 200),
 			"startedAt":        startedAt,
 			"endedAt":          model.NowString(),
+			"exitCode":         nil,
 		})
-		_ = a.codex.Respond(context.Background(), approval.RequestIDRaw, toolResponse(err.Error(), false))
+		_ = a.respondCodex(context.Background(), approval.RequestIDRaw, toolResponse(err.Error(), false))
 		return
 	}
 
@@ -816,8 +852,12 @@ func (a *App) executeApprovedRemoteFileChange(sessionID string, approval model.A
 	})
 	a.auditRemoteToolEvent("remote.file_change.started", sessionID, approval.HostID, "execute_system_mutation", map[string]any{
 		"filePath":         args.Path,
+		"cwd":              filepath.Dir(args.Path),
 		"approvalDecision": approval.Status,
+		"status":           "inProgress",
 		"startedAt":        startedAt,
+		"endedAt":          nil,
+		"exitCode":         nil,
 	})
 	result, writeErr := a.remoteWriteFile(ctx, approval.HostID, args.Path, args.Content, args.WriteMode)
 	if a.turnWasInterrupted(sessionID) {
@@ -829,7 +869,8 @@ func (a *App) executeApprovedRemoteFileChange(sessionID string, approval model.A
 		return
 	}
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) && !errors.Is(writeErr, context.DeadlineExceeded) {
-		a.failToolProcess(sessionID, processCardID, "修改文件失败："+writeErr.Error())
+		annotatedErr := annotateRemoteFileChangeError(args, writeErr)
+		a.failToolProcess(sessionID, processCardID, "修改文件失败："+annotatedErr.Error())
 		a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
 			if runtime.Activity.CurrentChangingFile == args.Path {
 				runtime.Activity.CurrentChangingFile = ""
@@ -838,19 +879,21 @@ func (a *App) executeApprovedRemoteFileChange(sessionID string, approval model.A
 		a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
 			card.Type = "FileChangeCard"
 			card.Status = "failed"
-			card.Text = writeErr.Error()
+			card.Text = annotatedErr.Error()
 			card.UpdatedAt = model.NowString()
 		})
 		a.broadcastSnapshot(sessionID)
 		a.auditRemoteToolEvent("remote.file_change.finished", sessionID, approval.HostID, "execute_system_mutation", map[string]any{
 			"filePath":         args.Path,
+			"cwd":              filepath.Dir(args.Path),
 			"status":           "failed",
 			"approvalDecision": approval.Status,
-			"error":            truncate(writeErr.Error(), 200),
+			"error":            truncate(annotatedErr.Error(), 200),
 			"startedAt":        startedAt,
 			"endedAt":          model.NowString(),
+			"exitCode":         nil,
 		})
-		_ = a.codex.Respond(context.Background(), approval.RequestIDRaw, toolResponse(writeErr.Error(), false))
+		_ = a.respondCodex(context.Background(), approval.RequestIDRaw, toolResponse(annotatedErr.Error(), false))
 		return
 	}
 
@@ -870,6 +913,10 @@ func (a *App) executeApprovedRemoteFileChange(sessionID string, approval model.A
 		Status:  "completed",
 		Changes: []model.FileChange{{Path: result.Path, Kind: remoteFileChangeKind(result.Created, result.WriteMode), Diff: diff}},
 		Text:    fmt.Sprintf("已修改远程文件 %s", result.Path),
+		HostID:  approval.HostID,
+		HostName: func() string {
+			return hostNameOrID(a.findHost(approval.HostID))
+		}(),
 		CreatedAt: func() string {
 			if existing := a.cardByID(sessionID, approval.ItemID); existing != nil && existing.CreatedAt != "" {
 				return existing.CreatedAt
@@ -882,12 +929,14 @@ func (a *App) executeApprovedRemoteFileChange(sessionID string, approval model.A
 	a.broadcastSnapshot(sessionID)
 	a.auditRemoteToolEvent("remote.file_change.finished", sessionID, approval.HostID, "execute_system_mutation", map[string]any{
 		"filePath":         result.Path,
+		"cwd":              filepath.Dir(result.Path),
 		"status":           "completed",
 		"approvalDecision": approval.Status,
 		"startedAt":        startedAt,
 		"endedAt":          model.NowString(),
+		"exitCode":         nil,
 	})
-	_ = a.codex.Respond(context.Background(), approval.RequestIDRaw, toolResponse(fmt.Sprintf("Updated file %s successfully.", result.Path), true))
+	_ = a.respondCodex(context.Background(), approval.RequestIDRaw, toolResponse(fmt.Sprintf("Updated file %s successfully.", result.Path), true))
 }
 
 func parseExecToolArgs(arguments map[string]any) (execToolArgs, error) {
@@ -901,6 +950,7 @@ func parseExecToolArgs(arguments map[string]any) (execToolArgs, error) {
 
 	timeoutSec, _ := getIntAny(arguments, "timeout_sec", "timeoutSec")
 	return execToolArgs{
+		HostID:     remoteToolTargetHost(arguments),
 		Command:    command,
 		Cwd:        strings.TrimSpace(getString(arguments, "cwd")),
 		Reason:     strings.TrimSpace(getString(arguments, "reason")),
@@ -911,6 +961,7 @@ func parseExecToolArgs(arguments map[string]any) (execToolArgs, error) {
 
 func parseRemoteListFilesArgs(arguments map[string]any) (remoteListFilesArgs, error) {
 	args := remoteListFilesArgs{
+		HostID:     remoteToolTargetHost(arguments),
 		Path:       strings.TrimSpace(getString(arguments, "path")),
 		Recursive:  getBool(arguments, "recursive"),
 		MaxEntries: getInt(arguments, "max_entries", "maxEntries"),
@@ -927,6 +978,7 @@ func parseRemoteListFilesArgs(arguments map[string]any) (remoteListFilesArgs, er
 
 func parseRemoteReadFileArgs(arguments map[string]any) (remoteReadFileArgs, error) {
 	args := remoteReadFileArgs{
+		HostID:   remoteToolTargetHost(arguments),
 		Path:     strings.TrimSpace(getString(arguments, "path")),
 		MaxBytes: getInt(arguments, "max_bytes", "maxBytes"),
 		Reason:   strings.TrimSpace(getString(arguments, "reason")),
@@ -942,6 +994,7 @@ func parseRemoteReadFileArgs(arguments map[string]any) (remoteReadFileArgs, erro
 
 func parseRemoteSearchFilesArgs(arguments map[string]any) (remoteSearchFilesArgs, error) {
 	args := remoteSearchFilesArgs{
+		HostID:     remoteToolTargetHost(arguments),
 		Path:       strings.TrimSpace(getString(arguments, "path")),
 		Query:      strings.TrimSpace(getString(arguments, "query")),
 		MaxMatches: getInt(arguments, "max_matches", "maxMatches"),
@@ -960,21 +1013,42 @@ func parseRemoteSearchFilesArgs(arguments map[string]any) (remoteSearchFilesArgs
 }
 
 func parseRemoteFileChangeArgs(arguments map[string]any) (remoteFileChangeArgs, error) {
+	hostID := strings.TrimSpace(getStringAny(arguments, "host", "hostId"))
 	args := remoteFileChangeArgs{
-		Mode:      strings.TrimSpace(getString(arguments, "mode")),
-		Path:      strings.TrimSpace(getString(arguments, "path")),
-		Content:   getString(arguments, "content"),
-		WriteMode: strings.TrimSpace(getStringAny(arguments, "write_mode", "writeMode")),
-		Reason:    strings.TrimSpace(getString(arguments, "reason")),
+		HostID: hostID,
+		Mode:   strings.TrimSpace(getString(arguments, "mode")),
+		Path:   strings.TrimSpace(getString(arguments, "path")),
+		Reason: strings.TrimSpace(getString(arguments, "reason")),
 	}
-	if args.Mode != "file_change" && args.Mode != "" {
-		return remoteFileChangeArgs{}, errors.New("unsupported mutation mode")
+	content, ok := arguments["content"]
+	if !ok {
+		return remoteFileChangeArgs{}, errors.New("file_change requires content")
 	}
-	if args.WriteMode == "" {
+	contentText, ok := content.(string)
+	if !ok {
+		return remoteFileChangeArgs{}, errors.New("file_change content must be a string")
+	}
+	args.Content = contentText
+
+	writeModeRaw, ok := arguments["write_mode"]
+	if !ok {
+		writeModeRaw, ok = arguments["writeMode"]
+	}
+	if !ok {
 		args.WriteMode = "overwrite"
+	} else {
+		writeMode, ok := writeModeRaw.(string)
+		if !ok {
+			return remoteFileChangeArgs{}, errors.New("file_change write_mode must be a string")
+		}
+		args.WriteMode = strings.TrimSpace(writeMode)
 	}
-	if args.WriteMode != "overwrite" && args.WriteMode != "append" {
-		return remoteFileChangeArgs{}, errors.New("file_change write_mode must be overwrite or append")
+
+	if args.HostID == "" {
+		return remoteFileChangeArgs{}, errors.New("file_change requires host")
+	}
+	if args.Mode != "file_change" {
+		return remoteFileChangeArgs{}, errors.New("file_change requires mode=file_change")
 	}
 	if args.Path == "" {
 		return remoteFileChangeArgs{}, errors.New("file_change requires a path")
@@ -982,7 +1056,57 @@ func parseRemoteFileChangeArgs(arguments map[string]any) (remoteFileChangeArgs, 
 	if args.Reason == "" {
 		return remoteFileChangeArgs{}, errors.New("file_change requires a reason")
 	}
+	if args.WriteMode != "overwrite" && args.WriteMode != "append" {
+		return remoteFileChangeArgs{}, errors.New("file_change write_mode must be overwrite or append")
+	}
 	return args, nil
+}
+
+func validateRemoteFileChangeArguments(arguments map[string]any) error {
+	if strings.TrimSpace(getStringAny(arguments, "host", "hostId")) == "" {
+		return errors.New("file_change requires host")
+	}
+	if mode := strings.TrimSpace(getString(arguments, "mode")); mode != "file_change" {
+		return errors.New("file_change requires mode=file_change")
+	}
+	if strings.TrimSpace(getString(arguments, "path")) == "" {
+		return errors.New("file_change requires a path")
+	}
+	if _, ok := arguments["content"]; !ok {
+		return errors.New("file_change requires content")
+	}
+	if _, ok := arguments["write_mode"]; !ok {
+		if _, ok := arguments["writeMode"]; !ok {
+			return errors.New("file_change requires write_mode")
+		}
+	}
+	if strings.TrimSpace(getString(arguments, "reason")) == "" {
+		return errors.New("file_change requires a reason")
+	}
+	return nil
+}
+
+func annotateRemoteFileChangeError(args remoteFileChangeArgs, err error) error {
+	detail := strings.TrimSpace(err.Error())
+	if detail == "" {
+		detail = "unknown error"
+	}
+	lower := strings.ToLower(detail)
+	prefix := fmt.Sprintf("file_change failed for %s (write_mode=%s)", args.Path, args.WriteMode)
+	switch {
+	case strings.Contains(lower, "permission denied") || strings.Contains(lower, "operation not permitted"):
+		return fmt.Errorf("%s: permission denied: %w", prefix, err)
+	case strings.Contains(lower, "no such file or directory") || strings.Contains(lower, "not found"):
+		return fmt.Errorf("%s: path not found: %w", prefix, err)
+	case strings.Contains(lower, "read-only file system"):
+		return fmt.Errorf("%s: read-only file system: %w", prefix, err)
+	case strings.Contains(lower, "input/output error") || strings.Contains(lower, "i/o error"):
+		return fmt.Errorf("%s: i/o error: %w", prefix, err)
+	case strings.Contains(lower, "is a directory"):
+		return fmt.Errorf("%s: path is a directory: %w", prefix, err)
+	default:
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
 }
 
 func (a *App) auditRemoteToolEvent(event, sessionID, hostID, toolName string, fields map[string]any) {
@@ -991,7 +1115,8 @@ func (a *App) auditRemoteToolEvent(event, sessionID, hostID, toolName string, fi
 	payload := map[string]any{
 		"sessionId": sessionID,
 		"hostId":    hostID,
-		"hostName":  host.Name,
+		"hostName":  hostNameOrID(host),
+		"operator":  a.auditOperator(sessionID),
 		"toolName":  toolName,
 	}
 	if session != nil {
@@ -1102,13 +1227,13 @@ func validateReadonlyCommand(command string) error {
 func validateReadonlyProgram(fields []string) error {
 	program := strings.ToLower(filepathBase(fields[0]))
 	allowed := map[string]bool{
-		"cat": true, "ls": true, "find": true, "grep": true, "rg": true, "sed": true, "awk": true,
+		"cat": true, "ls": true, "find": true, "grep": true, "rg": true, "sed": true,
 		"head": true, "tail": true, "wc": true, "cut": true, "sort": true, "uniq": true,
 		"df": true, "du": true, "free": true, "uptime": true, "top": true, "ps": true,
 		"ss": true, "netstat": true, "iostat": true, "vmstat": true, "journalctl": true,
 		"dmesg": true, "uname": true, "env": true, "printenv": true, "which": true, "whereis": true,
-		"hostname": true, "id": true, "whoami": true, "pwd": true, "date": true, "sysctl": true,
-		"mount": true, "lsblk": true, "blkid": true, "ip": true, "ifconfig": true,
+		"hostname": true, "id": true, "whoami": true, "pwd": true, "date": true,
+		"lsblk": true, "blkid": true,
 		"docker": true, "kubectl": true, "git": true, "systemctl": true,
 	}
 	if !allowed[program] {
@@ -1116,6 +1241,82 @@ func validateReadonlyProgram(fields []string) error {
 	}
 
 	switch program {
+	case "find":
+		for _, arg := range fields[1:] {
+			value := strings.ToLower(strings.TrimSpace(arg))
+			switch {
+			case value == "-delete",
+				value == "-exec",
+				value == "-execdir",
+				value == "-ok",
+				value == "-okdir",
+				value == "-fprint",
+				value == "-fprint0",
+				value == "-fprintf",
+				value == "-fls":
+				return errors.New("find mutations must use execute_system_mutation")
+			}
+		}
+		return nil
+	case "sed":
+		for _, arg := range fields[1:] {
+			value := strings.ToLower(strings.TrimSpace(arg))
+			switch {
+			case value == "-i",
+				strings.HasPrefix(value, "-i"),
+				value == "--in-place",
+				strings.HasPrefix(value, "--in-place="):
+				return errors.New("sed in-place edits must use execute_system_mutation")
+			}
+		}
+		return nil
+	case "sort":
+		for _, arg := range fields[1:] {
+			value := strings.ToLower(strings.TrimSpace(arg))
+			switch {
+			case value == "-o",
+				value == "--output",
+				strings.HasPrefix(value, "--output="):
+				return errors.New("sort output writes must use execute_system_mutation")
+			}
+		}
+		return nil
+	case "journalctl":
+		for _, arg := range fields[1:] {
+			value := strings.ToLower(strings.TrimSpace(arg))
+			switch {
+			case value == "--rotate",
+				value == "--flush",
+				value == "--sync",
+				value == "--relinquish-var",
+				value == "--smart-relinquish-var",
+				value == "--setup-keys",
+				strings.HasPrefix(value, "--vacuum-"):
+				return errors.New("journalctl mutations must use execute_system_mutation")
+			}
+		}
+		return nil
+	case "dmesg":
+		for _, arg := range fields[1:] {
+			value := strings.ToLower(strings.TrimSpace(arg))
+			switch value {
+			case "-c", "-C", "--clear", "--read-clear":
+				return errors.New("dmesg mutations must use execute_system_mutation")
+			}
+		}
+		return nil
+	case "hostname":
+		for _, arg := range fields[1:] {
+			value := strings.TrimSpace(arg)
+			if value == "" {
+				continue
+			}
+			if strings.HasPrefix(value, "-") {
+				continue
+			}
+			return errors.New("hostname changes must use execute_system_mutation")
+		}
+		return nil
 	case "systemctl":
 		action := firstCommandVerb(fields[1:], map[string]bool{
 			"--type": true,

@@ -19,6 +19,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  allowFollowUp: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const emit = defineEmits(["update:modelValue", "send", "stop"]);
@@ -55,8 +59,16 @@ const activeMentions = computed(() => {
 });
 
 const canStop = computed(() => store.runtime.turn.active);
-const inputDisabled = computed(() => props.disabled || !store.canSend || store.runtime.turn.active || store.sending);
+const followUpMode = computed(() => props.allowFollowUp && canStop.value);
+const primaryAction = computed(() => (canStop.value && !followUpMode.value ? "stop" : "send"));
+const inputDisabled = computed(() => props.disabled || !store.canSend || store.sending || (canStop.value && !followUpMode.value ? true : false));
 const sendDisabled = computed(() => props.disabled || !store.canSend || store.sending || !props.modelValue.trim());
+const showSecondaryStop = computed(() => followUpMode.value);
+const hintText = computed(() => {
+  if (primaryAction.value === "stop") return "停止当前任务";
+  if (followUpMode.value) return "⌘ ↵ 发送 follow-up";
+  return "⌘ ↵ 发送";
+});
 
 function onInput(e) {
   const text = e.target.value;
@@ -113,7 +125,9 @@ function onKeydown(e) {
   
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
     e.preventDefault();
-    if (!canStop.value) {
+    if (primaryAction.value === "stop") {
+      emit("stop");
+    } else if (!sendDisabled.value) {
       emit("send");
     }
   }
@@ -182,17 +196,20 @@ function getCaretCoordinates(element, position) {
          <span v-for="mention in activeMentions" :key="mention" class="pill-tag"><span class="pill-icon">@</span> {{ mention }}</span>
       </div>
       <div class="tools-right">
-         <span class="hint-text">{{ canStop ? "停止当前任务" : "⌘ ↵ 发送" }}</span>
-         <button
-           class="send-btn"
-           :class="{ 'stop-btn': canStop }"
-           :disabled="canStop ? false : sendDisabled"
-           @click="canStop ? emit('stop') : emit('send')"
-         >
-           <span v-if="!canStop && store.sending" class="spinner-small"></span>
-           <span v-else-if="canStop">■</span>
-           <span v-else>↑</span>
-         </button>
+         <span class="hint-text">{{ hintText }}</span>
+         <div class="action-group">
+           <button
+             class="send-btn"
+             :class="{ 'stop-btn': primaryAction === 'stop' }"
+             :disabled="primaryAction === 'stop' ? false : sendDisabled"
+             @click="primaryAction === 'stop' ? emit('stop') : emit('send')"
+           >
+             <span v-if="primaryAction === 'stop'">■</span>
+             <span v-else-if="store.sending" class="spinner-small"></span>
+             <span v-else>↑</span>
+           </button>
+           <button v-if="showSecondaryStop" type="button" class="stop-link-btn" @click="emit('stop')">停止</button>
+         </div>
       </div>
     </div>
   </div>
@@ -280,6 +297,12 @@ function getCaretCoordinates(element, position) {
   gap: 12px;
 }
 
+.action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .hint-text {
   font-size: 11px;
   color: #94a3b8;
@@ -310,6 +333,21 @@ function getCaretCoordinates(element, position) {
 
 .send-btn.stop-btn {
   background: #dc2626;
+}
+
+.stop-link-btn {
+  border: 1px solid #fecaca;
+  background: #fff;
+  color: #b91c1c;
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stop-link-btn:hover {
+  background: #fef2f2;
 }
 
 .pill-icon {

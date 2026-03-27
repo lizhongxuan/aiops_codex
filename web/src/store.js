@@ -65,6 +65,28 @@ function deriveSessionSummary(snapshot, runtime) {
   };
 }
 
+function hostStatusLabel(status) {
+  switch ((status || "").toLowerCase()) {
+    case "online":
+      return "在线";
+    case "offline":
+      return "离线";
+    default:
+      return status || "未知";
+  }
+}
+
+function formatHostStatus(host) {
+  const current = host || {};
+  const id = current.id || "server-local";
+  const name = current.name || id;
+  return `当前主机 ${name}（${id}）状态 ${hostStatusLabel(current.status)}`;
+}
+
+function isConnectionLossMessage(message) {
+  return /^与 ai-server 的连接已断开/.test((message || "").trim());
+}
+
 export const useAppStore = defineStore("app", {
   state: () => ({
     snapshot: {
@@ -463,6 +485,7 @@ export const useAppStore = defineStore("app", {
 
       socket.onopen = () => {
         if (this._socket !== socket) return;
+        const shouldRestoreState = this.runtime.codex.retryAttempt > 0 || !this.snapshot.sessionId;
         this.wsStatus = "connected";
         this.runtime.codex.status = "connected";
         this.runtime.codex.retryAttempt = 0;
@@ -472,6 +495,14 @@ export const useAppStore = defineStore("app", {
           if (this._socket !== socket || socket.readyState !== WebSocket.OPEN) return;
           socket.send(JSON.stringify({ type: "ping" }));
         }, 10000);
+        if (shouldRestoreState) {
+          void Promise.all([this.fetchState(), this.fetchSessions()]).finally(() => {
+            if (this._socket !== socket) return;
+            if (isConnectionLossMessage(this.errorMessage)) {
+              this.errorMessage = "";
+            }
+          });
+        }
       };
 
       socket.onmessage = (event) => {
@@ -501,6 +532,10 @@ export const useAppStore = defineStore("app", {
           if (!this.runtime.codex.lastError) {
             this.runtime.codex.lastError = "connection closed";
           }
+          if (this.runtime.turn.active) {
+            this.setTurnPhase("failed");
+          }
+          this.errorMessage = `与 ai-server 的连接已断开，${formatHostStatus(this.selectedHost)}。请刷新页面或稍后重试。`;
           return;
         }
         this.runtime.codex.status = "reconnecting";
@@ -513,8 +548,35 @@ export const useAppStore = defineStore("app", {
         this.runtime.codex.lastError = "connection error";
       };
     },
-    selectHost(hostId) {
-      this.snapshot.selectedHostId = hostId;
+    async selectHost(hostId) {
+      const targetHostId = hostId || "server-local";
+      if (targetHostId === this.snapshot.selectedHostId) {
+        return true;
+      }
+      if (this.runtime.turn.active) {
+        this.errorMessage = "当前任务执行中，完成后再切换主机";
+        return false;
+      }
+      try {
+        const response = await fetch("/api/v1/host/select", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hostId: targetHostId }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          this.errorMessage = data.error || "switch host failed";
+          return false;
+        }
+        this.errorMessage = "";
+        this.applySnapshot(data.snapshot || data);
+        return true;
+      } catch (e) {
+        console.error("Failed to switch host:", e);
+        this.errorMessage = "Switch host failed";
+        return false;
+      }
     },
   },
 });

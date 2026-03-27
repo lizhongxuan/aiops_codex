@@ -15,6 +15,8 @@ type Host struct {
 	ID              string            `json:"id"`
 	Name            string            `json:"name"`
 	Kind            string            `json:"kind"`
+	Address         string            `json:"address,omitempty"`
+	Transport       string            `json:"transport,omitempty"`
 	Status          string            `json:"status"`
 	Executable      bool              `json:"executable"`
 	TerminalCapable bool              `json:"terminalCapable,omitempty"`
@@ -23,6 +25,28 @@ type Host struct {
 	AgentVersion    string            `json:"agentVersion,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
 	LastHeartbeat   string            `json:"lastHeartbeat,omitempty"`
+	LastError       string            `json:"lastError,omitempty"`
+	SSHUser         string            `json:"sshUser,omitempty"`
+	SSHPort         int               `json:"sshPort,omitempty"`
+	InstallState    string            `json:"installState,omitempty"`
+	ControlMode     string            `json:"controlMode,omitempty"`
+}
+
+type SessionMessageExcerpt struct {
+	Role      string `json:"role"`
+	Text      string `json:"text"`
+	CreatedAt string `json:"createdAt,omitempty"`
+}
+
+type HostSessionSummary struct {
+	SessionID      string                  `json:"sessionId"`
+	Title          string                  `json:"title"`
+	Status         string                  `json:"status"`
+	LastActivityAt string                  `json:"lastActivityAt"`
+	MessageCount   int                     `json:"messageCount"`
+	TaskSummary    string                  `json:"taskSummary,omitempty"`
+	ReplySummary   string                  `json:"replySummary,omitempty"`
+	Messages       []SessionMessageExcerpt `json:"messages,omitempty"`
 }
 
 type AuthState struct {
@@ -148,7 +172,15 @@ type Card struct {
 	Status        string           `json:"status,omitempty"`
 	Command       string           `json:"command,omitempty"`
 	Cwd           string           `json:"cwd,omitempty"`
+	HostID        string           `json:"hostId,omitempty"`
+	HostName      string           `json:"hostName,omitempty"`
 	Output        string           `json:"output,omitempty"`
+	Stdout        string           `json:"stdout,omitempty"`
+	Stderr        string           `json:"stderr,omitempty"`
+	ExitCode      int              `json:"exitCode,omitempty"`
+	Timeout       bool             `json:"timeout,omitempty"`
+	Cancelled     bool             `json:"cancelled,omitempty"`
+	Error         string           `json:"error,omitempty"`
 	Items         []PlanItem       `json:"items,omitempty"`
 	Changes       []FileChange     `json:"changes,omitempty"`
 	Approval      *ApprovalRef     `json:"approval,omitempty"`

@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { ClipboardCheckIcon, FileTextIcon, FolderIcon, SearchIcon } from "lucide-vue-next";
 import Modal from "./Modal.vue";
+import { useAppStore } from "../store";
 
 const props = defineProps({
   card: {
@@ -10,9 +11,106 @@ const props = defineProps({
   },
 });
 
+const store = useAppStore();
 const primarySummary = computed(() => props.card.summary || props.card.text || "");
 const auxiliaryNote = computed(() => (props.card.summary && props.card.text ? props.card.text : ""));
-const fileItems = computed(() => props.card.fileItems || []);
+const kvRows = computed(() => props.card.kvRows || []);
+const highlightPills = computed(() => props.card.highlights || []);
+const rawFileItems = computed(() => props.card.fileItems || []);
+const displayHostId = computed(() => {
+  const explicit = (props.card.hostId || "").trim();
+  if (explicit && explicit !== "server-local") return explicit;
+  const itemHost = normalizedFileItems.value.find((item) => item.target?.hostId && item.target.hostId !== "server-local")?.target?.hostId;
+  if (itemHost) return itemHost;
+  const selectedHostId = (store.snapshot.selectedHostId || "").trim();
+  if (selectedHostId && selectedHostId !== "server-local") return selectedHostId;
+  return "";
+});
+const displayHostLabel = computed(() => {
+  const hostId = displayHostId.value;
+  const hostName = (props.card.hostName || store.snapshot.hosts.find((host) => host.id === hostId)?.name || "").trim();
+  if (!hostName || hostName === hostId) return hostId;
+  return `${hostName} · ${hostId}`;
+});
+const searchScopePath = computed(() => {
+  const directoryRow = kvRows.value.find((row) => isScopeKey(row.key) && (row.value || "").trim());
+  if (directoryRow) return normalizeSearchScope(directoryRow.value, "dir");
+
+  const firstMatch = normalizedFileItems.value.find((item) => item.kind === "match");
+  if (firstMatch) return normalizeSearchScope(firstMatch.absolutePath || firstMatch.target?.path || "", firstMatch.kind);
+
+  const firstDir = normalizedFileItems.value.find((item) => item.kind === "dir");
+  if (firstDir) return normalizeSearchScope(firstDir.absolutePath || firstDir.target?.path || "", firstDir.kind);
+
+  const firstFile = normalizedFileItems.value.find((item) => item.absolutePath);
+  if (firstFile) return normalizeSearchScope(firstFile.absolutePath || firstFile.target?.path || "", firstFile.kind);
+
+  return "";
+});
+const searchFocusLabel = computed(() => {
+  const queryRow = kvRows.value.find((row) => isQueryKey(row.key) && (row.value || "").trim());
+  if (queryRow) return queryRow.value.trim();
+  const firstMatch = normalizedFileItems.value.find((item) => item.kind === "match" && item.label);
+  if (firstMatch) return firstMatch.label;
+  const firstFile = normalizedFileItems.value.find((item) => item.label);
+  return firstFile?.label || "";
+});
+const repeatSearchPrompt = computed(() => {
+  const hostId = displayHostId.value;
+  const scopePath = searchScopePath.value;
+  if (!hostId || !scopePath) return "";
+
+  const focusText = searchFocusLabel.value ? `，重点围绕“${searchFocusLabel.value}”继续排查` : "";
+  const resultText = hasStructuredFiles.value
+    ? "，并保留结构化文件结果卡，便于继续回看和打开预览"
+    : "";
+
+  return [
+    `当前目标主机是远程 Linux（host=${hostId}）。`,
+    "请只使用 `search_remote_files`，不要退回本地工具，也不要改成 commandExecution。",
+    `请在 \`${scopePath}\` 中再次搜索${focusText}${resultText}。`,
+  ].join(" ");
+});
+const repeatSearchBusy = ref(false);
+const repeatSearchMessage = ref("");
+
+const normalizedFileItems = computed(() => rawFileItems.value.map(normalizeFileItem).filter(Boolean));
+const structuredFileSections = computed(() => {
+  const items = normalizedFileItems.value;
+  const sections = [];
+  const searchMatches = items.filter((item) => item.kind === "match");
+  const directories = items.filter((item) => item.kind === "dir");
+  const files = items.filter((item) => item.kind !== "dir" && item.kind !== "match");
+
+  if (searchMatches.length) {
+    sections.push({
+      key: "matches",
+      title: "搜索命中",
+      note: `${searchMatches.length} 条结果`,
+      items: searchMatches,
+    });
+  }
+  if (directories.length) {
+    sections.push({
+      key: "directories",
+      title: "目录条目",
+      note: `${directories.length} 个目录`,
+      items: directories,
+    });
+  }
+  if (files.length) {
+    sections.push({
+      key: "files",
+      title: "文件条目",
+      note: `${files.length} 个文件`,
+      items: files,
+    });
+  }
+  return sections;
+});
+const hasStructuredFiles = computed(() => structuredFileSections.value.length > 0);
+const hasHighlights = computed(() => highlightPills.value.length > 0);
+const canRepeatSearch = computed(() => !!repeatSearchPrompt.value && !repeatSearchBusy.value && !store.sending && !store.runtime.turn.active && store.canSend);
 
 const previewOpen = ref(false);
 const previewLoading = ref(false);
@@ -51,8 +149,36 @@ function parseFileLinkTarget(raw) {
   };
 }
 
-function tooltipPath(raw) {
-  return parseFileLinkTarget(raw).path;
+function displayTargetLabel(target) {
+  const path = (target.path || "").trim();
+  const hostId = (target.hostId || "server-local").trim();
+  if (!path) return hostId;
+  const line = target.line > 0 ? ` #L${target.line}` : "";
+  return `${hostId} · ${path}${line}`;
+}
+
+function normalizeFileItem(item) {
+  const target = parseFileLinkTarget(item.path);
+  const kind = (item.kind || "file").trim() || "file";
+  const absolutePath = target.path || "";
+  const label = (item.label || absolutePath || "未命名条目").trim();
+  const isDir = kind === "dir";
+  const isMatch = kind === "match";
+  const preview = (item.preview || "").trim();
+  const meta = (item.meta || "").trim();
+
+  return {
+    ...item,
+    kind,
+    target,
+    absolutePath,
+    label,
+    preview,
+    meta,
+    title: displayTargetLabel(target),
+    kindLabel: isMatch ? "命中" : isDir ? "目录" : "文件",
+    previewable: !isDir && !!absolutePath,
+  };
 }
 
 function itemIcon(item) {
@@ -62,7 +188,59 @@ function itemIcon(item) {
 }
 
 function canPreview(item) {
-  return item.kind !== "dir" && !!tooltipPath(item.path);
+  return item.previewable;
+}
+
+function isScopeKey(key) {
+  const value = (key || "").trim();
+  return ["目录", "路径", "范围", "搜索范围", "目标目录", "文件夹", "目录范围"].includes(value);
+}
+
+function isQueryKey(key) {
+  const value = (key || "").trim();
+  const normalized = value.toLowerCase();
+  return ["关键词", "关键字", "查询词", "搜索词"].includes(value) || ["query", "keyword", "search", "term"].includes(normalized);
+}
+
+function normalizeSearchScope(raw, kind = "file") {
+  const value = (raw || "").trim();
+  if (!value) return "";
+  const target = parseFileLinkTarget(value);
+  const basePath = target.path || value;
+  const normalized = basePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized) return "";
+  if (kind === "dir") return normalized;
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex <= 0) return normalized;
+  return normalized.slice(0, slashIndex);
+}
+
+async function repeatSearch() {
+  if (!canRepeatSearch.value) return;
+  repeatSearchBusy.value = true;
+  repeatSearchMessage.value = "";
+
+  try {
+    const response = await fetch("/api/v1/chat/message", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hostId: displayHostId.value,
+        message: repeatSearchPrompt.value,
+      }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      repeatSearchMessage.value = data.error || "再次搜索发送失败";
+      return;
+    }
+    repeatSearchMessage.value = `已发起再次搜索：${displayHostLabel.value} · ${searchScopePath.value}`;
+  } catch (_err) {
+    repeatSearchMessage.value = "再次搜索发送失败";
+  } finally {
+    repeatSearchBusy.value = false;
+  }
 }
 
 async function openFilePreview(raw) {
@@ -105,48 +283,104 @@ function closePreview() {
   <div class="result-card">
     <div class="result-header">
       <ClipboardCheckIcon size="16" class="result-icon" />
-      <span class="result-title">{{ card.title || "执行结果" }}</span>
+      <div class="result-title-group">
+        <span class="result-title">{{ card.title || "执行结果" }}</span>
+        <span v-if="hasStructuredFiles" class="result-subtitle">{{ structuredFileSections.length }} 个结构化结果区</span>
+      </div>
+      <div class="result-actions">
+        <button
+          v-if="canRepeatSearch"
+          type="button"
+          class="result-action-btn"
+          @click="repeatSearch"
+          :disabled="repeatSearchBusy"
+          title="再次搜索当前主机和目录"
+        >
+          <SearchIcon size="13" />
+          <span>再次搜索</span>
+        </button>
+      </div>
     </div>
 
     <div class="result-body">
-      <p class="result-summary" v-if="primarySummary">{{ primarySummary }}</p>
+      <div v-if="primarySummary || auxiliaryNote" class="result-summary-panel">
+        <p v-if="primarySummary" class="result-summary">{{ primarySummary }}</p>
+        <p v-if="auxiliaryNote" class="result-note">{{ auxiliaryNote }}</p>
+      </div>
 
-      <div class="kv-table" v-if="card.kvRows?.length">
-        <div class="kv-row" v-for="(row, idx) in card.kvRows" :key="idx">
+      <div v-if="kvRows.length" class="kv-grid">
+        <div v-for="(row, idx) in kvRows" :key="`${row.key}-${idx}`" class="kv-chip">
           <span class="kv-key">{{ row.key }}</span>
           <span class="kv-val">{{ row.value }}</span>
         </div>
       </div>
 
-      <div class="file-items" v-if="fileItems.length">
-        <div v-for="(item, idx) in fileItems" :key="`${item.path}-${idx}`" class="file-item">
-          <button
-            v-if="canPreview(item)"
-            type="button"
-            class="file-link-text"
-            :data-path="tooltipPath(item.path)"
-            @click="openFilePreview(item.path)"
-          >
-            <component :is="itemIcon(item)" size="15" class="file-item-icon" />
-            <span class="file-item-label">{{ item.label }}</span>
-            <span class="file-item-meta" v-if="item.meta">{{ item.meta }}</span>
-          </button>
-
-          <div v-else class="file-link-text static" :data-path="tooltipPath(item.path)">
-            <component :is="itemIcon(item)" size="15" class="file-item-icon" />
-            <span class="file-item-label">{{ item.label }}</span>
-            <span class="file-item-meta" v-if="item.meta">{{ item.meta }}</span>
+      <div v-if="hasStructuredFiles" class="file-sections">
+        <section v-for="section in structuredFileSections" :key="section.key" class="file-section">
+          <div class="file-section-header">
+            <div class="file-section-heading">
+              <span class="file-section-title">{{ section.title }}</span>
+              <span class="file-section-note">{{ section.note }}</span>
+            </div>
+            <span class="file-section-count">{{ section.items.length }}</span>
           </div>
 
-          <pre v-if="item.preview" class="file-item-preview">{{ item.preview }}</pre>
-        </div>
+          <div class="file-list">
+            <article
+              v-for="(item, idx) in section.items"
+              :key="`${item.path}-${idx}`"
+              class="file-card"
+              :class="{ clickable: canPreview(item), match: item.kind === 'match', dir: item.kind === 'dir' }"
+            >
+              <button
+                v-if="canPreview(item)"
+                type="button"
+                class="file-card-main"
+                :title="item.title"
+                @click="openFilePreview(item.path)"
+              >
+                <div class="file-card-icon">
+                  <component :is="itemIcon(item)" size="15" class="file-item-icon" />
+                </div>
+                <div class="file-card-content">
+                  <div class="file-card-title-row">
+                    <span class="file-card-label" :class="{ highlight: item.kind === 'match' }">{{ item.label }}</span>
+                    <span class="file-card-kind">{{ item.kindLabel }}</span>
+                  </div>
+                  <div class="file-card-path">
+                    <span class="mono">{{ item.absolutePath }}</span>
+                    <span v-if="item.target.line" class="file-card-line">L{{ item.target.line }}</span>
+                    <span v-if="item.meta" class="file-card-meta">{{ item.meta }}</span>
+                  </div>
+                  <pre v-if="item.preview" class="file-card-preview">{{ item.preview }}</pre>
+                </div>
+              </button>
+
+              <div v-else class="file-card-main static" :title="item.title">
+                <div class="file-card-icon">
+                  <component :is="itemIcon(item)" size="15" class="file-item-icon" />
+                </div>
+                <div class="file-card-content">
+                  <div class="file-card-title-row">
+                    <span class="file-card-label" :class="{ highlight: item.kind === 'match' }">{{ item.label }}</span>
+                    <span class="file-card-kind">{{ item.kindLabel }}</span>
+                  </div>
+                  <div class="file-card-path">
+                    <span class="mono">{{ item.absolutePath }}</span>
+                    <span v-if="item.meta" class="file-card-meta">{{ item.meta }}</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
       </div>
 
-      <p class="result-note" v-if="auxiliaryNote">{{ auxiliaryNote }}</p>
-
-      <div class="result-highlights" v-if="card.highlights?.length">
-        <span class="highlight-pill" v-for="(h, idx) in card.highlights" :key="idx">{{ h }}</span>
+      <div v-if="hasHighlights" class="result-highlights">
+        <span class="highlight-pill" v-for="(h, idx) in highlightPills" :key="idx">{{ h }}</span>
       </div>
+
+      <div v-if="repeatSearchMessage" class="search-banner">{{ repeatSearchMessage }}</div>
     </div>
   </div>
 
@@ -187,47 +421,120 @@ function closePreview() {
   color: #16a34a;
 }
 
+.result-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .result-title {
   font-size: 14px;
   font-weight: 600;
   color: #166534;
 }
 
+.result-subtitle {
+  font-size: 11px;
+  color: #4b5563;
+}
+
+.result-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.result-action-btn {
+  border: 1px solid #bbf7d0;
+  background: #ffffff;
+  color: #166534;
+  border-radius: 999px;
+  padding: 7px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.result-action-btn:hover:not(:disabled) {
+  background: #f0fdf4;
+  border-color: #86efac;
+  transform: translateY(-1px);
+}
+
+.result-action-btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
+  transform: none;
+}
+
 .result-body {
   padding: 16px 20px;
 }
 
+.result-summary-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
 .result-summary {
-  margin: 0 0 14px;
+  margin: 0;
   font-size: 15px;
   line-height: 1.7;
   color: #1f2937;
   word-break: break-word;
 }
 
-.kv-table {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.result-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+  word-break: break-word;
+}
+
+.search-banner {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #ecfdf5;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
   margin-bottom: 14px;
 }
 
-.kv-row {
+.kv-chip {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #dbe3ee;
   display: flex;
   justify-content: space-between;
-  gap: 16px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 13px;
-}
-
-.kv-row:nth-child(odd) {
-  background: #f9fafb;
+  gap: 12px;
+  font-size: 12px;
 }
 
 .kv-key {
-  color: #6b7280;
-  font-weight: 500;
+  color: #64748b;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .kv-val {
@@ -238,102 +545,198 @@ function closePreview() {
   word-break: break-all;
 }
 
-.file-items {
+.file-sections {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   margin-bottom: 14px;
 }
 
-.file-item {
+.file-section {
   border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  background: #f8fafc;
-  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  overflow: hidden;
 }
 
-.file-link-text {
+.file-section-header {
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.file-section-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.file-section-note {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.file-section-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.file-card {
+  border-top: 1px solid #e2e8f0;
+}
+
+.file-card:first-child {
+  border-top: none;
+}
+
+.file-card-main {
   position: relative;
   width: 100%;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
   background: transparent;
   border: none;
   color: #2563eb;
   font-weight: 600;
   cursor: pointer;
   text-decoration: none;
-  transition: color 0.2s ease, text-decoration-color 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease;
   font: inherit;
   text-align: left;
 }
 
-.file-link-text.static {
+.file-card-main:hover {
+  background: #eef6ff;
+}
+
+.file-card-main.static {
   cursor: default;
+  color: inherit;
 }
 
-.file-link-text:hover {
-  color: #1d4ed8;
-  text-decoration: underline;
+.file-card-main.static:hover {
+  background: transparent;
 }
 
-.file-link-text.static:hover {
-  text-decoration: none;
+.file-card.clickable.match .file-card-main {
+  color: #7c3aed;
 }
 
-.file-link-text::after {
-  content: attr(data-path);
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 8px);
-  min-width: 240px;
-  max-width: min(560px, 80vw);
-  padding: 8px 10px;
+.file-card.clickable.match .file-card-main:hover {
+  background: #f5f3ff;
+}
+
+.file-card-icon {
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.96);
-  color: #f8fafc;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: normal;
-  word-break: break-word;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(4px);
-  transition: opacity 0.16s ease, transform 0.16s ease;
-  z-index: 20;
-}
-
-.file-link-text:hover::after {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.file-item-icon {
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+  color: #2563eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 
-.file-item-label {
+.file-card.match .file-card-icon {
+  color: #7c3aed;
+}
+
+.file-card.dir .file-card-icon {
+  color: #0f766e;
+}
+
+.file-card-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.file-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.file-card-label {
   min-width: 0;
   word-break: break-word;
+  font-size: 13px;
+  color: #0f172a;
 }
 
-.file-item-meta {
-  margin-left: auto;
+.file-card-label.highlight {
+  color: #5b21b6;
+  font-weight: 700;
+}
+
+.file-card-kind {
   flex-shrink: 0;
-  color: #94a3b8;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #475569;
+  background: #e2e8f0;
+  border-radius: 999px;
+  padding: 3px 7px;
 }
 
-.file-item-preview {
-  margin: 8px 0 0;
-  padding: 8px 10px;
+.file-card-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.file-card-line,
+.file-card-meta {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+  color: #475569;
+  font-weight: 600;
+}
+
+.file-card-preview {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
   color: #334155;
   font-size: 12px;
   line-height: 1.6;
@@ -342,8 +745,12 @@ function closePreview() {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .result-note {
-  margin: 0 0 14px;
+  margin: 0;
   font-size: 13px;
   color: #64748b;
 }
@@ -358,8 +765,8 @@ function closePreview() {
   display: inline-block;
   padding: 4px 12px;
   border-radius: 9999px;
-  background: #eff6ff;
-  color: #1e40af;
+  background: #eef2ff;
+  color: #4338ca;
   font-size: 12px;
   font-weight: 600;
 }
@@ -390,5 +797,20 @@ function closePreview() {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@media (max-width: 900px) {
+  .result-card {
+    margin-left: 0;
+  }
+
+  .file-section-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .file-card-main {
+    padding: 12px 10px;
+  }
 }
 </style>

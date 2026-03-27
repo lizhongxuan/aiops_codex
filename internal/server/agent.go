@@ -109,6 +109,7 @@ func (a *App) handleAgentTerminalExit(hostID string, payload *agentrpc.TerminalE
 		Code:   payload.Code,
 		Status: defaultString(payload.Status, "disconnected"),
 	})
+	go a.reapExitedTerminalSession(payload.SessionID, terminalExitRetention)
 }
 
 func (a *App) handleAgentTerminalStatus(hostID string, payload *agentrpc.TerminalStatus) {

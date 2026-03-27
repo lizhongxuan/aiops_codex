@@ -23,6 +23,8 @@ type agentExecSession struct {
 
 	mu        sync.Mutex
 	cancelled bool
+	stdout    string
+	stderr    string
 }
 
 type agentExecManager struct {
@@ -89,8 +91,8 @@ func (m *agentExecManager) start(req *agentrpc.ExecStart) error {
 	m.execs[session.id] = session
 	m.mu.Unlock()
 
-	go m.streamOutput(session.id, stdout)
-	go m.streamOutput(session.id, stderr)
+	go m.streamOutput(session, "stdout", stdout)
+	go m.streamOutput(session, "stderr", stderr)
 	go m.waitExit(session)
 	return nil
 }
@@ -132,17 +134,29 @@ func (m *agentExecManager) shutdownAll() {
 	}
 }
 
-func (m *agentExecManager) streamOutput(execID string, reader io.Reader) {
+func (m *agentExecManager) streamOutput(session *agentExecSession, stream string, reader io.Reader) {
 	bufReader := bufio.NewReader(reader)
 	buf := make([]byte, 4096)
 	for {
 		n, err := bufReader.Read(buf)
 		if n > 0 {
+			chunk := sanitizeTerminalChunk(string(buf[:n]))
+			if chunk == "" {
+				continue
+			}
+			session.mu.Lock()
+			if stream == "stderr" {
+				session.stderr += chunk
+			} else {
+				session.stdout += chunk
+			}
+			session.mu.Unlock()
 			if sendErr := m.sender.send(&agentrpc.Envelope{
 				Kind: "exec/output",
 				ExecOutput: &agentrpc.ExecOutput{
-					ExecID: execID,
-					Data:   sanitizeTerminalChunk(string(buf[:n])),
+					ExecID: session.id,
+					Stream: stream,
+					Data:   chunk,
 				},
 			}); sendErr != nil {
 				log.Printf("send exec output failed: %v", sendErr)
@@ -150,7 +164,7 @@ func (m *agentExecManager) streamOutput(execID string, reader io.Reader) {
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				log.Printf("exec output stream error exec=%s err=%v", execID, err)
+				log.Printf("exec output stream error exec=%s err=%v", session.id, err)
 			}
 			return
 		}
@@ -161,16 +175,20 @@ func (m *agentExecManager) waitExit(session *agentExecSession) {
 	exitCode := 0
 	status := "completed"
 	message := ""
+	errorText := ""
 
 	if err := session.cmd.Wait(); err != nil {
 		exitCode = terminalExitCode(err)
 		status = "failed"
+		errorText = err.Error()
 	}
 
 	session.mu.Lock()
 	cancelled := session.cancelled
 	ctxErr := session.doneCtx.Err()
 	cancel := session.cancel
+	stdout := session.stdout
+	stderr := session.stderr
 	session.mu.Unlock()
 
 	if cancel != nil {
@@ -200,10 +218,16 @@ func (m *agentExecManager) waitExit(session *agentExecSession) {
 	if err := m.sender.send(&agentrpc.Envelope{
 		Kind: "exec/exit",
 		ExecExit: &agentrpc.ExecExit{
-			ExecID:  session.id,
-			Code:    exitCode,
-			Status:  status,
-			Message: message,
+			ExecID:    session.id,
+			Code:      exitCode,
+			ExitCode:  exitCode,
+			Status:    status,
+			Message:   message,
+			Stdout:    stdout,
+			Stderr:    stderr,
+			Timeout:   status == "timeout",
+			Cancelled: status == "cancelled",
+			Error:     errorText,
 		},
 	}); err != nil {
 		log.Printf("send exec exit failed: %v", err)

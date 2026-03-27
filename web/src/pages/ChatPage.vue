@@ -14,6 +14,7 @@ const scrollContainer = ref(null);
 const showFileDetails = ref(false);
 const showSearchDetails = ref(false);
 const authCardCollapsed = ref(false);
+const approvalFollowupMode = ref(false);
 let isUserScrolling = false;
 
 /* ---- ThinkingCard local state ---- */
@@ -87,6 +88,7 @@ watch(
   (phase) => {
     if (phase === "idle" || phase === "completed" || phase === "failed" || phase === "aborted") {
       showThinking.value = false;
+      approvalFollowupMode.value = false;
       clearThinkingPrelude();
     } else {
       const shouldPreferLocalPhase =
@@ -251,6 +253,29 @@ const activeApprovalCard = computed(() => {
   }) || pendingApprovalCards.value[0] || null;
 });
 
+const activeApprovalQueueIndex = computed(() => {
+  if (!activeApprovalCard.value?.approval?.requestId) return -1;
+  return pendingApprovals.value.findIndex((approval) => approval.id === activeApprovalCard.value.approval.requestId);
+});
+
+const activeApprovalQueueCount = computed(() => pendingApprovals.value.length);
+
+const activeApprovalQueueLabel = computed(() => {
+  if (!activeApprovalCard.value) return "";
+  if (activeApprovalQueueCount.value <= 1) return "当前仅 1 项待确认";
+  const position = activeApprovalQueueIndex.value >= 0 ? activeApprovalQueueIndex.value + 1 : 1;
+  return `当前 ${position}/${activeApprovalQueueCount.value} 项待确认`;
+});
+
+const activeApprovalQueueNote = computed(() => {
+  if (!activeApprovalCard.value || activeApprovalQueueCount.value <= 1) return "";
+  const position = activeApprovalQueueIndex.value >= 0 ? activeApprovalQueueIndex.value + 1 : 1;
+  const remaining = Math.max(activeApprovalQueueCount.value - position, 0);
+  return remaining > 0 ? `后面还有 ${remaining} 项排队` : "";
+});
+
+const allowFollowUpComposer = computed(() => approvalFollowupMode.value && !activeApprovalCard.value);
+
 const visibleCards = computed(() => {
   return store.snapshot.cards.filter((card) => {
     // Hide active plan card
@@ -299,10 +324,18 @@ const showReconnectBanner = computed(() => {
   return store.runtime.codex.status === "reconnecting" || isStopped.value;
 });
 
+const reconnectHostLabel = computed(() => {
+  const host = store.selectedHost;
+  if (!host) return "";
+  const name = host.name || host.id;
+  const status = host.status === "online" ? "在线" : host.status === "offline" ? "离线" : host.status || "未知";
+  return `当前主机 ${name}（${status}）`;
+});
+
 const reconnectLabel = computed(() => {
   const c = store.runtime.codex;
-  if (c.status === "stopped") return "与本地 ai-server 的实时连接已断开，无法恢复";
-  return `与本地 ai-server 的实时连接重连中 ${c.retryAttempt}/${c.retryMax}`;
+  if (c.status === "stopped") return `与本地 ai-server 的实时连接已断开，无法恢复 · ${reconnectHostLabel.value}`;
+  return `与本地 ai-server 的实时连接重连中 ${c.retryAttempt}/${c.retryMax} · ${reconnectHostLabel.value}`;
 });
 
 const isStopped = computed(() => store.runtime.codex.status === "stopped");
@@ -321,9 +354,18 @@ const codexReconnectLabel = computed(() => {
   return codexReconnectNotice.value?.message || codexReconnectNotice.value?.text || "与 GPT 的连接波动，正在自动恢复";
 });
 
+const selectedHostAlert = computed(() => {
+  const host = store.selectedHost;
+  if (!host || host.id === "server-local" || host.status === "online") {
+    return "";
+  }
+  return `当前远程主机 ${host.name || host.id}（${host.id}）离线，聊天与终端都不会静默回退到 server-local。`;
+});
+
 const composerPlaceholder = computed(() => {
   if (!store.snapshot.auth.connected) return "请先登录 GPT 账号后再开始对话";
   if (!store.snapshot.config.codexAlive) return "Codex app-server 当前不可用";
+  if (allowFollowUpComposer.value) return "可以继续输入 follow-up，Cmd+Enter 发送";
   if (store.selectedHost.terminalCapable && !store.selectedHost.executable) {
     return "当前主机已接入远程终端，Codex 自动执行链路还未开启";
   }
@@ -344,7 +386,8 @@ function getRowClass(card) {
 }
 
 async function sendMessage() {
-  if (!store.canSend || !composerMessage.value.trim() || store.runtime.turn.active) return;
+  if (!store.canSend || !composerMessage.value.trim()) return;
+  if (store.runtime.turn.active && !allowFollowUpComposer.value) return;
 
   const message = composerMessage.value.trim();
   store.sending = true;
@@ -372,6 +415,7 @@ async function sendMessage() {
       clearThinkingPrelude();
     } else {
       composerMessage.value = "";
+      approvalFollowupMode.value = false;
       isUserScrolling = false;
     }
   } catch (e) {
@@ -399,6 +443,7 @@ async function stopMessage() {
     store.errorMessage = "";
     showThinking.value = false;
     store.setTurnPhase("aborted");
+    approvalFollowupMode.value = false;
     clearThinkingPrelude();
   } catch (e) {
     console.error(e);
@@ -419,6 +464,11 @@ async function decideApproval({ approvalId, decision }) {
       const data = await response.json();
       store.errorMessage = data.error || "approval failed";
     } else {
+      if (decision === "decline" || decision === "reject") {
+        approvalFollowupMode.value = true;
+      } else {
+        approvalFollowupMode.value = false;
+      }
       isUserScrolling = false;
     }
   } catch (e) {
@@ -512,6 +562,7 @@ watch(
   (approvalID, previousID) => {
     if (!approvalID || approvalID === previousID) return;
     authCardCollapsed.value = false;
+    approvalFollowupMode.value = false;
     thinkingPhase.value = "waiting_approval";
     showThinking.value = true;
     clearThinkingPrelude();
@@ -565,6 +616,8 @@ onBeforeUnmount(() => {
       </div>
 
       <p v-if="store.noticeMessage" class="chat-banner info">{{ store.noticeMessage }}</p>
+
+      <p v-if="selectedHostAlert" class="chat-banner warn">{{ selectedHostAlert }}</p>
 
       <p v-if="store.errorMessage" class="chat-banner error">{{ store.errorMessage }}</p>
 
@@ -635,14 +688,19 @@ onBeforeUnmount(() => {
       <div v-if="activeApprovalCard" class="auth-overlay-dock">
         <div v-if="!authCardCollapsed" class="auth-overlay-container">
           <div class="auth-overlay-header">
-             <span class="auth-overlay-title">需要您的确认</span>
-             <button class="icon-btn auth-collapse-btn" @click="authCardCollapsed = true">折叠展开输入框</button>
+             <div class="auth-overlay-title-group">
+               <span class="auth-overlay-title">需要您的确认</span>
+               <span v-if="activeApprovalQueueLabel" class="auth-overlay-queue-label">{{ activeApprovalQueueLabel }}</span>
+             </div>
+             <button class="icon-btn auth-collapse-btn" @click="authCardCollapsed = true">折叠审批工作台</button>
           </div>
+          <div v-if="activeApprovalQueueNote" class="auth-overlay-queue-note">{{ activeApprovalQueueNote }}</div>
           <CardItem :card="activeApprovalCard" :is-overlay="true" @approval="decideApproval" />
         </div>
         
         <button v-else class="auth-restore-btn" @click="authCardCollapsed = false">
-           有 1 项待确认任务被折叠，点击展开审核
+           <span>当前审批工作台已折叠</span>
+           <span v-if="activeApprovalQueueLabel" class="auth-restore-queue">{{ activeApprovalQueueLabel }}</span>
         </button>
       </div>
 
@@ -650,6 +708,7 @@ onBeforeUnmount(() => {
         v-if="!activeApprovalCard || authCardCollapsed"
         v-model="composerMessage"
         :placeholder="composerPlaceholder"
+        :allow-follow-up="allowFollowUpComposer"
         @send="sendMessage"
         @stop="stopMessage"
         :disabled="isStopped"
@@ -787,10 +846,29 @@ onBeforeUnmount(() => {
   background: #f8fafc;
 }
 
+.auth-overlay-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .auth-overlay-title {
   font-size: 12px;
   font-weight: 600;
   color: #fb923c;
+}
+
+.auth-overlay-queue-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.auth-overlay-queue-note {
+  padding: 8px 14px 0;
+  font-size: 11px;
+  color: #94a3b8;
 }
 
 .auth-collapse-btn {
@@ -816,10 +894,20 @@ onBeforeUnmount(() => {
   cursor: pointer;
   margin-bottom: 8px;
   box-shadow: 0 4px 12px rgba(234, 88, 12, 0.05);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
 .auth-restore-btn:hover {
   background: #ffedd5;
+}
+
+.auth-restore-queue {
+  font-size: 11px;
+  color: #ea580c;
+  font-weight: 500;
 }
 
 .row-notice {

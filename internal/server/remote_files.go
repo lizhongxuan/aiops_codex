@@ -26,6 +26,43 @@ type filePreviewResponse struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
+func buildFileReadCard(cardID, hostID string, result *agentrpc.FileReadResult, createdAt string) model.Card {
+	content := strings.TrimSpace(result.Content)
+	lines := meaningfulFileLines(content, 3)
+	summary := fmt.Sprintf("读取 %s，%s。", result.Path, readFileSizeLabel(content, result.Truncated))
+	if len(lines) > 0 {
+		summary = fmt.Sprintf("读取 %s，%s，首行内容：%s。", result.Path, readFileSizeLabel(content, result.Truncated), lines[0])
+	}
+	highlights := lines
+	if result.Truncated {
+		highlights = append(highlights, "文件内容已截断，仅展示前一部分。")
+	}
+	return model.Card{
+		ID:      cardID,
+		Type:    "ResultSummaryCard",
+		Title:   "远程文件读取",
+		Status:  "completed",
+		Summary: summary,
+		KVRows: []model.KeyValueRow{
+			{Key: "主机", Value: hostID},
+			{Key: "文件", Value: result.Path},
+			{Key: "大小", Value: readFileSizeLabel(content, result.Truncated)},
+			{Key: "状态", Value: readFileReadStatus(result.Truncated)},
+		},
+		FileItems: []model.FileItem{{
+			Label:   filepathBase(result.Path),
+			Path:    remoteFileLink(hostID, result.Path, 0),
+			Kind:    "file",
+			Meta:    readFileMeta(content, result.Truncated),
+			Preview: previewFileContent(content, 6),
+		}},
+		Highlights: highlights,
+		Text:       readFileTailNote(result.Truncated),
+		CreatedAt:  createdAt,
+		UpdatedAt:  createdAt,
+	}
+}
+
 func (a *App) setAgentResponseWaiter(requestID, hostID string, waiter *agentResponseWaiter) {
 	a.fileReqMu.Lock()
 	defer a.fileReqMu.Unlock()
@@ -370,24 +407,36 @@ func renderFileListMessage(hostID, root string, entries []agentrpc.FileEntry, tr
 }
 
 func buildFileListCard(cardID, hostID string, result *agentrpc.FileListResult, createdAt string) model.Card {
-	note := ""
-	if result.Truncated {
-		note = "结果已截断，继续缩小目录范围可查看更多。"
+	return buildFileListCardWithRecursive(cardID, hostID, result, false, createdAt)
+}
+
+func buildFileListCardWithRecursive(cardID, hostID string, result *agentrpc.FileListResult, recursive bool, createdAt string) model.Card {
+	files, dirs := countRemoteEntries(result.Entries)
+	note := listFileTailNote(result.Truncated)
+	recursiveLabel := "否"
+	if recursive {
+		recursiveLabel = "是"
 	}
 	return model.Card{
 		ID:      cardID,
 		Type:    "ResultSummaryCard",
 		Title:   "远程文件列表",
-		Summary: fmt.Sprintf("目录 %s 下找到 %d 个条目。", result.Path, len(result.Entries)),
+		Summary: fmt.Sprintf("目录 %s 下找到 %d 个条目（%d 个文件，%d 个目录）。", result.Path, len(result.Entries), files, dirs),
 		Status:  "completed",
 		KVRows: []model.KeyValueRow{
 			{Key: "主机", Value: hostID},
 			{Key: "目录", Value: result.Path},
+			{Key: "条目数", Value: fmt.Sprintf("%d", len(result.Entries))},
+			{Key: "文件数", Value: fmt.Sprintf("%d", files)},
+			{Key: "目录数", Value: fmt.Sprintf("%d", dirs)},
+			{Key: "递归", Value: recursiveLabel},
+			{Key: "状态", Value: listResultStatus(result.Truncated)},
 		},
-		FileItems: buildFileListItems(hostID, result.Entries),
-		Text:      note,
-		CreatedAt: createdAt,
-		UpdatedAt: createdAt,
+		FileItems:  buildFileListItems(hostID, result.Entries),
+		Text:       note,
+		Highlights: listFileHighlights(result.Path, result.Entries, result.Truncated),
+		CreatedAt:  createdAt,
+		UpdatedAt:  createdAt,
 	}
 }
 
@@ -408,25 +457,28 @@ func renderFileSearchMessage(hostID, root, query string, matches []agentrpc.File
 }
 
 func buildFileSearchCard(cardID, hostID string, result *agentrpc.FileSearchResult, createdAt string) model.Card {
-	note := ""
-	if result.Truncated {
-		note = "结果已截断，继续缩小搜索范围可查看更多。"
-	}
+	files, lines := countSearchMatches(result.Matches)
+	note := searchFileTailNote(result.Truncated)
 	return model.Card{
 		ID:      cardID,
 		Type:    "ResultSummaryCard",
 		Title:   "远程搜索结果",
-		Summary: fmt.Sprintf("在 %s 中搜索 %q，命中 %d 个位置。", result.Path, result.Query, len(result.Matches)),
+		Summary: fmt.Sprintf("在 %s 中搜索 %q，命中 %d 个位置，涉及 %d 个文件。", result.Path, result.Query, len(result.Matches), files),
 		Status:  "completed",
 		KVRows: []model.KeyValueRow{
 			{Key: "主机", Value: hostID},
 			{Key: "范围", Value: result.Path},
 			{Key: "关键词", Value: result.Query},
+			{Key: "命中", Value: fmt.Sprintf("%d", len(result.Matches))},
+			{Key: "文件数", Value: fmt.Sprintf("%d", files)},
+			{Key: "行数", Value: fmt.Sprintf("%d", lines)},
+			{Key: "状态", Value: searchResultStatus(result.Truncated)},
 		},
-		FileItems: buildFileSearchItems(hostID, result.Matches),
-		Text:      note,
-		CreatedAt: createdAt,
-		UpdatedAt: createdAt,
+		FileItems:  buildFileSearchItems(hostID, result.Matches),
+		Text:       note,
+		Highlights: searchFileHighlights(result.Matches, result.Truncated),
+		CreatedAt:  createdAt,
+		UpdatedAt:  createdAt,
 	}
 }
 
@@ -466,12 +518,15 @@ func buildFileListItems(hostID string, entries []agentrpc.FileEntry) []model.Fil
 func buildFileSearchItems(hostID string, matches []agentrpc.FileMatch) []model.FileItem {
 	items := make([]model.FileItem, 0, len(matches))
 	for _, match := range matches {
-		label := filepathBase(match.Path)
+		label := match.Path
+		if label == "" {
+			label = filepathBase(match.Path)
+		}
 		items = append(items, model.FileItem{
 			Label:   label,
 			Path:    remoteFileLink(hostID, match.Path, match.Line),
 			Kind:    "match",
-			Meta:    fmt.Sprintf("第 %d 行", match.Line),
+			Meta:    searchMatchLine(match.Line),
 			Preview: strings.TrimSpace(match.Preview),
 		})
 	}
@@ -520,4 +575,175 @@ func humanizeFileSize(size int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
+}
+
+func readFileSizeLabel(content string, truncated bool) string {
+	size := len(content)
+	if size == 0 {
+		if truncated {
+			return "内容已截断"
+		}
+		return "0 B"
+	}
+	label := humanizeFileSize(int64(size))
+	if truncated {
+		return label + "（已截断）"
+	}
+	return label
+}
+
+func readFileMeta(content string, truncated bool) string {
+	lines := countMeaningfulLines(content)
+	if truncated {
+		return fmt.Sprintf("%d 行 · 已截断", lines)
+	}
+	return fmt.Sprintf("%d 行", lines)
+}
+
+func readFileReadStatus(truncated bool) string {
+	if truncated {
+		return "已截断"
+	}
+	return "完整"
+}
+
+func readFileTailNote(truncated bool) string {
+	if truncated {
+		return "文件内容已截断，继续缩小读取范围可查看更多。"
+	}
+	return ""
+}
+
+func previewFileContent(content string, maxLines int) string {
+	lines := meaningfulFileLines(content, maxLines)
+	return strings.Join(lines, "\n")
+}
+
+func meaningfulFileLines(content string, limit int) []string {
+	lines := make([]string, 0, 4)
+	for _, raw := range strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if limit > 0 && len(lines) >= limit {
+			break
+		}
+	}
+	return lines
+}
+
+func countMeaningfulLines(content string) int {
+	return len(meaningfulFileLines(content, 0))
+}
+
+func countRemoteEntries(entries []agentrpc.FileEntry) (files, dirs int) {
+	for _, entry := range entries {
+		switch entry.Kind {
+		case "dir":
+			dirs++
+		case "file":
+			files++
+		}
+	}
+	return files, dirs
+}
+
+func listResultStatus(truncated bool) string {
+	if truncated {
+		return "已截断"
+	}
+	return "完整"
+}
+
+func listFileTailNote(truncated bool) string {
+	if truncated {
+		return "结果已截断，继续缩小目录范围可查看更多。"
+	}
+	return ""
+}
+
+func listFileHighlights(root string, entries []agentrpc.FileEntry, truncated bool) []string {
+	lines := make([]string, 0, 5)
+	if root != "" {
+		lines = append(lines, "目录: "+root)
+	}
+	for _, entry := range entries {
+		label := entry.Name
+		if label == "" {
+			label = filepathBase(entry.Path)
+		}
+		if entry.Kind == "dir" {
+			label += "/"
+		}
+		lines = append(lines, label)
+		if len(lines) >= 4 {
+			break
+		}
+	}
+	if truncated {
+		lines = append(lines, "结果已截断")
+	}
+	return lines
+}
+
+func countSearchMatches(matches []agentrpc.FileMatch) (files int, lines int) {
+	seen := make(map[string]struct{})
+	for _, match := range matches {
+		if strings.TrimSpace(match.Path) != "" {
+			seen[match.Path] = struct{}{}
+		}
+		if match.Line > 0 {
+			lines++
+		}
+	}
+	return len(seen), lines
+}
+
+func searchResultStatus(truncated bool) string {
+	if truncated {
+		return "已截断"
+	}
+	return "完整"
+}
+
+func searchFileTailNote(truncated bool) string {
+	if truncated {
+		return "搜索结果已截断，继续缩小搜索范围可查看更多。"
+	}
+	return ""
+}
+
+func searchMatchLine(line int) string {
+	if line > 0 {
+		return fmt.Sprintf("第 %d 行", line)
+	}
+	return ""
+}
+
+func searchFileHighlights(matches []agentrpc.FileMatch, truncated bool) []string {
+	lines := make([]string, 0, len(matches)+1)
+	for _, match := range matches {
+		parts := []string{}
+		if p := filepathBase(match.Path); p != "" {
+			parts = append(parts, p)
+		}
+		if match.Line > 0 {
+			parts = append(parts, fmt.Sprintf("第 %d 行", match.Line))
+		}
+		if snippet := strings.TrimSpace(match.Preview); snippet != "" {
+			parts = append(parts, snippet)
+		}
+		if len(parts) > 0 {
+			lines = append(lines, strings.Join(parts, " · "))
+		}
+		if len(lines) >= 4 {
+			break
+		}
+	}
+	if truncated {
+		lines = append(lines, "搜索结果已截断")
+	}
+	return lines
 }

@@ -111,6 +111,12 @@ const currentSessionStatus = computed(() => {
   return "空白";
 });
 
+const selectedHostLabel = computed(() => {
+  const host = store.selectedHost;
+  if (!host?.id) return host?.name || "server-local";
+  return `${host.name || host.id} · ${host.id}`;
+});
+
 onMounted(() => {
   store.fetchState();
   store.fetchSessions();
@@ -158,11 +164,38 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="nav-group">
+          <div class="nav-group-title">运维工作台</div>
+          <button class="nav-item" :class="{ active: $route.name === 'hosts' }" @click="router.push('/hosts')">
+            <ServerIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">主机管理</span>
+              <span class="nav-item-time">Inventory & Scope</span>
+            </div>
+          </button>
+
+          <button class="nav-item" :class="{ active: $route.name === 'experience-packs' }" @click="router.push('/experience-packs')">
+            <HistoryIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">经验包库</span>
+              <span class="nav-item-time">Packs & Playbooks</span>
+            </div>
+          </button>
+
+          <button class="nav-item" :class="{ active: $route.name === 'protocol' }" @click="router.push('/protocol')">
+            <PanelsTopLeftIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">协议工作台</span>
+              <span class="nav-item-time">DAG & Sub-agents</span>
+            </div>
+          </button>
+        </div>
+
+        <div class="nav-group">
           <div class="nav-group-title">终端</div>
           <button class="nav-item" :class="{ active: $route.name === 'terminal' }" @click="openTerminal">
             <TerminalIcon size="16" />
             <div class="nav-item-content">
-              <span class="nav-item-title">{{ store.selectedHost.name }}</span>
+              <span class="nav-item-title">{{ selectedHostLabel }}</span>
               <span class="nav-item-time">
                 <span class="pill-dot-inline" :class="store.selectedHost.status"></span>
                 {{ store.selectedHost.status }}
@@ -201,7 +234,7 @@ onBeforeUnmount(() => {
 
           <button class="header-pill" @click="isHostModalOpen = true">
             <ServerIcon size="14" />
-            <span class="pill-text">{{ store.selectedHost.name }}</span>
+            <span class="pill-text">{{ selectedHostLabel }}</span>
             <span class="pill-dot" :class="store.selectedHost.status"></span>
           </button>
           

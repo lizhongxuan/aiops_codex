@@ -16,7 +16,36 @@ const props = defineProps({
 const emit = defineEmits(["approval"]);
 
 const isCommand = computed(() => props.card.type === "CommandApprovalCard" || !!props.card.command);
+const isFileChange = computed(() => props.card.type === "FileChangeApprovalCard" || !!props.card.changes?.length);
 const decisions = computed(() => props.card.approval?.decisions || []);
+const hostCaption = computed(() => {
+  const name = (props.card.hostName || "").trim();
+  const id = (props.card.hostId || "").trim();
+  if (!name && !id) return "";
+  if (!id || id === name) return `目标主机 ${name || id}`;
+  return `${name} · ${id}`;
+});
+const fileChanges = computed(() => (props.card.changes || []).map((change, index) => normalizeFileChange(change, index)));
+const fileChangeCount = computed(() => fileChanges.value.length);
+const fileChangePrimaryPath = computed(() => fileChanges.value[0]?.path || "");
+const fileChangeModeSummary = computed(() => {
+  if (!fileChanges.value.length) return "";
+  const kinds = new Set(fileChanges.value.map((item) => item.kindLabel));
+  if (kinds.size === 1) {
+    return fileChanges.value[0].writeModeLabel;
+  }
+  return "混合写入";
+});
+const fileChangeSummary = computed(() => {
+  if (!fileChanges.value.length) return "";
+  if (fileChanges.value.length === 1) {
+    const item = fileChanges.value[0];
+    return item.diffPreview || "没有可展示的 diff 片段。";
+  }
+  const first = fileChanges.value[0];
+  return first.diffPreview || `共 ${fileChanges.value.length} 个文件变更。`;
+});
+const fileChangeReason = computed(() => (props.card.text || "要执行以下文件修改，你要允许吗？").trim());
 
 const options = computed(() => {
   if (isCommand.value) {
@@ -57,6 +86,57 @@ function submitDecision(decision) {
     decision,
   });
 }
+
+function normalizeFileChange(change, index) {
+  const path = (change?.path || "").trim();
+  const kind = (change?.kind || "update").trim() || "update";
+  return {
+    index,
+    path,
+    kind,
+    kindLabel: fileChangeKindLabel(kind),
+    writeModeLabel: describeWriteMode(kind),
+    diff: (change?.diff || "").trim(),
+    diffPreview: summarizeDiff(change?.diff || ""),
+  };
+}
+
+function fileChangeKindLabel(kind) {
+  switch ((kind || "").toLowerCase()) {
+    case "create":
+      return "新建";
+    case "append":
+      return "追加";
+    case "delete":
+      return "删除";
+    default:
+      return "更新";
+  }
+}
+
+function describeWriteMode(kind) {
+  switch ((kind || "").toLowerCase()) {
+    case "create":
+      return "新建并写入";
+    case "append":
+      return "追加写入";
+    case "delete":
+      return "删除文件";
+    default:
+      return "覆盖写入";
+  }
+}
+
+function summarizeDiff(diff) {
+  const text = (diff || "").trim();
+  if (!text) return "";
+  const lines = text.split("\n");
+  const preview = lines.slice(0, 6).join("\n").trim();
+  if (preview.length >= 260 || lines.length <= 6) {
+    return preview;
+  }
+  return `${preview}\n...`;
+}
 </script>
 
 <template>
@@ -67,18 +147,54 @@ function submitDecision(decision) {
     </div>
 
     <div class="auth-preview" v-if="card.command || card.changes?.length">
-      <div v-if="card.cwd" class="cwd-badge">{{ card.cwd }}</div>
-      <pre v-if="card.command" class="command-code">{{ card.command }}</pre>
+      <div v-if="hostCaption" class="host-badge">{{ hostCaption }}</div>
+      <template v-if="isCommand">
+        <div v-if="card.cwd" class="cwd-badge">{{ card.cwd }}</div>
+        <pre v-if="card.command" class="command-code">{{ card.command }}</pre>
+      </template>
 
-      <div v-if="card.changes?.length" class="changes-list">
-        <div v-for="change in card.changes" :key="change.path" class="change-item">
-          <div class="change-row">
-            <span class="change-kind">{{ change.kind }}</span>
-            <span class="change-path">{{ change.path }}</span>
+      <template v-else-if="isFileChange">
+        <div class="file-change-overview">
+          <div class="file-change-kpis">
+            <div class="kpi-chip">
+              <span class="kpi-label">目标路径</span>
+              <span class="kpi-value">{{ fileChangePrimaryPath || "未指定" }}</span>
+            </div>
+            <div class="kpi-chip">
+              <span class="kpi-label">变更数量</span>
+              <span class="kpi-value">{{ fileChangeCount }} 个文件</span>
+            </div>
+            <div class="kpi-chip">
+              <span class="kpi-label">写入方式</span>
+              <span class="kpi-value">{{ fileChangeModeSummary }}</span>
+            </div>
           </div>
-          <pre v-if="change.diff" class="change-diff">{{ change.diff }}</pre>
+
+          <div v-if="fileChangeReason" class="file-change-reason">
+            <span class="reason-label">变更原因</span>
+            <span class="reason-text">{{ fileChangeReason }}</span>
+          </div>
+
+          <div class="file-change-summary">
+            <span class="summary-label">摘要 diff</span>
+            <pre class="summary-diff">{{ fileChangeSummary }}</pre>
+          </div>
         </div>
-      </div>
+
+        <div class="changes-list">
+          <article v-for="change in fileChanges" :key="`${change.path}-${change.index}`" class="change-item">
+            <div class="change-row">
+              <span class="change-kind">{{ change.kindLabel }}</span>
+              <span class="change-path">{{ change.path }}</span>
+            </div>
+            <div class="change-meta">
+              <span class="change-meta-chip">{{ change.writeModeLabel }}</span>
+              <span class="change-meta-chip">文件 {{ change.index + 1 }}</span>
+            </div>
+            <pre v-if="change.diffPreview" class="change-diff">{{ change.diffPreview }}</pre>
+          </article>
+        </div>
+      </template>
     </div>
 
     <div v-if="card.status === 'pending' && card.approval" class="auth-options">
@@ -150,6 +266,19 @@ function submitDecision(decision) {
   overflow-x: auto;
 }
 
+.host-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .cwd-badge {
   font-size: 10px;
   color: #6b7280;
@@ -179,6 +308,86 @@ function submitDecision(decision) {
   padding: 6px 0;
 }
 
+.file-change-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.file-change-kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.kpi-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+}
+
+.kpi-label,
+.summary-label,
+.reason-label {
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kpi-value {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #0f172a;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.file-change-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+}
+
+.reason-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #1f2937;
+  word-break: break-word;
+}
+
+.file-change-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.summary-diff {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  color: #1f2937;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .change-row {
   display: flex;
   align-items: center;
@@ -199,6 +408,25 @@ function submitDecision(decision) {
 .change-path {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: #374151;
+  word-break: break-word;
+}
+
+.change-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.change-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .change-diff {
@@ -285,5 +513,35 @@ function submitDecision(decision) {
   font-size: 12px;
   font-weight: 500;
   background: #f9fafb;
+}
+
+@media (max-width: 640px) {
+  .auth-card {
+    margin-left: 0;
+    max-width: none;
+  }
+
+  .auth-intent {
+    padding: 12px 12px 6px;
+  }
+
+  .auth-preview {
+    margin: 0 10px 10px;
+    padding: 10px;
+  }
+
+  .kpi-chip {
+    min-width: 0;
+    flex: 1 1 140px;
+  }
+
+  .change-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .change-kind {
+    width: fit-content;
+  }
 }
 </style>

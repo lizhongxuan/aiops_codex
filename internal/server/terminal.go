@@ -86,10 +86,24 @@ func (a *App) handleTerminalCreate(w http.ResponseWriter, r *http.Request, sessi
 		req.HostID = model.ServerLocalHostID
 	}
 
-	host := a.findHost(req.HostID)
+	host, ok := a.knownHost(req.HostID)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "selected host not found"})
+		return
+	}
 	if !hostSupportsTerminal(host) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "selected host is not available for terminal access"})
 		return
+	}
+	if _, switched, err := a.switchSelectedHost(sessionID, req.HostID, false); err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "执行中") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	} else if switched {
+		a.broadcastSnapshot(sessionID)
 	}
 
 	terminal, err := a.createTerminalSession(sessionID, req)
@@ -243,7 +257,7 @@ func (a *App) createLocalTerminalSession(ownerSessionID string, req terminalCrea
 	go a.streamTerminalOutput(terminal, stdout)
 	go a.streamTerminalOutput(terminal, stderr)
 	go a.waitTerminalExit(terminal)
-	go a.expireUnusedTerminalSession(terminal.ID, 20*time.Second)
+	go a.expireUnusedTerminalSession(terminal.ID, terminalSubscriberGraceTTL)
 
 	return terminal, nil
 }
@@ -285,7 +299,8 @@ func (a *App) createRemoteTerminalSession(ownerSessionID string, req terminalCre
 		return nil, err
 	}
 
-	go a.expireUnusedTerminalSession(terminal.ID, 20*time.Second)
+	go a.expireUnusedTerminalSession(terminal.ID, terminalSubscriberGraceTTL)
+	go a.expireConnectingTerminalSession(terminal.ID, terminalConnectTimeout)
 	return terminal, nil
 }
 
@@ -346,6 +361,7 @@ func (a *App) waitTerminalExit(terminal *terminalSession) {
 		Code:   exitCode,
 		Status: "disconnected",
 	})
+	go a.reapExitedTerminalSession(terminal.ID, terminalExitRetention)
 }
 
 func (a *App) writeTerminalInput(terminal *terminalSession, data string) error {
@@ -447,31 +463,38 @@ func (a *App) shutdownTerminalSession(terminalID string) {
 	terminal.mu.Lock()
 	remote := terminal.Remote
 	hostID := terminal.HostID
-	defer terminal.mu.Unlock()
+	subscribers := make([]*websocket.Conn, 0, len(terminal.subscribers))
+	for conn := range terminal.subscribers {
+		subscribers = append(subscribers, conn)
+		delete(terminal.subscribers, conn)
+	}
 	if remote {
 		terminal.exited = true
 		terminal.Status = "disconnected"
-		a.terminalMu.Lock()
-		delete(a.terminals, terminalID)
-		a.terminalMu.Unlock()
+	} else {
+		if terminal.cmd != nil && terminal.cmd.Process != nil && !terminal.exited {
+			_ = syscall.Kill(-terminal.cmd.Process.Pid, syscall.SIGHUP)
+		}
+		if terminal.stdin != nil {
+			_ = terminal.stdin.Close()
+			terminal.stdin = nil
+		}
+	}
+	terminal.mu.Unlock()
+	a.terminalMu.Lock()
+	delete(a.terminals, terminalID)
+	a.terminalMu.Unlock()
+	if remote {
 		_ = a.sendAgentEnvelope(hostID, &agentrpc.Envelope{
 			Kind: "terminal/close",
 			TerminalClose: &agentrpc.TerminalClose{
 				SessionID: terminalID,
 			},
 		})
-		return
 	}
-	if terminal.cmd != nil && terminal.cmd.Process != nil && !terminal.exited {
-		_ = syscall.Kill(-terminal.cmd.Process.Pid, syscall.SIGHUP)
+	for _, conn := range subscribers {
+		_ = conn.Close()
 	}
-	if terminal.stdin != nil {
-		_ = terminal.stdin.Close()
-		terminal.stdin = nil
-	}
-	a.terminalMu.Lock()
-	delete(a.terminals, terminalID)
-	a.terminalMu.Unlock()
 }
 
 func (a *App) broadcastTerminal(terminalID string, payload terminalEnvelope) {
@@ -546,6 +569,60 @@ func terminalExitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return 1
+}
+
+func (a *App) expireConnectingTerminalSession(terminalID string, ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = terminalConnectTimeout
+	}
+	timer := time.NewTimer(ttl)
+	defer timer.Stop()
+
+	<-timer.C
+	terminal, ok := a.terminalSession(terminalID)
+	if !ok {
+		return
+	}
+
+	terminal.mu.Lock()
+	stillConnecting := !terminal.exited && terminal.Status == "connecting"
+	terminal.mu.Unlock()
+	if !stillConnecting {
+		return
+	}
+
+	a.broadcastTerminal(terminalID, terminalEnvelope{
+		Type:    "error",
+		Status:  "error",
+		Message: "remote terminal connection timed out",
+	})
+	a.broadcastTerminal(terminalID, terminalEnvelope{
+		Type:   "exit",
+		Code:   124,
+		Status: "timeout",
+	})
+	a.shutdownTerminalSession(terminalID)
+}
+
+func (a *App) reapExitedTerminalSession(terminalID string, ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = terminalExitRetention
+	}
+	timer := time.NewTimer(ttl)
+	defer timer.Stop()
+
+	<-timer.C
+	terminal, ok := a.terminalSession(terminalID)
+	if !ok {
+		return
+	}
+
+	terminal.mu.Lock()
+	exited := terminal.exited
+	terminal.mu.Unlock()
+	if exited {
+		a.shutdownTerminalSession(terminalID)
+	}
 }
 
 func (a *App) stopAllTerminals(ctx context.Context) {
