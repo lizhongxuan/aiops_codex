@@ -40,13 +40,19 @@ type agentTerminalSession struct {
 
 type agentTerminalManager struct {
 	sender    *agentStreamSender
+	runtime   *hostAgentRuntime
 	mu        sync.Mutex
 	terminals map[string]*agentTerminalSession
 }
 
-func newAgentTerminalManager(sender *agentStreamSender) *agentTerminalManager {
+func newAgentTerminalManager(sender *agentStreamSender, runtime ...*hostAgentRuntime) *agentTerminalManager {
+	var hostRuntime *hostAgentRuntime
+	if len(runtime) > 0 {
+		hostRuntime = runtime[0]
+	}
 	return &agentTerminalManager{
 		sender:    sender,
+		runtime:   hostRuntime,
 		terminals: make(map[string]*agentTerminalSession),
 	}
 }
@@ -62,6 +68,17 @@ func (m *agentTerminalManager) open(req *agentrpc.TerminalOpen) error {
 	cwd, err := resolveAgentTerminalCwd(req.Cwd)
 	if err != nil {
 		return err
+	}
+	if m.runtime != nil && m.runtime.profile != nil {
+		if err := m.runtime.profile.ensureCapabilityAllowed("terminal"); err != nil {
+			return err
+		}
+		if !m.runtime.profile.allowShellWrapper() {
+			return errors.New("terminal sessions require shell wrapper support by the current host-agent profile")
+		}
+		if err := m.runtime.profile.ensureWritableRoots([]string{cwd}); err != nil {
+			return err
+		}
 	}
 	shell := resolveAgentShell(req.Shell)
 	scriptBinary, err := exec.LookPath("script")

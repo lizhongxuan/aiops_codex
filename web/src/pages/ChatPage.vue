@@ -1,6 +1,7 @@
 <script setup>
-import { computed, ref, watch, nextTick, onBeforeUnmount } from "vue";
+import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useAppStore } from "../store";
+import { resolveHostDisplay } from "../lib/hostDisplay";
 import CardItem from "../components/CardItem.vue";
 import Omnibar from "../components/Omnibar.vue";
 import ThinkingCard from "../components/ThinkingCard.vue";
@@ -11,11 +12,13 @@ const store = useAppStore();
 
 const composerMessage = ref("");
 const scrollContainer = ref(null);
+const scrollContent = ref(null);
 const showFileDetails = ref(false);
 const showSearchDetails = ref(false);
 const authCardCollapsed = ref(false);
 const approvalFollowupMode = ref(false);
-let isUserScrolling = false;
+const autoFollowTail = ref(true);
+let contentResizeObserver = null;
 
 /* ---- ThinkingCard local state ---- */
 const showThinking = ref(false);
@@ -30,6 +33,7 @@ const thinkingCard = computed(() => ({
   phase: thinkingPhase.value,
   hint: thinkingHint.value,
 }));
+const showThinkingCard = computed(() => showThinking.value && thinkingPhase.value !== "finalizing");
 
 function clearThinkingPrelude() {
   if (thinkingHintTimer) {
@@ -327,7 +331,7 @@ const showReconnectBanner = computed(() => {
 const reconnectHostLabel = computed(() => {
   const host = store.selectedHost;
   if (!host) return "";
-  const name = host.name || host.id;
+  const name = resolveHostDisplay(host);
   const status = host.status === "online" ? "在线" : host.status === "offline" ? "离线" : host.status || "未知";
   return `当前主机 ${name}（${status}）`;
 });
@@ -359,7 +363,7 @@ const selectedHostAlert = computed(() => {
   if (!host || host.id === "server-local" || host.status === "online") {
     return "";
   }
-  return `当前远程主机 ${host.name || host.id}（${host.id}）离线，聊天与终端都不会静默回退到 server-local。`;
+  return `当前远程主机 ${resolveHostDisplay(host)} 离线，聊天与终端都不会静默回退到 server-local。`;
 });
 
 const composerPlaceholder = computed(() => {
@@ -383,6 +387,21 @@ function getRowClass(card) {
     return "row-notice";
   }
   return "row-assistant";
+}
+
+function bottomDistance(el) {
+  if (!el) return 0;
+  return Math.max(el.scrollHeight - el.scrollTop - el.clientHeight, 0);
+}
+
+function isNearBottom(el, threshold = 80) {
+  return bottomDistance(el) <= threshold;
+}
+
+function scrollToBottom(force = false) {
+  const el = scrollContainer.value;
+  if (!el || (!force && !autoFollowTail.value)) return;
+  el.scrollTop = el.scrollHeight;
 }
 
 async function sendMessage() {
@@ -416,7 +435,8 @@ async function sendMessage() {
     } else {
       composerMessage.value = "";
       approvalFollowupMode.value = false;
-      isUserScrolling = false;
+      autoFollowTail.value = true;
+      nextTick(() => scrollToBottom(true));
     }
   } catch (e) {
     store.errorMessage = "Network error";
@@ -469,7 +489,8 @@ async function decideApproval({ approvalId, decision }) {
       } else {
         approvalFollowupMode.value = false;
       }
-      isUserScrolling = false;
+      autoFollowTail.value = true;
+      nextTick(() => scrollToBottom(true));
     }
   } catch (e) {
     console.error(e);
@@ -492,7 +513,8 @@ async function handleChoice({ requestId, answers }) {
       return;
     }
     store.errorMessage = "";
-    isUserScrolling = false;
+    autoFollowTail.value = true;
+    nextTick(() => scrollToBottom(true));
   } catch (e) {
     console.error(e);
     store.errorMessage = "choice submit failed";
@@ -520,23 +542,22 @@ function handleRefresh() {
 
 function handleScroll(e) {
   const el = e.target;
-  if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
-    isUserScrolling = true;
-  } else {
-    isUserScrolling = false;
-  }
+  autoFollowTail.value = isNearBottom(el);
 }
 
 watch(
-  () => store.snapshot.cards,
-  () => {
-    if (!isUserScrolling) {
-      nextTick(() => {
-        if (scrollContainer.value) {
-          scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight;
-        }
-      });
-    }
+  () => ({
+    cardCount: visibleCards.value.length,
+    lastCardId: visibleCards.value[visibleCards.value.length - 1]?.id || "",
+    lastCardUpdatedAt: visibleCards.value[visibleCards.value.length - 1]?.updatedAt || "",
+    lastCardTextLength: (visibleCards.value[visibleCards.value.length - 1]?.text || "").length,
+    lastCardOutputLength: (visibleCards.value[visibleCards.value.length - 1]?.output || "").length,
+    thinking: showThinkingCard.value,
+    feedback: hasTopFeedback.value,
+  }),
+  async () => {
+    await nextTick();
+    scrollToBottom();
   },
   { deep: true }
 );
@@ -585,6 +606,21 @@ watch(
 
 onBeforeUnmount(() => {
   clearThinkingPrelude();
+  if (contentResizeObserver) {
+    contentResizeObserver.disconnect();
+    contentResizeObserver = null;
+  }
+});
+
+onMounted(() => {
+  nextTick(() => scrollToBottom(true));
+  if (typeof ResizeObserver === "undefined" || !scrollContent.value) {
+    return;
+  }
+  contentResizeObserver = new ResizeObserver(() => {
+    scrollToBottom();
+  });
+  contentResizeObserver.observe(scrollContent.value);
 });
 </script>
 
@@ -604,7 +640,7 @@ onBeforeUnmount(() => {
   </div>
 
   <div class="chat-container" ref="scrollContainer" @scroll="handleScroll">
-    <div class="chat-stream-inner">
+    <div class="chat-stream-inner" ref="scrollContent">
       <div v-if="store.loading" class="chat-banner loading-banner">
         <span class="spinner"></span> 正在初始化...
       </div>
@@ -671,7 +707,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="showThinking" class="stream-row row-assistant">
+        <div v-if="showThinkingCard" class="stream-row row-assistant">
           <ThinkingCard :card="thinkingCard" />
         </div>
       </div>

@@ -58,6 +58,7 @@ type App struct {
 	cfg              config.Config
 	store            *store.Store
 	codex            *codex.Client
+	codexRequestFunc func(context.Context, string, any, any) error
 	codexRespondFunc func(context.Context, string, any) error
 	upgrader         websocket.Upgrader
 	agentMu          sync.Mutex
@@ -112,6 +113,44 @@ type choiceAnswerInput struct {
 
 type choiceAnswerRequest struct {
 	Answers []choiceAnswerInput `json:"answers"`
+}
+
+type agentProfileResetRequest struct {
+	ProfileID string `json:"profileId"`
+}
+
+type agentProfilePreviewResponse struct {
+	ProfileID         string                     `json:"profileId"`
+	ProfileType       string                     `json:"profileType"`
+	SystemPrompt      string                     `json:"systemPrompt"`
+	SystemPromptLines int                        `json:"systemPromptLines"`
+	CommandSummary    []string                   `json:"commandSummary"`
+	CapabilitySummary []string                   `json:"capabilitySummary"`
+	EnabledSkills     []model.AgentSkill         `json:"enabledSkills"`
+	EnabledMCPs       []model.AgentMCP           `json:"enabledMcps"`
+	Runtime           model.AgentRuntimeSettings `json:"runtime"`
+}
+
+type agentProfileUpdateRequest struct {
+	model.AgentProfile
+	RiskConfirmed bool `json:"riskConfirmed"`
+}
+
+type agentProfileErrorResponse struct {
+	Error       string            `json:"error"`
+	FieldErrors map[string]string `json:"fieldErrors,omitempty"`
+}
+
+type agentProfileValidationError struct {
+	message     string
+	fieldErrors map[string]string
+}
+
+func (e agentProfileValidationError) Error() string {
+	if strings.TrimSpace(e.message) != "" {
+		return e.message
+	}
+	return "agent profile validation failed"
 }
 
 type loginResponse struct {
@@ -207,6 +246,13 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/sessions", a.withBrowserSession(a.handleSessions))
 	httpMux.HandleFunc("/api/v1/sessions/", a.withBrowserSession(a.handleSessionActivation))
 	httpMux.HandleFunc("/api/v1/state", a.withSession(a.handleState))
+	httpMux.HandleFunc("/api/v1/agent-profiles", a.withSession(a.handleAgentProfiles))
+	httpMux.HandleFunc("/api/v1/agent-profiles/", a.withSession(a.handleAgentProfileByID))
+	httpMux.HandleFunc("/api/v1/agent-profiles/export", a.withSession(a.handleAgentProfilesExport))
+	httpMux.HandleFunc("/api/v1/agent-profiles/import", a.withSession(a.handleAgentProfilesImport))
+	httpMux.HandleFunc("/api/v1/agent-profile", a.withSession(a.handleAgentProfile))
+	httpMux.HandleFunc("/api/v1/agent-profile/reset", a.withSession(a.handleAgentProfileReset))
+	httpMux.HandleFunc("/api/v1/agent-profile/preview", a.withSession(a.handleAgentProfilePreview))
 	httpMux.HandleFunc("/api/v1/host/select", a.withSession(a.handleHostSelection))
 	httpMux.HandleFunc("/api/v1/hosts", a.withSession(a.handleHosts))
 	httpMux.HandleFunc("/api/v1/hosts/", a.withSession(a.handleHostByID))
@@ -388,6 +434,9 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 					Timestamp: time.Now().Unix(),
 				},
 			})
+			if err := a.pushHostAgentProfile(conn); err != nil {
+				log.Printf("push host-agent profile on register failed host=%s err=%v", hostID, err)
+			}
 		case "heartbeat":
 			if msg.Heartbeat == nil {
 				continue
@@ -438,6 +487,8 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 					Timestamp: time.Now().Unix(),
 				},
 			})
+		case "profile/ack":
+			a.handleAgentProfileAck(hostID, msg.ProfileAck)
 		case "terminal/ready":
 			a.handleAgentTerminalReady(hostID, msg.TerminalReady)
 		case "terminal/output":
@@ -650,6 +701,180 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request, sessionID stri
 	writeJSON(w, http.StatusOK, a.snapshot(sessionID))
 }
 
+func (a *App) handleAgentProfiles(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	a.store.EnsureSession(sessionID)
+	a.store.TouchSession(sessionID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":         a.store.AgentProfiles(),
+		"configVersion": model.AgentProfileConfigVersion,
+	})
+}
+
+func (a *App) handleAgentProfileByID(w http.ResponseWriter, r *http.Request, sessionID string) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/agent-profiles/"), "/")
+	if path == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	parts := strings.Split(path, "/")
+	profileID := strings.TrimSpace(parts[0])
+	if profileID == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	if len(parts) == 1 {
+		switch r.Method {
+		case http.MethodGet:
+			a.handleAgentProfileGet(w, profileID)
+		case http.MethodPut:
+			a.handleAgentProfilePut(w, r, sessionID, profileID)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+		return
+	}
+	if len(parts) == 2 && parts[1] == "reset" {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		a.handleAgentProfileResetWithID(w, sessionID, profileID)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile route not found"})
+}
+
+func (a *App) handleAgentProfile(w http.ResponseWriter, r *http.Request, sessionID string) {
+	switch r.Method {
+	case http.MethodGet:
+		a.handleAgentProfileGet(w, a.agentProfileIDFromRequest(r))
+	case http.MethodPut:
+		a.handleAgentProfilePut(w, r, sessionID, a.agentProfileIDFromRequest(r))
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (a *App) handleAgentProfileReset(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req agentProfileResetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	profileID := strings.TrimSpace(req.ProfileID)
+	if profileID == "" {
+		profileID = a.agentProfileIDFromRequest(r)
+	}
+	a.handleAgentProfileResetWithID(w, sessionID, profileID)
+}
+
+func (a *App) handleAgentProfileGet(w http.ResponseWriter, profileID string) {
+	profile, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, profile)
+}
+
+func (a *App) handleAgentProfilePut(w http.ResponseWriter, r *http.Request, sessionID, requestedProfileID string) {
+	var req agentProfileUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	merged, before, err := a.mergeAndValidateAgentProfile(sessionID, requestedProfileID, req.AgentProfile, req.RiskConfirmed)
+	if err != nil {
+		a.writeAgentProfileError(w, http.StatusBadRequest, err)
+		return
+	}
+	a.store.UpsertAgentProfile(merged)
+	if merged.ID == string(model.AgentProfileTypeHostAgentDefault) {
+		a.pushHostAgentProfileToConnectedAgents()
+	}
+	a.audit("agent_profile.updated", map[string]any{
+		"sessionId":     sessionID,
+		"profileId":     merged.ID,
+		"profileType":   merged.Type,
+		"operator":      a.auditOperator(sessionID),
+		"before":        a.agentProfileAuditSummary(before),
+		"after":         a.agentProfileAuditSummary(merged),
+		"configVersion": model.AgentProfileConfigVersion,
+	})
+	writeJSON(w, http.StatusOK, merged)
+}
+
+func (a *App) handleAgentProfileResetWithID(w http.ResponseWriter, sessionID, profileID string) {
+	before, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	a.store.ResetAgentProfile(profileID)
+	profile, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	if profile.ID == string(model.AgentProfileTypeHostAgentDefault) {
+		a.pushHostAgentProfileToConnectedAgents()
+	}
+	a.audit("agent_profile.reset", map[string]any{
+		"sessionId":     sessionID,
+		"profileId":     profile.ID,
+		"profileType":   profile.Type,
+		"operator":      a.auditOperator(sessionID),
+		"before":        a.agentProfileAuditSummary(before),
+		"after":         a.agentProfileAuditSummary(profile),
+		"configVersion": model.AgentProfileConfigVersion,
+	})
+	writeJSON(w, http.StatusOK, profile)
+}
+
+func (a *App) writeAgentProfileError(w http.ResponseWriter, status int, err error) {
+	var validationErr agentProfileValidationError
+	if errors.As(err, &validationErr) {
+		writeJSON(w, status, agentProfileErrorResponse{
+			Error:       validationErr.Error(),
+			FieldErrors: cloneStringMap(validationErr.fieldErrors),
+		})
+		return
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (a *App) handleAgentProfilePreview(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	profileID := a.agentProfileIDFromRequest(r)
+	profile, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	selectedHostID := strings.TrimSpace(r.URL.Query().Get("hostId"))
+	if selectedHostID == "" {
+		session := a.store.Session(sessionID)
+		if session != nil {
+			selectedHostID = defaultHostID(session.SelectedHostID)
+		}
+	}
+	if selectedHostID == "" {
+		selectedHostID = model.ServerLocalHostID
+	}
+	writeJSON(w, http.StatusOK, a.buildAgentProfilePreview(profile, selectedHostID))
+}
+
 func (a *App) handleThreadReset(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -687,7 +912,7 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 		}
 		var result map[string]any
 		log.Printf("auth login session=%s mode=apiKey", sessionID)
-		if err := a.codex.Request(ctx, "account/login/start", map[string]any{
+		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
 			"type":   "apiKey",
 			"apiKey": req.APIKey,
 		}, &result); err != nil {
@@ -719,7 +944,7 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 			LoginID string `json:"loginId"`
 		}
 		log.Printf("auth login session=%s mode=chatgpt", sessionID)
-		if err := a.codex.Request(ctx, "account/login/start", map[string]any{
+		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
 			"type": "chatgpt",
 		}, &result); err != nil {
 			a.audit("auth.login_failed", map[string]any{
@@ -755,7 +980,7 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 		}
 		var result map[string]any
 		log.Printf("auth login session=%s mode=chatgptAuthTokens", sessionID)
-		if err := a.codex.Request(ctx, "account/login/start", map[string]any{
+		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
 			"type":             "chatgptAuthTokens",
 			"accessToken":      req.AccessToken,
 			"chatgptAccountId": accountID,
@@ -802,7 +1027,7 @@ func (a *App) handleAuthLogout(w http.ResponseWriter, r *http.Request, sessionID
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	var result map[string]any
-	_ = a.codex.Request(ctx, "account/logout", map[string]any{}, &result)
+	_ = a.codexRequest(ctx, "account/logout", map[string]any{}, &result)
 	log.Printf("auth logout session=%s", sessionID)
 	a.audit("auth.logout", map[string]any{
 		"sessionId": sessionID,
@@ -884,7 +1109,7 @@ func (a *App) handleOAuthCallback(w http.ResponseWriter, r *http.Request, sessio
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	var result map[string]any
-	err = a.codex.Request(ctx, "account/login/start", map[string]any{
+	err = a.codexRequest(ctx, "account/login/start", map[string]any{
 		"type":             "chatgptAuthTokens",
 		"accessToken":      tokenResp.AccessToken,
 		"chatgptAccountId": a.cfg.OAuthAccountID,
@@ -953,6 +1178,10 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	if previousHostID != req.HostID && session.ThreadID != "" {
 		a.clearSessionThreadBinding(sessionID)
 		a.appendHostSwitchCard(sessionID, previousHostID, req.HostID)
+		session.ThreadID = ""
+	} else if a.shouldRefreshThreadForAgentRuntime(session, req.HostID) {
+		a.clearSessionThreadBinding(sessionID)
+		a.appendAgentProfileRuntimeRefreshCard(sessionID)
 		session.ThreadID = ""
 	} else if a.shouldAutoResetThread(session, req.Message) {
 		log.Printf(
@@ -1089,7 +1318,7 @@ func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID s
 			params["turnId"] = turnID
 		}
 		var result map[string]any
-		if err := a.codex.Request(ctx, "turn/interrupt", params, &result); err != nil && !cancelledPending {
+		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil && !cancelledPending {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 			return
 		}
@@ -1134,27 +1363,22 @@ func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) 
 
 func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req chatRequest) error {
 	var result map[string]any
-	developerInstructions := fmt.Sprintf(
-		"Current selected host is %s. Operate only on this host. The default writable workspace is %s. Do not assume access outside the workspace unless explicitly requested and approved.",
-		req.HostID,
-		a.cfg.DefaultWorkspace,
-	)
-	if isRemoteHostID(req.HostID) {
-		developerInstructions = remoteTurnDeveloperInstructions(req.HostID)
-	}
-	err := a.codex.Request(ctx, "turn/start", map[string]any{
+	profile := a.mainAgentProfile()
+	params := map[string]any{
 		"threadId":              threadID,
 		"cwd":                   a.cfg.DefaultWorkspace,
-		"approvalPolicy":        "untrusted",
-		"developerInstructions": developerInstructions,
+		"approvalPolicy":        profile.Runtime.ApprovalPolicy,
+		"developerInstructions": a.renderMainAgentDeveloperInstructions(profile, req.HostID, true),
 		"sandboxPolicy": map[string]any{
-			"type":          "workspaceWrite",
-			"writableRoots": []string{a.cfg.DefaultWorkspace},
+			"type":          codexSandboxPolicyType(profile.Runtime.SandboxMode),
+			"writableRoots": a.mainAgentWritableRoots(profile),
 		},
-		"input": []map[string]any{
-			{"type": "text", "text": req.Message},
-		},
-	}, &result)
+		"input": a.buildMainAgentTurnInput(ctx, profile, req.Message),
+	}
+	if profile.Runtime.ReasoningEffort != "" {
+		params["reasoningEffort"] = profile.Runtime.ReasoningEffort
+	}
+	err := a.codexRequest(ctx, "turn/start", params, &result)
 	if err != nil {
 		return err
 	}
@@ -1918,8 +2142,33 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			Decisions:    toStringSlice(payload["availableDecisions"]),
 			RequestedAt:  model.NowString(),
 		}
+		commandState := a.mainAgentCapabilityState("commandExecution")
+		decision, policyErr := a.evaluateCommandPolicy(approval.Command)
+		if capabilityDisabled(commandState) {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command execution blocked", "commandExecution capability is disabled by the current main-agent profile")
+			return
+		}
+		if policyErr != nil {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by profile", policyErr.Error())
+			return
+		}
+		if decision.Category == "filesystem_mutation" && approval.Cwd != "" {
+			if err := a.ensureWritableRoots([]string{approval.Cwd}); err != nil {
+				a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by writable roots", err.Error())
+				return
+			}
+		}
+		if timeoutSec, ok := getIntAny(payload, "timeoutSec", "timeoutSeconds", "timeout"); ok && timeoutSec > a.mainAgentProfile().CommandPermissions.DefaultTimeoutSeconds {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by timeout policy", "requested timeout exceeds the current main-agent profile limit")
+			return
+		}
 		if a.autoApproveBySessionGrant(sessionID, approval) {
 			return
+		}
+		if !capabilityNeedsApproval(commandState) && (decision.Mode == model.AgentPermissionModeAllow || decision.Mode == model.AgentPermissionModeReadonlyOnly) {
+			if a.autoApproveLocalApprovalByProfile(sessionID, approval) {
+				return
+			}
 		}
 		log.Printf("approval requested type=command session=%s item=%s command=%q", sessionID, approval.ItemID, approval.Command)
 		a.auditApprovalRequested(sessionID, approval, nil)
@@ -1983,8 +2232,22 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			Decisions:    []string{"accept", "decline"},
 			RequestedAt:  model.NowString(),
 		}
+		fileChangeState := a.mainAgentCapabilityState("fileChange")
+		if capabilityDisabled(fileChangeState) {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "File change blocked", "fileChange capability is disabled by the current main-agent profile")
+			return
+		}
+		if err := a.ensureWritableRoots(changePaths(approval.Changes)); err != nil {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "File change blocked by writable roots", err.Error())
+			return
+		}
 		if a.autoApproveBySessionGrant(sessionID, approval) {
 			return
+		}
+		if !capabilityNeedsApproval(fileChangeState) {
+			if a.autoApproveLocalApprovalByProfile(sessionID, approval) {
+				return
+			}
 		}
 		log.Printf("approval requested type=file_change session=%s item=%s", sessionID, itemID)
 		filePath := ""
@@ -2061,6 +2324,16 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 	case "item/tool/call":
 		a.handleDynamicToolCall(string(rawID), payload)
 	}
+}
+
+func (a *App) codexRequest(ctx context.Context, method string, params any, result any) error {
+	if a.codexRequestFunc != nil {
+		return a.codexRequestFunc(ctx, method, params, result)
+	}
+	if a.codex == nil {
+		return errors.New("codex client not configured")
+	}
+	return a.codex.Request(ctx, method, params, result)
 }
 
 func (a *App) handleItemStarted(payload map[string]any) {
@@ -2396,7 +2669,7 @@ func (a *App) failStalledTurn(sessionID, turnID string, delay time.Duration) {
 			params["turnId"] = turnID
 		}
 		var result map[string]any
-		if err := a.codex.Request(ctx, "turn/interrupt", params, &result); err != nil {
+		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil {
 			log.Printf("stalled turn interrupt failed session=%s turn=%s err=%s", sessionID, turnID, truncate(err.Error(), 200))
 		}
 	}(current.ThreadID)
@@ -2886,7 +3159,7 @@ func (a *App) cleanBackgroundTerminalsWithTimeout(threadID string, timeout time.
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	var result map[string]any
-	if err := a.codex.Request(ctx, "thread/backgroundTerminals/clean", map[string]any{
+	if err := a.codexRequest(ctx, "thread/backgroundTerminals/clean", map[string]any{
 		"threadId": threadID,
 	}, &result); err != nil {
 		log.Printf("background terminal cleanup skipped thread=%s err=%s", threadID, truncate(err.Error(), 200))
@@ -3299,29 +3572,627 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
+	profile := a.mainAgentProfile()
 	params := map[string]any{
-		"model":          "gpt-5.4",
-		"cwd":            a.cfg.DefaultWorkspace,
-		"approvalPolicy": "untrusted",
-		"sandbox":        "workspace-write",
-		"developerInstructions": fmt.Sprintf(strings.TrimSpace(`
-You are embedded inside a web AI ops console.
-Operate only on the selected host %q.
-Use the working directory as the default root and keep writes inside it unless the user explicitly requests otherwise.
-Summarize command results clearly for the web UI.
-`), selectedHostID),
+		"model":                 profile.Runtime.Model,
+		"cwd":                   a.cfg.DefaultWorkspace,
+		"approvalPolicy":        profile.Runtime.ApprovalPolicy,
+		"sandbox":               profile.Runtime.SandboxMode,
+		"developerInstructions": a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false),
+	}
+	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
+		params["config"] = threadConfig
 	}
 	if isRemoteHostID(selectedHostID) {
-		params["developerInstructions"] = remoteThreadDeveloperInstructions(selectedHostID)
-		params["dynamicTools"] = remoteDynamicTools()
+		params["dynamicTools"] = a.remoteDynamicTools()
 	}
-	err := a.codex.Request(ctx, "thread/start", params, &result)
+	err := a.codexRequest(ctx, "thread/start", params, &result)
 	if err != nil {
 		return "", err
 	}
 	a.store.SetThread(sessionID, result.Thread.ID)
+	a.store.SetThreadConfigHash(sessionID, a.mainAgentThreadConfigHash(selectedHostID))
 	a.broadcastSnapshot(sessionID)
 	return result.Thread.ID, nil
+}
+
+func (a *App) agentProfileIDFromRequest(r *http.Request) string {
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	if profileID == "" {
+		profileID = string(model.AgentProfileTypeMainAgent)
+	}
+	return profileID
+}
+
+func (a *App) mainAgentProfile() model.AgentProfile {
+	profile, ok := a.store.AgentProfile(string(model.AgentProfileTypeMainAgent))
+	if !ok {
+		return model.DefaultAgentProfile(string(model.AgentProfileTypeMainAgent))
+	}
+	return model.CompleteAgentProfile(profile)
+}
+
+func (a *App) mainAgentWritableRoots(profile model.AgentProfile) []string {
+	roots := make([]string, 0, len(profile.CommandPermissions.AllowedWritableRoots))
+	for _, root := range profile.CommandPermissions.AllowedWritableRoots {
+		if trimmed := strings.TrimSpace(root); trimmed != "" {
+			roots = append(roots, trimmed)
+		}
+	}
+	if len(roots) == 0 {
+		roots = append(roots, a.cfg.DefaultWorkspace)
+	}
+	return roots
+}
+
+func (a *App) renderMainAgentDeveloperInstructions(profile model.AgentProfile, hostID string, turnScoped bool) string {
+	hostID = defaultHostID(hostID)
+	sections := []string{strings.TrimSpace(profile.SystemPrompt.Content)}
+	contextLines := []string{
+		"You are embedded inside a web AI ops console.",
+		fmt.Sprintf("Operate only on the selected host %q.", hostID),
+		fmt.Sprintf("Use %q as the default writable workspace.", a.cfg.DefaultWorkspace),
+		fmt.Sprintf("Writable roots: %s.", strings.Join(a.mainAgentWritableRoots(profile), ", ")),
+	}
+	if turnScoped {
+		contextLines = append(contextLines, "Summarize execution results clearly for the web UI.")
+	}
+	sections = append(sections, strings.Join(contextLines, "\n"))
+	if enabled := defaultEnabledAgentSkillNames(profile); len(enabled) > 0 {
+		sections = append(sections, "Default-enabled skills:\n- "+strings.Join(enabled, "\n- "))
+	}
+	if explicit := explicitOnlyAgentSkillNames(profile); len(explicit) > 0 {
+		sections = append(sections, "Explicit-only skills (use them only when the user explicitly asks or the workflow requires them):\n- "+strings.Join(explicit, "\n- "))
+	}
+	if enabled := a.enabledAgentMCPNames(profile, hostID); len(enabled) > 0 {
+		sections = append(sections, "Enabled MCP connectors:\n- "+strings.Join(enabled, "\n- "))
+	}
+	if gated := a.explicitApprovalMCPNames(profile, hostID); len(gated) > 0 {
+		sections = append(sections, "The following MCP connectors require explicit user approval before any write or state-changing action:\n- "+strings.Join(gated, "\n- "))
+	}
+	if isRemoteHostID(hostID) {
+		sections = append(sections, remoteThreadDeveloperInstructions(hostID))
+	}
+	return strings.TrimSpace(strings.Join(sections, "\n\n"))
+}
+
+func codexSandboxPolicyType(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "read-only":
+		return "readOnly"
+	case "danger-full-access":
+		return "dangerFullAccess"
+	default:
+		return "workspaceWrite"
+	}
+}
+
+func (a *App) mergeAndValidateAgentProfile(sessionID, requestedProfileID string, incoming model.AgentProfile, riskConfirmed bool) (model.AgentProfile, model.AgentProfile, error) {
+	profileID := strings.TrimSpace(incoming.ID)
+	if profileID == "" {
+		profileID = strings.TrimSpace(requestedProfileID)
+	}
+	if profileID == "" {
+		profileID = string(model.AgentProfileTypeMainAgent)
+	}
+	current, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		current = model.DefaultAgentProfile(profileID)
+	}
+	merged := current
+	if strings.TrimSpace(incoming.ID) != "" {
+		merged.ID = strings.TrimSpace(incoming.ID)
+	}
+	if strings.TrimSpace(incoming.Name) != "" {
+		merged.Name = strings.TrimSpace(incoming.Name)
+	}
+	if strings.TrimSpace(incoming.Type) != "" {
+		merged.Type = strings.TrimSpace(incoming.Type)
+	}
+	merged.Description = strings.TrimSpace(incoming.Description)
+	if strings.TrimSpace(incoming.Runtime.Model) != "" {
+		merged.Runtime.Model = strings.TrimSpace(incoming.Runtime.Model)
+	}
+	if strings.TrimSpace(incoming.Runtime.ReasoningEffort) != "" {
+		merged.Runtime.ReasoningEffort = strings.TrimSpace(incoming.Runtime.ReasoningEffort)
+	}
+	if strings.TrimSpace(incoming.Runtime.ApprovalPolicy) != "" {
+		merged.Runtime.ApprovalPolicy = strings.TrimSpace(incoming.Runtime.ApprovalPolicy)
+	}
+	if strings.TrimSpace(incoming.Runtime.SandboxMode) != "" {
+		merged.Runtime.SandboxMode = strings.TrimSpace(incoming.Runtime.SandboxMode)
+	}
+	if incoming.SystemPrompt.Content != "" {
+		merged.SystemPrompt.Content = strings.TrimSpace(incoming.SystemPrompt.Content)
+	}
+	if incoming.SystemPrompt.Version != "" {
+		merged.SystemPrompt.Version = strings.TrimSpace(incoming.SystemPrompt.Version)
+	}
+	merged.SystemPrompt.Notes = strings.TrimSpace(incoming.SystemPrompt.Notes)
+	if incoming.CommandPermissions.Enabled != nil {
+		merged.CommandPermissions.Enabled = cloneBoolPtr(incoming.CommandPermissions.Enabled)
+	}
+	if incoming.CommandPermissions.AllowShellWrapper != nil {
+		merged.CommandPermissions.AllowShellWrapper = cloneBoolPtr(incoming.CommandPermissions.AllowShellWrapper)
+	}
+	if incoming.CommandPermissions.AllowSudo != nil {
+		merged.CommandPermissions.AllowSudo = cloneBoolPtr(incoming.CommandPermissions.AllowSudo)
+	}
+	if incoming.CommandPermissions.DefaultMode != "" {
+		merged.CommandPermissions.DefaultMode = strings.TrimSpace(incoming.CommandPermissions.DefaultMode)
+	}
+	if incoming.CommandPermissions.DefaultTimeoutSeconds > 0 {
+		merged.CommandPermissions.DefaultTimeoutSeconds = incoming.CommandPermissions.DefaultTimeoutSeconds
+	}
+	if incoming.CommandPermissions.AllowedWritableRoots != nil {
+		merged.CommandPermissions.AllowedWritableRoots = append([]string(nil), incoming.CommandPermissions.AllowedWritableRoots...)
+	}
+	if incoming.CommandPermissions.CategoryPolicies != nil {
+		merged.CommandPermissions.CategoryPolicies = cloneStringMap(incoming.CommandPermissions.CategoryPolicies)
+	}
+	if incoming.CapabilityPermissions != (model.AgentCapabilityPermissions{}) {
+		merged.CapabilityPermissions = incoming.CapabilityPermissions
+	}
+	if incoming.Skills != nil {
+		merged.Skills = append([]model.AgentSkill(nil), incoming.Skills...)
+	}
+	if incoming.MCPs != nil {
+		merged.MCPs = append([]model.AgentMCP(nil), incoming.MCPs...)
+	}
+	merged = model.CompleteAgentProfile(merged)
+	merged.UpdatedAt = model.NowString()
+	merged.UpdatedBy = a.auditOperator(sessionID)
+	if err := validateAgentProfile(merged); err != nil {
+		return model.AgentProfile{}, model.AgentProfile{}, err
+	}
+	if err := validateAgentProfileRiskChange(current, merged, riskConfirmed); err != nil {
+		return model.AgentProfile{}, model.AgentProfile{}, err
+	}
+	return merged, current, nil
+}
+
+func validateAgentProfile(profile model.AgentProfile) error {
+	fieldErrors := make(map[string]string)
+	addFieldError := func(field, message string) {
+		if strings.TrimSpace(field) == "" || strings.TrimSpace(message) == "" {
+			return
+		}
+		if _, exists := fieldErrors[field]; exists {
+			return
+		}
+		fieldErrors[field] = message
+	}
+	profileID := strings.TrimSpace(profile.ID)
+	switch profileID {
+	case string(model.AgentProfileTypeMainAgent), string(model.AgentProfileTypeHostAgentDefault):
+	default:
+		addFieldError("id", fmt.Sprintf("unsupported profile id %q", profileID))
+	}
+	switch strings.TrimSpace(profile.Type) {
+	case string(model.AgentProfileTypeMainAgent), string(model.AgentProfileTypeHostAgentDefault):
+	default:
+		addFieldError("type", fmt.Sprintf("unsupported profile type %q", profile.Type))
+	}
+	if strings.TrimSpace(profile.Name) == "" {
+		addFieldError("name", "profile name is required")
+	}
+	if prompt := strings.TrimSpace(profile.SystemPrompt.Content); prompt == "" {
+		addFieldError("systemPrompt.content", "system prompt is required")
+	} else if len([]rune(prompt)) > 12000 {
+		addFieldError("systemPrompt.content", "system prompt is too long")
+	}
+	if timeout := profile.CommandPermissions.DefaultTimeoutSeconds; timeout <= 0 || timeout > 3600 {
+		addFieldError("commandPermissions.defaultTimeoutSeconds", "default timeout must be between 1 and 3600 seconds")
+	}
+	validCommandModes := map[string]struct{}{
+		model.AgentPermissionModeAllow:            {},
+		model.AgentPermissionModeApprovalRequired: {},
+		model.AgentPermissionModeReadonlyOnly:     {},
+		model.AgentPermissionModeDeny:             {},
+	}
+	validCommandCategories := map[string]struct{}{
+		"system_inspection":   {},
+		"service_read":        {},
+		"network_read":        {},
+		"file_read":           {},
+		"service_mutation":    {},
+		"filesystem_mutation": {},
+		"package_mutation":    {},
+	}
+	if _, ok := validCommandModes[profile.CommandPermissions.DefaultMode]; !ok {
+		addFieldError("commandPermissions.defaultMode", fmt.Sprintf("unsupported command default mode %q", profile.CommandPermissions.DefaultMode))
+	}
+	for category, mode := range profile.CommandPermissions.CategoryPolicies {
+		if _, ok := validCommandCategories[category]; !ok {
+			addFieldError("commandPermissions.categoryPolicies."+category, fmt.Sprintf("unsupported command category %q", category))
+			continue
+		}
+		if _, ok := validCommandModes[mode]; !ok {
+			addFieldError("commandPermissions.categoryPolicies."+category, fmt.Sprintf("unsupported command mode %q for %s", mode, category))
+		}
+	}
+	for index, root := range profile.CommandPermissions.AllowedWritableRoots {
+		if strings.TrimSpace(root) == "" {
+			addFieldError(fmt.Sprintf("commandPermissions.allowedWritableRoots.%d", index), "writable roots must not contain empty paths")
+		}
+	}
+	validCapabilityStates := map[string]struct{}{
+		model.AgentCapabilityEnabled:          {},
+		model.AgentCapabilityApprovalRequired: {},
+		model.AgentCapabilityDisabled:         {},
+	}
+	capabilityFields := map[string]string{
+		"capabilityPermissions.commandExecution": profile.CapabilityPermissions.CommandExecution,
+		"capabilityPermissions.fileRead":         profile.CapabilityPermissions.FileRead,
+		"capabilityPermissions.fileSearch":       profile.CapabilityPermissions.FileSearch,
+		"capabilityPermissions.fileChange":       profile.CapabilityPermissions.FileChange,
+		"capabilityPermissions.terminal":         profile.CapabilityPermissions.Terminal,
+		"capabilityPermissions.webSearch":        profile.CapabilityPermissions.WebSearch,
+		"capabilityPermissions.webOpen":          profile.CapabilityPermissions.WebOpen,
+		"capabilityPermissions.approval":         profile.CapabilityPermissions.Approval,
+		"capabilityPermissions.multiAgent":       profile.CapabilityPermissions.MultiAgent,
+		"capabilityPermissions.plan":             profile.CapabilityPermissions.Plan,
+		"capabilityPermissions.summary":          profile.CapabilityPermissions.Summary,
+	}
+	for field, state := range capabilityFields {
+		if _, ok := validCapabilityStates[state]; !ok {
+			addFieldError(field, fmt.Sprintf("unsupported capability state %q", state))
+		}
+	}
+	supportedSkillIDs := make(map[string]struct{}, len(model.SupportedAgentSkills()))
+	for _, item := range model.SupportedAgentSkills() {
+		supportedSkillIDs[item.ID] = struct{}{}
+	}
+	validActivationModes := map[string]struct{}{
+		model.AgentSkillActivationDefault:  {},
+		model.AgentSkillActivationExplicit: {},
+		model.AgentSkillActivationDisabled: {},
+	}
+	for index, skill := range profile.Skills {
+		if _, ok := supportedSkillIDs[strings.TrimSpace(skill.ID)]; !ok {
+			addFieldError(fmt.Sprintf("skills.%d.id", index), fmt.Sprintf("unsupported skill id %q", skill.ID))
+		}
+		if _, ok := validActivationModes[model.NormalizeAgentSkillActivationMode(skill.ActivationMode)]; !ok {
+			addFieldError(fmt.Sprintf("skills.%d.activationMode", index), fmt.Sprintf("unsupported activation mode %q", skill.ActivationMode))
+		}
+	}
+	supportedMCPIDs := make(map[string]struct{}, len(model.SupportedAgentMCPs()))
+	for _, item := range model.SupportedAgentMCPs() {
+		supportedMCPIDs[item.ID] = struct{}{}
+	}
+	validMCPPermissions := map[string]struct{}{
+		model.AgentMCPPermissionReadonly:  {},
+		model.AgentMCPPermissionReadwrite: {},
+	}
+	for index, item := range profile.MCPs {
+		if _, ok := supportedMCPIDs[strings.TrimSpace(item.ID)]; !ok {
+			addFieldError(fmt.Sprintf("mcps.%d.id", index), fmt.Sprintf("unsupported MCP id %q", item.ID))
+		}
+		if _, ok := validMCPPermissions[model.NormalizeAgentMCPPermission(item.Permission)]; !ok {
+			addFieldError(fmt.Sprintf("mcps.%d.permission", index), fmt.Sprintf("unsupported MCP permission %q", item.Permission))
+		}
+	}
+	if len(fieldErrors) > 0 {
+		return newAgentProfileValidationError(fieldErrors)
+	}
+	return nil
+}
+
+func newAgentProfileValidationError(fieldErrors map[string]string) error {
+	if len(fieldErrors) == 0 {
+		return nil
+	}
+	message := "agent profile validation failed"
+	if len(fieldErrors) == 1 {
+		for _, item := range fieldErrors {
+			message = item
+		}
+	}
+	return agentProfileValidationError{
+		message:     message,
+		fieldErrors: cloneStringMap(fieldErrors),
+	}
+}
+
+func validateAgentProfileRiskChange(before, after model.AgentProfile, riskConfirmed bool) error {
+	fieldErrors := detectHighRiskProfileChanges(before, after)
+	if len(fieldErrors) == 0 || riskConfirmed {
+		return nil
+	}
+	return agentProfileValidationError{
+		message:     "high-risk profile changes require explicit confirmation",
+		fieldErrors: fieldErrors,
+	}
+}
+
+func detectHighRiskProfileChanges(before, after model.AgentProfile) map[string]string {
+	before = model.CompleteAgentProfile(before)
+	after = model.CompleteAgentProfile(after)
+	fieldErrors := make(map[string]string)
+	add := func(field, message string) {
+		if _, exists := fieldErrors[field]; exists {
+			return
+		}
+		fieldErrors[field] = message
+	}
+	if !boolValue(before.CommandPermissions.AllowSudo, false) && boolValue(after.CommandPermissions.AllowSudo, false) {
+		add("commandPermissions.allowSudo", "allowSudo 从关闭改为开启，需要显式确认高风险变更")
+	}
+	if before.Runtime.SandboxMode != "danger-full-access" && after.Runtime.SandboxMode == "danger-full-access" {
+		add("runtime.sandboxMode", "sandboxMode 切到 danger-full-access，需要显式确认高风险变更")
+	}
+	for _, category := range []string{"filesystem_mutation", "service_mutation", "package_mutation"} {
+		beforeMode := before.CommandPermissions.CategoryPolicies[category]
+		afterMode := after.CommandPermissions.CategoryPolicies[category]
+		if beforeMode != model.AgentPermissionModeAllow && afterMode == model.AgentPermissionModeAllow {
+			add("commandPermissions.categoryPolicies."+category, fmt.Sprintf("%s 改为 allow，需要显式确认高风险变更", category))
+		}
+	}
+	beforeCaps := map[string]string{
+		"commandExecution": before.CapabilityPermissions.CommandExecution,
+		"fileChange":       before.CapabilityPermissions.FileChange,
+		"terminal":         before.CapabilityPermissions.Terminal,
+		"webOpen":          before.CapabilityPermissions.WebOpen,
+	}
+	afterCaps := map[string]string{
+		"commandExecution": after.CapabilityPermissions.CommandExecution,
+		"fileChange":       after.CapabilityPermissions.FileChange,
+		"terminal":         after.CapabilityPermissions.Terminal,
+		"webOpen":          after.CapabilityPermissions.WebOpen,
+	}
+	for key, afterState := range afterCaps {
+		beforeState := beforeCaps[key]
+		if beforeState != model.AgentCapabilityEnabled && afterState == model.AgentCapabilityEnabled {
+			add("capabilityPermissions."+key, fmt.Sprintf("%s 改为 enabled，需要显式确认高风险变更", key))
+		}
+	}
+	for _, item := range after.MCPs {
+		if !item.Enabled {
+			continue
+		}
+		beforeItem, ok := findAgentMCP(before.MCPs, item.ID)
+		if !ok {
+			beforeItem = model.AgentMCP{}
+		}
+		if model.NormalizeAgentMCPPermission(beforeItem.Permission) != model.AgentMCPPermissionReadwrite &&
+			model.NormalizeAgentMCPPermission(item.Permission) == model.AgentMCPPermissionReadwrite &&
+			!item.RequiresExplicitUserApproval {
+			add("mcps."+item.ID, fmt.Sprintf("%s 开启 readwrite 且未要求显式审批，需要确认高风险变更", item.ID))
+		}
+	}
+	return fieldErrors
+}
+
+func findAgentMCP(items []model.AgentMCP, id string) (model.AgentMCP, bool) {
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) == strings.TrimSpace(id) {
+			return item, true
+		}
+	}
+	return model.AgentMCP{}, false
+}
+
+func defaultEnabledAgentSkillNames(profile model.AgentProfile) []string {
+	names := make([]string, 0, len(profile.Skills))
+	for _, item := range profile.Skills {
+		if !item.Enabled || model.NormalizeAgentSkillActivationMode(item.ActivationMode) != model.AgentSkillActivationDefault {
+			continue
+		}
+		if label := strings.TrimSpace(item.Name); label != "" {
+			names = append(names, label)
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			names = append(names, id)
+		}
+	}
+	return names
+}
+
+func explicitOnlyAgentSkillNames(profile model.AgentProfile) []string {
+	names := make([]string, 0, len(profile.Skills))
+	for _, item := range profile.Skills {
+		if !item.Enabled || model.NormalizeAgentSkillActivationMode(item.ActivationMode) != model.AgentSkillActivationExplicit {
+			continue
+		}
+		if label := strings.TrimSpace(item.Name); label != "" {
+			names = append(names, label)
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			names = append(names, id)
+		}
+	}
+	return names
+}
+
+func requiredCapabilityForMCP(item model.AgentMCP) string {
+	switch strings.TrimSpace(item.ID) {
+	case "filesystem", "host-files", "host-logs":
+		return "fileRead"
+	case "docs":
+		return "webSearch"
+	case "metrics":
+		return "commandExecution"
+	default:
+		return ""
+	}
+}
+
+func (a *App) effectiveEnabledAgentMCPs(profile model.AgentProfile, hostID string) []model.AgentMCP {
+	items := make([]model.AgentMCP, 0, len(profile.MCPs))
+	for _, item := range profile.MCPs {
+		if !item.Enabled {
+			continue
+		}
+		requiredCapability := requiredCapabilityForMCP(item)
+		if requiredCapability != "" && capabilityDisabled(a.effectiveCapabilityState(hostID, requiredCapability)) {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (a *App) enabledAgentMCPNames(profile model.AgentProfile, hostID string) []string {
+	names := make([]string, 0, len(profile.MCPs))
+	for _, item := range a.effectiveEnabledAgentMCPs(profile, hostID) {
+		label := strings.TrimSpace(item.Name)
+		if label == "" {
+			label = strings.TrimSpace(item.ID)
+		}
+		if label == "" {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%s (%s)", label, model.NormalizeAgentMCPPermission(item.Permission)))
+	}
+	return names
+}
+
+func (a *App) explicitApprovalMCPNames(profile model.AgentProfile, hostID string) []string {
+	names := make([]string, 0, len(profile.MCPs))
+	for _, item := range a.effectiveEnabledAgentMCPs(profile, hostID) {
+		if !item.RequiresExplicitUserApproval {
+			continue
+		}
+		label := strings.TrimSpace(item.Name)
+		if label == "" {
+			label = strings.TrimSpace(item.ID)
+		}
+		if label == "" {
+			continue
+		}
+		names = append(names, label)
+	}
+	return names
+}
+
+func (a *App) buildAgentProfilePreview(profile model.AgentProfile, hostID string) agentProfilePreviewResponse {
+	profile = model.CompleteAgentProfile(profile)
+	commandSummary := make([]string, 0, len(profile.CommandPermissions.CategoryPolicies)+4)
+	commandSummary = append(commandSummary,
+		fmt.Sprintf("命令执行: %s", yesNo(boolValue(profile.CommandPermissions.Enabled, true))),
+		fmt.Sprintf("默认模式: %s", profile.CommandPermissions.DefaultMode),
+		fmt.Sprintf("允许 shell wrapper: %s", yesNo(boolValue(profile.CommandPermissions.AllowShellWrapper, true))),
+		fmt.Sprintf("允许 sudo: %s", yesNo(boolValue(profile.CommandPermissions.AllowSudo, false))),
+	)
+	categories := make([]string, 0, len(profile.CommandPermissions.CategoryPolicies))
+	for category := range profile.CommandPermissions.CategoryPolicies {
+		categories = append(categories, category)
+	}
+	slices.Sort(categories)
+	for _, category := range categories {
+		commandSummary = append(commandSummary, fmt.Sprintf("%s: %s", agentCommandCategoryLabel(category), profile.CommandPermissions.CategoryPolicies[category]))
+	}
+	capabilitySummary := []string{
+		fmt.Sprintf("命令执行: %s", profile.CapabilityPermissions.CommandExecution),
+		fmt.Sprintf("文件读取: %s", profile.CapabilityPermissions.FileRead),
+		fmt.Sprintf("文件搜索: %s", profile.CapabilityPermissions.FileSearch),
+		fmt.Sprintf("文件修改: %s", profile.CapabilityPermissions.FileChange),
+		fmt.Sprintf("终端: %s", profile.CapabilityPermissions.Terminal),
+		fmt.Sprintf("网页搜索: %s", profile.CapabilityPermissions.WebSearch),
+		fmt.Sprintf("网页打开: %s", profile.CapabilityPermissions.WebOpen),
+		fmt.Sprintf("审批: %s", profile.CapabilityPermissions.Approval),
+		fmt.Sprintf("多 Agent: %s", profile.CapabilityPermissions.MultiAgent),
+		fmt.Sprintf("计划: %s", profile.CapabilityPermissions.Plan),
+		fmt.Sprintf("总结: %s", profile.CapabilityPermissions.Summary),
+	}
+	enabledSkills := make([]model.AgentSkill, 0, len(profile.Skills))
+	for _, skill := range profile.Skills {
+		if skill.Enabled && model.NormalizeAgentSkillActivationMode(skill.ActivationMode) != model.AgentSkillActivationDisabled {
+			enabledSkills = append(enabledSkills, skill)
+		}
+	}
+	enabledMCPs := a.effectiveEnabledAgentMCPs(profile, hostID)
+	systemPrompt := strings.TrimSpace(profile.SystemPrompt.Content)
+	if profile.ID == string(model.AgentProfileTypeMainAgent) {
+		systemPrompt = a.renderMainAgentDeveloperInstructions(profile, hostID, true)
+	}
+	return agentProfilePreviewResponse{
+		ProfileID:         profile.ID,
+		ProfileType:       profile.Type,
+		SystemPrompt:      systemPrompt,
+		SystemPromptLines: len(strings.Split(systemPrompt, "\n")),
+		CommandSummary:    commandSummary,
+		CapabilitySummary: capabilitySummary,
+		EnabledSkills:     enabledSkills,
+		EnabledMCPs:       enabledMCPs,
+		Runtime:           profile.Runtime,
+	}
+}
+
+func (a *App) agentProfileAuditSummary(profile model.AgentProfile) map[string]any {
+	if profile.ID == "" {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"id":                profile.ID,
+		"type":              profile.Type,
+		"name":              profile.Name,
+		"model":             profile.Runtime.Model,
+		"reasoningEffort":   profile.Runtime.ReasoningEffort,
+		"approvalPolicy":    profile.Runtime.ApprovalPolicy,
+		"sandboxMode":       profile.Runtime.SandboxMode,
+		"systemPrompt":      profile.SystemPrompt.Preview,
+		"writableRoots":     append([]string(nil), profile.CommandPermissions.AllowedWritableRoots...),
+		"commandEnabled":    boolValue(profile.CommandPermissions.Enabled, true),
+		"allowShellWrapper": boolValue(profile.CommandPermissions.AllowShellWrapper, true),
+		"allowSudo":         boolValue(profile.CommandPermissions.AllowSudo, false),
+	}
+}
+
+func agentCommandCategoryLabel(category string) string {
+	switch category {
+	case "system_inspection":
+		return "系统检查"
+	case "service_read":
+		return "服务读取"
+	case "network_read":
+		return "网络读取"
+	case "file_read":
+		return "文件读取"
+	case "service_mutation":
+		return "服务变更"
+	case "filesystem_mutation":
+		return "文件系统变更"
+	case "package_mutation":
+		return "包管理变更"
+	default:
+		return category
+	}
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "是"
+	}
+	return "否"
+}
+
+func cloneBoolPtr(in *bool) *bool {
+	if in == nil {
+		return nil
+	}
+	value := *in
+	return &value
+}
+
+func boolValue(in *bool, fallback bool) bool {
+	if in == nil {
+		return fallback
+	}
+	return *in
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return make(map[string]string)
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (a *App) snapshot(sessionID string) model.Snapshot {
@@ -3453,7 +4324,7 @@ func (a *App) syncAccountState(ctx context.Context, sessionID string) {
 		RequiresOpenAIAuth bool           `json:"requiresOpenaiAuth"`
 	}
 	refreshToken := currentAuth.Pending || !currentAuth.Connected
-	if err := a.codex.Request(ctx, "account/read", map[string]any{"refreshToken": refreshToken}, &result); err != nil {
+	if err := a.codexRequest(ctx, "account/read", map[string]any{"refreshToken": refreshToken}, &result); err != nil {
 		log.Printf("account sync skipped session=%s err=%s", sessionID, truncate(err.Error(), 200))
 		return
 	}
@@ -3467,7 +4338,7 @@ func (a *App) syncAccountState(ctx context.Context, sessionID string) {
 					Account            map[string]any `json:"account"`
 					RequiresOpenAIAuth bool           `json:"requiresOpenaiAuth"`
 				}
-				if err := a.codex.Request(ctx, "account/read", map[string]any{"refreshToken": false}, &retryResult); err == nil {
+				if err := a.codexRequest(ctx, "account/read", map[string]any{"refreshToken": false}, &retryResult); err == nil {
 					result = retryResult
 				}
 			}
@@ -3599,7 +4470,7 @@ func (a *App) restoreStoredCodexAuth(ctx context.Context, sessionID string, toke
 	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var result map[string]any
-	if err := a.codex.Request(requestCtx, "account/login/start", map[string]any{
+	if err := a.codexRequest(requestCtx, "account/login/start", map[string]any{
 		"type":             "chatgptAuthTokens",
 		"accessToken":      tokens.AccessToken,
 		"chatgptAccountId": tokens.ChatGPTAccountID,
@@ -3724,7 +4595,7 @@ func (a *App) interruptTurnAsync(threadID, turnID string) {
 			params["turnId"] = turnID
 		}
 		var result map[string]any
-		if err := a.codex.Request(ctx, "turn/interrupt", params, &result); err != nil {
+		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil {
 			log.Printf("interrupt unexpected local fallback failed thread=%s turn=%s err=%s", threadID, turnID, truncate(err.Error(), 200))
 		}
 	}()

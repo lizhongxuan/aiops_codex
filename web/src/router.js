@@ -5,6 +5,7 @@ const HostsPage = () => import("./pages/HostsPage.vue");
 const ExperiencePacksPage = () => import("./pages/ExperiencePacksPage.vue");
 const ProtocolPage = () => import("./pages/ProtocolPage.vue");
 const TerminalPage = () => import("./pages/TerminalPage.vue");
+const AgentProfilePage = () => import("./pages/AgentProfilePage.vue");
 
 const routes = [
   {
@@ -32,6 +33,11 @@ const routes = [
     name: "terminal",
     component: TerminalPage,
     props: true,
+  },
+  {
+    path: "/settings/agent",
+    name: "settings-agent",
+    component: AgentProfilePage,
   },
 ];
 

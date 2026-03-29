@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { ClipboardCheckIcon, FileTextIcon, FolderIcon, SearchIcon } from "lucide-vue-next";
 import Modal from "./Modal.vue";
 import { useAppStore } from "../store";
+import { resolveHostDisplay } from "../lib/hostDisplay";
 
 const props = defineProps({
   card: {
@@ -28,9 +29,13 @@ const displayHostId = computed(() => {
 });
 const displayHostLabel = computed(() => {
   const hostId = displayHostId.value;
-  const hostName = (props.card.hostName || store.snapshot.hosts.find((host) => host.id === hostId)?.name || "").trim();
-  if (!hostName || hostName === hostId) return hostId;
-  return `${hostName} · ${hostId}`;
+  const host = store.snapshot.hosts.find((item) => item.id === hostId) || {};
+  return resolveHostDisplay({
+    ...host,
+    id: hostId,
+    hostId,
+    hostName: props.card.hostName,
+  }) || hostId;
 });
 const searchScopePath = computed(() => {
   const directoryRow = kvRows.value.find((row) => isScopeKey(row.key) && (row.value || "").trim());

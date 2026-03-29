@@ -4,6 +4,7 @@ import { AlertTriangleIcon, CopyIcon, ExternalLinkIcon, FileCode2Icon, SearchIco
 import * as monaco from "monaco-editor";
 import Modal from "./Modal.vue";
 import { useAppStore } from "../store";
+import { resolveHostDisplay } from "../lib/hostDisplay";
 
 const props = defineProps({
   card: {
@@ -33,11 +34,13 @@ const selectedChange = computed(() => changes.value[selectedIndex.value] || null
 const selectedTarget = computed(() => parseFileLinkTarget(selectedChange.value?.path || changes.value[0]?.path || ""));
 const displayHostId = computed(() => (props.card.hostId || "server-local").trim() || "server-local");
 const displayHostLabel = computed(() => {
-  const name = (props.card.hostName || "").trim();
-  const id = displayHostId.value;
-  if (!name && !id) return "server-local";
-  if (!id || id === name) return name || id;
-  return `${name} · ${id}`;
+  const host = store.snapshot.hosts.find((item) => item.id === displayHostId.value) || {};
+  return resolveHostDisplay({
+    ...host,
+    id: displayHostId.value,
+    hostId: displayHostId.value,
+    hostName: props.card.hostName,
+  }) || "server-local";
 });
 const fileCount = computed(() => {
   if (!changes.value.length) return 0;

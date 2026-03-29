@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"strings"
 	"sync"
 
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
@@ -9,15 +10,29 @@ import (
 )
 
 type agentConnection struct {
-	hostID string
-	stream agentrpc.AgentService_ConnectServer
-	sendMu sync.Mutex
+	hostID          string
+	stream          agentrpc.AgentService_ConnectServer
+	sendMu          sync.Mutex
+	stateMu         sync.Mutex
+	lastProfileHash string
 }
 
 func (c *agentConnection) send(msg *agentrpc.Envelope) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	return c.stream.Send(msg)
+}
+
+func (c *agentConnection) profileHash() string {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.lastProfileHash
+}
+
+func (c *agentConnection) setProfileHash(hash string) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.lastProfileHash = strings.TrimSpace(hash)
 }
 
 func (a *App) setAgentConnection(hostID string, conn *agentConnection) {

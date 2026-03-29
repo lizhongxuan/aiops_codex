@@ -272,8 +272,11 @@ func (a *App) handleFilePreview(w http.ResponseWriter, r *http.Request, sessionI
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-
 	hostID := defaultHostID(strings.TrimSpace(r.URL.Query().Get("hostId")))
+	if err := a.ensureCapabilityAllowedForHost(hostID, "fileRead"); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return
+	}
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
 	if path == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})

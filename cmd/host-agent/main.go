@@ -51,8 +51,12 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 		return err
 	}
 	sender := &agentStreamSender{stream: stream}
-	terminals := newAgentTerminalManager(sender)
-	execs := newAgentExecManager(sender)
+	agentRuntime, err := newHostAgentRuntime()
+	if err != nil {
+		return err
+	}
+	terminals := newAgentTerminalManager(sender, agentRuntime)
+	execs := newAgentExecManager(sender, agentRuntime)
 	defer terminals.shutdownAll()
 	defer execs.shutdownAll()
 
@@ -70,6 +74,14 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 	}); err != nil {
 		return err
 	}
+	profile, revision, unsupported := agentRuntime.profile.snapshot()
+	_ = sender.send(profileAckEnvelope(hostAgentProfileAckMessage{
+		ProfileID:   profile.ID,
+		Revision:    revision,
+		Status:      "loaded",
+		Summary:     hostAgentProfileSummary(profile, unsupported) + " (unsupported runtime-only fields: " + strings.Join(unsupported, ", ") + ")",
+		Unsupported: unsupported,
+	}))
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -84,6 +96,15 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				if msg.Ack != nil {
 					log.Printf("server ack: %s", msg.Ack.Message)
 				}
+			case hostAgentProfileUpdateKind:
+				ack, err := agentRuntime.profile.applyUpdate(msg)
+				if err != nil {
+					log.Printf("profile update failed: %v", err)
+					_ = sender.send(profileAckErrorEnvelope(err.Error()))
+					continue
+				}
+				log.Printf("profile update applied: rev=%s status=%s", ack.Revision, ack.Status)
+				_ = sender.send(profileAckEnvelope(ack))
 			case "error":
 				log.Printf("server error: %s", msg.Error)
 			case "terminal/open":
@@ -171,7 +192,7 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				}
 			case "file/list":
 				go func(req *agentrpc.FileListRequest) {
-					if err := handleAgentFileList(sender, req); err != nil {
+					if err := handleAgentFileList(agentRuntime, sender, req); err != nil {
 						_ = sender.send(&agentrpc.Envelope{
 							Kind: "file/list/result",
 							FileListResult: &agentrpc.FileListResult{
@@ -183,7 +204,7 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				}(msg.FileListRequest)
 			case "file/read":
 				go func(req *agentrpc.FileReadRequest) {
-					if err := handleAgentFileRead(sender, req); err != nil {
+					if err := handleAgentFileRead(agentRuntime, sender, req); err != nil {
 						_ = sender.send(&agentrpc.Envelope{
 							Kind: "file/read/result",
 							FileReadResult: &agentrpc.FileReadResult{
@@ -195,7 +216,7 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				}(msg.FileReadRequest)
 			case "file/search":
 				go func(req *agentrpc.FileSearchRequest) {
-					if err := handleAgentFileSearch(sender, req); err != nil {
+					if err := handleAgentFileSearch(agentRuntime, sender, req); err != nil {
 						_ = sender.send(&agentrpc.Envelope{
 							Kind: "file/search/result",
 							FileSearchResult: &agentrpc.FileSearchResult{
@@ -207,7 +228,7 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				}(msg.FileSearchRequest)
 			case "file/write":
 				go func(req *agentrpc.FileWriteRequest) {
-					if err := handleAgentFileWrite(sender, req); err != nil {
+					if err := handleAgentFileWrite(agentRuntime, sender, req); err != nil {
 						_ = sender.send(&agentrpc.Envelope{
 							Kind: "file/write/result",
 							FileWriteResult: &agentrpc.FileWriteResult{

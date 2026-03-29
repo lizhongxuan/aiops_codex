@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,16 +29,22 @@ type agentExecSession struct {
 }
 
 type agentExecManager struct {
-	sender *agentStreamSender
+	sender  *agentStreamSender
+	runtime *hostAgentRuntime
 
 	mu    sync.Mutex
 	execs map[string]*agentExecSession
 }
 
-func newAgentExecManager(sender *agentStreamSender) *agentExecManager {
+func newAgentExecManager(sender *agentStreamSender, runtime ...*hostAgentRuntime) *agentExecManager {
+	var hostRuntime *hostAgentRuntime
+	if len(runtime) > 0 {
+		hostRuntime = runtime[0]
+	}
 	return &agentExecManager{
-		sender: sender,
-		execs:  make(map[string]*agentExecSession),
+		sender:  sender,
+		runtime: hostRuntime,
+		execs:   make(map[string]*agentExecSession),
 	}
 }
 
@@ -56,11 +63,29 @@ func (m *agentExecManager) start(req *agentrpc.ExecStart) error {
 	if err != nil {
 		return err
 	}
-	shell := resolveAgentShell(req.Shell)
+	decision := commandPolicyDecision{}
+	if m.runtime != nil && m.runtime.profile != nil {
+		decision, err = m.runtime.profile.commandPolicy(req.Command)
+		if err != nil {
+			return err
+		}
+		if isMutationCommandCategory(decision.Category) {
+			if err := m.runtime.profile.ensureWritableRoots([]string{cwd}); err != nil {
+				return err
+			}
+		}
+	}
 	timeout := clampAgentExecTimeout(req.TimeoutSec, req.Readonly)
+	if m.runtime != nil && m.runtime.profile != nil {
+		timeout = m.runtime.profile.effectiveCommandTimeoutSeconds(req.TimeoutSec, req.Readonly)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	cmd := exec.CommandContext(ctx, shell, "-lc", req.Command)
+	cmd, err := buildAgentExecCommand(ctx, req.Command, req.Shell, m.runtime == nil || m.runtime.profile == nil || m.runtime.profile.allowShellWrapper())
+	if err != nil {
+		cancel()
+		return err
+	}
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -258,4 +283,43 @@ func clampAgentExecTimeout(timeoutSec int, readonly bool) int {
 		return 600
 	}
 	return timeoutSec
+}
+
+func buildAgentExecCommand(ctx context.Context, command, shell string, allowShellWrapper bool) (*exec.Cmd, error) {
+	if allowShellWrapper {
+		resolvedShell := resolveAgentShell(shell)
+		return exec.CommandContext(ctx, resolvedShell, "-lc", command), nil
+	}
+	if hostAgentCommandUsesShellWrapper(command) {
+		return nil, errors.New("shell wrapper commands are disabled by the current host-agent profile")
+	}
+	args, err := parseAgentDirectCommand(command)
+	if err != nil {
+		return nil, err
+	}
+	return exec.CommandContext(ctx, args[0], args[1:]...), nil
+}
+
+func parseAgentDirectCommand(command string) ([]string, error) {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return nil, errors.New("exec start requires command")
+	}
+	if strings.ContainsAny(trimmed, "|;&<>`$()") {
+		return nil, errors.New("shell wrapper commands are disabled by the current host-agent profile")
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return nil, errors.New("exec start requires command")
+	}
+	return fields, nil
+}
+
+func isMutationCommandCategory(category string) bool {
+	switch category {
+	case "service_mutation", "filesystem_mutation", "package_mutation":
+		return true
+	default:
+		return false
+	}
 }

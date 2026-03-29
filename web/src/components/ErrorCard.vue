@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from "vue";
 import { AlertTriangleIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-vue-next";
+import { resolveHostDisplay } from "../lib/hostDisplay";
+import { useAppStore } from "../store";
 
 const props = defineProps({
   card: {
@@ -10,6 +12,7 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["retry", "refresh"]);
+const store = useAppStore();
 
 const errorText = computed(() => {
   return [props.card.title, props.card.message, props.card.text, props.card.error]
@@ -55,6 +58,14 @@ const isRetryable = computed(() => {
 
 const retryabilityLabel = computed(() => (isRetryable.value ? "可直接重试" : "需要调整后再试"));
 const strategyLabel = computed(() => (needsAlternative.value ? "建议换方案" : "建议等待恢复后重试"));
+const hostLabel = computed(() => {
+  const host = store.snapshot.hosts.find((item) => item.id === props.card.hostId) || {};
+  return resolveHostDisplay({
+    ...host,
+    hostId: props.card.hostId,
+    hostName: props.card.hostName,
+  });
+});
 
 const errorHint = computed(() => {
   const text = errorText.value;
@@ -97,9 +108,7 @@ function onRefresh() {
       <AlertTriangleIcon size="20" class="error-icon" />
       <div class="error-title-group">
         <span class="error-title">{{ card.title || '出现错误' }}</span>
-        <span v-if="card.hostId || card.hostName" class="error-host">
-          {{ card.hostName || card.hostId }}<span v-if="card.hostId"> · {{ card.hostId }}</span>
-        </span>
+        <span v-if="hostLabel" class="error-host">{{ hostLabel }}</span>
       </div>
     </div>
 

@@ -87,6 +87,749 @@ function isConnectionLossMessage(message) {
   return /^与 ai-server 的连接已断开/.test((message || "").trim());
 }
 
+const COMMAND_CATEGORY_META = [
+  { id: "system_inspection", label: "系统检查" },
+  { id: "service_read", label: "服务读取" },
+  { id: "network_read", label: "网络读取" },
+  { id: "file_read", label: "文件读取" },
+  { id: "service_mutation", label: "服务变更" },
+  { id: "filesystem_mutation", label: "文件系统变更" },
+  { id: "package_mutation", label: "包管理变更" },
+];
+
+const CAPABILITY_META = [
+  { id: "commandExecution", label: "命令执行" },
+  { id: "fileRead", label: "文件读取" },
+  { id: "fileSearch", label: "文件搜索" },
+  { id: "fileChange", label: "文件修改" },
+  { id: "terminal", label: "终端访问" },
+  { id: "webSearch", label: "网页搜索" },
+  { id: "webOpen", label: "网页打开" },
+  { id: "approval", label: "审批请求" },
+  { id: "multiAgent", label: "多 Agent 并行" },
+  { id: "plan", label: "计划生成" },
+  { id: "summary", label: "结果总结" },
+];
+
+const SKILL_CATALOG = [
+  {
+    id: "ops-triage",
+    name: "Ops Triage",
+    description: "快速归类问题并给出最小干预路径。",
+    source: "built-in",
+    defaultEnabled: true,
+    defaultActivationMode: "default_enabled",
+  },
+  {
+    id: "incident-summary",
+    name: "Incident Summary",
+    description: "把诊断过程整理成可交付摘要。",
+    source: "local",
+    defaultEnabled: true,
+    defaultActivationMode: "default_enabled",
+  },
+  {
+    id: "safe-change-review",
+    name: "Safe Change Review",
+    description: "在执行前做变更影响检查。",
+    source: "built-in",
+    defaultEnabled: false,
+    defaultActivationMode: "explicit_only",
+  },
+  {
+    id: "host-diagnostics",
+    name: "Host Diagnostics",
+    description: "收集主机健康与日志摘要。",
+    source: "local",
+    defaultEnabled: true,
+    defaultActivationMode: "default_enabled",
+  },
+  {
+    id: "host-change-review",
+    name: "Host Change Review",
+    description: "对主机变更做安全复核。",
+    source: "built-in",
+    defaultEnabled: false,
+    defaultActivationMode: "explicit_only",
+  },
+];
+
+const MCP_CATALOG = [
+  {
+    id: "filesystem",
+    name: "Filesystem MCP",
+    type: "stdio",
+    source: "built-in",
+    defaultEnabled: true,
+    permission: "readonly",
+    requiresExplicitUserApproval: false,
+  },
+  {
+    id: "docs",
+    name: "Docs MCP",
+    type: "http",
+    source: "local",
+    defaultEnabled: true,
+    permission: "readonly",
+    requiresExplicitUserApproval: true,
+  },
+  {
+    id: "metrics",
+    name: "Metrics MCP",
+    type: "http",
+    source: "built-in",
+    defaultEnabled: false,
+    permission: "readwrite",
+    requiresExplicitUserApproval: true,
+  },
+  {
+    id: "host-files",
+    name: "Host Files MCP",
+    type: "stdio",
+    source: "built-in",
+    defaultEnabled: true,
+    permission: "readonly",
+    requiresExplicitUserApproval: false,
+  },
+  {
+    id: "host-logs",
+    name: "Host Logs MCP",
+    type: "http",
+    source: "local",
+    defaultEnabled: true,
+    permission: "readonly",
+    requiresExplicitUserApproval: true,
+  },
+];
+
+function cloneCatalogEntries(entries) {
+  return (entries || []).map((item) => ({ ...item }));
+}
+
+function createSkillCatalog() {
+  return cloneCatalogEntries(SKILL_CATALOG);
+}
+
+function createMcpCatalog() {
+  return cloneCatalogEntries(MCP_CATALOG);
+}
+
+function normalizeSkillActivationMode(value, fallbackEnabled) {
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "default" || mode === "default_enabled" || mode === "enabled") return "default_enabled";
+  if (mode === "explicit" || mode === "explicit_only") return "explicit_only";
+  if (mode === "disabled") return "disabled";
+  if (typeof fallbackEnabled === "boolean") {
+    return fallbackEnabled ? "default_enabled" : "disabled";
+  }
+  return "disabled";
+}
+
+function normalizeSkillEnabled(value, mode, fallbackEnabled) {
+  if (mode === "disabled") return false;
+  if (typeof value === "boolean") return value;
+  if (typeof fallbackEnabled === "boolean") return fallbackEnabled;
+  return mode === "default_enabled";
+}
+
+function normalizeMcpPermission(value, fallbackPermission) {
+  const permission = String(value || fallbackPermission || "").trim().toLowerCase();
+  if (permission === "readwrite" || permission === "read-write") return "readwrite";
+  if (permission === "readonly" || permission === "read-only") return "readonly";
+  return "readonly";
+}
+
+function normalizeMcpEnabled(value, fallbackEnabled) {
+  if (typeof value === "boolean") return value;
+  if (typeof fallbackEnabled === "boolean") return fallbackEnabled;
+  return false;
+}
+
+function normalizeSkillItems(rawSkills, fallbackSkills = [], catalog = SKILL_CATALOG) {
+  const fallbackMap = new Map((fallbackSkills || []).map((item) => [String(item?.id || ""), item]));
+  const rawMap = new Map((rawSkills || []).map((item) => [String(item?.id || ""), item]));
+  const merged = [];
+  const seen = new Set();
+
+  for (const entry of catalog) {
+    const raw = rawMap.get(entry.id) || fallbackMap.get(entry.id) || null;
+    const mode = normalizeSkillActivationMode(raw?.activationMode ?? raw?.activation_mode ?? entry.defaultActivationMode, raw?.enabled ?? fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled);
+    merged.push({
+      id: entry.id,
+      name: String(raw?.name || entry.name || entry.id),
+      description: String(raw?.description || entry.description || ""),
+      source: String(raw?.source || entry.source || "local"),
+      enabled: normalizeSkillEnabled(raw?.enabled, mode, fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled),
+      activationMode: mode,
+    });
+    seen.add(entry.id);
+  }
+
+  for (const [id, raw] of rawMap.entries()) {
+    if (!id || seen.has(id)) continue;
+    const mode = normalizeSkillActivationMode(raw?.activationMode ?? raw?.activation_mode, raw?.enabled);
+    merged.push({
+      id,
+      name: String(raw?.name || id),
+      description: String(raw?.description || ""),
+      source: String(raw?.source || "local"),
+      enabled: normalizeSkillEnabled(raw?.enabled, mode),
+      activationMode: mode,
+    });
+  }
+
+  return merged;
+}
+
+function normalizeMcpItems(rawMcps, fallbackMcps = [], catalog = MCP_CATALOG) {
+  const fallbackMap = new Map((fallbackMcps || []).map((item) => [String(item?.id || ""), item]));
+  const rawMap = new Map((rawMcps || []).map((item) => [String(item?.id || ""), item]));
+  const merged = [];
+  const seen = new Set();
+
+  for (const entry of catalog) {
+    const raw = rawMap.get(entry.id) || fallbackMap.get(entry.id) || null;
+    const permission = normalizeMcpPermission(raw?.permission, entry.permission);
+    merged.push({
+      id: entry.id,
+      name: String(raw?.name || entry.name || entry.id),
+      type: String(raw?.type || entry.type || "stdio"),
+      source: String(raw?.source || entry.source || "local"),
+      enabled: normalizeMcpEnabled(raw?.enabled, fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled),
+      permission,
+      requiresExplicitUserApproval:
+        typeof raw?.requiresExplicitUserApproval === "boolean"
+          ? raw.requiresExplicitUserApproval
+          : raw?.requires_explicit_user_approval ?? fallbackMap.get(entry.id)?.requiresExplicitUserApproval ?? entry.requiresExplicitUserApproval,
+    });
+    seen.add(entry.id);
+  }
+
+  for (const [id, raw] of rawMap.entries()) {
+    if (!id || seen.has(id)) continue;
+    merged.push({
+      id,
+      name: String(raw?.name || id),
+      type: String(raw?.type || "stdio"),
+      source: String(raw?.source || "local"),
+      enabled: normalizeMcpEnabled(raw?.enabled, false),
+      permission: normalizeMcpPermission(raw?.permission, "readonly"),
+      requiresExplicitUserApproval:
+        typeof raw?.requiresExplicitUserApproval === "boolean" ? raw.requiresExplicitUserApproval : raw?.requires_explicit_user_approval ?? false,
+    });
+  }
+
+  return merged;
+}
+
+function alignAgentProfileCollections(profile) {
+  if (!profile || typeof profile !== "object") {
+    return profile;
+  }
+  return {
+    ...profile,
+    skills: normalizeSkillItems(profile.skills || [], [], createSkillCatalog()),
+    mcps: normalizeMcpItems(profile.mcps || [], [], createMcpCatalog()),
+  };
+}
+
+function serializeSkillItems(skills) {
+  return normalizeSkillItems(skills || [], [], createSkillCatalog()).map((item) => ({
+    id: String(item.id || ""),
+    name: String(item.name || ""),
+    description: String(item.description || ""),
+    source: String(item.source || ""),
+    enabled: Boolean(item.enabled),
+    activationMode: normalizeSkillActivationMode(item.activationMode, item.enabled),
+  }));
+}
+
+function serializeMcpItems(mcps) {
+  return normalizeMcpItems(mcps || [], [], createMcpCatalog()).map((item) => ({
+    id: String(item.id || ""),
+    name: String(item.name || ""),
+    type: String(item.type || ""),
+    source: String(item.source || ""),
+    enabled: Boolean(item.enabled),
+    permission: normalizeMcpPermission(item.permission),
+    requiresExplicitUserApproval: Boolean(item.requiresExplicitUserApproval),
+  }));
+}
+
+function profileHasHighRiskCombination(profile) {
+  const commandPermissions = profile?.commandPermissions || {};
+  const categoryPolicies = Array.isArray(commandPermissions.categoryPolicies) ? commandPermissions.categoryPolicies : [];
+  const packageMutation = categoryPolicies.find((item) => item?.id === "package_mutation")?.mode;
+  const filesystemMutation = categoryPolicies.find((item) => item?.id === "filesystem_mutation")?.mode;
+  const serviceMutation = categoryPolicies.find((item) => item?.id === "service_mutation")?.mode;
+  return Boolean(
+    (commandPermissions.enabled && commandPermissions.allowSudo) ||
+      packageMutation === "allow" ||
+      filesystemMutation === "allow" ||
+      serviceMutation === "allow" ||
+      String(profile?.runtime?.sandboxMode || "") === "danger-full-access",
+  );
+}
+
+function createDefaultAgentProfiles() {
+  return [
+    {
+      id: "main-agent",
+      name: "main-agent",
+      type: "main-agent",
+      description: "系统默认主 Agent 配置，用于会话编排、规划和结果收敛。",
+      updatedAt: "2026-03-28 00:00:00",
+      updatedBy: "system",
+      runtime: {
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+        approvalPolicy: "untrusted",
+        sandboxMode: "workspace-write",
+      },
+      systemPrompt: {
+        content:
+          "你是主 Agent。优先收敛目标、分解任务、控制风险，并在输出中保持清晰、可执行和可回溯。遇到高风险变更时，先说明边界，再给出最小影响方案。",
+        preview:
+          "你是主 Agent。优先收敛目标、分解任务、控制风险，并在输出中保持清晰、可执行和可回溯。",
+        notes: "面向会话层编排与统一决策，不包含主机运行态。",
+      },
+      commandPermissions: {
+        enabled: true,
+        defaultMode: "approval_required",
+        allowShellWrapper: true,
+        allowSudo: false,
+        defaultTimeoutSeconds: 300,
+        allowedWritableRoots: ["/workspace", "/tmp"],
+        categoryPolicies: [
+          { id: "system_inspection", label: "系统检查", mode: "allow" },
+          { id: "service_read", label: "服务读取", mode: "allow" },
+          { id: "network_read", label: "网络读取", mode: "approval_required" },
+          { id: "file_read", label: "文件读取", mode: "allow" },
+          { id: "filesystem_mutation", label: "文件系统变更", mode: "approval_required" },
+          { id: "service_mutation", label: "服务变更", mode: "approval_required" },
+          { id: "package_mutation", label: "包管理变更", mode: "deny" },
+        ],
+      },
+      capabilityPermissions: [
+        { id: "commandExecution", label: "命令执行", state: "approval_required" },
+        { id: "fileRead", label: "文件读取", state: "enabled" },
+        { id: "fileSearch", label: "文件搜索", state: "enabled" },
+        { id: "fileChange", label: "文件修改", state: "approval_required" },
+        { id: "terminal", label: "终端访问", state: "approval_required" },
+        { id: "webSearch", label: "网页搜索", state: "enabled" },
+        { id: "webOpen", label: "网页打开", state: "approval_required" },
+        { id: "approval", label: "审批请求", state: "enabled" },
+        { id: "multiAgent", label: "多 Agent 并行", state: "enabled" },
+        { id: "plan", label: "计划生成", state: "enabled" },
+        { id: "summary", label: "结果总结", state: "enabled" },
+      ],
+      skills: [
+        {
+          id: "ops-triage",
+          name: "Ops Triage",
+          description: "快速归类问题并给出最小干预路径。",
+          source: "built-in",
+          enabled: true,
+          activationMode: "default",
+        },
+        {
+          id: "incident-summary",
+          name: "Incident Summary",
+          description: "把诊断过程整理成可交付摘要。",
+          source: "local",
+          enabled: true,
+          activationMode: "default",
+        },
+        {
+          id: "safe-change-review",
+          name: "Safe Change Review",
+          description: "在执行前做变更影响检查。",
+          source: "built-in",
+          enabled: false,
+          activationMode: "explicit",
+        },
+      ],
+      mcps: [
+        {
+          id: "filesystem",
+          name: "Filesystem MCP",
+          type: "stdio",
+          source: "built-in",
+          enabled: true,
+          permission: "read-only",
+          requiresExplicitUserApproval: false,
+        },
+        {
+          id: "docs",
+          name: "Docs MCP",
+          type: "http",
+          source: "local",
+          enabled: true,
+          permission: "read-only",
+          requiresExplicitUserApproval: true,
+        },
+        {
+          id: "metrics",
+          name: "Metrics MCP",
+          type: "http",
+          source: "built-in",
+          enabled: false,
+          permission: "read-write",
+          requiresExplicitUserApproval: true,
+        },
+      ],
+    },
+    {
+      id: "host-agent-default",
+      name: "host-agent-default",
+      type: "host-agent-default",
+      description: "默认 host-agent 静态配置，偏向安全读取和受限执行。",
+      updatedAt: "2026-03-28 00:00:00",
+      updatedBy: "system",
+      runtime: {
+        model: "gpt-5.4-mini",
+        reasoningEffort: "low",
+        approvalPolicy: "untrusted",
+        sandboxMode: "workspace-write",
+      },
+      systemPrompt: {
+        content:
+          "你是 host-agent。只负责在受控边界内执行局部操作，优先只读、低风险和可回滚的动作。任何变更都要保持最小范围，并在必要时请求审批。",
+        preview:
+          "你是 host-agent。只负责在受控边界内执行局部操作，优先只读、低风险和可回滚的动作。",
+        notes: "面向主机侧默认执行边界，不展示主机心跳或在线信息。",
+      },
+      commandPermissions: {
+        enabled: true,
+        defaultMode: "readonly_only",
+        allowShellWrapper: true,
+        allowSudo: false,
+        defaultTimeoutSeconds: 180,
+        allowedWritableRoots: ["/tmp"],
+        categoryPolicies: [
+          { id: "system_inspection", label: "系统检查", mode: "allow" },
+          { id: "service_read", label: "服务读取", mode: "allow" },
+          { id: "network_read", label: "网络读取", mode: "allow" },
+          { id: "file_read", label: "文件读取", mode: "allow" },
+          { id: "filesystem_mutation", label: "文件系统变更", mode: "approval_required" },
+          { id: "service_mutation", label: "服务变更", mode: "approval_required" },
+          { id: "package_mutation", label: "包管理变更", mode: "deny" },
+        ],
+      },
+      capabilityPermissions: [
+        { id: "commandExecution", label: "命令执行", state: "approval_required" },
+        { id: "fileRead", label: "文件读取", state: "enabled" },
+        { id: "fileSearch", label: "文件搜索", state: "enabled" },
+        { id: "fileChange", label: "文件修改", state: "disabled" },
+        { id: "terminal", label: "终端访问", state: "enabled" },
+        { id: "webSearch", label: "网页搜索", state: "disabled" },
+        { id: "webOpen", label: "网页打开", state: "disabled" },
+        { id: "approval", label: "审批请求", state: "enabled" },
+        { id: "multiAgent", label: "多 Agent 并行", state: "disabled" },
+        { id: "plan", label: "计划生成", state: "enabled" },
+        { id: "summary", label: "结果总结", state: "enabled" },
+      ],
+      skills: [
+        {
+          id: "host-diagnostics",
+          name: "Host Diagnostics",
+          description: "收集主机健康与日志摘要。",
+          source: "local",
+          enabled: true,
+          activationMode: "default",
+        },
+        {
+          id: "host-change-review",
+          name: "Host Change Review",
+          description: "对主机变更做安全复核。",
+          source: "built-in",
+          enabled: false,
+          activationMode: "explicit",
+        },
+      ],
+      mcps: [
+        {
+          id: "host-files",
+          name: "Host Files MCP",
+          type: "stdio",
+          source: "built-in",
+          enabled: true,
+          permission: "read-only",
+          requiresExplicitUserApproval: false,
+        },
+        {
+          id: "host-logs",
+          name: "Host Logs MCP",
+          type: "http",
+          source: "local",
+          enabled: true,
+          permission: "read-only",
+          requiresExplicitUserApproval: true,
+        },
+      ],
+    },
+  ];
+}
+
+function normalizeCategoryPolicies(rawPolicies, fallbackPolicies = []) {
+  const fallbackMap = new Map((fallbackPolicies || []).map((item) => [item.id, item]));
+  const policies = [];
+  const pushPolicy = (id, mode) => {
+    if (!id) return;
+    const fallback = fallbackMap.get(id) || {};
+    policies.push({
+      id,
+      label: fallback.label || COMMAND_CATEGORY_META.find((item) => item.id === id)?.label || id,
+      mode: String(mode || fallback.mode || "approval_required"),
+      description: String(fallback.description || ""),
+    });
+  };
+  if (Array.isArray(rawPolicies)) {
+    rawPolicies.forEach((item) => pushPolicy(String(item?.id || ""), item?.mode || item?.state));
+  } else if (rawPolicies && typeof rawPolicies === "object") {
+    Object.entries(rawPolicies).forEach(([id, mode]) => pushPolicy(id, mode));
+  }
+  if (!policies.length) {
+    return [...fallbackPolicies];
+  }
+  return COMMAND_CATEGORY_META.map((item) => policies.find((entry) => entry.id === item.id) || {
+    id: item.id,
+    label: item.label,
+    mode: fallbackMap.get(item.id)?.mode || "approval_required",
+    description: fallbackMap.get(item.id)?.description || "",
+  });
+}
+
+function normalizeCapabilityPermissions(rawCapabilities, fallbackCapabilities = []) {
+  const fallbackMap = new Map((fallbackCapabilities || []).map((item) => [item.id, item]));
+  const capabilities = [];
+  const pushCapability = (id, state) => {
+    if (!id) return;
+    const fallback = fallbackMap.get(id) || {};
+    capabilities.push({
+      id,
+      label: fallback.label || CAPABILITY_META.find((item) => item.id === id)?.label || id,
+      state: String(state || fallback.state || "enabled"),
+    });
+  };
+  if (Array.isArray(rawCapabilities)) {
+    rawCapabilities.forEach((item) => pushCapability(String(item?.id || ""), item?.state));
+  } else if (rawCapabilities && typeof rawCapabilities === "object") {
+    Object.entries(rawCapabilities).forEach(([id, state]) => pushCapability(id, state));
+  }
+  if (!capabilities.length) {
+    return [...fallbackCapabilities];
+  }
+  return CAPABILITY_META.map((item) => capabilities.find((entry) => entry.id === item.id) || {
+    id: item.id,
+    label: item.label,
+    state: fallbackMap.get(item.id)?.state || "enabled",
+  });
+}
+
+function normalizeAgentProfile(rawProfile, fallbackProfile) {
+  const fallback = fallbackProfile || {};
+  const raw = rawProfile || {};
+  const runtime = raw.runtime || raw.runtime_settings || {};
+  const systemPrompt = raw.systemPrompt || raw.system_prompt || {};
+  const commandPermissions = raw.commandPermissions || raw.command_permissions || {};
+  const capabilityPermissions = raw.capabilityPermissions || raw.capability_permissions || {};
+  const skills = raw.skills || [];
+  const mcps = raw.mcps || raw.mcpServers || [];
+
+  const normalized = {
+    id: String(raw.id || fallback.id || raw.type || fallback.type || ""),
+    name: String(raw.name || fallback.name || raw.id || fallback.id || ""),
+    type: String(raw.type || fallback.type || raw.id || fallback.id || "main-agent"),
+    description: String(raw.description || fallback.description || ""),
+    updatedAt: String(raw.updatedAt || raw.updated_at || fallback.updatedAt || ""),
+    updatedBy: String(raw.updatedBy || raw.updated_by || fallback.updatedBy || ""),
+    runtime: {
+      model: String(runtime.model || fallback.runtime?.model || "gpt-5.4"),
+      reasoningEffort: String(runtime.reasoningEffort || runtime.reasoning_effort || fallback.runtime?.reasoningEffort || "medium"),
+      approvalPolicy: String(runtime.approvalPolicy || runtime.approval_policy || fallback.runtime?.approvalPolicy || "untrusted"),
+      sandboxMode: String(runtime.sandboxMode || runtime.sandbox_mode || fallback.runtime?.sandboxMode || "workspace-write"),
+    },
+    systemPrompt: {
+      content: String(systemPrompt.content || fallback.systemPrompt?.content || ""),
+      preview: String(systemPrompt.preview || fallback.systemPrompt?.preview || ""),
+      version: String(systemPrompt.version || fallback.systemPrompt?.version || ""),
+      notes: String(systemPrompt.notes || fallback.systemPrompt?.notes || ""),
+    },
+    commandPermissions: {
+      enabled: typeof commandPermissions.enabled === "boolean" ? commandPermissions.enabled : fallback.commandPermissions?.enabled ?? true,
+      defaultMode: String(commandPermissions.defaultMode || commandPermissions.default_mode || fallback.commandPermissions?.defaultMode || "approval_required"),
+      allowShellWrapper:
+        typeof commandPermissions.allowShellWrapper === "boolean"
+          ? commandPermissions.allowShellWrapper
+          : commandPermissions.allow_shell_wrapper ?? fallback.commandPermissions?.allowShellWrapper ?? true,
+      allowSudo:
+        typeof commandPermissions.allowSudo === "boolean"
+          ? commandPermissions.allowSudo
+          : commandPermissions.allow_sudo ?? fallback.commandPermissions?.allowSudo ?? false,
+      defaultTimeoutSeconds: Number(commandPermissions.defaultTimeoutSeconds || commandPermissions.default_timeout_seconds || fallback.commandPermissions?.defaultTimeoutSeconds || 0),
+      allowedWritableRoots: Array.isArray(commandPermissions.allowedWritableRoots || commandPermissions.allowed_writable_roots)
+        ? (commandPermissions.allowedWritableRoots || commandPermissions.allowed_writable_roots).map((item) => String(item))
+        : [...(fallback.commandPermissions?.allowedWritableRoots || [])],
+      categoryPolicies: normalizeCategoryPolicies(
+        commandPermissions.categoryPolicies || commandPermissions.category_policies,
+        fallback.commandPermissions?.categoryPolicies || [],
+      ),
+    },
+    capabilityPermissions: normalizeCapabilityPermissions(capabilityPermissions, fallback.capabilityPermissions || []),
+    skills: normalizeSkillItems(skills, fallback.skills || [], createSkillCatalog()),
+    mcps: normalizeMcpItems(mcps, fallback.mcps || [], createMcpCatalog()),
+  };
+
+  return alignAgentProfileCollections(normalized);
+}
+
+function serializeAgentProfile(profile, options = {}) {
+  const normalized = normalizeAgentProfile(profile, null);
+  return {
+    id: String(normalized?.id || ""),
+    name: String(normalized?.name || ""),
+    type: String(normalized?.type || "main-agent"),
+    description: String(normalized?.description || ""),
+    runtime: {
+      model: String(normalized?.runtime?.model || "gpt-5.4"),
+      reasoningEffort: String(normalized?.runtime?.reasoningEffort || "medium"),
+      approvalPolicy: String(normalized?.runtime?.approvalPolicy || "untrusted"),
+      sandboxMode: String(normalized?.runtime?.sandboxMode || "workspace-write"),
+    },
+    systemPrompt: {
+      content: String(normalized?.systemPrompt?.content || ""),
+      preview: String(normalized?.systemPrompt?.preview || ""),
+      version: String(normalized?.systemPrompt?.version || ""),
+      notes: String(normalized?.systemPrompt?.notes || ""),
+    },
+    commandPermissions: {
+      enabled: Boolean(normalized?.commandPermissions?.enabled),
+      defaultMode: String(normalized?.commandPermissions?.defaultMode || "approval_required"),
+      allowShellWrapper: Boolean(normalized?.commandPermissions?.allowShellWrapper),
+      allowSudo: Boolean(normalized?.commandPermissions?.allowSudo),
+      defaultTimeoutSeconds: Number(normalized?.commandPermissions?.defaultTimeoutSeconds || 120),
+      allowedWritableRoots: Array.isArray(normalized?.commandPermissions?.allowedWritableRoots)
+        ? normalized.commandPermissions.allowedWritableRoots.map((item) => String(item).trim()).filter(Boolean)
+        : [],
+      categoryPolicies: Object.fromEntries(
+        (normalized?.commandPermissions?.categoryPolicies || []).map((item) => [String(item.id || ""), String(item.mode || "approval_required")]),
+      ),
+    },
+    capabilityPermissions: Object.fromEntries(
+      (normalized?.capabilityPermissions || []).map((item) => [String(item.id || ""), String(item.state || "enabled")]),
+    ),
+    skills: serializeSkillItems(normalized?.skills || []),
+    mcps: serializeMcpItems(normalized?.mcps || []),
+    riskConfirmed: Boolean(options?.riskConfirmed),
+  };
+}
+
+function normalizeAgentProfileFieldErrors(rawFieldErrors) {
+  if (!rawFieldErrors || typeof rawFieldErrors !== "object" || Array.isArray(rawFieldErrors)) {
+    return {};
+  }
+  const fieldErrors = {};
+  for (const [field, value] of Object.entries(rawFieldErrors)) {
+    const key = String(field || "").trim();
+    if (!key) continue;
+    if (Array.isArray(value)) {
+      const message = value.map((item) => String(item || "").trim()).filter(Boolean).join("；");
+      if (message) fieldErrors[key] = message;
+      continue;
+    }
+    if (value && typeof value === "object") {
+      const nested = normalizeAgentProfileFieldErrors(value);
+      for (const [nestedKey, nestedValue] of Object.entries(nested)) {
+        fieldErrors[`${key}.${nestedKey}`] = nestedValue;
+      }
+      continue;
+    }
+    const message = String(value || "").trim();
+    if (message) fieldErrors[key] = message;
+  }
+  return fieldErrors;
+}
+
+function clearAgentProfileErrorState(store) {
+  store.agentProfilesError = "";
+  store.agentProfileFieldErrors = {};
+}
+
+function applyAgentProfileErrorState(store, error, fieldErrors) {
+  store.agentProfilesError = String(error || "").trim() || "Agent Profile 请求失败";
+  store.agentProfileFieldErrors = normalizeAgentProfileFieldErrors(fieldErrors);
+}
+
+function cloneAgentProfilesForExport(profiles) {
+  return (profiles || []).map((profile) => normalizeAgentProfile(profile, null));
+}
+
+function buildAgentProfilesExportPayload(profiles, overrides = {}) {
+  const items = cloneAgentProfilesForExport(profiles);
+  return {
+    version: 1,
+    configVersion: overrides.configVersion || 1,
+    exportedAt: overrides.exportedAt || new Date().toISOString(),
+    exportedBy: overrides.exportedBy || "",
+    count: items.length,
+    profiles: items,
+  };
+}
+
+function parseAgentProfilesImportPayload(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (typeof payload !== "object") return [];
+  if (Array.isArray(payload.profiles)) return payload.profiles;
+  if (Array.isArray(payload.items)) return payload.items;
+  if (Array.isArray(payload.agentProfiles)) return payload.agentProfiles;
+  if (payload.profile && typeof payload.profile === "object") return [payload.profile];
+  if (payload.data && Array.isArray(payload.data)) return payload.data;
+  return [];
+}
+
+function normalizeImportedAgentProfiles(rawProfiles) {
+  const defaults = createDefaultAgentProfiles();
+  const imported = Array.isArray(rawProfiles) ? rawProfiles.filter((item) => item && typeof item === "object") : [];
+  const importedById = new Map();
+  for (const profile of imported) {
+    const key = String(profile.id || profile.type || "").trim();
+    if (!key) continue;
+    importedById.set(key, profile);
+  }
+
+  const merged = defaults.map((fallbackProfile) => {
+    const incoming =
+      importedById.get(fallbackProfile.id) ||
+      importedById.get(fallbackProfile.type) ||
+      null;
+    return normalizeAgentProfile(incoming || fallbackProfile, fallbackProfile);
+  });
+
+  for (const profile of imported) {
+    const key = String(profile.id || profile.type || "").trim();
+    if (!key) continue;
+    if (merged.some((item) => item.id === key || item.type === key)) continue;
+    merged.push(normalizeAgentProfile(profile, null));
+  }
+
+  return merged;
+}
+
+async function readAgentProfilesImportSource(source) {
+  if (typeof source === "string") {
+    return source;
+  }
+  if (source && typeof source.text === "function") {
+    return await source.text();
+  }
+  if (source && typeof source.content === "string") {
+    return source.content;
+  }
+  throw new Error("unsupported import source");
+}
+
 export const useAppStore = defineStore("app", {
   state: () => ({
     snapshot: {
@@ -154,6 +897,17 @@ export const useAppStore = defineStore("app", {
       reasoningEffort: "medium",
       models: [],
     },
+    skillCatalog: createSkillCatalog(),
+    mcpCatalog: createMcpCatalog(),
+    agentProfileDefaults: createDefaultAgentProfiles().map((profile) => normalizeAgentProfile(profile, null)),
+    agentProfiles: createDefaultAgentProfiles().map((profile) => normalizeAgentProfile(profile, null)),
+    agentProfilesLoading: false,
+    agentProfilesError: "",
+    agentProfileFieldErrors: {},
+    activeAgentProfileId: "main-agent",
+    agentProfilePreview: null,
+    agentProfilePreviewLoading: false,
+    agentProfileSaving: false,
     sessionList: [],
     activeSessionId: "",
     historyLoading: false,
@@ -202,6 +956,9 @@ export const useAppStore = defineStore("app", {
     },
     activeSessionSummary: (state) => {
       return state.sessionList.find((session) => session.id === state.activeSessionId) || null;
+    },
+    activeAgentProfile: (state) => {
+      return state.agentProfiles.find((profile) => profile.id === state.activeAgentProfileId) || state.agentProfiles[0] || null;
     },
   },
   actions: {
@@ -340,6 +1097,269 @@ export const useAppStore = defineStore("app", {
       } catch (e) {
         console.error("Failed to update settings:", e);
         this.settings = { ...this.settings, ...newSettings }; // Mock fallback
+      }
+    },
+    async fetchAgentProfiles() {
+      this.agentProfilesLoading = true;
+      clearAgentProfileErrorState(this);
+      this.agentProfilePreview = null;
+      try {
+        const defaults = createDefaultAgentProfiles();
+        const remoteProfiles = [];
+
+        const tryLoad = async (url) => {
+          try {
+            const response = await fetch(url, { credentials: "include" });
+            if (!response.ok) return null;
+            return await response.json();
+          } catch (e) {
+            console.error(`Failed to fetch agent profiles from ${url}:`, e);
+            return null;
+          }
+        };
+
+        const listPayload = await tryLoad("/api/v1/agent-profiles");
+        const singlePayload = listPayload ? null : await tryLoad("/api/v1/agent-profile");
+
+        const ingestPayload = (payload) => {
+          if (!payload) return;
+          if (Array.isArray(payload.items)) {
+            remoteProfiles.push(...payload.items);
+            return;
+          }
+          if (Array.isArray(payload.profiles)) {
+            remoteProfiles.push(...payload.profiles);
+            return;
+          }
+          if (Array.isArray(payload)) {
+            remoteProfiles.push(...payload);
+            return;
+          }
+          if (typeof payload === "object") {
+            remoteProfiles.push(payload);
+          }
+        };
+
+        ingestPayload(listPayload);
+        ingestPayload(singlePayload);
+
+        if (remoteProfiles.length) {
+          const overrides = new Map();
+          for (const profile of remoteProfiles) {
+            const key = String(profile?.id || profile?.type || "");
+            if (key) {
+              overrides.set(key, profile);
+            }
+          }
+          const mergedProfiles = defaults.map((fallbackProfile) => {
+            return normalizeAgentProfile(
+              overrides.get(fallbackProfile.id) || overrides.get(fallbackProfile.type) || null,
+              fallbackProfile,
+            );
+          });
+          for (const profile of remoteProfiles) {
+            const key = String(profile?.id || profile?.type || "");
+            if (!key) continue;
+            if (mergedProfiles.some((item) => item.id === key || item.type === profile?.type)) continue;
+            mergedProfiles.push(normalizeAgentProfile(profile, null));
+          }
+          this.agentProfiles = mergedProfiles;
+        } else {
+          this.agentProfiles = defaults.map((profile) => alignAgentProfileCollections(profile));
+        }
+
+        if (!this.agentProfiles.some((profile) => profile.id === this.activeAgentProfileId)) {
+          this.activeAgentProfileId = this.agentProfiles[0]?.id || "main-agent";
+        }
+
+        return true;
+      } finally {
+        this.agentProfilesLoading = false;
+      }
+    },
+    selectAgentProfile(profileId) {
+      const nextId = String(profileId || "");
+      if (!nextId) return false;
+      const exists = this.agentProfiles.some((profile) => profile.id === nextId);
+      if (!exists) return false;
+      this.activeAgentProfileId = nextId;
+      this.agentProfilePreview = null;
+      this.agentProfileFieldErrors = {};
+      return true;
+    },
+    resetAgentProfiles() {
+      this.agentProfiles = createDefaultAgentProfiles().map((profile) => alignAgentProfileCollections(profile));
+      this.activeAgentProfileId = "main-agent";
+      clearAgentProfileErrorState(this);
+      this.agentProfilePreview = null;
+      return true;
+    },
+    async exportAgentProfiles() {
+      let payload = null;
+      try {
+        const response = await fetch("/api/v1/agent-profiles/export", {
+          method: "GET",
+          credentials: "include",
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.error || "导出 Agent Profiles 失败");
+        }
+        const exportedProfiles = normalizeImportedAgentProfiles(parseAgentProfilesImportPayload(data));
+        payload = buildAgentProfilesExportPayload(exportedProfiles, {
+          configVersion: Number(data?.configVersion || data?.version || 1),
+          exportedAt: data?.exportedAt,
+          exportedBy: data?.exportedBy,
+        });
+      } catch (e) {
+        console.error("Failed to export agent profiles from server, using local snapshot:", e);
+        payload = buildAgentProfilesExportPayload(this.agentProfiles);
+      }
+      return {
+        filename: `agent-profiles-${payload.exportedAt.replace(/[:.]/g, "-")}.json`,
+        content: JSON.stringify(payload, null, 2),
+        payload,
+      };
+    },
+    async importAgentProfiles(source) {
+      this.agentProfilesLoading = true;
+      clearAgentProfileErrorState(this);
+      try {
+        const text = await readAgentProfilesImportSource(source);
+        const payload = JSON.parse(text);
+        const response = await fetch("/api/v1/agent-profiles/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          applyAgentProfileErrorState(this, data?.error || "导入 Agent Profiles 失败", data?.fieldErrors || data?.field_errors || data?.errors?.fieldErrors);
+          return {
+            ok: false,
+            error: String(data?.error || "导入 Agent Profiles 失败"),
+          };
+        }
+        const importedProfiles = parseAgentProfilesImportPayload(data);
+        const mergedProfiles = normalizeImportedAgentProfiles(importedProfiles);
+        if (!mergedProfiles.length) {
+          throw new Error("服务端未返回可导入的 profiles");
+        }
+        this.agentProfiles = mergedProfiles;
+        if (!this.agentProfiles.some((profile) => profile.id === this.activeAgentProfileId)) {
+          this.activeAgentProfileId = this.agentProfiles[0]?.id || "main-agent";
+        }
+        await this.fetchAgentProfilePreview(this.activeAgentProfileId);
+        clearAgentProfileErrorState(this);
+        return {
+          ok: true,
+          count: mergedProfiles.length,
+          activeProfileId: this.activeAgentProfileId,
+        };
+      } catch (e) {
+        console.error("Failed to import agent profiles:", e);
+        applyAgentProfileErrorState(this, "导入 Agent Profiles 失败", { general: String(e?.message || e || "invalid JSON") });
+        return {
+          ok: false,
+          error: String(e?.message || e || "invalid JSON"),
+        };
+      } finally {
+        this.agentProfilesLoading = false;
+      }
+    },
+    async saveAgentProfile(profile, options = {}) {
+      this.agentProfileSaving = true;
+      clearAgentProfileErrorState(this);
+      try {
+        const response = await fetch("/api/v1/agent-profile", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(serializeAgentProfile(profile, options)),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          applyAgentProfileErrorState(this, data.error || "保存 Agent Profile 失败", data.fieldErrors || data.field_errors || data.errors?.fieldErrors);
+          return false;
+        }
+        const fallback = createDefaultAgentProfiles().find((item) => item.id === data.id) || null;
+        const normalized = normalizeAgentProfile(data, fallback);
+        const index = this.agentProfiles.findIndex((item) => item.id === normalized.id);
+        if (index >= 0) {
+          this.agentProfiles[index] = normalized;
+        } else {
+          this.agentProfiles.push(normalized);
+        }
+        this.activeAgentProfileId = normalized.id;
+        clearAgentProfileErrorState(this);
+        await this.fetchAgentProfilePreview(normalized.id);
+        return true;
+      } catch (e) {
+        console.error("Failed to save agent profile:", e);
+        applyAgentProfileErrorState(this, "保存 Agent Profile 失败", {});
+        return false;
+      } finally {
+        this.agentProfileSaving = false;
+      }
+    },
+    async resetAgentProfile(profileId) {
+      const nextId = String(profileId || this.activeAgentProfileId || "main-agent");
+      this.agentProfileSaving = true;
+      clearAgentProfileErrorState(this);
+      try {
+        const response = await fetch("/api/v1/agent-profile/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ profileId: nextId }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          applyAgentProfileErrorState(this, data.error || "重置 Agent Profile 失败", data.fieldErrors || data.field_errors || data.errors?.fieldErrors);
+          return false;
+        }
+        const fallback = createDefaultAgentProfiles().find((item) => item.id === nextId) || null;
+        const normalized = normalizeAgentProfile(data, fallback);
+        const index = this.agentProfiles.findIndex((item) => item.id === normalized.id);
+        if (index >= 0) {
+          this.agentProfiles[index] = normalized;
+        } else {
+          this.agentProfiles.push(normalized);
+        }
+        this.activeAgentProfileId = normalized.id;
+        clearAgentProfileErrorState(this);
+        await this.fetchAgentProfilePreview(normalized.id);
+        return true;
+      } catch (e) {
+        console.error("Failed to reset agent profile:", e);
+        applyAgentProfileErrorState(this, "重置 Agent Profile 失败", {});
+        return false;
+      } finally {
+        this.agentProfileSaving = false;
+      }
+    },
+    async fetchAgentProfilePreview(profileId) {
+      const nextId = String(profileId || this.activeAgentProfileId || "main-agent");
+      this.agentProfilePreviewLoading = true;
+      this.agentProfileFieldErrors = {};
+      try {
+        const response = await fetch(`/api/v1/agent-profile/preview?profileId=${encodeURIComponent(nextId)}`, {
+          credentials: "include",
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          this.agentProfilesError = data.error || "加载预览失败";
+          return null;
+        }
+        this.agentProfilePreview = data;
+        return data;
+      } catch (e) {
+        console.error("Failed to fetch agent profile preview:", e);
+        this.agentProfilesError = "加载预览失败";
+        return null;
+      } finally {
+        this.agentProfilePreviewLoading = false;
       }
     },
     async resetThread() {

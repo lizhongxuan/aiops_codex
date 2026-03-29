@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { ChevronRightIcon, ChevronDownIcon, TerminalIcon, CheckIcon, XIcon, ExternalLinkIcon } from "lucide-vue-next";
 import "@xterm/xterm/css/xterm.css";
 import { useAppStore } from "../store";
+import { resolveHostBadge } from "../lib/hostDisplay";
 
 const props = defineProps({
   card: {
@@ -92,11 +93,12 @@ const dynamicHeight = computed(() => {
 
 const commandDescriptor = computed(() => describeCommand(props.card.command || ""));
 const hostCaption = computed(() => {
-  const name = (props.card.hostName || "").trim();
-  const id = (props.card.hostId || "").trim();
-  if (!name && !id) return "";
-  if (!id || id === name) return `目标主机 ${name || id}`;
-  return `${name} · ${id}`;
+  const host = store.snapshot.hosts.find((item) => item.id === props.card.hostId) || {};
+  return resolveHostBadge({
+    ...host,
+    hostId: props.card.hostId,
+    hostName: props.card.hostName,
+  });
 });
 const rawCommand = computed(() => (props.card.command || "").trim());
 const hasFoldedCommand = computed(() => {

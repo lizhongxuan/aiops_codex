@@ -193,6 +193,8 @@ type Envelope struct {
 	Heartbeat         *Heartbeat         `json:"heartbeat,omitempty"`
 	Ping              *Ping              `json:"ping,omitempty"`
 	Ack               *Ack               `json:"ack,omitempty"`
+	ProfileUpdate     *ProfileUpdate     `json:"profileUpdate,omitempty"`
+	ProfileAck        *ProfileAck        `json:"profileAck,omitempty"`
 	TerminalOpen      *TerminalOpen      `json:"terminalOpen,omitempty"`
 	TerminalInput     *TerminalInput     `json:"terminalInput,omitempty"`
 	TerminalResize    *TerminalResize    `json:"terminalResize,omitempty"`

@@ -250,6 +250,11 @@ docker buildx build \
 └── ai-audit.log            ← 审计日志 (JSONL)
 ```
 
+`Agent Profile` 也持久化在同一个 `APP_STATE_PATH` 状态文件里，默认就是 `/data/ai-server-state.json`。  
+这意味着 profile 的修改、恢复默认、以及 `main-agent` / `host-agent-default` 的默认值回填，都会跟着这份状态文件一起保存，不需要再单独挂载一份 profile 配置文件。
+
+接口和恢复默认的运维步骤见 [docs/agent_profile_api.md](/Users/lizhongxuan/Desktop/aiops-codex/docs/agent_profile_api.md)。
+
 备份：
 
 ```bash

@@ -51,10 +51,28 @@ button, input, textarea, select {
   border-right: 1px solid var(--sidebar-border);
   display: flex;
   flex-direction: column;
+  transition: width 0.22s ease, min-width 0.22s ease;
+  overflow: hidden;
+}
+
+.app-sidebar.collapsed {
+  width: 76px;
+  min-width: 76px;
 }
 
 .sidebar-top {
   padding: 16px;
+}
+
+.sidebar-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.sidebar-collapse-btn {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--sidebar-border);
 }
 
 .sidebar-actions {
@@ -113,6 +131,45 @@ button, input, textarea, select {
   background: #f1f5f9;
   padding: 2px 6px;
   border-radius: 4px;
+}
+
+.app-sidebar.collapsed .sidebar-top {
+  padding: 12px 10px;
+}
+
+.app-sidebar.collapsed .sidebar-toolbar {
+  justify-content: center;
+}
+
+.app-sidebar.collapsed .sidebar-scroll {
+  padding: 0 8px;
+}
+
+.app-sidebar.collapsed .sidebar-actions {
+  gap: 8px;
+}
+
+.app-sidebar.collapsed .nav-button {
+  justify-content: center;
+  padding: 10px 8px;
+}
+
+.app-sidebar.collapsed .nav-label,
+.app-sidebar.collapsed .shortcut,
+.app-sidebar.collapsed .nav-group-title,
+.app-sidebar.collapsed .nav-item-content,
+.app-sidebar.collapsed .flex-spacer {
+  display: none;
+}
+
+.app-sidebar.collapsed .nav-item {
+  justify-content: center;
+  padding: 10px 0;
+}
+
+.app-sidebar.collapsed .sidebar-bottom {
+  justify-content: center;
+  padding: 12px 8px;
 }
 
 .sidebar-scroll {

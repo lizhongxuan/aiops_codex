@@ -85,6 +85,10 @@ func (a *App) handleTerminalCreate(w http.ResponseWriter, r *http.Request, sessi
 	if req.HostID == "" {
 		req.HostID = model.ServerLocalHostID
 	}
+	if err := a.ensureCapabilityAllowedForHost(req.HostID, "terminal"); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return
+	}
 
 	host, ok := a.knownHost(req.HostID)
 	if !ok {

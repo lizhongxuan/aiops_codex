@@ -12,9 +12,14 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
 )
 
-func handleAgentFileList(sender *agentStreamSender, req *agentrpc.FileListRequest) error {
+func handleAgentFileList(runtime *hostAgentRuntime, sender *agentStreamSender, req *agentrpc.FileListRequest) error {
 	if req == nil || strings.TrimSpace(req.RequestID) == "" {
 		return errors.New("file list requires requestId")
+	}
+	if runtime != nil && runtime.profile != nil {
+		if err := runtime.profile.ensureCapabilityAllowed("fileRead"); err != nil {
+			return err
+		}
 	}
 
 	resolved, err := resolveAgentFilePath(req.Path)
@@ -43,9 +48,14 @@ func handleAgentFileList(sender *agentStreamSender, req *agentrpc.FileListReques
 	})
 }
 
-func handleAgentFileRead(sender *agentStreamSender, req *agentrpc.FileReadRequest) error {
+func handleAgentFileRead(runtime *hostAgentRuntime, sender *agentStreamSender, req *agentrpc.FileReadRequest) error {
 	if req == nil || strings.TrimSpace(req.RequestID) == "" {
 		return errors.New("file read requires requestId")
+	}
+	if runtime != nil && runtime.profile != nil {
+		if err := runtime.profile.ensureCapabilityAllowed("fileRead"); err != nil {
+			return err
+		}
 	}
 
 	resolved, err := resolveAgentFilePath(req.Path)
@@ -74,12 +84,17 @@ func handleAgentFileRead(sender *agentStreamSender, req *agentrpc.FileReadReques
 	})
 }
 
-func handleAgentFileSearch(sender *agentStreamSender, req *agentrpc.FileSearchRequest) error {
+func handleAgentFileSearch(runtime *hostAgentRuntime, sender *agentStreamSender, req *agentrpc.FileSearchRequest) error {
 	if req == nil || strings.TrimSpace(req.RequestID) == "" {
 		return errors.New("file search requires requestId")
 	}
 	if strings.TrimSpace(req.Query) == "" {
 		return errors.New("file search requires query")
+	}
+	if runtime != nil && runtime.profile != nil {
+		if err := runtime.profile.ensureCapabilityAllowed("fileSearch"); err != nil {
+			return err
+		}
 	}
 
 	resolved, err := resolveAgentFilePath(req.Path)
@@ -109,9 +124,14 @@ func handleAgentFileSearch(sender *agentStreamSender, req *agentrpc.FileSearchRe
 	})
 }
 
-func handleAgentFileWrite(sender *agentStreamSender, req *agentrpc.FileWriteRequest) error {
+func handleAgentFileWrite(runtime *hostAgentRuntime, sender *agentStreamSender, req *agentrpc.FileWriteRequest) error {
 	if req == nil || strings.TrimSpace(req.RequestID) == "" {
 		return errors.New("file write requires requestId")
+	}
+	if runtime != nil && runtime.profile != nil {
+		if err := runtime.profile.ensureCapabilityAllowed("fileChange"); err != nil {
+			return err
+		}
 	}
 
 	resolved, err := resolveAgentFilePath(req.Path)
@@ -125,6 +145,15 @@ func handleAgentFileWrite(sender *agentStreamSender, req *agentrpc.FileWriteRequ
 			Kind:            "file/write/result",
 			FileWriteResult: result,
 		})
+	}
+	if runtime != nil && runtime.profile != nil {
+		if err := runtime.profile.ensureWritableRoots([]string{resolved}); err != nil {
+			result.Message = err.Error()
+			return sender.send(&agentrpc.Envelope{
+				Kind:            "file/write/result",
+				FileWriteResult: result,
+			})
+		}
 	}
 
 	oldContent, newContent, created, writeErr := writeAgentFile(resolved, req.Content, req.WriteMode)

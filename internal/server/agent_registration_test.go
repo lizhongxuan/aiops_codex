@@ -10,6 +10,7 @@ import (
 
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
 	"github.com/lizhongxuan/aiops-codex/internal/config"
+	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 )
@@ -188,11 +189,23 @@ func TestConnectRegistersHostAndAck(t *testing.T) {
 	}
 
 	messages := stream.messages()
-	if len(messages) != 1 || messages[0].Kind != "ack" {
+	if len(messages) != 2 || messages[0].Kind != "ack" {
 		t.Fatalf("expected ack envelope, got %#v", messages)
 	}
 	if messages[0].Ack == nil || messages[0].Ack.Message != "registered" {
 		t.Fatalf("expected registered ack, got %#v", messages[0])
+	}
+	if messages[1].Kind != "profile/update" || messages[1].ProfileUpdate == nil {
+		t.Fatalf("expected profile update after ack, got %#v", messages)
+	}
+	if messages[1].ProfileUpdate.Profile.ID != string(model.AgentProfileTypeHostAgentDefault) {
+		t.Fatalf("expected host-agent-default profile, got %#v", messages[1].ProfileUpdate)
+	}
+	if messages[1].ProfileUpdate.ConfigVersion != model.AgentProfileConfigVersion {
+		t.Fatalf("expected config version %d, got %#v", model.AgentProfileConfigVersion, messages[1].ProfileUpdate)
+	}
+	if messages[1].ProfileUpdate.ProfileHash == "" {
+		t.Fatalf("expected non-empty profile hash")
 	}
 
 	host, ok := app.store.Host("linux-01")
@@ -210,6 +223,59 @@ func TestConnectRegistersHostAndAck(t *testing.T) {
 	}
 	if host.LastHeartbeat == "" {
 		t.Fatalf("expected last heartbeat to be populated")
+	}
+}
+
+func TestConnectRecordsProfileAckOnHost(t *testing.T) {
+	app := New(testAgentRegistrationConfig())
+	profileHash := agentProfileHash(app.hostAgentDefaultProfile())
+	stream := newScriptedAgentConnectServer(
+		"10.1.2.3:5555",
+		testRegistrationEnvelope("linux-01", "bootstrap-token"),
+		&agentrpc.Envelope{
+			Kind: "profile/ack",
+			ProfileAck: &agentrpc.ProfileAck{
+				ConfigVersion: model.AgentProfileConfigVersion,
+				ProfileID:     string(model.AgentProfileTypeHostAgentDefault),
+				ProfileHash:   profileHash,
+				LoadedAt:      "2026-03-28T09:00:00Z",
+				Status:        "loaded",
+				Summary:       "profile=Host Agent Default skills=1 mcps=2",
+				EnabledSkills: []string{"host-diagnostics"},
+				EnabledMCPs:   []string{"host-files", "host-logs"},
+			},
+		},
+	)
+
+	err := app.Connect(stream)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected io.EOF, got %v", err)
+	}
+
+	host, ok := app.store.Host("linux-01")
+	if !ok {
+		t.Fatalf("expected host to remain registered")
+	}
+	if host.ProfileHash != profileHash {
+		t.Fatalf("expected profile hash %q, got %#v", profileHash, host)
+	}
+	if host.ProfileLoadedAt != "2026-03-28T09:00:00Z" {
+		t.Fatalf("expected profile loaded timestamp, got %#v", host)
+	}
+	if host.ProfileStatus != "loaded" {
+		t.Fatalf("expected profile status loaded, got %#v", host)
+	}
+	if host.ProfileVersion != model.AgentProfileConfigVersion {
+		t.Fatalf("expected profile version %d, got %#v", model.AgentProfileConfigVersion, host)
+	}
+	if host.ProfileSummary != "profile=Host Agent Default skills=1 mcps=2" {
+		t.Fatalf("expected profile summary to persist, got %#v", host)
+	}
+	if len(host.EnabledSkills) != 1 || host.EnabledSkills[0] != "host-diagnostics" {
+		t.Fatalf("expected enabled skills to persist, got %#v", host.EnabledSkills)
+	}
+	if len(host.EnabledMCPs) != 2 || host.EnabledMCPs[0] != "host-files" || host.EnabledMCPs[1] != "host-logs" {
+		t.Fatalf("expected enabled MCPs to persist, got %#v", host.EnabledMCPs)
 	}
 }
 
@@ -232,14 +298,17 @@ func TestConnectRejectsHostIdentityDrift(t *testing.T) {
 	}
 
 	messages := stream.messages()
-	if len(messages) != 2 {
-		t.Fatalf("expected ack plus identity error, got %#v", messages)
+	if len(messages) != 3 {
+		t.Fatalf("expected ack, profile update, and identity error, got %#v", messages)
 	}
 	if messages[0].Kind != "ack" {
 		t.Fatalf("expected registration ack first, got %#v", messages[0])
 	}
-	if messages[1].Kind != "error" || messages[1].Error != "host identity mismatch" {
-		t.Fatalf("expected identity mismatch error, got %#v", messages[1])
+	if messages[1].Kind != "profile/update" || messages[1].ProfileUpdate == nil {
+		t.Fatalf("expected profile update second, got %#v", messages[1])
+	}
+	if messages[2].Kind != "error" || messages[2].Error != "host identity mismatch" {
+		t.Fatalf("expected identity mismatch error, got %#v", messages[2])
 	}
 
 	if _, ok := app.store.Host("linux-evil"); ok {

@@ -62,9 +62,26 @@ type remoteFileChangeArgs struct {
 	Reason    string `json:"reason"`
 }
 
-func remoteDynamicTools() []map[string]any {
-	return []map[string]any{
-		{
+func (a *App) remoteDynamicTools() []map[string]any {
+	tools := make([]map[string]any, 0, 5)
+	commandState := mergeCapabilityStates(
+		a.mainAgentProfile().CapabilityPermissions.CommandExecution,
+		a.hostAgentDefaultProfile().CapabilityPermissions.CommandExecution,
+	)
+	fileReadState := mergeCapabilityStates(
+		a.mainAgentProfile().CapabilityPermissions.FileRead,
+		a.hostAgentDefaultProfile().CapabilityPermissions.FileRead,
+	)
+	fileSearchState := mergeCapabilityStates(
+		a.mainAgentProfile().CapabilityPermissions.FileSearch,
+		a.hostAgentDefaultProfile().CapabilityPermissions.FileSearch,
+	)
+	fileChangeState := mergeCapabilityStates(
+		a.mainAgentProfile().CapabilityPermissions.FileChange,
+		a.hostAgentDefaultProfile().CapabilityPermissions.FileChange,
+	)
+	if !capabilityDisabled(commandState) {
+		tools = append(tools, map[string]any{
 			"name":        "execute_readonly_query",
 			"description": "Run a read-only shell command on the currently selected remote host. Use it for inspection only, such as uptime, df, ps, ss, systemctl status, cat, grep, tail, find, journalctl, or simple read-only pipelines. Never use it for installs, restarts, file writes, deletes, or process signals.",
 			"inputSchema": map[string]any{
@@ -96,8 +113,10 @@ func remoteDynamicTools() []map[string]any {
 				"required":             []string{"host", "command", "reason"},
 				"additionalProperties": false,
 			},
-		},
-		{
+		})
+	}
+	if !capabilityDisabled(fileReadState) || !capabilityDisabled(fileSearchState) {
+		tools = append(tools, map[string]any{
 			"name":        "list_remote_files",
 			"description": "List files or directories on the currently selected remote host. Prefer this over shell commands when you need to inspect a directory tree.",
 			"inputSchema": map[string]any{
@@ -129,8 +148,10 @@ func remoteDynamicTools() []map[string]any {
 				"required":             []string{"host", "path", "reason"},
 				"additionalProperties": false,
 			},
-		},
-		{
+		})
+	}
+	if !capabilityDisabled(fileReadState) {
+		tools = append(tools, map[string]any{
 			"name":        "read_remote_file",
 			"description": "Read a file from the currently selected remote host. Prefer this over shell cat/sed when you need file contents.",
 			"inputSchema": map[string]any{
@@ -158,8 +179,10 @@ func remoteDynamicTools() []map[string]any {
 				"required":             []string{"host", "path", "reason"},
 				"additionalProperties": false,
 			},
-		},
-		{
+		})
+	}
+	if !capabilityDisabled(fileSearchState) {
+		tools = append(tools, map[string]any{
 			"name":        "search_remote_files",
 			"description": "Search for text in files on the currently selected remote host. Prefer this over grep when you need structured search results.",
 			"inputSchema": map[string]any{
@@ -191,8 +214,10 @@ func remoteDynamicTools() []map[string]any {
 				"required":             []string{"host", "path", "query", "reason"},
 				"additionalProperties": false,
 			},
-		},
-		{
+		})
+	}
+	if !capabilityDisabled(commandState) || !capabilityDisabled(fileChangeState) {
+		tools = append(tools, map[string]any{
 			"name":        "execute_system_mutation",
 			"description": "Run a shell command that changes system state on the currently selected remote host. Use it for installs, service restarts, file edits, starting or stopping processes, or any write operation. This tool always requires user approval before execution.",
 			"inputSchema": map[string]any{
@@ -242,8 +267,9 @@ func remoteDynamicTools() []map[string]any {
 				"required":             []string{"host", "mode", "reason"},
 				"additionalProperties": false,
 			},
-		},
+		})
 	}
+	return tools
 }
 
 func remoteThreadDeveloperInstructions(selectedHostID string) string {
@@ -320,7 +346,16 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 
 	switch params.Tool {
 	case "execute_readonly_query":
+		if err := a.ensureCapabilityAllowedForHost(hostID, "commandExecution"); err != nil {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+			return
+		}
 		args, err := parseExecToolArgs(params.Arguments)
+		if err != nil {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+			return
+		}
+		decision, err := a.evaluateCommandPolicyForHost(hostID, args.Command)
 		if err != nil {
 			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 			return
@@ -329,8 +364,16 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 			return
 		}
+		if decision.Mode == model.AgentPermissionModeApprovalRequired {
+			a.requestRemoteCommandApproval(sessionID, hostID, rawID, params, args, true)
+			return
+		}
 		a.executeReadonlyDynamicTool(sessionID, hostID, rawID, params, args)
 	case "list_remote_files":
+		if capabilityDisabled(a.effectiveCapabilityState(hostID, "fileRead")) && capabilityDisabled(a.effectiveCapabilityState(hostID, "fileSearch")) {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse("list_remote_files is disabled by the current effective agent profile", false))
+			return
+		}
 		args, err := parseRemoteListFilesArgs(params.Arguments)
 		if err != nil {
 			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
@@ -338,6 +381,10 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 		}
 		a.executeRemoteListFilesTool(sessionID, hostID, rawID, params, args)
 	case "read_remote_file":
+		if err := a.ensureCapabilityAllowedForHost(hostID, "fileRead"); err != nil {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+			return
+		}
 		args, err := parseRemoteReadFileArgs(params.Arguments)
 		if err != nil {
 			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
@@ -345,6 +392,10 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 		}
 		a.executeRemoteReadFileTool(sessionID, hostID, rawID, params, args)
 	case "search_remote_files":
+		if err := a.ensureCapabilityAllowedForHost(hostID, "fileSearch"); err != nil {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+			return
+		}
 		args, err := parseRemoteSearchFilesArgs(params.Arguments)
 		if err != nil {
 			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
@@ -355,13 +406,21 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 		mode := strings.TrimSpace(getString(params.Arguments, "mode"))
 		switch mode {
 		case "command":
+			if err := a.ensureCapabilityAllowedForHost(hostID, "commandExecution"); err != nil {
+				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+				return
+			}
 			args, err := parseExecToolArgs(params.Arguments)
 			if err != nil {
 				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 				return
 			}
-			a.requestRemoteCommandApproval(sessionID, hostID, rawID, params, args)
+			a.requestRemoteCommandApproval(sessionID, hostID, rawID, params, args, false)
 		case "file_change":
+			if err := a.ensureCapabilityAllowedForHost(hostID, "fileChange"); err != nil {
+				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+				return
+			}
 			if err := validateRemoteFileChangeArguments(params.Arguments); err != nil {
 				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
 				return
@@ -591,10 +650,25 @@ func (a *App) executeRemoteSearchFilesTool(sessionID, hostID, rawID string, para
 	_ = a.respondCodex(context.Background(), rawID, toolResponse(renderFileSearchMessage(hostID, result.Path, result.Query, result.Matches, result.Truncated), true))
 }
 
-func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, params dynamicToolCallParams, args execToolArgs) {
+func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, params dynamicToolCallParams, args execToolArgs, readonly bool) {
 	cardID := dynamicToolCardID(params.CallID)
 	now := model.NowString()
 	host := a.findHost(hostID)
+	decision, err := a.evaluateCommandPolicyForHost(hostID, args.Command)
+	if err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+	if maxTimeout := a.effectiveCommandTimeoutSeconds(hostID); maxTimeout > 0 && args.TimeoutSec > 0 && args.TimeoutSec > maxTimeout {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("requested timeout exceeds the current effective agent profile limit", false))
+		return
+	}
+	if decision.Category == "filesystem_mutation" && args.Cwd != "" {
+		if err := a.ensureWritableRootsForHost(hostID, []string{args.Cwd}); err != nil {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+			return
+		}
+	}
 	a.store.RememberItem(sessionID, cardID, map[string]any{
 		"tool":       params.Tool,
 		"threadId":   params.ThreadID,
@@ -604,7 +678,13 @@ func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, para
 		"cwd":        args.Cwd,
 		"reason":     args.Reason,
 		"timeoutSec": clampExecTimeout(args.TimeoutSec, false),
-		"mode":       "command",
+		"mode": func() string {
+			if readonly {
+				return "readonly_command"
+			}
+			return "command"
+		}(),
+		"readonly": readonly,
 	})
 
 	approval := model.ApprovalRequest{
@@ -626,6 +706,16 @@ func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, para
 
 	if a.autoApproveRemoteOperationBySessionGrant(sessionID, approval) {
 		return
+	}
+	if readonly == false && decision.Mode == model.AgentPermissionModeAllow && !capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "commandExecution")) {
+		if a.autoApproveRemoteOperationByPolicy(sessionID, approval) {
+			return
+		}
+	}
+	if readonly && decision.Mode == model.AgentPermissionModeAllow && !capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "commandExecution")) {
+		if a.autoApproveRemoteOperationByPolicy(sessionID, approval) {
+			return
+		}
 	}
 
 	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
@@ -656,6 +746,10 @@ func (a *App) requestRemoteFileChangeApproval(sessionID, hostID, rawID string, p
 	cardID := dynamicToolCardID(params.CallID)
 	now := model.NowString()
 	host := a.findHost(hostID)
+	if err := a.ensureWritableRootsForHost(hostID, []string{args.Path}); err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -709,6 +803,11 @@ func (a *App) requestRemoteFileChangeApproval(sessionID, hostID, rawID string, p
 
 	if a.autoApproveRemoteOperationBySessionGrant(sessionID, approval) {
 		return
+	}
+	if !capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "fileChange")) {
+		if a.autoApproveRemoteOperationByPolicy(sessionID, approval) {
+			return
+		}
 	}
 
 	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
@@ -765,6 +864,30 @@ func (a *App) autoApproveRemoteOperationBySessionGrant(sessionID string, approva
 	return true
 }
 
+func (a *App) autoApproveRemoteOperationByPolicy(sessionID string, approval model.ApprovalRequest) bool {
+	now := model.NowString()
+	approval.Status = "accepted_by_policy_auto"
+	approval.ResolvedAt = now
+	a.store.AddApproval(sessionID, approval)
+	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+	a.setRuntimeTurnPhase(sessionID, "executing")
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        "auto-approval-" + approval.ItemID,
+		Type:      "NoticeCard",
+		Title:     "Auto-approved by profile",
+		Text:      "当前 main-agent profile 允许该操作直接执行，因此已自动放行。",
+		Status:    "notice",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, "accept", approval.Status, approval.RequestedAt, now, map[string]any{
+		"autoApprovedByProfile": true,
+	})
+	a.broadcastSnapshot(sessionID)
+	go a.executeApprovedRemoteOperation(sessionID, approval)
+	return true
+}
+
 func (a *App) executeApprovedRemoteOperation(sessionID string, approval model.ApprovalRequest) {
 	switch approval.Type {
 	case "remote_file_change":
@@ -797,7 +920,7 @@ func (a *App) executeApprovedRemoteMutation(sessionID string, approval model.App
 		Command:    args.Command,
 		Cwd:        args.Cwd,
 		TimeoutSec: args.TimeoutSec,
-		Readonly:   false,
+		Readonly:   getBool(item, "readonly") || strings.TrimSpace(getString(item, "mode")) == "readonly_command",
 		Approval:   approval.Status,
 	})
 	if a.turnWasInterrupted(sessionID) {

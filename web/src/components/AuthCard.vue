@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from "vue";
 import { ShieldAlertIcon } from "lucide-vue-next";
+import { resolveHostBadge } from "../lib/hostDisplay";
+import { useAppStore } from "../store";
 
 const props = defineProps({
   card: {
@@ -14,16 +16,18 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["approval"]);
+const store = useAppStore();
 
 const isCommand = computed(() => props.card.type === "CommandApprovalCard" || !!props.card.command);
 const isFileChange = computed(() => props.card.type === "FileChangeApprovalCard" || !!props.card.changes?.length);
 const decisions = computed(() => props.card.approval?.decisions || []);
 const hostCaption = computed(() => {
-  const name = (props.card.hostName || "").trim();
-  const id = (props.card.hostId || "").trim();
-  if (!name && !id) return "";
-  if (!id || id === name) return `目标主机 ${name || id}`;
-  return `${name} · ${id}`;
+  const host = store.snapshot.hosts.find((item) => item.id === props.card.hostId) || {};
+  return resolveHostBadge({
+    ...host,
+    hostId: props.card.hostId,
+    hostName: props.card.hostName,
+  });
 });
 const fileChanges = computed(() => (props.card.changes || []).map((change, index) => normalizeFileChange(change, index)));
 const fileChangeCount = computed(() => fileChanges.value.length);

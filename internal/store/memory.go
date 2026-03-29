@@ -12,21 +12,22 @@ import (
 )
 
 type SessionState struct {
-	ID             string
-	AuthSessionID  string
-	ThreadID       string
-	TurnID         string
-	SelectedHostID string
-	Cards          []model.Card
-	Approvals      map[string]model.ApprovalRequest
-	Choices        map[string]model.ChoiceRequest
-	ApprovalGrants []model.ApprovalGrant
-	ItemCache      map[string]map[string]any
-	Runtime        model.RuntimeState
-	Auth           model.AuthState
-	Tokens         model.ExternalAuthTokens
-	CreatedAt      string
-	LastActivityAt string
+	ID               string
+	AuthSessionID    string
+	ThreadID         string
+	ThreadConfigHash string
+	TurnID           string
+	SelectedHostID   string
+	Cards            []model.Card
+	Approvals        map[string]model.ApprovalRequest
+	Choices          map[string]model.ChoiceRequest
+	ApprovalGrants   []model.ApprovalGrant
+	ItemCache        map[string]map[string]any
+	Runtime          model.RuntimeState
+	Auth             model.AuthState
+	Tokens           model.ExternalAuthTokens
+	CreatedAt        string
+	LastActivityAt   string
 }
 
 type BrowserSessionState struct {
@@ -51,6 +52,7 @@ type Store struct {
 	browserSessions map[string]*BrowserSessionState
 	sessions        map[string]*SessionState
 	authSessions    map[string]*AuthSessionState
+	agentProfiles   map[string]model.AgentProfile
 	threadToSession map[string]string
 	turnToSession   map[string]string
 	loginToSession  map[string]string
@@ -97,13 +99,15 @@ type persistentExternalAuthTokens struct {
 }
 
 type persistentState struct {
-	BrowserSessions map[string]*persistentBrowserSessionState `json:"browserSessions"`
-	Sessions        map[string]*persistentSessionState        `json:"sessions"`
-	AuthSessions    map[string]*persistentAuthSessionState    `json:"authSessions"`
-	ThreadToSession map[string]string                         `json:"threadToSession"`
-	LoginToSession  map[string]string                         `json:"loginToSession"`
-	LastAuthSession string                                    `json:"lastAuthSession,omitempty"`
-	Hosts           map[string]model.Host                     `json:"hosts"`
+	BrowserSessions     map[string]*persistentBrowserSessionState `json:"browserSessions"`
+	Sessions            map[string]*persistentSessionState        `json:"sessions"`
+	AuthSessions        map[string]*persistentAuthSessionState    `json:"authSessions"`
+	AgentProfiles       map[string]model.AgentProfile             `json:"agentProfiles"`
+	AgentProfileVersion int                                       `json:"agentProfileVersion,omitempty"`
+	ThreadToSession     map[string]string                         `json:"threadToSession"`
+	LoginToSession      map[string]string                         `json:"loginToSession"`
+	LastAuthSession     string                                    `json:"lastAuthSession,omitempty"`
+	Hosts               map[string]model.Host                     `json:"hosts"`
 }
 
 func New() *Store {
@@ -111,6 +115,7 @@ func New() *Store {
 		browserSessions: make(map[string]*BrowserSessionState),
 		sessions:        make(map[string]*SessionState),
 		authSessions:    make(map[string]*AuthSessionState),
+		agentProfiles:   defaultAgentProfileMap(),
 		threadToSession: make(map[string]string),
 		turnToSession:   make(map[string]string),
 		loginToSession:  make(map[string]string),
@@ -190,6 +195,14 @@ func (s *Store) SetThread(sessionID, threadID string) {
 	s.SaveStableState("")
 }
 
+func (s *Store) SetThreadConfigHash(sessionID, hash string) {
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	session.ThreadConfigHash = hash
+	session.LastActivityAt = model.NowString()
+	s.mu.Unlock()
+}
+
 func (s *Store) ClearThread(sessionID string) {
 	s.mu.Lock()
 	session, _ := s.ensureSessionLocked(sessionID)
@@ -197,6 +210,7 @@ func (s *Store) ClearThread(sessionID string) {
 		delete(s.threadToSession, session.ThreadID)
 	}
 	session.ThreadID = ""
+	session.ThreadConfigHash = ""
 	session.LastActivityAt = model.NowString()
 	s.mu.Unlock()
 	s.SaveStableState("")
@@ -238,6 +252,7 @@ func (s *Store) ResetConversation(sessionID string) {
 		delete(s.turnToSession, session.TurnID)
 	}
 	session.ThreadID = ""
+	session.ThreadConfigHash = ""
 	session.TurnID = ""
 	session.Cards = nil
 	session.Approvals = make(map[string]model.ApprovalRequest)
@@ -416,6 +431,61 @@ func (s *Store) PendingSessionIDs() []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+func (s *Store) AgentProfiles() []model.AgentProfile {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profiles := make([]model.AgentProfile, 0, len(s.agentProfiles))
+	for _, profile := range s.agentProfiles {
+		profiles = append(profiles, cloneAgentProfile(profile))
+	}
+	model.SortAgentProfiles(profiles)
+	return profiles
+}
+
+func (s *Store) AgentProfile(profileID string) (model.AgentProfile, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, ok := s.agentProfiles[profileID]
+	if !ok {
+		return model.AgentProfile{}, false
+	}
+	return cloneAgentProfile(profile), true
+}
+
+func (s *Store) UpsertAgentProfile(profile model.AgentProfile) {
+	s.mu.Lock()
+	normalized := model.CompleteAgentProfile(profile)
+	if s.agentProfiles == nil {
+		s.agentProfiles = defaultAgentProfileMap()
+	}
+	s.agentProfiles[normalized.ID] = normalized
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
+func (s *Store) ResetAgentProfile(profileID string) {
+	s.mu.Lock()
+	if s.agentProfiles == nil {
+		s.agentProfiles = defaultAgentProfileMap()
+	}
+	switch profileID {
+	case string(model.AgentProfileTypeMainAgent), string(model.AgentProfileTypeHostAgentDefault), string(model.AgentProfileTypeHostAgentOverride):
+		s.agentProfiles[profileID] = model.DefaultAgentProfile(profileID)
+	default:
+		delete(s.agentProfiles, profileID)
+	}
+	s.ensureDefaultAgentProfilesLocked()
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
+func (s *Store) ResetAgentProfiles() {
+	s.mu.Lock()
+	s.agentProfiles = defaultAgentProfileMap()
+	s.mu.Unlock()
+	s.SaveStableState("")
 }
 
 func (s *Store) UpsertCard(sessionID string, card model.Card) {
@@ -856,6 +926,8 @@ func (s *Store) LoadStableState(path string) error {
 		s.hosts = make(map[string]model.Host)
 	}
 	s.hosts[model.ServerLocalHostID] = serverLocalHost()
+	s.agentProfiles = cloneAgentProfileMap(state.AgentProfiles)
+	s.ensureDefaultAgentProfilesLocked()
 
 	return nil
 }
@@ -872,13 +944,15 @@ func (s *Store) SaveStableState(path string) error {
 
 	s.mu.RLock()
 	state := persistentState{
-		BrowserSessions: make(map[string]*persistentBrowserSessionState, len(s.browserSessions)),
-		Sessions:        make(map[string]*persistentSessionState, len(s.sessions)),
-		AuthSessions:    make(map[string]*persistentAuthSessionState, len(s.authSessions)),
-		ThreadToSession: make(map[string]string),
-		LoginToSession:  cloneStringMap(s.loginToSession),
-		LastAuthSession: s.lastAuthSession,
-		Hosts:           cloneHostMap(s.hosts),
+		BrowserSessions:     make(map[string]*persistentBrowserSessionState, len(s.browserSessions)),
+		Sessions:            make(map[string]*persistentSessionState, len(s.sessions)),
+		AuthSessions:        make(map[string]*persistentAuthSessionState, len(s.authSessions)),
+		AgentProfiles:       cloneAgentProfileMap(s.agentProfiles),
+		AgentProfileVersion: model.AgentProfileConfigVersion,
+		ThreadToSession:     make(map[string]string),
+		LoginToSession:      cloneStringMap(s.loginToSession),
+		LastAuthSession:     s.lastAuthSession,
+		Hosts:               cloneHostMap(s.hosts),
 	}
 	for id, browserSession := range s.browserSessions {
 		if browserSession == nil {
@@ -1021,6 +1095,60 @@ func cloneHostMap(in map[string]model.Host) map[string]model.Host {
 		out[k] = v
 	}
 	return out
+}
+
+func cloneAgentProfile(profile model.AgentProfile) model.AgentProfile {
+	out := profile
+	out.CommandPermissions.Enabled = cloneBoolPtr(profile.CommandPermissions.Enabled)
+	out.CommandPermissions.AllowShellWrapper = cloneBoolPtr(profile.CommandPermissions.AllowShellWrapper)
+	out.CommandPermissions.AllowSudo = cloneBoolPtr(profile.CommandPermissions.AllowSudo)
+	out.CommandPermissions.AllowedWritableRoots = append([]string(nil), profile.CommandPermissions.AllowedWritableRoots...)
+	out.CommandPermissions.CategoryPolicies = cloneStringMap(profile.CommandPermissions.CategoryPolicies)
+	out.Skills = append([]model.AgentSkill(nil), profile.Skills...)
+	out.MCPs = append([]model.AgentMCP(nil), profile.MCPs...)
+	return out
+}
+
+func cloneAgentProfileMap(in map[string]model.AgentProfile) map[string]model.AgentProfile {
+	if len(in) == 0 {
+		return defaultAgentProfileMap()
+	}
+	out := make(map[string]model.AgentProfile, len(in))
+	for k, v := range in {
+		out[k] = cloneAgentProfile(v)
+	}
+	return out
+}
+
+func defaultAgentProfileMap() map[string]model.AgentProfile {
+	profiles := model.DefaultAgentProfiles()
+	out := make(map[string]model.AgentProfile, len(profiles))
+	for _, profile := range profiles {
+		out[profile.ID] = cloneAgentProfile(profile)
+	}
+	return out
+}
+
+func cloneBoolPtr(in *bool) *bool {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func (s *Store) ensureDefaultAgentProfilesLocked() {
+	if s.agentProfiles == nil {
+		s.agentProfiles = defaultAgentProfileMap()
+		return
+	}
+	for _, profile := range model.DefaultAgentProfiles() {
+		if _, ok := s.agentProfiles[profile.ID]; !ok {
+			s.agentProfiles[profile.ID] = cloneAgentProfile(profile)
+			continue
+		}
+		s.agentProfiles[profile.ID] = model.CompleteAgentProfile(s.agentProfiles[profile.ID])
+	}
 }
 
 func defaultHostID(hostID string) string {

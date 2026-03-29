@@ -1519,7 +1519,7 @@ func TestRequestRemoteCommandApprovalIncludesHostMetadata(t *testing.T) {
 		Command: "systemctl restart nginx",
 		Cwd:     "/etc/nginx",
 		Reason:  "restart nginx",
-	})
+	}, false)
 
 	session := app.store.Session(sessionID)
 	if session == nil {
