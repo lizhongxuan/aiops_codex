@@ -9,6 +9,10 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  sessionKind: {
+    type: String,
+    default: "",
+  },
 });
 
 const emit = defineEmits(["choice"]);
@@ -35,6 +39,7 @@ const choiceQuestions = computed(() => {
 });
 
 const resolvedSummary = computed(() => props.card.answerSummary || []);
+const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台输入请求" : ""));
 
 watch(
   choiceQuestions,
@@ -112,7 +117,10 @@ function onSubmit() {
   <div class="choice-card">
     <div class="choice-header">
       <ListIcon size="16" class="choice-icon" />
-      <span class="choice-title">{{ card.title || "请选择" }}</span>
+      <div class="choice-title-group">
+        <span v-if="contextLabel" class="choice-context">{{ contextLabel }}</span>
+        <span class="choice-title">{{ card.title || "请选择" }}</span>
+      </div>
     </div>
 
     <div class="choice-body">
@@ -221,6 +229,20 @@ function onSubmit() {
   font-size: 14px;
   font-weight: 600;
   color: #1f2937;
+}
+
+.choice-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.choice-context {
+  font-size: 11px;
+  color: #475569;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .choice-body {

@@ -23,6 +23,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  forceEnabled: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const emit = defineEmits(["update:modelValue", "send", "stop"]);
@@ -61,8 +65,11 @@ const activeMentions = computed(() => {
 const canStop = computed(() => store.runtime.turn.active);
 const followUpMode = computed(() => props.allowFollowUp && canStop.value);
 const primaryAction = computed(() => (canStop.value && !followUpMode.value ? "stop" : "send"));
-const inputDisabled = computed(() => props.disabled || !store.canSend || store.sending || (canStop.value && !followUpMode.value ? true : false));
-const sendDisabled = computed(() => props.disabled || !store.canSend || store.sending || !props.modelValue.trim());
+const canSendMessage = computed(() => (props.forceEnabled ? true : !!store.canSend));
+const inputDisabled = computed(
+  () => props.disabled || !canSendMessage.value || store.sending || (canStop.value && !followUpMode.value ? true : false),
+);
+const sendDisabled = computed(() => props.disabled || !canSendMessage.value || store.sending || !props.modelValue.trim());
 const showSecondaryStop = computed(() => followUpMode.value);
 const hintText = computed(() => {
   if (primaryAction.value === "stop") return "停止当前任务";

@@ -202,6 +202,12 @@ func (c *Client) LastExitError() string {
 	return c.lastExitError
 }
 
+func (c *Client) PendingCount() int {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	return len(c.pending)
+}
+
 func (c *Client) setAlive(alive bool) {
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()

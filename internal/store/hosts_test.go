@@ -102,6 +102,29 @@ func TestHostSessionsBuildTaskAndReplySummaries(t *testing.T) {
 	}
 }
 
+func TestHostSessionsSkipsHiddenSessions(t *testing.T) {
+	st := New()
+	visible := st.EnsureSessionWithMeta("sess-visible", model.SessionMeta{
+		Kind:    model.SessionKindSingleHost,
+		Visible: true,
+	})
+	hidden := st.EnsureSessionWithMeta("sess-hidden", model.SessionMeta{
+		Kind:    model.SessionKindWorker,
+		Visible: false,
+	})
+
+	st.SetSelectedHost(visible.ID, "web-01")
+	st.SetSelectedHost(hidden.ID, "web-01")
+
+	items := st.HostSessions("web-01", 10)
+	if len(items) != 1 {
+		t.Fatalf("expected hidden sessions to be filtered, got %d", len(items))
+	}
+	if items[0].SessionID != visible.ID {
+		t.Fatalf("expected visible session only, got %#v", items[0])
+	}
+}
+
 func TestBatchUpdateHostLabelsAddsAndRemovesKeys(t *testing.T) {
 	st := New()
 	st.UpsertHost(model.Host{

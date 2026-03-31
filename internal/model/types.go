@@ -83,6 +83,14 @@ const (
 	AgentSkillActivationDisabled    = "disabled"
 	AgentMCPPermissionReadonly      = "readonly"
 	AgentMCPPermissionReadwrite     = "readwrite"
+	SessionKindSingleHost           = "single_host"
+	SessionKindWorkspace            = "workspace"
+	SessionKindPlanner              = "planner"
+	SessionKindWorker               = "worker"
+	SessionRuntimePresetSingleHost  = "single_host_default"
+	SessionRuntimePresetWorkspace   = "workspace_front"
+	SessionRuntimePresetPlanner     = "planner_internal"
+	SessionRuntimePresetWorker      = "worker_internal"
 )
 
 type AgentProfile struct {
@@ -263,6 +271,15 @@ type ActivityRuntime struct {
 	SearchedContentQueries []ActivityEntry `json:"searchedContentQueries,omitempty"`
 }
 
+type SessionMeta struct {
+	Kind               string `json:"kind,omitempty"`
+	Visible            bool   `json:"visible"`
+	MissionID          string `json:"missionId,omitempty"`
+	WorkspaceSessionID string `json:"workspaceSessionId,omitempty"`
+	WorkerHostID       string `json:"workerHostId,omitempty"`
+	RuntimePreset      string `json:"runtimePreset,omitempty"`
+}
+
 type RuntimeState struct {
 	Turn     TurnRuntime     `json:"turn"`
 	Codex    CodexRuntime    `json:"codex"`
@@ -302,6 +319,7 @@ type Card struct {
 	KVRows        []KeyValueRow    `json:"kvRows,omitempty"`
 	Highlights    []string         `json:"highlights,omitempty"`
 	FileItems     []FileItem       `json:"fileItems,omitempty"`
+	Detail        map[string]any   `json:"detail,omitempty"`
 	CreatedAt     string           `json:"createdAt"`
 	UpdatedAt     string           `json:"updatedAt"`
 }
@@ -350,6 +368,7 @@ type ChoiceRequest struct {
 
 type Snapshot struct {
 	SessionID      string            `json:"sessionId"`
+	Kind           string            `json:"kind,omitempty"`
 	SelectedHostID string            `json:"selectedHostId"`
 	Auth           AuthState         `json:"auth"`
 	Hosts          []Host            `json:"hosts"`
@@ -362,6 +381,7 @@ type Snapshot struct {
 
 type SessionSummary struct {
 	ID             string `json:"id"`
+	Kind           string `json:"kind,omitempty"`
 	Title          string `json:"title"`
 	Preview        string `json:"preview"`
 	SelectedHostID string `json:"selectedHostId"`
@@ -369,6 +389,215 @@ type SessionSummary struct {
 	MessageCount   int    `json:"messageCount"`
 	CreatedAt      string `json:"createdAt"`
 	LastActivityAt string `json:"lastActivityAt"`
+}
+
+type MissionHistorySummary struct {
+	ID                       string `json:"id"`
+	WorkspaceSessionID       string `json:"workspaceSessionId,omitempty"`
+	PlannerSessionID         string `json:"plannerSessionId,omitempty"`
+	Title                    string `json:"title,omitempty"`
+	Summary                  string `json:"summary,omitempty"`
+	Status                   string `json:"status,omitempty"`
+	ProjectionMode           string `json:"projectionMode,omitempty"`
+	CreatedAt                string `json:"createdAt,omitempty"`
+	UpdatedAt                string `json:"updatedAt,omitempty"`
+	TaskCount                int    `json:"taskCount,omitempty"`
+	WorkerCount              int    `json:"workerCount,omitempty"`
+	WorkspaceCount           int    `json:"workspaceCount,omitempty"`
+	EventCount               int    `json:"eventCount,omitempty"`
+	QueuedTaskCount          int    `json:"queuedTaskCount,omitempty"`
+	ReadyTaskCount           int    `json:"readyTaskCount,omitempty"`
+	DispatchingTaskCount     int    `json:"dispatchingTaskCount,omitempty"`
+	RunningTaskCount         int    `json:"runningTaskCount,omitempty"`
+	WaitingApprovalTaskCount int    `json:"waitingApprovalTaskCount,omitempty"`
+	WaitingInputTaskCount    int    `json:"waitingInputTaskCount,omitempty"`
+	CompletedTaskCount       int    `json:"completedTaskCount,omitempty"`
+	FailedTaskCount          int    `json:"failedTaskCount,omitempty"`
+	CancelledTaskCount       int    `json:"cancelledTaskCount,omitempty"`
+}
+
+type MissionHistoryTask struct {
+	ID             string   `json:"id"`
+	MissionID      string   `json:"missionId,omitempty"`
+	HostID         string   `json:"hostId,omitempty"`
+	WorkerHostID   string   `json:"workerHostId,omitempty"`
+	SessionID      string   `json:"sessionId,omitempty"`
+	ThreadID       string   `json:"threadId,omitempty"`
+	Title          string   `json:"title,omitempty"`
+	Instruction    string   `json:"instruction,omitempty"`
+	Constraints    []string `json:"constraints,omitempty"`
+	Status         string   `json:"status,omitempty"`
+	ExternalNodeID string   `json:"externalNodeId,omitempty"`
+	Attempt        int      `json:"attempt,omitempty"`
+	CreatedAt      string   `json:"createdAt,omitempty"`
+	UpdatedAt      string   `json:"updatedAt,omitempty"`
+	LastError      string   `json:"lastError,omitempty"`
+	LastReply      string   `json:"lastReply,omitempty"`
+	ApprovalState  string   `json:"approvalState,omitempty"`
+}
+
+type MissionHistoryWorker struct {
+	MissionID      string                 `json:"missionId,omitempty"`
+	HostID         string                 `json:"hostId,omitempty"`
+	SessionID      string                 `json:"sessionId,omitempty"`
+	ThreadID       string                 `json:"threadId,omitempty"`
+	WorkspaceID    string                 `json:"workspaceId,omitempty"`
+	ActiveTaskID   string                 `json:"activeTaskId,omitempty"`
+	QueueTaskIDs   []string               `json:"queueTaskIds,omitempty"`
+	Status         string                 `json:"status,omitempty"`
+	LastSeenAt     string                 `json:"lastSeenAt,omitempty"`
+	IdleSince      string                 `json:"idleSince,omitempty"`
+	UpdatedAt      string                 `json:"updatedAt,omitempty"`
+	Conversation   []ConversationExcerpt  `json:"conversation,omitempty"`
+	Terminal       map[string]any         `json:"terminal,omitempty"`
+	ApprovalAnchor *ApprovalTerminalAnchor `json:"approvalAnchor,omitempty"`
+}
+
+type MissionHistoryWorkspace struct {
+	ID         string `json:"id"`
+	MissionID  string `json:"missionId,omitempty"`
+	SessionID  string `json:"sessionId,omitempty"`
+	HostID     string `json:"hostId,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	LocalPath  string `json:"localPath,omitempty"`
+	RemotePath string `json:"remotePath,omitempty"`
+	Status     string `json:"status,omitempty"`
+	CreatedAt  string `json:"createdAt,omitempty"`
+	UpdatedAt  string `json:"updatedAt,omitempty"`
+}
+
+type MissionHistoryEvent struct {
+	ID           string `json:"id"`
+	MissionID    string `json:"missionId,omitempty"`
+	TaskID       string `json:"taskId,omitempty"`
+	HostID       string `json:"hostId,omitempty"`
+	SessionID    string `json:"sessionId,omitempty"`
+	Type         string `json:"type,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	Detail       string `json:"detail,omitempty"`
+	ApprovalID   string `json:"approvalId,omitempty"`
+	SourceCardID string `json:"sourceCardId,omitempty"`
+	CreatedAt    string `json:"createdAt,omitempty"`
+}
+
+type ConversationExcerpt struct {
+	ID        string `json:"id,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
+	ThreadID  string `json:"threadId,omitempty"`
+	HostID    string `json:"hostId,omitempty"`
+	TaskID    string `json:"taskId,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Source    string `json:"source,omitempty"`
+	CardType  string `json:"cardType,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Status    string `json:"status,omitempty"`
+	CreatedAt string `json:"createdAt,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
+type DispatchEvent struct {
+	ID           string `json:"id,omitempty"`
+	MissionID    string `json:"missionId,omitempty"`
+	TaskID       string `json:"taskId,omitempty"`
+	HostID       string `json:"hostId,omitempty"`
+	SessionID    string `json:"sessionId,omitempty"`
+	Type         string `json:"type,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	Detail       string `json:"detail,omitempty"`
+	ApprovalID   string `json:"approvalId,omitempty"`
+	SourceCardID string `json:"sourceCardId,omitempty"`
+	CreatedAt    string `json:"createdAt,omitempty"`
+}
+
+type TaskHostBinding struct {
+	TaskID         string   `json:"taskId,omitempty"`
+	MissionID      string   `json:"missionId,omitempty"`
+	HostID         string   `json:"hostId,omitempty"`
+	WorkerHostID   string   `json:"workerHostId,omitempty"`
+	SessionID      string   `json:"sessionId,omitempty"`
+	ThreadID       string   `json:"threadId,omitempty"`
+	Title          string   `json:"title,omitempty"`
+	Instruction    string   `json:"instruction,omitempty"`
+	Status         string   `json:"status,omitempty"`
+	Constraints    []string `json:"constraints,omitempty"`
+	Attempt        int      `json:"attempt,omitempty"`
+	ApprovalState  string   `json:"approvalState,omitempty"`
+	LastReply      string   `json:"lastReply,omitempty"`
+	LastError      string   `json:"lastError,omitempty"`
+	ExternalNodeID string   `json:"externalNodeId,omitempty"`
+	CreatedAt      string   `json:"createdAt,omitempty"`
+	UpdatedAt      string   `json:"updatedAt,omitempty"`
+}
+
+type ApprovalTerminalAnchor struct {
+	ApprovalID      string `json:"approvalId,omitempty"`
+	ItemID          string `json:"itemId,omitempty"`
+	HostID          string `json:"hostId,omitempty"`
+	SessionID       string `json:"sessionId,omitempty"`
+	ThreadID        string `json:"threadId,omitempty"`
+	Command         string `json:"command,omitempty"`
+	Cwd             string `json:"cwd,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	RequestedAt     string `json:"requestedAt,omitempty"`
+	TerminalCardID  string `json:"terminalCardId,omitempty"`
+	TerminalTitle   string `json:"terminalTitle,omitempty"`
+	TerminalStatus  string `json:"terminalStatus,omitempty"`
+	TerminalSummary string `json:"terminalSummary,omitempty"`
+}
+
+type MissionHistoryReport struct {
+	Summary      string                `json:"summary,omitempty"`
+	OverviewRows []KeyValueRow         `json:"overviewRows,omitempty"`
+	Highlights   []string              `json:"highlights,omitempty"`
+	Timeline     []MissionHistoryEvent `json:"timeline,omitempty"`
+}
+
+type MissionHistoryDetail struct {
+	MissionHistorySummary
+	Report              MissionHistoryReport  `json:"report"`
+	Tasks               []MissionHistoryTask  `json:"tasks,omitempty"`
+	Workers             []MissionHistoryWorker `json:"workers,omitempty"`
+	Workspaces          []MissionHistoryWorkspace `json:"workspaces,omitempty"`
+	Events              []MissionHistoryEvent `json:"events,omitempty"`
+	PlannerConversation []ConversationExcerpt `json:"plannerConversation,omitempty"`
+	DispatchEvents      []DispatchEvent       `json:"dispatchEvents,omitempty"`
+	TaskBindings        []TaskHostBinding     `json:"taskBindings,omitempty"`
+}
+
+func DefaultSessionMeta() SessionMeta {
+	return SessionMeta{
+		Kind:          SessionKindSingleHost,
+		Visible:       true,
+		RuntimePreset: SessionRuntimePresetSingleHost,
+	}
+}
+
+func NormalizeSessionMeta(meta SessionMeta) SessionMeta {
+	if strings.TrimSpace(meta.Kind) == "" {
+		meta.Kind = SessionKindSingleHost
+	}
+	switch strings.TrimSpace(meta.RuntimePreset) {
+	case "", SessionRuntimePresetSingleHost, SessionRuntimePresetWorkspace, SessionRuntimePresetPlanner, SessionRuntimePresetWorker:
+		if meta.RuntimePreset == "" {
+			switch meta.Kind {
+			case SessionKindWorkspace:
+				meta.RuntimePreset = SessionRuntimePresetWorkspace
+			case SessionKindPlanner:
+				meta.RuntimePreset = SessionRuntimePresetPlanner
+			case SessionKindWorker:
+				meta.RuntimePreset = SessionRuntimePresetWorker
+			default:
+				meta.RuntimePreset = SessionRuntimePresetSingleHost
+			}
+		}
+	default:
+		meta.RuntimePreset = SessionRuntimePresetSingleHost
+	}
+	return meta
 }
 
 type UIConfig struct {

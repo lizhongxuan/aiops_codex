@@ -19,13 +19,17 @@
     <key>AIOPS_HTTP_ADDR</key>
     <string>127.0.0.1:18080</string>
     <key>AIOPS_GRPC_ADDR</key>
-    <string>0.0.0.0:18090</string>
+    <string>127.0.0.1:18090</string>
     <key>DEFAULT_WORKSPACE</key>
-    <string>/Users/lizhongxuan/.aiops_codex</string>
+    <string>/Users/lizhongxuan/Desktop/aiops-codex/.data/workspace</string>
     <key>HOST_AGENT_BOOTSTRAP_TOKEN</key>
-    <string>change-me</string>
+    <string>local-bootstrap-token</string>
+    <key>HOST_AGENT_ALLOWED_HOST_IDS</key>
+    <string>agent-local</string>
+    <key>FRONTEND_REDIRECT_URL</key>
+    <string>http://127.0.0.1:18080/</string>
     <key>CODEX_APP_SERVER_PATH</key>
-    <string>/Users/lizhongxuan/.cursor/extensions/openai.chatgpt-26.318.11754-darwin-arm64/bin/macos-aarch64/codex</string>
+    <string>/Applications/Codex.app/Contents/Resources/codex</string>
   </dict>
 
   <key>WorkingDirectory</key>

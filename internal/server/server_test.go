@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -237,6 +238,114 @@ func TestSetRuntimeTurnPhaseNormalizesAndSkipsDuplicateUpdates(t *testing.T) {
 	}
 	if session.LastActivityAt != firstActivityAt {
 		t.Fatalf("expected duplicate phase update to be ignored, got lastActivityAt %q -> %q", firstActivityAt, session.LastActivityAt)
+	}
+}
+
+func TestClearRemoteHostUnavailableCardsRemovesStaleError(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-remote-host-recovery"
+	hostID := "host-a"
+	cardID := "remote-host-error-" + hostID
+
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        cardID,
+		Type:      "ErrorCard",
+		Title:     "远程主机连接超时",
+		Message:   "test",
+		Status:    "failed",
+		CreatedAt: model.NowString(),
+		UpdatedAt: model.NowString(),
+	})
+
+	app.clearRemoteHostUnavailableCards(hostID)
+
+	session := app.store.Session(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to exist")
+	}
+	for _, card := range session.Cards {
+		if card.ID == cardID {
+			t.Fatalf("expected stale remote host error card to be removed")
+		}
+	}
+}
+
+func TestScheduleSilentTurnCompletionCheckCompletesFinalizingTurn(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-silent-finalizing"
+
+	app.store.EnsureSession(sessionID)
+	app.startRuntimeTurn(sessionID, model.ServerLocalHostID)
+	app.setRuntimeTurnPhase(sessionID, "finalizing")
+	app.store.SetTurn(sessionID, "turn-silent-finalizing")
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        "assistant-final",
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      "done",
+		Status:    "completed",
+		CreatedAt: model.NowString(),
+		UpdatedAt: model.NowString(),
+	})
+
+	time.Sleep(25 * time.Millisecond)
+	app.scheduleSilentTurnCompletionCheck(sessionID, 20*time.Millisecond)
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		session := app.store.Session(sessionID)
+		if session != nil && !session.Runtime.Turn.Active && session.Runtime.Turn.Phase == "completed" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	session := app.store.Session(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to exist")
+	}
+	t.Fatalf("expected finalizing turn to auto-complete, got active=%t phase=%q", session.Runtime.Turn.Active, session.Runtime.Turn.Phase)
+}
+
+func TestTurnTraceLifecycleLogsStageSummary(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-turn-trace"
+
+	app.store.EnsureSession(sessionID)
+
+	var buf strings.Builder
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	app.beginTurnTraceRequest(sessionID, "host-a")
+	app.startRuntimeTurn(sessionID, "host-a")
+	app.markTurnTraceThreadStartBegin(sessionID)
+	app.markTurnTraceThreadStarted(sessionID, "thread-1")
+	app.markTurnTraceTurnStartBegin(sessionID, "thread-1")
+	app.markTurnTraceTurnStarted(sessionID, "thread-1", "turn-1")
+	app.markTurnTraceFirstItem(sessionID, "item-1", "commandExecution")
+	app.markTurnTraceFirstAssistant(sessionID, "item-2", "delta")
+	app.completeTurnTrace(sessionID, "completed")
+
+	output := buf.String()
+	if !strings.Contains(output, "turn first progress session=sess-turn-trace") {
+		t.Fatalf("expected first progress log, got %q", output)
+	}
+	if !strings.Contains(output, "turn first assistant session=sess-turn-trace") {
+		t.Fatalf("expected first assistant log, got %q", output)
+	}
+	if !strings.Contains(output, "turn trace complete session=sess-turn-trace") {
+		t.Fatalf("expected final trace summary log, got %q", output)
+	}
+	if !strings.Contains(output, "request=req-") {
+		t.Fatalf("expected request id in trace logs, got %q", output)
 	}
 }
 

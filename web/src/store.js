@@ -56,12 +56,39 @@ function deriveSessionSummary(snapshot, runtime) {
 
   return {
     id: snapshot?.sessionId || "",
+    kind: snapshot?.kind || "single_host",
     title,
     preview,
     selectedHostId: snapshot?.selectedHostId || "server-local",
     status: deriveSessionStatus(cards, runtime),
     messageCount,
     lastActivityAt: snapshot?.lastActivityAt || "",
+  };
+}
+
+function normalizeSessionSummary(session) {
+  const raw = session && typeof session === "object" ? session : {};
+  const cards = Array.isArray(raw.cards) ? raw.cards : [];
+  const derived = deriveSessionSummary(
+    {
+      sessionId: raw.id || raw.sessionId || "",
+      kind: raw.kind || "single_host",
+      selectedHostId: raw.selectedHostId || "server-local",
+      lastActivityAt: raw.lastActivityAt || "",
+      cards,
+    },
+    null,
+  );
+  return {
+    ...derived,
+    id: String(raw.id || raw.sessionId || derived.id || ""),
+    kind: String(raw.kind || derived.kind || "single_host"),
+    title: String(raw.title || derived.title || "新建会话"),
+    preview: String(raw.preview || derived.preview || "暂无消息"),
+    selectedHostId: String(raw.selectedHostId || derived.selectedHostId || "server-local"),
+    status: String(raw.status || derived.status || "empty"),
+    messageCount: Number.isFinite(Number(raw.messageCount)) ? Number(raw.messageCount) : derived.messageCount,
+    lastActivityAt: String(raw.lastActivityAt || derived.lastActivityAt || ""),
   };
 }
 
@@ -85,6 +112,21 @@ function formatHostStatus(host) {
 
 function isConnectionLossMessage(message) {
   return /^与 ai-server 的连接已断开/.test((message || "").trim());
+}
+
+function normalizeWorkspaceReturnTargets(rawTargets) {
+  if (!rawTargets || typeof rawTargets !== "object" || Array.isArray(rawTargets)) {
+    return {};
+  }
+  const normalized = {};
+  for (const [sessionId, workspaceSessionId] of Object.entries(rawTargets)) {
+    const key = String(sessionId || "").trim();
+    const value = String(workspaceSessionId || "").trim();
+    if (key && value) {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
 }
 
 const COMMAND_CATEGORY_META = [
@@ -834,6 +876,7 @@ export const useAppStore = defineStore("app", {
   state: () => ({
     snapshot: {
       sessionId: "",
+      kind: "single_host",
       selectedHostId: "server-local",
       auth: {
         connected: false,
@@ -910,6 +953,7 @@ export const useAppStore = defineStore("app", {
     agentProfileSaving: false,
     sessionList: [],
     activeSessionId: "",
+    workspaceReturnTargets: {},
     historyLoading: false,
     loading: true,
     errorMessage: "",
@@ -957,6 +1001,16 @@ export const useAppStore = defineStore("app", {
     activeSessionSummary: (state) => {
       return state.sessionList.find((session) => session.id === state.activeSessionId) || null;
     },
+    workspaceReturnSessionId: (state) => {
+      return String(state.workspaceReturnTargets[state.activeSessionId] || "");
+    },
+    workspaceReturnSession: (state) => {
+      const targetSessionId = String(state.workspaceReturnTargets[state.activeSessionId] || "");
+      if (!targetSessionId) {
+        return null;
+      }
+      return state.sessionList.find((session) => session.id === targetSessionId && session.kind === "workspace") || null;
+    },
     activeAgentProfile: (state) => {
       return state.agentProfiles.find((profile) => profile.id === state.activeAgentProfileId) || state.agentProfiles[0] || null;
     },
@@ -964,6 +1018,7 @@ export const useAppStore = defineStore("app", {
   actions: {
     applySnapshot(data) {
       this.snapshot.sessionId = data.sessionId || this.snapshot.sessionId;
+      this.snapshot.kind = data.kind || this.snapshot.kind || "single_host";
       this.activeSessionId = this.snapshot.sessionId;
       this.snapshot.selectedHostId = data.selectedHostId || this.snapshot.selectedHostId;
       this.snapshot.auth = data.auth || this.snapshot.auth;
@@ -1015,7 +1070,44 @@ export const useAppStore = defineStore("app", {
     },
     applySessions(data) {
       this.activeSessionId = data.activeSessionId || this.activeSessionId || this.snapshot.sessionId;
-      this.sessionList = data.sessions || [];
+      this.sessionList = (data.sessions || []).map((session) => normalizeSessionSummary(session));
+    },
+    rememberWorkspaceReturnTarget(sessionId, workspaceSessionId) {
+      const targetSessionId = String(sessionId || this.activeSessionId || "").trim();
+      const sourceWorkspaceSessionId = String(workspaceSessionId || "").trim();
+      if (!targetSessionId || !sourceWorkspaceSessionId) {
+        return false;
+      }
+      if (this.workspaceReturnTargets[targetSessionId] === sourceWorkspaceSessionId) {
+        return true;
+      }
+      this.workspaceReturnTargets = normalizeWorkspaceReturnTargets({
+        ...this.workspaceReturnTargets,
+        [targetSessionId]: sourceWorkspaceSessionId,
+      });
+      return true;
+    },
+    clearWorkspaceReturnTarget(sessionId = this.activeSessionId) {
+      const targetSessionId = String(sessionId || "").trim();
+      if (!targetSessionId || !this.workspaceReturnTargets[targetSessionId]) {
+        return false;
+      }
+      const nextTargets = { ...this.workspaceReturnTargets };
+      delete nextTargets[targetSessionId];
+      this.workspaceReturnTargets = normalizeWorkspaceReturnTargets(nextTargets);
+      return true;
+    },
+    async returnToWorkspaceSession() {
+      const workspaceSession = this.workspaceReturnSession;
+      if (!workspaceSession?.id) {
+        this.errorMessage = "没有可返回的工作台会话";
+        return false;
+      }
+      if (this.runtime.turn.active) {
+        this.errorMessage = "当前任务执行中，完成后再返回工作台";
+        return false;
+      }
+      return this.activateSession(workspaceSession.id);
     },
     setTurnPhase(phase) {
       this.runtime.turn.active = phase !== "idle" && phase !== "completed" && phase !== "failed" && phase !== "aborted";
@@ -1419,7 +1511,7 @@ export const useAppStore = defineStore("app", {
       this.runtime.codex.retryAttempt = 0;
       this.connectWs();
     },
-    async createSession() {
+    async createSession(kind = "single_host") {
       if (this.runtime.turn.active) {
         this.errorMessage = "当前任务执行中，完成后再新建会话";
         return false;
@@ -1428,6 +1520,10 @@ export const useAppStore = defineStore("app", {
         const response = await fetch("/api/v1/sessions", {
           method: "POST",
           credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ kind }),
         });
         const data = await response.json();
         if (!response.ok) {
@@ -1483,6 +1579,51 @@ export const useAppStore = defineStore("app", {
         this.errorMessage = "Switch session failed";
         return false;
       }
+    },
+    async createOrActivateSingleHostSessionForHost(hostId, hostMeta = {}) {
+      const targetHostId = String(hostId || hostMeta.hostId || hostMeta.id || hostMeta.name || hostMeta.address || "").trim();
+      if (!targetHostId) {
+        this.errorMessage = "hostId is required";
+        return false;
+      }
+      const sourceWorkspaceSessionId = this.snapshot.kind === "workspace" ? this.snapshot.sessionId : "";
+      if (this.runtime.turn.active) {
+        this.errorMessage = "当前任务执行中，完成后再切换会话";
+        return false;
+      }
+
+      if (!this.sessionList.length && !this.historyLoading) {
+        await this.fetchSessions();
+      }
+
+      const existingSingleHostSession = this.sessionList.find(
+        (session) => session.kind === "single_host" && session.selectedHostId === targetHostId,
+      );
+
+      if (existingSingleHostSession?.id && existingSingleHostSession.id !== this.activeSessionId) {
+        const activated = await this.activateSession(existingSingleHostSession.id);
+        if (!activated) {
+          return false;
+        }
+      } else if (this.snapshot.kind !== "single_host") {
+        const created = await this.createSession("single_host");
+        if (!created) {
+          return false;
+        }
+      }
+
+      if (this.snapshot.selectedHostId !== targetHostId) {
+        const selected = await this.selectHost(targetHostId);
+        if (!selected) {
+          return false;
+        }
+      }
+
+      if (sourceWorkspaceSessionId) {
+        this.rememberWorkspaceReturnTarget(this.activeSessionId, sourceWorkspaceSessionId);
+      }
+
+      return true;
     },
     connectWs() {
       this.disconnectWs();

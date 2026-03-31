@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lizhongxuan/aiops-codex/internal/model"
+	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 )
 
 type dynamicToolCallParams struct {
@@ -272,6 +273,67 @@ func (a *App) remoteDynamicTools() []map[string]any {
 	return tools
 }
 
+func (a *App) plannerDynamicTools() []map[string]any {
+	return []map[string]any{
+		{
+			"name":        "orchestrator_dispatch_tasks",
+			"description": "Submit structured host tasks to the ai-server orchestrator. Use this after you finish planning and have per-host execution tasks ready.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"missionTitle": map[string]any{
+						"type":        "string",
+						"description": "Optional mission title shown in the workspace projection.",
+					},
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "Optional mission summary shown in the workspace projection.",
+					},
+					"tasks": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"taskId": map[string]any{
+									"type":        "string",
+									"description": "Stable planner task identifier.",
+								},
+								"hostId": map[string]any{
+									"type":        "string",
+									"description": "Target host ID. Must be an online executable remote host.",
+								},
+								"title": map[string]any{
+									"type":        "string",
+									"description": "Short task title.",
+								},
+								"instruction": map[string]any{
+									"type":        "string",
+									"description": "Concrete worker instruction for the target host.",
+								},
+								"constraints": map[string]any{
+									"type":        "array",
+									"items":       map[string]any{"type": "string"},
+									"description": "Optional flat constraint list.",
+								},
+								"externalNodeId": map[string]any{
+									"type":        "string",
+									"description": "Optional planner-local node identifier for debugging.",
+								},
+							},
+							"required":             []string{"taskId", "hostId", "instruction"},
+							"additionalProperties": false,
+						},
+						"minItems":    1,
+						"description": "Structured task list grouped by target host.",
+					},
+				},
+				"required":             []string{"tasks"},
+				"additionalProperties": false,
+			},
+		},
+	}
+}
+
 func remoteThreadDeveloperInstructions(selectedHostID string) string {
 	return fmt.Sprintf(strings.TrimSpace(`
 You are embedded inside a web AI ops console.
@@ -332,6 +394,14 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 	session := a.store.Session(sessionID)
 	if session == nil {
 		_ = a.codex.RespondError(context.Background(), rawID, -32000, "session not found for dynamic tool call")
+		return
+	}
+	switch a.sessionKind(sessionID) {
+	case model.SessionKindPlanner:
+		a.handlePlannerDynamicToolCall(rawID, payload, params, sessionID)
+		return
+	case model.SessionKindWorkspace:
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("WorkspaceSession 不暴露动态工具。", false))
 		return
 	}
 	hostID := defaultHostID(session.SelectedHostID)
@@ -438,6 +508,96 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 	default:
 		_ = a.respondCodex(context.Background(), rawID, toolResponse("Unknown dynamic tool request.", false))
 	}
+}
+
+func (a *App) handlePlannerDynamicToolCall(rawID string, _ map[string]any, params dynamicToolCallParams, sessionID string) {
+	switch params.Tool {
+	case "orchestrator_dispatch_tasks":
+		a.handlePlannerDispatchTasks(rawID, sessionID, params.Arguments)
+	default:
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("PlannerSession 不支持该动态工具。", false))
+	}
+}
+
+func (a *App) handlePlannerDispatchTasks(rawID, sessionID string, arguments map[string]any) {
+	if a.orchestrator == nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("orchestrator 未初始化。", false))
+		return
+	}
+	mission, ok := a.orchestrator.MissionBySession(sessionID)
+	if !ok || mission == nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("当前 PlannerSession 没有关联 mission。", false))
+		return
+	}
+	var req orchestrator.DispatchRequest
+	if err := remarshalInto(arguments, &req); err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("dispatch payload 无法解析。", false))
+		return
+	}
+	req.MissionID = mission.ID
+	if len(req.Tasks) == 0 {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("dispatch tasks 不能为空。", false))
+		return
+	}
+	for _, task := range req.Tasks {
+		host := a.findHost(task.HostID)
+		switch {
+		case strings.TrimSpace(task.HostID) == "":
+			_ = a.respondCodex(context.Background(), rawID, toolResponse("所有任务都必须提供 hostId。", false))
+			return
+		case task.HostID == model.ServerLocalHostID:
+			_ = a.respondCodex(context.Background(), rawID, toolResponse("worker 任务当前只支持 remote host，不支持 server-local。", false))
+			return
+		case host.Status != "online":
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(fmt.Sprintf("host %s 当前离线。", task.HostID), false))
+			return
+		case !host.Executable:
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(fmt.Sprintf("host %s 当前不支持执行。", task.HostID), false))
+			return
+		}
+	}
+
+	result, err := a.orchestrator.Dispatch(context.Background(), req)
+	if err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+
+	if workspaceSessionID := strings.TrimSpace(mission.WorkspaceSessionID); workspaceSessionID != "" {
+		view := orchestrator.ProjectDispatchSummary(result, mission)
+		a.store.UpsertCard(workspaceSessionID, model.Card{
+			ID:      "dispatch-" + mission.ID,
+			Type:    "ResultSummaryCard",
+			Title:   view.Label,
+			Summary: firstNonEmptyValue(view.Caption, "当前批次任务已提交到调度器。"),
+			Text:    fmt.Sprintf("accepted=%d activated=%d queued=%d", view.Accepted, view.Activated, view.Queued),
+			Status:  "completed",
+			KVRows: []model.KeyValueRow{
+				{Key: "Accepted", Value: fmt.Sprintf("%d", view.Accepted)},
+				{Key: "Activated", Value: fmt.Sprintf("%d", view.Activated)},
+				{Key: "Queued", Value: fmt.Sprintf("%d", view.Queued)},
+			},
+			Detail: map[string]any{
+				"dispatchSummary": map[string]any{
+					"accepted":  view.Accepted,
+					"activated": view.Activated,
+					"queued":    view.Queued,
+				},
+			},
+			CreatedAt: model.NowString(),
+			UpdatedAt: model.NowString(),
+		})
+		a.broadcastSnapshot(workspaceSessionID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	_ = a.activateDispatchResult(ctx, mission, result)
+
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(
+		fmt.Sprintf("dispatch accepted=%d activated=%d queued=%d", result.Accepted, result.Activated, result.Queued),
+		true,
+	))
 }
 
 func (a *App) executeReadonlyDynamicTool(sessionID, hostID, rawID string, params dynamicToolCallParams, args execToolArgs) {
@@ -738,6 +898,10 @@ func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, para
 	}
 	applyCardHost(&card, host)
 	a.store.UpsertCard(sessionID, card)
+	a.recordOrchestratorApprovalRequested(sessionID, approval)
+	if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+		a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+	}
 	a.auditApprovalRequested(sessionID, approval, nil)
 	a.broadcastSnapshot(sessionID)
 }
@@ -829,6 +993,10 @@ func (a *App) requestRemoteFileChangeApproval(sessionID, hostID, rawID string, p
 	}
 	applyCardHost(&card, host)
 	a.store.UpsertCard(sessionID, card)
+	a.recordOrchestratorApprovalRequested(sessionID, approval)
+	if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+		a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+	}
 	a.auditApprovalRequested(sessionID, approval, map[string]any{
 		"filePath": args.Path,
 	})

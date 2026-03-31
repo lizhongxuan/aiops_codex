@@ -1,9 +1,7 @@
 <script setup>
-import { computed } from "vue";
+import { computed, defineAsyncComponent } from "vue";
 import MessageCard from "./MessageCard.vue";
 import PlanCard from "./PlanCard.vue";
-import TerminalCard from "./TerminalCard.vue";
-import CodeCard from "./CodeCard.vue";
 import AuthCard from "./AuthCard.vue";
 import ThinkingCard from "./ThinkingCard.vue";
 import NoticeCard from "./NoticeCard.vue";
@@ -12,10 +10,17 @@ import ChoiceCard from "./ChoiceCard.vue";
 import ResultSummaryCard from "./ResultSummaryCard.vue";
 import ProcessLineCard from "./ProcessLineCard.vue";
 
+const TerminalCard = defineAsyncComponent(() => import("./TerminalCard.vue"));
+const CodeCard = defineAsyncComponent(() => import("./CodeCard.vue"));
+
 const props = defineProps({
   card: {
     type: Object,
     required: true,
+  },
+  sessionKind: {
+    type: String,
+    default: "",
   },
   isOverlay: {
     type: Boolean,
@@ -60,7 +65,7 @@ const isMessage = computed(() => {
 </script>
 
 <template>
-  <div class="card-root">
+  <div class="card-root" :class="{ 'is-workspace': sessionKind === 'workspace' }">
     <!-- ThinkingCard -->
     <template v-if="card.type === 'ThinkingCard'">
       <ThinkingCard :card="card" />
@@ -72,11 +77,11 @@ const isMessage = computed(() => {
 
     <!-- PlanCard -->
     <template v-else-if="card.type === 'PlanCard'">
-      <PlanCard :card="card" />
+      <PlanCard :card="card" :session-kind="sessionKind" />
     </template>
 
     <template v-else-if="card.type === 'ProcessLineCard'">
-      <ProcessLineCard :card="card" />
+      <ProcessLineCard :card="card" :session-kind="sessionKind" />
     </template>
 
     <!-- Approval cards -->
@@ -86,7 +91,7 @@ const isMessage = computed(() => {
 
     <!-- ChoiceCard -->
     <template v-else-if="card.type === 'ChoiceCard'">
-      <ChoiceCard :card="card" @choice="handleChoice" />
+      <ChoiceCard :card="card" :session-kind="sessionKind" @choice="handleChoice" />
     </template>
 
     <!-- Terminal / Command card -->
@@ -101,12 +106,12 @@ const isMessage = computed(() => {
 
     <!-- ResultSummaryCard -->
     <template v-else-if="card.type === 'ResultSummaryCard'">
-      <ResultSummaryCard :card="card" />
+      <ResultSummaryCard :card="card" :session-kind="sessionKind" />
     </template>
 
     <!-- NoticeCard -->
     <template v-else-if="card.type === 'NoticeCard'">
-      <NoticeCard :card="card" />
+      <NoticeCard :card="card" :session-kind="sessionKind" />
     </template>
 
     <!-- ErrorCard -->
@@ -126,6 +131,10 @@ const isMessage = computed(() => {
 
 <style scoped>
 .card-root {
+  width: 100%;
+}
+
+.card-root.is-workspace {
   width: 100%;
 }
 

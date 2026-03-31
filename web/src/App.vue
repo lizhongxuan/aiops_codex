@@ -5,7 +5,6 @@ import { useAppStore } from "./store";
 import { resolveHostDisplay } from "./lib/hostDisplay";
 import LoginModal from "./components/LoginModal.vue";
 import HostModal from "./components/HostModal.vue";
-import SettingsModal from "./components/SettingsModal.vue";
 import SessionHistoryDrawer from "./components/SessionHistoryDrawer.vue";
 import {
   MessageSquarePlusIcon,
@@ -16,6 +15,7 @@ import {
   PanelsTopLeftIcon,
   TerminalIcon,
   HistoryIcon,
+  ArrowLeftIcon,
   EraserIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
@@ -27,7 +27,6 @@ const route = useRoute();
 
 const isLoginModalOpen = ref(false);
 const isHostModalOpen = ref(false);
-const isSettingsModalOpen = ref(false);
 const isSettingsMenuOpen = ref(false);
 const isMcpDrawerOpen = ref(false);
 const isHistoryDrawerOpen = ref(false);
@@ -51,35 +50,44 @@ function clearRouteHostQuery() {
   router.replace({ path: route.path, query: nextQuery });
 }
 
-function resolveRequestedHostId() {
+function resolveRequestedHostTarget() {
   const requestedId = normalizeRouteValue(route.query.hostId);
   const requestedName = normalizeRouteValue(route.query.hostName);
   const requestedAddress = normalizeRouteValue(route.query.hostAddress);
   const candidates = [requestedId, requestedName, requestedAddress].filter(Boolean);
 
-  if (!candidates.length) return "";
+  if (!candidates.length) {
+    return { hostId: "", hostMeta: null };
+  }
 
   const host = store.snapshot.hosts.find((item) =>
     candidates.some((candidate) => candidate === item.id || candidate === item.name || candidate === item.address),
   );
 
-  return host?.id || requestedId;
+  return {
+    hostId: host?.id || requestedId,
+    hostMeta: host || (requestedId ? { id: requestedId, name: requestedName, address: requestedAddress } : null),
+  };
 }
 
 async function syncChatRouteHostSelection() {
   if (route.name !== "chat" || isRouteHostSyncing.value) return;
-  const requestedHostId = resolveRequestedHostId();
-  if (!requestedHostId) return;
+  const requestedHostTarget = resolveRequestedHostTarget();
+  if (!requestedHostTarget.hostId) return;
   if (store.loading || store.sending || store.runtime.turn.active) return;
-  if (requestedHostId === store.snapshot.selectedHostId) {
-    clearRouteHostQuery();
-    return;
-  }
 
   isRouteHostSyncing.value = true;
   try {
-    await store.selectHost(requestedHostId);
-    clearRouteHostQuery();
+    const alreadySingleHost = store.snapshot.kind === "single_host" && requestedHostTarget.hostId === store.snapshot.selectedHostId;
+    if (alreadySingleHost) {
+      clearRouteHostQuery();
+      return;
+    }
+
+    const ok = await store.createOrActivateSingleHostSessionForHost(requestedHostTarget.hostId, requestedHostTarget.hostMeta || {});
+    if (ok) {
+      clearRouteHostQuery();
+    }
   } finally {
     isRouteHostSyncing.value = false;
   }
@@ -99,7 +107,7 @@ function closeSettingsMenu() {
 
 function openGeneralSettings() {
   closeSettingsMenu();
-  isSettingsModalOpen.value = true;
+  router.push("/settings");
 }
 
 function openAgentProfile() {
@@ -117,13 +125,37 @@ const authBadgeLabel = computed(() => {
   return "未登录";
 });
 
-async function startNewThread() {
+async function createSession(kind = "single_host") {
   if (store.sending) return;
-  const ok = await store.createSession();
+  const ok = await store.createSession(kind);
   if (!ok) return;
   store.errorMessage = "";
   store.noticeMessage = "";
   isHistoryDrawerOpen.value = false;
+  if (kind === "workspace") {
+    router.push("/protocol");
+    return;
+  }
+  router.push("/");
+}
+
+async function startNewThread() {
+  await createSession("single_host");
+}
+
+async function startWorkspaceSession() {
+  await createSession("workspace");
+}
+
+async function openWorkspaceEntry() {
+  if (store.snapshot.kind === "single_host" && store.workspaceReturnSession?.id) {
+    const ok = await store.returnToWorkspaceSession();
+    if (!ok) return;
+    isHistoryDrawerOpen.value = false;
+    router.push("/protocol");
+    return;
+  }
+  router.push("/protocol");
 }
 
 async function openHistoryDrawer() {
@@ -132,9 +164,15 @@ async function openHistoryDrawer() {
 }
 
 async function switchSession(sessionId) {
+  const target = store.sessionList.find((item) => item.id === sessionId);
   const ok = await store.activateSession(sessionId);
   if (ok) {
     isHistoryDrawerOpen.value = false;
+    if (target?.kind === "workspace") {
+      router.push("/protocol");
+      return;
+    }
+    router.push("/");
   }
 }
 
@@ -208,7 +246,79 @@ const selectedHostLabel = computed(() => {
   return resolveHostDisplay(host) || "server-local";
 });
 
-const isSettingsRoute = computed(() => route.path.startsWith("/settings/"));
+function describeTurnPhase(phase) {
+  switch (phase) {
+    case "thinking":
+      return "思考中";
+    case "planning":
+      return "规划中";
+    case "waiting_approval":
+      return "等待审批";
+    case "waiting_input":
+      return "等待补充输入";
+    case "executing":
+      return "执行中";
+    case "finalizing":
+      return "收尾中";
+    case "completed":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "aborted":
+      return "已停止";
+    default:
+      return "待命";
+  }
+}
+
+const workspaceSession = computed(() => {
+  if (store.snapshot.kind === "workspace") {
+    return store.activeSessionSummary?.kind === "workspace" ? store.activeSessionSummary : null;
+  }
+  if (store.workspaceReturnSession) {
+    return store.workspaceReturnSession;
+  }
+  return store.activeSessionSummary?.kind === "workspace" ? store.activeSessionSummary : null;
+});
+
+const workspaceNavTitle = computed(() => workspaceSession.value?.title || "协作工作台");
+const workspaceNavStatus = computed(() => {
+  if (store.snapshot.kind === "workspace") {
+    const pendingApprovals = (store.snapshot.approvals || []).filter((approval) => approval.status === "pending").length;
+    if (store.runtime.turn.active) return describeTurnPhase(store.runtime.turn.phase);
+    if (pendingApprovals > 0) return `${pendingApprovals} 项待审批`;
+    return workspaceSession.value?.status === "completed"
+      ? "已完成"
+      : workspaceSession.value?.status === "failed"
+        ? "失败"
+        : "可用";
+  }
+  return workspaceSession.value ? "返回工作台" : "规划 / 调度 / 审批";
+});
+
+const canReturnToWorkspace = computed(() => store.snapshot.kind === "single_host" && !!store.workspaceReturnSession?.id);
+
+const settingsNavTitle = computed(() => {
+  if (route.path.startsWith("/settings/agent")) return "Agent Profile";
+  if (route.path.startsWith("/settings/experience-packs")) return "Experience Packs";
+  if (route.path.startsWith("/settings/hosts")) return "Hosts";
+  return "Hosts / Packs / Agent";
+});
+
+const settingsNavStatus = computed(() => {
+  if (route.path === "/settings") return "设置中心";
+  if (route.path.startsWith("/settings/agent")) return "System Prompt / Skills / MCP";
+  if (route.path.startsWith("/settings/experience-packs")) return "Playbooks";
+  if (route.path.startsWith("/settings/hosts")) return "Inventory & Scope";
+  return "入口";
+});
+
+const mainHeaderTitle = computed(() => {
+  if (route.name === "chat") return "对话";
+  if (route.name === "protocol") return "工作台";
+  if (route.path.startsWith("/settings")) return "设置";
+  return "Codex Workspace";
+});
 
 onMounted(() => {
   store.fetchState();
@@ -236,6 +346,8 @@ watch(
     store.loading,
     store.sending,
     store.runtime.turn.active,
+    store.snapshot.kind,
+    store.activeSessionId,
     store.snapshot.selectedHostId,
     store.snapshot.hosts.length,
   ],
@@ -248,172 +360,151 @@ watch(
 
 <template>
   <div class="app-layout">
-    <template v-if="isSettingsRoute">
-      <router-view />
-    </template>
-    <template v-else>
-      <!-- Left Sidebar: Navigation & Threads -->
-      <aside class="app-sidebar" :class="{ collapsed: isSidebarCollapsed }">
-        <div class="sidebar-top">
-          <div class="sidebar-toolbar">
-            <button class="nav-icon-btn sidebar-collapse-btn" :title="isSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'" @click="toggleSidebar">
-              <PanelLeftOpenIcon v-if="isSidebarCollapsed" size="18" />
-              <PanelLeftCloseIcon v-else size="18" />
-            </button>
-          </div>
-          <div class="sidebar-actions">
-            <button class="nav-button new-thread" @click="startNewThread">
-              <MessageSquarePlusIcon size="18" />
-              <span class="nav-label">新建会话</span>
-              <span class="shortcut">⌘ N</span>
-            </button>
-            <button class="nav-button secondary" @click="openHistoryDrawer">
-              <HistoryIcon size="18" />
-              <span class="nav-label">历史会话</span>
-            </button>
-          </div>
+    <!-- Left Sidebar: Navigation & Threads -->
+    <aside class="app-sidebar" :class="{ collapsed: isSidebarCollapsed }">
+      <div class="sidebar-top">
+        <div class="sidebar-toolbar">
+          <button class="nav-icon-btn sidebar-collapse-btn" :title="isSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'" @click="toggleSidebar">
+            <PanelLeftOpenIcon v-if="isSidebarCollapsed" size="18" />
+            <PanelLeftCloseIcon v-else size="18" />
+          </button>
         </div>
+        <div class="sidebar-actions">
+          <button class="nav-button new-thread" @click="startNewThread">
+            <MessageSquarePlusIcon size="18" />
+            <span class="nav-label">新建会话</span>
+            <span class="shortcut">⌘ N</span>
+          </button>
+          <button class="nav-button secondary" @click="openHistoryDrawer">
+            <HistoryIcon size="18" />
+            <span class="nav-label">历史会话</span>
+          </button>
+        </div>
+      </div>
 
         <div class="sidebar-scroll">
-          <div class="nav-group">
-            <div class="nav-group-title">会话</div>
-            <button class="nav-item" :class="{ active: $route.name === 'chat' }" @click="router.push('/')">
-              <AppWindowIcon size="16" />
-              <div class="nav-item-content">
-                <span class="nav-item-title">{{ currentSession.title }}</span>
-                <span class="nav-item-time">{{ currentSessionStatus }}</span>
-              </div>
-            </button>
-          </div>
-
-          <div class="nav-group">
-            <div class="nav-group-title">运维工作台</div>
-            <button class="nav-item" :class="{ active: $route.name === 'hosts' }" @click="router.push('/hosts')">
-              <ServerIcon size="16" />
-              <div class="nav-item-content">
-                <span class="nav-item-title">主机管理</span>
-                <span class="nav-item-time">Inventory & Scope</span>
-              </div>
-            </button>
-
-            <button class="nav-item" :class="{ active: $route.name === 'experience-packs' }" @click="router.push('/experience-packs')">
-              <HistoryIcon size="16" />
-              <div class="nav-item-content">
-                <span class="nav-item-title">经验包库</span>
-                <span class="nav-item-time">Packs & Playbooks</span>
-              </div>
-            </button>
-
-            <button class="nav-item" :class="{ active: $route.name === 'protocol' }" @click="router.push('/protocol')">
-              <PanelsTopLeftIcon size="16" />
-              <div class="nav-item-content">
-                <span class="nav-item-title">协议工作台</span>
-                <span class="nav-item-time">DAG & Sub-agents</span>
-              </div>
-            </button>
-          </div>
-
-          <div class="nav-group">
-            <div class="nav-group-title">终端</div>
-            <button class="nav-item" :class="{ active: $route.name === 'terminal' }" @click="openTerminal">
-              <TerminalIcon size="16" />
-              <div class="nav-item-content">
-                <span class="nav-item-title">{{ selectedHostLabel }}</span>
-                <span class="nav-item-time">
-                  <span class="pill-dot-inline" :class="store.selectedHost.status"></span>
-                  {{ store.selectedHost.status }}
-                </span>
-              </div>
-            </button>
-          </div>
-        </div>
-
-        <div class="sidebar-bottom">
-          <div ref="settingsMenuRef" class="settings-menu">
-            <button class="nav-icon-btn" title="Settings" @click.stop="isSettingsMenuOpen = !isSettingsMenuOpen">
-              <SettingsIcon size="20" />
-            </button>
-            <div v-if="isSettingsMenuOpen" class="settings-menu-popover" @click.stop>
-              <button class="settings-menu-item" @click="openGeneralSettings">
-                <span class="settings-menu-title">通用设置</span>
-                <span class="settings-menu-subtitle">账户、模型与默认参数</span>
-              </button>
-              <button class="settings-menu-item" @click="openAgentProfile">
-                <span class="settings-menu-title">Agent Profile</span>
-                <span class="settings-menu-subtitle">System Prompt / Permissions / Skills / MCP</span>
-              </button>
+        <div class="nav-group">
+          <div class="nav-group-title">主导航</div>
+          <button class="nav-item" :class="{ active: $route.name === 'chat' }" @click="router.push('/')">
+            <AppWindowIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">{{ currentSession.title }}</span>
+              <span class="nav-item-time">{{ currentSessionStatus }}</span>
             </div>
-          </div>
-          <div class="flex-spacer"></div>
-          <div class="ws-badge" :class="store.wsStatus" :title="'WS: ' + store.wsStatus"></div>
-        </div>
-      </aside>
+          </button>
 
-      <!-- Main Canvas -->
-      <main class="app-main">
-        <header class="main-header">
-          <div class="header-left">
-            <h1 class="header-title">Codex Workspace</h1>
+          <button class="nav-item" :class="{ active: $route.name === 'protocol' }" @click="openWorkspaceEntry">
+            <PanelsTopLeftIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">{{ workspaceNavTitle }}</span>
+              <span class="nav-item-time">{{ workspaceNavStatus }}</span>
+            </div>
+          </button>
+
+          <button class="nav-item" :class="{ active: $route.path.startsWith('/settings') }" @click="router.push('/settings')">
+            <SettingsIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">{{ settingsNavTitle }}</span>
+              <span class="nav-item-time">{{ settingsNavStatus }}</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <div class="sidebar-bottom">
+        <div ref="settingsMenuRef" class="settings-menu">
+          <button class="nav-icon-btn" title="Settings" @click.stop="isSettingsMenuOpen = !isSettingsMenuOpen">
+            <SettingsIcon size="20" />
+          </button>
+          <div v-if="isSettingsMenuOpen" class="settings-menu-popover" @click.stop>
+            <button class="settings-menu-item" @click="openGeneralSettings">
+              <span class="settings-menu-title">设置总览</span>
+              <span class="settings-menu-subtitle">Hosts / Packs / Agent</span>
+            </button>
+            <button class="settings-menu-item" @click="openAgentProfile">
+              <span class="settings-menu-title">Agent Profile</span>
+              <span class="settings-menu-subtitle">System Prompt / Permissions / Skills / MCP</span>
+            </button>
           </div>
+        </div>
+        <div class="flex-spacer"></div>
+        <div class="ws-badge" :class="store.wsStatus" :title="'WS: ' + store.wsStatus"></div>
+      </div>
+    </aside>
+
+    <!-- Main Canvas -->
+    <main class="app-main">
+      <header class="main-header">
+        <div class="header-left">
+          <h1 class="header-title">{{ mainHeaderTitle }}</h1>
+        </div>
+        
+        <div class="header-right">
+          <button class="header-pill subtle-pill" :disabled="!canResetCurrentSession" :title="resetButtonTitle" @click="resetCurrentSession">
+            <EraserIcon size="14" />
+            <span class="pill-text">清空上下文</span>
+          </button>
+
+          <button
+            v-if="canReturnToWorkspace"
+            class="header-pill subtle-pill"
+            :title="`返回到 ${workspaceSession?.title || '工作台'}`"
+            @click="openWorkspaceEntry"
+          >
+            <ArrowLeftIcon size="14" />
+            <span class="pill-text">返回工作台</span>
+          </button>
+
+          <button class="header-pill" :disabled="!store.canOpenTerminal" @click="openTerminal" title="打开终端">
+            <TerminalIcon size="14" />
+            <span class="pill-text">终端</span>
+          </button>
+
+          <button class="header-pill" @click="isHostModalOpen = true">
+            <ServerIcon size="14" />
+            <span class="pill-text">{{ selectedHostLabel }}</span>
+            <span class="pill-dot" :class="store.selectedHost.status"></span>
+          </button>
           
-          <div class="header-right">
-            <button class="header-pill subtle-pill" :disabled="!canResetCurrentSession" :title="resetButtonTitle" @click="resetCurrentSession">
-              <EraserIcon size="14" />
-              <span class="pill-text">清空上下文</span>
-            </button>
-
-            <button class="header-pill" :disabled="!store.canOpenTerminal" @click="openTerminal" title="打开终端">
-              <TerminalIcon size="14" />
-              <span class="pill-text">终端</span>
-            </button>
-
-            <button class="header-pill" @click="isHostModalOpen = true">
-              <ServerIcon size="14" />
-              <span class="pill-text">{{ selectedHostLabel }}</span>
-              <span class="pill-dot" :class="store.selectedHost.status"></span>
-            </button>
-            
-            <button class="header-pill auth-pill" @click="isLoginModalOpen = true" :class="{'connected': store.snapshot.auth.connected}">
-              <UserCircleIcon size="16" />
-              <span class="pill-text">{{ authBadgeLabel }}</span>
-            </button>
-            
-            <button class="header-icon-btn" @click="toggleMcpDrawer" :class="{ 'is-active': isMcpDrawerOpen }" title="Skills & MCP">
-              <PanelsTopLeftIcon size="20" />
-            </button>
-          </div>
-        </header>
-
-        <!-- Router View: ChatPage or TerminalPage -->
-        <router-view />
-      </main>
-
-      <!-- Right Drawer: MCP & Core Panel -->
-      <aside class="app-mcp-drawer" :class="{ 'is-open': isMcpDrawerOpen }">
-        <div class="mcp-header">
-          <h3>Skills & MCP</h3>
+          <button class="header-pill auth-pill" @click="isLoginModalOpen = true" :class="{'connected': store.snapshot.auth.connected}">
+            <UserCircleIcon size="16" />
+            <span class="pill-text">{{ authBadgeLabel }}</span>
+          </button>
+          
+          <button class="header-icon-btn" @click="toggleMcpDrawer" :class="{ 'is-active': isMcpDrawerOpen }" title="Skills & MCP">
+            <PanelsTopLeftIcon size="20" />
+          </button>
         </div>
-        <div class="mcp-body">
-           <p class="subtle" style="font-size:13px">No skills configured yet.</p>
-        </div>
-      </aside>
+      </header>
 
-      <SessionHistoryDrawer
-        v-if="isHistoryDrawerOpen"
-        :sessions="store.sessionList"
-        :active-session-id="store.activeSessionId"
-        :loading="store.historyLoading"
-        :switching-disabled="store.runtime.turn.active"
-        @close="isHistoryDrawerOpen = false"
-        @create="startNewThread"
-        @select="switchSession"
-      />
+      <router-view />
+    </main>
 
-      <!-- Modals -->
-      <LoginModal v-if="isLoginModalOpen" @close="isLoginModalOpen = false" />
-      <HostModal v-if="isHostModalOpen" @close="isHostModalOpen = false" />
-      <SettingsModal v-if="isSettingsModalOpen" @close="isSettingsModalOpen = false" />
-    </template>
+    <!-- Right Drawer: MCP & Core Panel -->
+    <aside class="app-mcp-drawer" :class="{ 'is-open': isMcpDrawerOpen }">
+      <div class="mcp-header">
+        <h3>Skills & MCP</h3>
+      </div>
+      <div class="mcp-body">
+         <p class="subtle" style="font-size:13px">No skills configured yet.</p>
+      </div>
+    </aside>
+
+    <SessionHistoryDrawer
+      v-if="isHistoryDrawerOpen"
+      :sessions="store.sessionList"
+      :active-session-id="store.activeSessionId"
+      :loading="store.historyLoading"
+      :switching-disabled="store.runtime.turn.active"
+      @close="isHistoryDrawerOpen = false"
+      @create="startNewThread"
+      @create-workspace="startWorkspaceSession"
+      @select="switchSession"
+    />
+
+    <!-- Modals -->
+    <LoginModal v-if="isLoginModalOpen" @close="isLoginModalOpen = false" />
+    <HostModal v-if="isHostModalOpen" @close="isHostModalOpen = false" />
   </div>
 </template>
 

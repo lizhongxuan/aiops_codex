@@ -209,6 +209,7 @@ func (a *App) handleHostDelete(w http.ResponseWriter, r *http.Request, hostID st
 	a.failRemoteTerminalsForHost(hostID, "host deleted")
 	a.failRemoteExecsForHost(hostID, "host deleted")
 	a.failAgentResponseWaitersForHost(hostID, "host deleted")
+	a.reconcileOrchestratorHostUnavailable(hostID, "host deleted")
 	a.notifyRemoteHostUnavailable(hostID, "主机已从清单移除", "主机记录已删除，如需继续执行，请重新添加或切回其他主机。")
 	a.audit("host.delete", map[string]any{
 		"hostId":  host.ID,

@@ -97,7 +97,7 @@ func (s *Store) HostSessions(hostID string, limit int) []model.HostSessionSummar
 	s.mu.RLock()
 	out := make([]model.HostSessionSummary, 0)
 	for _, session := range s.sessions {
-		if session == nil || defaultHostID(session.SelectedHostID) != hostID {
+		if session == nil || !session.Meta.Visible || defaultHostID(session.SelectedHostID) != hostID {
 			continue
 		}
 		out = append(out, summarizeHostSession(session))

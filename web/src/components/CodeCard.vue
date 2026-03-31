@@ -1,7 +1,6 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { AlertTriangleIcon, CopyIcon, ExternalLinkIcon, FileCode2Icon, SearchIcon } from "lucide-vue-next";
-import * as monaco from "monaco-editor";
 import Modal from "./Modal.vue";
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
@@ -26,6 +25,7 @@ const previewTruncated = ref(false);
 const repeatSearchBusy = ref(false);
 const repeatSearchMessage = ref("");
 let editor = null;
+let monacoModulePromise = null;
 
 const changes = computed(() => props.card.changes || []);
 const isPreviewCard = computed(() => props.card.type === "FilePreviewCard");
@@ -230,8 +230,17 @@ function resizeEditor() {
   editor.layout();
 }
 
-function initMonaco() {
-  if (!editorContainer.value) return;
+function ensureMonaco() {
+  if (!monacoModulePromise) {
+    monacoModulePromise = import("monaco-editor/esm/vs/editor/editor.api");
+  }
+  return monacoModulePromise;
+}
+
+async function initMonaco() {
+  if (!editorContainer.value || editor) return;
+  const monaco = await ensureMonaco();
+  if (!editorContainer.value || editor) return;
 
   editor = monaco.editor.create(editorContainer.value, {
     value: content.value,
@@ -342,18 +351,24 @@ watch([content, language], () => {
   if (!editor) return;
   const model = editor.getModel();
   if (!model) return;
-  model.setValue(content.value);
-  monaco.editor.setModelLanguage(model, language.value);
-  resizeEditor();
+  void ensureMonaco().then((monaco) => {
+    if (!editor) return;
+    model.setValue(content.value);
+    monaco.editor.setModelLanguage(model, language.value);
+    resizeEditor();
+  });
 });
 
 onMounted(() => {
-  setTimeout(initMonaco, 10);
+  window.setTimeout(() => {
+    void initMonaco();
+  }, 10);
 });
 
 onBeforeUnmount(() => {
   if (editor) {
     editor.dispose();
+    editor = null;
   }
 });
 </script>

@@ -302,6 +302,7 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 	applyCardHost(&card, host)
 	a.store.UpsertCard(sessionID, card)
 	a.broadcastSnapshot(sessionID)
+	a.recordOrchestratorRemoteExecStarted(sessionID, hostID, cardID, spec.Command)
 	a.auditRemoteToolEvent("remote.exec.started", sessionID, hostID, func() string {
 		if spec.Readonly {
 			return "execute_readonly_query"
@@ -430,6 +431,7 @@ func (a *App) finalizeExecCard(exec *remoteExecSession, createdAt string, result
 		"error":            truncate(result.Error, 200),
 		"approvalDecision": exec.Approval,
 	})
+	a.recordOrchestratorRemoteExecFinished(exec.SessionID, exec.HostID, exec.CardID, finalStatus, exec.Command, firstNonEmptyString([]string{result.Error, result.Message, result.Output}))
 }
 
 func buildExecCardPresentation(exec *remoteExecSession, result remoteExecResult, finalStatus string) (string, []string, []model.KeyValueRow) {

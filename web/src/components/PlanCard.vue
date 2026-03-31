@@ -7,6 +7,10 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  sessionKind: {
+    type: String,
+    default: "",
+  },
   compact: {
     type: Boolean,
     default: false,
@@ -24,6 +28,8 @@ const summaryText = computed(() => {
   return `共 ${totalCount.value} 个任务，已完成 ${completedCount.value} 个`;
 });
 
+const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台计划投影" : "计划"));
+
 function toggleExpand() {
   isExpanded.value = !isExpanded.value;
 }
@@ -40,7 +46,10 @@ function getIconForStatus(status) {
     <div class="plan-header" @click="toggleExpand">
       <div class="plan-left">
         <ListTodoIcon size="16" class="plan-icon" />
-        <span class="plan-summary">{{ summaryText }}</span>
+        <div class="plan-title-group">
+          <span class="plan-context">{{ contextLabel }}</span>
+          <span class="plan-summary">{{ summaryText }}</span>
+        </div>
       </div>
       <component :is="isExpanded ? ChevronDownIcon : ChevronRightIcon" size="16" class="plan-toggle" />
     </div>
@@ -107,8 +116,22 @@ function getIconForStatus(status) {
   gap: 10px;
 }
 
+.plan-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .plan-icon {
   color: #6b7280;
+}
+
+.plan-context {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .plan-summary {

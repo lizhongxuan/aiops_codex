@@ -18,6 +18,7 @@ type SessionState struct {
 	ThreadConfigHash string
 	TurnID           string
 	SelectedHostID   string
+	Meta             model.SessionMeta
 	Cards            []model.Card
 	Approvals        map[string]model.ApprovalRequest
 	Choices          map[string]model.ChoiceRequest
@@ -67,6 +68,7 @@ type persistentSessionState struct {
 	AuthSessionID  string                       `json:"authSessionId,omitempty"`
 	ThreadID       string                       `json:"threadId,omitempty"`
 	SelectedHostID string                       `json:"selectedHostId,omitempty"`
+	Meta           model.SessionMeta            `json:"meta,omitempty"`
 	Auth           model.AuthState              `json:"auth"`
 	Tokens         persistentExternalAuthTokens `json:"tokens"`
 	CreatedAt      string                       `json:"createdAt,omitempty"`
@@ -147,6 +149,51 @@ func (s *Store) Session(sessionID string) *SessionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return cloneSession(s.sessions[sessionID])
+}
+
+func (s *Store) SessionMeta(sessionID string) model.SessionMeta {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	session := s.sessions[sessionID]
+	if session == nil {
+		return model.DefaultSessionMeta()
+	}
+	if isZeroSessionMeta(session.Meta) {
+		return model.DefaultSessionMeta()
+	}
+	return model.NormalizeSessionMeta(session.Meta)
+}
+
+func (s *Store) EnsureSessionWithMeta(sessionID string, meta model.SessionMeta) *SessionState {
+	s.mu.Lock()
+	session, created := s.ensureSessionLocked(sessionID)
+	if created || isZeroSessionMeta(session.Meta) {
+		session.Meta = normalizeSessionMetaForCreate(meta)
+	}
+	cloned := cloneSession(session)
+	s.mu.Unlock()
+	if created {
+		s.SaveStableState("")
+	}
+	return cloned
+}
+
+func (s *Store) UpdateSessionMeta(sessionID string, fn func(*model.SessionMeta)) {
+	if fn == nil {
+		return
+	}
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	meta := session.Meta
+	if isZeroSessionMeta(meta) {
+		meta = model.DefaultSessionMeta()
+	}
+	meta.RuntimePreset = ""
+	fn(&meta)
+	session.Meta = normalizeSessionMetaForCreate(meta)
+	session.LastActivityAt = model.NowString()
+	s.mu.Unlock()
+	s.SaveStableState("")
 }
 
 func (s *Store) SessionIDs() []string {
@@ -521,6 +568,23 @@ func (s *Store) UpdateCard(sessionID, cardID string, fn func(*model.Card)) {
 	s.mu.Unlock()
 }
 
+func (s *Store) RemoveCard(sessionID, cardID string) bool {
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	for i := range session.Cards {
+		if session.Cards[i].ID != cardID {
+			continue
+		}
+		session.Cards = append(session.Cards[:i], session.Cards[i+1:]...)
+		session.LastActivityAt = model.NowString()
+		s.mu.Unlock()
+		s.scheduleSessionPersistence(sessionID)
+		return true
+	}
+	s.mu.Unlock()
+	return false
+}
+
 func (s *Store) RememberItem(sessionID, itemID string, item map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -750,6 +814,7 @@ func (s *Store) Snapshot(sessionID string, cfg model.UIConfig) model.Snapshot {
 	cards := append([]model.Card(nil), session.Cards...)
 	return model.Snapshot{
 		SessionID:      session.ID,
+		Kind:           session.Meta.Kind,
 		SelectedHostID: session.SelectedHostID,
 		Auth:           session.Auth,
 		Hosts:          hosts,
@@ -764,6 +829,11 @@ func (s *Store) Snapshot(sessionID string, cfg model.UIConfig) model.Snapshot {
 func (s *Store) ensureSessionLocked(sessionID string) (*SessionState, bool) {
 	session, ok := s.sessions[sessionID]
 	if ok {
+		if isZeroSessionMeta(session.Meta) {
+			session.Meta = model.DefaultSessionMeta()
+		} else {
+			session.Meta = normalizeSessionMetaForLoad(session.Meta)
+		}
 		return session, false
 	}
 	session = defaultSession(sessionID)
@@ -776,6 +846,7 @@ func defaultSession(sessionID string) *SessionState {
 	return &SessionState{
 		ID:             sessionID,
 		SelectedHostID: model.ServerLocalHostID,
+		Meta:           model.DefaultSessionMeta(),
 		Approvals:      make(map[string]model.ApprovalRequest),
 		Choices:        make(map[string]model.ChoiceRequest),
 		ApprovalGrants: make([]model.ApprovalGrant, 0),
@@ -842,12 +913,14 @@ func (s *Store) LoadStableState(path string) error {
 		if session == nil {
 			continue
 		}
+		meta := normalizeSessionMetaForLoad(session.Meta)
 		s.sessions[id] = &SessionState{
 			ID:             session.ID,
 			AuthSessionID:  session.AuthSessionID,
 			ThreadID:       "",
 			TurnID:         "",
 			SelectedHostID: defaultHostID(session.SelectedHostID),
+			Meta:           meta,
 			Approvals:      make(map[string]model.ApprovalRequest),
 			Choices:        make(map[string]model.ChoiceRequest),
 			ApprovalGrants: make([]model.ApprovalGrant, 0),
@@ -975,6 +1048,7 @@ func (s *Store) SaveStableState(path string) error {
 			AuthSessionID:  session.AuthSessionID,
 			ThreadID:       "",
 			SelectedHostID: session.SelectedHostID,
+			Meta:           normalizeSessionMetaForPersist(session.Meta),
 			Auth:           session.Auth,
 			Tokens:         toPersistentTokens(session.Tokens),
 			CreatedAt:      session.CreatedAt,
@@ -1035,6 +1109,45 @@ func cloneSession(session *SessionState) *SessionState {
 		out.ItemCache[k] = copyMap
 	}
 	return &out
+}
+
+func isZeroSessionMeta(meta model.SessionMeta) bool {
+	return meta.Kind == "" && !meta.Visible && meta.MissionID == "" && meta.WorkspaceSessionID == "" && meta.WorkerHostID == "" && meta.RuntimePreset == ""
+}
+
+func normalizeSessionMetaForCreate(meta model.SessionMeta) model.SessionMeta {
+	if isZeroSessionMeta(meta) {
+		return model.DefaultSessionMeta()
+	}
+	meta = model.NormalizeSessionMeta(meta)
+	if meta.Kind == "" {
+		meta.Kind = model.SessionKindSingleHost
+	}
+	if meta.RuntimePreset == "" {
+		meta = model.NormalizeSessionMeta(meta)
+	}
+	return meta
+}
+
+func normalizeSessionMetaForLoad(meta model.SessionMeta) model.SessionMeta {
+	if isZeroSessionMeta(meta) {
+		return model.DefaultSessionMeta()
+	}
+	meta = model.NormalizeSessionMeta(meta)
+	if meta.Kind == "" {
+		meta.Kind = model.SessionKindSingleHost
+	}
+	if meta.RuntimePreset == "" {
+		meta = model.NormalizeSessionMeta(meta)
+	}
+	return meta
+}
+
+func normalizeSessionMetaForPersist(meta model.SessionMeta) model.SessionMeta {
+	if isZeroSessionMeta(meta) {
+		return model.DefaultSessionMeta()
+	}
+	return normalizeSessionMetaForCreate(meta)
 }
 
 func defaultRuntime(hostID string) model.RuntimeState {

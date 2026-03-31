@@ -10,6 +10,10 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  sessionKind: {
+    type: String,
+    default: "",
+  },
 });
 
 const store = useAppStore();
@@ -116,6 +120,7 @@ const structuredFileSections = computed(() => {
 const hasStructuredFiles = computed(() => structuredFileSections.value.length > 0);
 const hasHighlights = computed(() => highlightPills.value.length > 0);
 const canRepeatSearch = computed(() => !!repeatSearchPrompt.value && !repeatSearchBusy.value && !store.sending && !store.runtime.turn.active && store.canSend);
+const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台结果投影" : "执行结果"));
 
 const previewOpen = ref(false);
 const previewLoading = ref(false);
@@ -289,6 +294,7 @@ function closePreview() {
     <div class="result-header">
       <ClipboardCheckIcon size="16" class="result-icon" />
       <div class="result-title-group">
+        <span class="result-context">{{ contextLabel }}</span>
         <span class="result-title">{{ card.title || "执行结果" }}</span>
         <span v-if="hasStructuredFiles" class="result-subtitle">{{ structuredFileSections.length }} 个结构化结果区</span>
       </div>
@@ -431,6 +437,14 @@ function closePreview() {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+}
+
+.result-context {
+  font-size: 11px;
+  color: #65a30d;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .result-title {

@@ -33,6 +33,107 @@ func TestMarkStaleHostsMarksOffline(t *testing.T) {
 	}
 }
 
+func TestSessionMetaDefaultsAndPersistence(t *testing.T) {
+	st := New()
+	sessionID := "sess-meta"
+
+	session := st.EnsureSession(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to be created")
+	}
+	if got := session.Meta; got != model.DefaultSessionMeta() {
+		t.Fatalf("expected default session meta, got %#v", got)
+	}
+
+	created := st.EnsureSessionWithMeta("sess-planner", model.SessionMeta{
+		Kind:      model.SessionKindPlanner,
+		Visible:   false,
+		MissionID: "mission-1",
+	})
+	if created == nil {
+		t.Fatalf("expected session with meta to be created")
+	}
+	if created.Meta.Kind != model.SessionKindPlanner || created.Meta.Visible {
+		t.Fatalf("expected hidden planner session, got %#v", created.Meta)
+	}
+	if created.Meta.RuntimePreset != model.SessionRuntimePresetPlanner {
+		t.Fatalf("expected planner runtime preset, got %#v", created.Meta)
+	}
+
+	st.UpdateSessionMeta(sessionID, func(meta *model.SessionMeta) {
+		meta.Kind = model.SessionKindWorker
+		meta.Visible = false
+		meta.MissionID = "mission-2"
+		meta.WorkspaceSessionID = "sess-workspace"
+		meta.WorkerHostID = "host-1"
+	})
+
+	got := st.SessionMeta(sessionID)
+	if got.Kind != model.SessionKindWorker || got.Visible {
+		t.Fatalf("expected updated hidden worker meta, got %#v", got)
+	}
+	if got.RuntimePreset != model.SessionRuntimePresetWorker {
+		t.Fatalf("expected worker runtime preset, got %#v", got)
+	}
+	if got.MissionID != "mission-2" || got.WorkspaceSessionID != "sess-workspace" || got.WorkerHostID != "host-1" {
+		t.Fatalf("expected updated linkage fields, got %#v", got)
+	}
+
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	st.SetStatePath(statePath)
+	if err := st.SaveStableState(statePath); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStatePath(statePath)
+	if err := reloaded.LoadStableState(statePath); err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	loaded := reloaded.SessionMeta(sessionID)
+	if loaded != got {
+		t.Fatalf("expected worker meta to persist, got %#v want %#v", loaded, got)
+	}
+	planner := reloaded.SessionMeta("sess-planner")
+	if planner.Kind != model.SessionKindPlanner || planner.Visible {
+		t.Fatalf("expected hidden planner meta to persist, got %#v", planner)
+	}
+	if planner.RuntimePreset != model.SessionRuntimePresetPlanner {
+		t.Fatalf("expected planner runtime preset to persist, got %#v", planner)
+	}
+}
+
+func TestLegacyStableStateDefaultsSessionMeta(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "legacy-state.json")
+	legacy := []byte(`{
+  "sessions": {
+    "sess-legacy": {
+      "id": "sess-legacy",
+      "selectedHostId": "server-local",
+      "createdAt": "2026-03-27T10:00:00Z",
+      "lastActivityAt": "2026-03-27T10:00:00Z"
+    }
+  }
+}`)
+	if err := os.WriteFile(statePath, legacy, 0o600); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	st := New()
+	if err := st.LoadStableState(statePath); err != nil {
+		t.Fatalf("load legacy state: %v", err)
+	}
+
+	meta := st.SessionMeta("sess-legacy")
+	if meta.Kind != model.SessionKindSingleHost || !meta.Visible {
+		t.Fatalf("expected legacy session meta to default to visible single_host, got %#v", meta)
+	}
+	if meta.RuntimePreset != model.SessionRuntimePresetSingleHost {
+		t.Fatalf("expected legacy session runtime preset to default, got %#v", meta)
+	}
+}
+
 func TestApprovalGrantDoesNotPersistAcrossStableState(t *testing.T) {
 	st := New()
 	sessionID := "sess-test"
@@ -122,6 +223,36 @@ func TestThreadIDIsNotRestoredFromStableState(t *testing.T) {
 	}
 	if got := reloaded.SessionIDByThread("thread-stale"); got != "" {
 		t.Fatalf("expected stale thread mapping to be cleared, got %q", got)
+	}
+}
+
+func TestSessionSummariesAndHostSessionsHideInternalSessions(t *testing.T) {
+	st := New()
+	browserID := "browser-meta"
+
+	visible := st.CreateSessionWithMeta(browserID, model.DefaultSessionMeta(), true)
+	hidden := st.CreateSessionWithMeta(browserID, model.SessionMeta{
+		Kind:    model.SessionKindWorker,
+		Visible: false,
+	}, true)
+
+	st.SetSelectedHost(visible.ID, "web-01")
+	st.SetSelectedHost(hidden.ID, "web-01")
+
+	summaries := st.SessionSummaries(browserID)
+	if len(summaries) != 1 {
+		t.Fatalf("expected only visible session summary, got %d", len(summaries))
+	}
+	if summaries[0].ID != visible.ID {
+		t.Fatalf("expected visible session summary, got %#v", summaries[0])
+	}
+
+	hostSessions := st.HostSessions("web-01", 10)
+	if len(hostSessions) != 1 {
+		t.Fatalf("expected only visible host session, got %d", len(hostSessions))
+	}
+	if hostSessions[0].SessionID != visible.ID {
+		t.Fatalf("expected visible host session, got %#v", hostSessions[0])
 	}
 }
 

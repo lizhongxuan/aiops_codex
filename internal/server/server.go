@@ -32,6 +32,7 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/codex"
 	"github.com/lizhongxuan/aiops-codex/internal/config"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
+	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 	"github.com/lizhongxuan/aiops-codex/internal/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -41,6 +42,7 @@ import (
 
 const (
 	stalledTurnTimeout                   = 45 * time.Second
+	silentTurnCompletionDelay            = 1200 * time.Millisecond
 	autoThreadResetIdleThreshold         = 4 * time.Hour
 	autoThreadResetCardThreshold         = 80
 	autoThreadResetConversationThreshold = 24
@@ -58,6 +60,7 @@ type App struct {
 	cfg              config.Config
 	store            *store.Store
 	codex            *codex.Client
+	orchestrator     *orchestrator.Manager
 	codexRequestFunc func(context.Context, string, any, any) error
 	codexRespondFunc func(context.Context, string, any) error
 	upgrader         websocket.Upgrader
@@ -78,6 +81,12 @@ type App struct {
 	oauthMu          sync.Mutex
 	oauthStates      map[string]string
 	auditMu          sync.Mutex
+	turnTraceMu      sync.Mutex
+	turnTraces       map[string]*turnTrace
+	orchestratorMu   sync.Mutex
+	orchestratorJobs map[string]string
+	threadStarts     []time.Time
+	turnStarts       []time.Time
 	httpServer       *http.Server
 	grpcServer       *grpc.Server
 	commandRunner    commandRunner
@@ -95,6 +104,27 @@ type authLoginRequest struct {
 type chatRequest struct {
 	Message string `json:"message"`
 	HostID  string `json:"hostId"`
+}
+
+type turnTrace struct {
+	RequestID            string
+	SessionID            string
+	Kind                 string
+	HostID               string
+	RequestStartedAt     time.Time
+	RuntimeStartedAt     time.Time
+	ThreadStartBeganAt   time.Time
+	ThreadStartedAt      time.Time
+	ThreadID             string
+	TurnStartBeganAt     time.Time
+	TurnStartedAt        time.Time
+	TurnID               string
+	FirstItemStartedAt   time.Time
+	FirstItemID          string
+	FirstItemType        string
+	FirstAssistantAt     time.Time
+	FirstAssistantItemID string
+	FirstAssistantSource string
 }
 
 type hostSelectionRequest struct {
@@ -184,6 +214,8 @@ func New(cfg config.Config) *App {
 		fileReqs:         make(map[string]*agentResponseWaiter),
 		fileChangeClaims: make(map[string]struct{}),
 		oauthStates:      make(map[string]string),
+		turnTraces:       make(map[string]*turnTrace),
+		orchestratorJobs: make(map[string]string),
 		commandRunner:    defaultCommandRunner,
 	}
 	app.codex = codex.New(cfg.CodexPath, app.handleCodexNotification, app.handleCodexServerRequest)
@@ -210,6 +242,9 @@ func (a *App) Start(ctx context.Context) error {
 	a.store.SetStatePath(a.cfg.StatePath)
 	if err := a.store.LoadStableState(a.cfg.StatePath); err != nil {
 		return fmt.Errorf("load state store: %w", err)
+	}
+	if err := a.initOrchestrator(); err != nil {
+		return fmt.Errorf("load orchestrator store: %w", err)
 	}
 	a.store.UpsertHost(model.Host{
 		ID:              model.ServerLocalHostID,
@@ -240,12 +275,15 @@ func (a *App) Start(ctx context.Context) error {
 	if err := a.codex.Start(ctx); err != nil {
 		return err
 	}
+	a.reconcileOrchestratorRecoveredWorkers()
 
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/api/v1/healthz", a.handleHealthz)
 	httpMux.HandleFunc("/api/v1/sessions", a.withBrowserSession(a.handleSessions))
 	httpMux.HandleFunc("/api/v1/sessions/", a.withBrowserSession(a.handleSessionActivation))
 	httpMux.HandleFunc("/api/v1/state", a.withSession(a.handleState))
+	httpMux.HandleFunc("/api/v1/workspace/missions", a.withBrowserSession(a.handleWorkspaceMissionHistory))
+	httpMux.HandleFunc("/api/v1/workspace/missions/", a.withBrowserSession(a.handleWorkspaceMissionHistoryDetail))
 	httpMux.HandleFunc("/api/v1/agent-profiles", a.withSession(a.handleAgentProfiles))
 	httpMux.HandleFunc("/api/v1/agent-profiles/", a.withSession(a.handleAgentProfileByID))
 	httpMux.HandleFunc("/api/v1/agent-profiles/export", a.withSession(a.handleAgentProfilesExport))
@@ -339,6 +377,7 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 			a.failRemoteExecsForHost(hostID, "remote host disconnected")
 			a.failAgentResponseWaitersForHost(hostID, "remote host disconnected")
 			a.store.MarkHostOffline(hostID)
+			a.reconcileOrchestratorHostUnavailable(hostID, "remote host disconnected")
 			a.notifyRemoteHostUnavailable(hostID, "远程主机已断连", "远程主机连接已断开，当前任务可能失败，可稍后重试或刷新。")
 			a.audit("agent.disconnect", map[string]any{
 				"hostId": hostID,
@@ -425,6 +464,7 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				Labels:          msg.Registration.Labels,
 				LastHeartbeat:   model.NowString(),
 			})
+			a.clearRemoteHostUnavailableCards(hostID)
 			a.broadcastAllSnapshots()
 
 			_ = conn.send(&agentrpc.Envelope{
@@ -463,6 +503,7 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 			host.TerminalCapable = true
 			host.LastHeartbeat = model.NowString()
 			a.store.UpsertHost(host)
+			a.clearRemoteHostUnavailableCards(hostID)
 			a.broadcastAllSnapshots()
 			target := conn
 			if target == nil {
@@ -649,7 +690,19 @@ func (a *App) handleSessions(w http.ResponseWriter, r *http.Request, browserID s
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "当前任务执行中，暂时无法新建会话"})
 			return
 		}
-		session := a.store.CreateSession(browserID)
+		createReq := sessionCreateRequest{}
+		if r.Body != nil {
+			if err := json.NewDecoder(r.Body).Decode(&createReq); err != nil && !errors.Is(err, io.EOF) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+		}
+		kind, err := normalizeSessionCreateKind(createReq.Kind)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		session := a.store.CreateSessionWithMeta(browserID, sessionCreateMeta(kind), true)
 		a.syncAccountState(r.Context(), session.ID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"activeSessionId": session.ID,
@@ -1163,6 +1216,15 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录 GPT 账号"})
 		return
 	}
+	requestStartedAt := time.Now()
+	switch a.sessionKind(sessionID) {
+	case model.SessionKindWorkspace:
+		a.handleWorkspaceChatMessage(w, r, sessionID, req, requestStartedAt)
+		return
+	case model.SessionKindPlanner, model.SessionKindWorker:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "internal session 不支持前台直接发送消息"})
+		return
+	}
 	host := a.findHost(req.HostID)
 	if host.Status != "online" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "选中的主机当前离线"})
@@ -1199,7 +1261,15 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	a.clearTransientCodexReconnectNotice(sessionID)
 	a.store.TouchSession(sessionID)
 	a.store.SetSelectedHost(sessionID, req.HostID)
-	log.Printf("chat message session=%s host=%s text=%q", sessionID, req.HostID, truncate(req.Message, 120))
+	requestID := a.beginTurnTraceRequest(sessionID, req.HostID)
+	log.Printf(
+		"chat request begin session=%s request=%s kind=%s host=%s text=%q",
+		sessionID,
+		requestID,
+		a.sessionKind(sessionID),
+		req.HostID,
+		truncate(req.Message, 120),
+	)
 	a.audit("chat.message", map[string]any{
 		"sessionId": sessionID,
 		"hostId":    req.HostID,
@@ -1229,12 +1299,29 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	err := a.startTurn(ctx, sessionID, req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) && a.turnWasInterrupted(sessionID) {
+			log.Printf(
+				"chat request interrupted session=%s request=%s kind=%s host=%s duration=%s",
+				sessionID,
+				requestID,
+				a.sessionKind(sessionID),
+				req.HostID,
+				time.Since(requestStartedAt),
+			)
 			writeJSON(w, http.StatusAccepted, map[string]any{
 				"accepted":    false,
 				"interrupted": true,
 			})
 			return
 		}
+		log.Printf(
+			"chat request failed session=%s request=%s kind=%s host=%s duration=%s err=%v",
+			sessionID,
+			requestID,
+			a.sessionKind(sessionID),
+			req.HostID,
+			time.Since(requestStartedAt),
+			err,
+		)
 		a.finishRuntimeTurn(sessionID, "failed")
 		a.store.UpsertCard(sessionID, model.Card{
 			ID:        model.NewID("error"),
@@ -1251,6 +1338,14 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		return
 	}
 
+	log.Printf(
+		"chat request accepted session=%s request=%s kind=%s host=%s duration=%s",
+		sessionID,
+		requestID,
+		a.sessionKind(sessionID),
+		req.HostID,
+		time.Since(requestStartedAt),
+	)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 }
 
@@ -1289,6 +1384,14 @@ func (a *App) handleHostSelection(w http.ResponseWriter, r *http.Request, sessio
 func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	switch a.sessionKind(sessionID) {
+	case model.SessionKindWorkspace:
+		a.handleWorkspaceStop(w, r, sessionID)
+		return
+	case model.SessionKindPlanner, model.SessionKindWorker:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "internal session 不支持前台直接 stop"})
 		return
 	}
 
@@ -1362,31 +1465,7 @@ func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) 
 }
 
 func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req chatRequest) error {
-	var result map[string]any
-	profile := a.mainAgentProfile()
-	params := map[string]any{
-		"threadId":              threadID,
-		"cwd":                   a.cfg.DefaultWorkspace,
-		"approvalPolicy":        profile.Runtime.ApprovalPolicy,
-		"developerInstructions": a.renderMainAgentDeveloperInstructions(profile, req.HostID, true),
-		"sandboxPolicy": map[string]any{
-			"type":          codexSandboxPolicyType(profile.Runtime.SandboxMode),
-			"writableRoots": a.mainAgentWritableRoots(profile),
-		},
-		"input": a.buildMainAgentTurnInput(ctx, profile, req.Message),
-	}
-	if profile.Runtime.ReasoningEffort != "" {
-		params["reasoningEffort"] = profile.Runtime.ReasoningEffort
-	}
-	err := a.codexRequest(ctx, "turn/start", params, &result)
-	if err != nil {
-		return err
-	}
-	if turnID := getTurnID(result); turnID != "" {
-		a.store.SetTurn(sessionID, turnID)
-		a.scheduleTurnStallMonitor(sessionID, stalledTurnTimeout)
-	}
-	return nil
+	return a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildSingleHostTurnStartSpec(ctx, req))
 }
 
 func (a *App) appendThreadResetCard(sessionID string) {
@@ -1546,7 +1625,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 
 	approvalID := strings.TrimPrefix(r.URL.Path, "/api/v1/approvals/")
 	approvalID = strings.TrimSuffix(approvalID, "/decision")
-	approval, ok := a.store.Approval(sessionID, approvalID)
+	targetSessionID, approval, ok := a.resolveApprovalTargetSession(sessionID, approvalID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found"})
 		return
@@ -1558,9 +1637,9 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 	decision := normalizeApprovalDecisionInput(req.Decision)
-	log.Printf("approval decision session=%s approval=%s decision=%s", sessionID, approvalID, decision)
+	log.Printf("approval decision session=%s target=%s approval=%s decision=%s", sessionID, targetSessionID, approvalID, decision)
 	if decision == "accept_session" {
-		a.store.AddApprovalGrant(sessionID, approvalGrantFromApproval(approval))
+		a.store.AddApprovalGrant(targetSessionID, approvalGrantFromApproval(approval))
 	}
 	if approval.Type == "remote_command" || approval.Type == "remote_file_change" {
 		if approval.Type == "remote_file_change" && approval.Status != "pending" {
@@ -1568,26 +1647,33 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 			return
 		}
 		if approval.Type == "remote_file_change" && (decision == "accept" || decision == "accept_session") {
-			if !a.claimRemoteFileChangeExecution(sessionID, approval.ID) {
+			if !a.claimRemoteFileChangeExecution(targetSessionID, approval.ID) {
 				writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 				return
 			}
 		}
 		now := model.NowString()
 		cardStatus := approvalStatusFromDecision(decision)
-		a.store.ResolveApproval(sessionID, approvalID, cardStatus, now)
+		a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
 		approval.Status = cardStatus
 		approval.ResolvedAt = now
-		a.store.UpsertCard(sessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
+		a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
+		if sessionID != targetSessionID {
+			a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
+		}
 
 		if decision == "decline" {
-			a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
+			a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
 				card.Status = cardStatus
 				card.UpdatedAt = now
 			})
-			a.setRuntimeTurnPhase(sessionID, "thinking")
-			a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
-			a.broadcastSnapshot(sessionID)
+			a.setRuntimeTurnPhase(targetSessionID, "thinking")
+			if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
+				_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
+			}
+			a.recordOrchestratorApprovalResolved(targetSessionID, approval)
+			a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
+			a.broadcastSnapshot(targetSessionID)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if err := a.respondCodex(ctx, approval.RequestIDRaw, toolResponse("User declined the requested system mutation.", false)); err != nil {
@@ -1613,7 +1699,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				UpdatedAt: now,
 			}
 			applyCardHost(&card, a.findHost(approval.HostID))
-			a.store.UpsertCard(sessionID, card)
+			a.store.UpsertCard(targetSessionID, card)
 		} else {
 			card := model.Card{
 				ID:        approval.ItemID,
@@ -1626,12 +1712,16 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				UpdatedAt: now,
 			}
 			applyCardHost(&card, a.findHost(approval.HostID))
-			a.store.UpsertCard(sessionID, card)
+			a.store.UpsertCard(targetSessionID, card)
 		}
-		a.setRuntimeTurnPhase(sessionID, "executing")
-		a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
-		a.broadcastSnapshot(sessionID)
-		go a.executeApprovedRemoteOperation(sessionID, approval)
+		a.setRuntimeTurnPhase(targetSessionID, "executing")
+		if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
+			_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "executing")
+		}
+		a.recordOrchestratorApprovalResolved(targetSessionID, approval)
+		a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
+		a.broadcastSnapshot(targetSessionID)
+		go a.executeApprovedRemoteOperation(targetSessionID, approval)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
@@ -1650,29 +1740,36 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 
 	cardStatus := approvalStatusFromDecision(decision)
 	resolvedAt := model.NowString()
-	a.store.ResolveApproval(sessionID, approvalID, cardStatus, resolvedAt)
+	a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
 	approval.Status = cardStatus
 	approval.ResolvedAt = resolvedAt
 	nextPhase := "thinking"
-	if a.hasPendingApprovals(sessionID) {
+	if a.hasPendingApprovals(targetSessionID) {
 		nextPhase = "waiting_approval"
 	} else if decision == "accept" || decision == "accept_session" {
 		nextPhase = "executing"
 	}
-	a.setRuntimeTurnPhase(sessionID, nextPhase)
-	a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, decision, cardStatus, approval.RequestedAt, model.NowString(), nil)
+	a.setRuntimeTurnPhase(targetSessionID, nextPhase)
+	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
+		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, nextPhase)
+	}
+	a.recordOrchestratorApprovalResolved(targetSessionID, approval)
+	a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, model.NowString(), nil)
 	if approval.Type == "command" {
-		a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
+		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
 			card.Status = cardStatus
 			card.UpdatedAt = model.NowString()
 		})
 	} else {
-		a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
+		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
 			card.Status = cardStatus
 			card.UpdatedAt = model.NowString()
 		})
 	}
-	a.broadcastSnapshot(sessionID)
+	a.broadcastSnapshot(targetSessionID)
+	if sessionID != targetSessionID {
+		a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1684,7 +1781,7 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 
 	choiceID := strings.TrimPrefix(r.URL.Path, "/api/v1/choices/")
 	choiceID = strings.TrimSuffix(choiceID, "/answer")
-	choice, ok := a.store.Choice(sessionID, choiceID)
+	targetSessionID, choice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "choice not found"})
 		return
@@ -1726,7 +1823,7 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	if err := a.codex.Respond(ctx, choice.RequestIDRaw, map[string]any{
+	if err := a.respondCodex(ctx, choice.RequestIDRaw, map[string]any{
 		"answers": codexAnswers,
 	}); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -1734,27 +1831,36 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 	}
 
 	now := model.NowString()
-	a.store.ResolveChoice(sessionID, choiceID, "completed", now)
-	a.store.UpdateCard(sessionID, choice.ItemID, func(card *model.Card) {
+	a.store.ResolveChoice(targetSessionID, choiceID, "completed", now)
+	a.store.UpdateCard(targetSessionID, choice.ItemID, func(card *model.Card) {
 		card.Status = "completed"
 		card.AnswerSummary = choiceAnswerSummary(choice.Questions, req.Answers)
 		card.UpdatedAt = now
 	})
-	a.setRuntimeTurnPhase(sessionID, "thinking")
+	a.setRuntimeTurnPhase(targetSessionID, "thinking")
+	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
+		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
+	}
+	a.recordOrchestratorChoiceResolved(targetSessionID, choice, req.Answers)
 	a.audit("choice.answer", map[string]any{
-		"sessionId": sessionID,
+		"sessionId": targetSessionID,
 		"choiceId":  choiceID,
 		"answers":   len(req.Answers),
 	})
-	a.broadcastSnapshot(sessionID)
+	a.broadcastSnapshot(targetSessionID)
+	if sessionID != targetSessionID {
+		a.resolveMirroredChoiceCard(sessionID, choiceID, req.Answers, choice.Questions)
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string) {
 	conn, err := a.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("session ws upgrade failed session=%s remote_addr=%s err=%v", sessionID, r.RemoteAddr, err)
 		return
 	}
+	log.Printf("session ws connected session=%s remote_addr=%s", sessionID, r.RemoteAddr)
 
 	a.wsMu.Lock()
 	conns := a.wsClients[sessionID]
@@ -1772,11 +1878,13 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string)
 		delete(a.wsClients[sessionID], conn)
 		a.wsMu.Unlock()
 		_ = conn.Close()
+		log.Printf("session ws closed session=%s remote_addr=%s", sessionID, r.RemoteAddr)
 	}()
 
 	for {
 		messageType, payload, err := conn.ReadMessage()
 		if err != nil {
+			log.Printf("session ws read failed session=%s remote_addr=%s err=%v", sessionID, r.RemoteAddr, err)
 			return
 		}
 		if messageType != websocket.TextMessage {
@@ -1793,6 +1901,7 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string)
 			writeErr := conn.WriteJSON(map[string]string{"type": "heartbeat"})
 			a.wsMu.Unlock()
 			if writeErr != nil {
+				log.Printf("session ws heartbeat write failed session=%s remote_addr=%s err=%v", sessionID, r.RemoteAddr, writeErr)
 				return
 			}
 		}
@@ -1875,6 +1984,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
+		a.markTurnTraceTurnStarted(sessionID, getStringAny(payload, "threadId", "thread_id"), getTurnID(payload))
 	case "turn/plan/updated":
 		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
 		if sessionID == "" {
@@ -1910,6 +2020,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		}
 		a.bindTurnToSession(sessionID, payload)
 		itemID := getString(payload, "itemId")
+		a.markTurnTraceFirstAssistant(sessionID, itemID, "delta")
 		if a.cardIsFinal(sessionID, itemID) {
 			return
 		}
@@ -2003,10 +2114,13 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		} else {
 			a.finishRuntimeTurn(sessionID, "failed")
 		}
+		a.recordOrchestratorTurnPhase(sessionID, normalizeCardStatus(turnStatus))
+		a.recordOrchestratorReply(sessionID)
 		a.finalizeOpenTurnCards(sessionID, normalizeCardStatus(turnStatus))
 		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
 		log.Printf("turn completed session=%s turn=%s status=%s", sessionID, getString(turn, "id"), turnStatus)
 		a.broadcastSnapshot(sessionID)
+		a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
 	case "turn/aborted":
 		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
@@ -2015,6 +2129,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		a.bindTurnToSession(sessionID, payload)
 		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
 		a.markTurnInterrupted(sessionID, getTurnID(payload))
+		a.recordOrchestratorTurnPhase(sessionID, "aborted")
 		a.broadcastSnapshot(sessionID)
 	case "error":
 		errorPayload := getMap(payload, "error")
@@ -2191,6 +2306,10 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		}
 		applyCardHost(&card, a.findHost(approval.HostID))
 		a.store.UpsertCard(sessionID, card)
+		a.recordOrchestratorApprovalRequested(sessionID, approval)
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+		}
 		a.broadcastSnapshot(sessionID)
 	case "item/fileChange/requestApproval":
 		sessionID := a.sessionIDFromPayload(payload)
@@ -2275,6 +2394,10 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		}
 		applyCardHost(&card, a.findHost(approval.HostID))
 		a.store.UpsertCard(sessionID, card)
+		a.recordOrchestratorApprovalRequested(sessionID, approval)
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+		}
 		a.broadcastSnapshot(sessionID)
 	case "item/tool/requestUserInput", "request_user_input":
 		sessionID := a.sessionIDFromPayload(payload)
@@ -2315,6 +2438,10 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		}
 		a.store.AddChoice(sessionID, choice)
 		a.store.UpsertCard(sessionID, card)
+		a.recordOrchestratorChoiceRequested(sessionID, choice)
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+			a.mirrorInternalChoiceToWorkspace(sessionID, choice, card)
+		}
 		a.audit("choice.requested", map[string]any{
 			"sessionId": sessionID,
 			"choiceId":  choice.ID,
@@ -2348,6 +2475,15 @@ func (a *App) handleItemStarted(payload map[string]any) {
 	item := getMap(payload, "item")
 	itemID := getString(item, "id")
 	itemType := getString(item, "type")
+	log.Printf(
+		"turn item started session=%s request=%s turn=%s item=%s type=%s",
+		sessionID,
+		firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-"),
+		a.sessionTurnID(sessionID),
+		itemID,
+		itemType,
+	)
+	a.markTurnTraceFirstItem(sessionID, itemID, itemType)
 	if host, ok := a.selectedRemoteHostForSession(sessionID); ok && (itemType == "commandExecution" || itemType == "fileChange") {
 		a.blockUnexpectedLocalExecution(sessionID, payload, item, host)
 		return
@@ -2399,7 +2535,7 @@ func (a *App) handleItemStarted(payload map[string]any) {
 		}
 		a.store.UpsertCard(sessionID, card)
 		a.scheduleFinalizingExecutionCleanup(sessionID, getStringAny(payload, "threadId", "thread_id"))
-		a.scheduleSilentTurnCompletionCheck(sessionID, 6*time.Second)
+		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
 	}
 	a.broadcastSnapshot(sessionID)
 }
@@ -2422,9 +2558,20 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 
 	now := model.NowString()
 	durationMS := a.cardDurationMS(sessionID, itemID, now)
+	log.Printf(
+		"turn item completed session=%s request=%s turn=%s item=%s type=%s duration_ms=%d status=%s",
+		sessionID,
+		firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-"),
+		a.sessionTurnID(sessionID),
+		itemID,
+		itemType,
+		durationMS,
+		normalizeCardStatus(getString(item, "status")),
+	)
 
 	switch itemType {
 	case "agentMessage":
+		a.markTurnTraceFirstAssistant(sessionID, itemID, "completed")
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
 			card.Status = "completed"
 			if card.Text == "" {
@@ -2476,7 +2623,7 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 		a.resumeThinkingAfterExecution(sessionID)
 	}
 	if itemType == "agentMessage" {
-		a.scheduleSilentTurnCompletionCheck(sessionID, 6*time.Second)
+		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
 	}
 	a.broadcastSnapshot(sessionID)
 }
@@ -2535,6 +2682,7 @@ func (a *App) startRuntimeTurn(sessionID, hostID string) {
 			SearchedContentQueries: make([]model.ActivityEntry, 0),
 		}
 	})
+	a.markTurnTraceRuntimeStart(sessionID, hostID)
 }
 
 func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
@@ -2557,6 +2705,7 @@ func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
 			runtime.Turn.HostID = model.ServerLocalHostID
 		}
 	})
+	a.recordOrchestratorTurnPhase(sessionID, phase)
 }
 
 func normalizeRuntimeTurnPhase(phase string) string {
@@ -2582,6 +2731,277 @@ func (a *App) finishRuntimeTurn(sessionID, phase string) {
 		runtime.Activity.CurrentSearchQuery = ""
 		runtime.Activity.CurrentWebSearchQuery = ""
 	})
+	a.completeTurnTrace(sessionID, phase)
+}
+
+func (a *App) beginTurnTraceRequest(sessionID, hostID string) string {
+	now := time.Now()
+	requestID := model.NewID("req")
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := &turnTrace{
+		RequestID:        requestID,
+		SessionID:        sessionID,
+		Kind:             a.sessionKind(sessionID),
+		HostID:           defaultHostID(hostID),
+		RequestStartedAt: now,
+	}
+	a.turnTraces[sessionID] = trace
+	return requestID
+}
+
+func (a *App) markTurnTraceRuntimeStart(sessionID, hostID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	requestStartedAt := time.Time{}
+	if trace != nil {
+		requestStartedAt = trace.RequestStartedAt
+	}
+	a.turnTraces[sessionID] = &turnTrace{
+		RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+		SessionID:        sessionID,
+		Kind:             a.sessionKind(sessionID),
+		HostID:           defaultHostID(hostID),
+		RequestStartedAt: requestStartedAt,
+		RuntimeStartedAt: now,
+	}
+}
+
+func (a *App) markTurnTraceThreadStartBegin(sessionID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	if trace.ThreadStartBeganAt.IsZero() {
+		trace.ThreadStartBeganAt = now
+	}
+}
+
+func (a *App) markTurnTraceThreadStarted(sessionID, threadID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	trace.ThreadID = strings.TrimSpace(threadID)
+	if trace.ThreadStartedAt.IsZero() {
+		trace.ThreadStartedAt = now
+	}
+}
+
+func (a *App) markTurnTraceTurnStartBegin(sessionID, threadID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	trace.ThreadID = firstNonEmptyValue(strings.TrimSpace(threadID), trace.ThreadID)
+	if trace.TurnStartBeganAt.IsZero() {
+		trace.TurnStartBeganAt = now
+	}
+}
+
+func (a *App) markTurnTraceTurnStarted(sessionID, threadID, turnID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	trace.ThreadID = firstNonEmptyValue(strings.TrimSpace(threadID), trace.ThreadID)
+	trace.TurnID = firstNonEmptyValue(strings.TrimSpace(turnID), trace.TurnID)
+	if trace.TurnStartedAt.IsZero() {
+		trace.TurnStartedAt = now
+	}
+}
+
+func (a *App) markTurnTraceFirstItem(sessionID, itemID, itemType string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	shouldLog := trace.FirstItemStartedAt.IsZero()
+	if shouldLog {
+		trace.FirstItemStartedAt = now
+		trace.FirstItemID = strings.TrimSpace(itemID)
+		trace.FirstItemType = strings.TrimSpace(itemType)
+	}
+	turnID := trace.TurnID
+	requestID := trace.RequestID
+	sinceRequest := formatTurnTraceDuration(trace.RequestStartedAt, trace.FirstItemStartedAt)
+	sinceTurnStart := formatTurnTraceDuration(trace.TurnStartedAt, trace.FirstItemStartedAt)
+	a.turnTraceMu.Unlock()
+	if shouldLog {
+		log.Printf(
+			"turn first progress session=%s request=%s turn=%s item=%s type=%s since_request=%s since_turn_start=%s",
+			sessionID,
+			firstNonEmptyValue(requestID, "-"),
+			firstNonEmptyValue(turnID, a.sessionTurnID(sessionID)),
+			itemID,
+			itemType,
+			sinceRequest,
+			sinceTurnStart,
+		)
+	}
+}
+
+func (a *App) markTurnTraceFirstAssistant(sessionID, itemID, source string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	shouldLog := trace.FirstAssistantAt.IsZero()
+	if shouldLog {
+		trace.FirstAssistantAt = now
+		trace.FirstAssistantItemID = strings.TrimSpace(itemID)
+		trace.FirstAssistantSource = strings.TrimSpace(source)
+	}
+	turnID := trace.TurnID
+	requestID := trace.RequestID
+	sinceRequest := formatTurnTraceDuration(trace.RequestStartedAt, trace.FirstAssistantAt)
+	sinceTurnStart := formatTurnTraceDuration(trace.TurnStartedAt, trace.FirstAssistantAt)
+	sinceFirstItem := formatTurnTraceDuration(trace.FirstItemStartedAt, trace.FirstAssistantAt)
+	a.turnTraceMu.Unlock()
+	if shouldLog {
+		log.Printf(
+			"turn first assistant session=%s request=%s turn=%s item=%s source=%s since_request=%s since_turn_start=%s since_first_item=%s",
+			sessionID,
+			firstNonEmptyValue(requestID, "-"),
+			firstNonEmptyValue(turnID, a.sessionTurnID(sessionID)),
+			itemID,
+			source,
+			sinceRequest,
+			sinceTurnStart,
+			sinceFirstItem,
+		)
+	}
+}
+
+func (a *App) completeTurnTrace(sessionID, finalPhase string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		a.turnTraceMu.Unlock()
+		return
+	}
+	delete(a.turnTraces, sessionID)
+	summary := fmt.Sprintf(
+		"turn trace complete session=%s request=%s kind=%s host=%s turn=%s phase=%s total=%s request_to_thread=%s request_to_turn=%s turn_to_first_item=%s first_item_to_first_assistant=%s first_assistant_to_finish=%s",
+		sessionID,
+		firstNonEmptyValue(trace.RequestID, "-"),
+		firstNonEmptyValue(trace.Kind, a.sessionKind(sessionID)),
+		firstNonEmptyValue(trace.HostID, defaultHostID(a.sessionHostID(sessionID))),
+		firstNonEmptyValue(trace.TurnID, a.sessionTurnID(sessionID)),
+		finalPhase,
+		formatTurnTraceTotal(trace, now),
+		formatTurnTraceStage(trace.RequestStartedAt, trace.ThreadStartedAt),
+		formatTurnTraceStage(trace.RequestStartedAt, trace.TurnStartedAt),
+		formatTurnTraceStage(trace.TurnStartedAt, trace.FirstItemStartedAt),
+		formatTurnTraceStage(trace.FirstItemStartedAt, trace.FirstAssistantAt),
+		formatTurnTraceStage(trace.FirstAssistantAt, now),
+	)
+	a.turnTraceMu.Unlock()
+	log.Print(summary)
+}
+
+func formatTurnTraceStage(start, end time.Time) string {
+	if start.IsZero() || end.IsZero() || end.Before(start) {
+		return "-"
+	}
+	return end.Sub(start).String()
+}
+
+func formatTurnTraceDuration(start, end time.Time) string {
+	return formatTurnTraceStage(start, end)
+}
+
+func formatTurnTraceTotal(trace *turnTrace, end time.Time) string {
+	if trace == nil {
+		return "-"
+	}
+	start := trace.RequestStartedAt
+	if start.IsZero() {
+		start = trace.RuntimeStartedAt
+	}
+	return formatTurnTraceStage(start, end)
+}
+
+func (a *App) sessionHostID(sessionID string) string {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return model.ServerLocalHostID
+	}
+	return defaultHostID(firstNonEmptyValue(session.Runtime.Turn.HostID, session.SelectedHostID))
+}
+
+func (a *App) turnTraceRequestID(sessionID string) string {
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	return a.turnTraceRequestIDLocked(sessionID)
+}
+
+func (a *App) turnTraceRequestIDLocked(sessionID string) string {
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		return ""
+	}
+	return strings.TrimSpace(trace.RequestID)
 }
 
 func (a *App) scheduleTurnStallMonitor(sessionID string, delay time.Duration) {
@@ -2638,6 +3058,15 @@ func (a *App) failStalledTurn(sessionID, turnID string, delay time.Duration) {
 	if !isStallWatchPhase(current.Runtime.Turn.Phase) {
 		return
 	}
+	log.Printf(
+		"turn stalled session=%s request=%s turn=%s phase=%s last_activity_at=%s delay=%s",
+		sessionID,
+		firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-"),
+		turnID,
+		current.Runtime.Turn.Phase,
+		current.LastActivityAt,
+		delay,
+	)
 
 	now := model.NowString()
 	a.finishRuntimeTurn(sessionID, "failed")
@@ -3130,6 +3559,7 @@ func (a *App) markTurnInterrupted(sessionID, turnID string) {
 	a.finishRuntimeTurn(sessionID, "aborted")
 	a.finalizeOpenTurnCards(sessionID, "failed")
 	a.resolvePendingTurnRequests(sessionID, now)
+	a.resolveMirroredPendingTurnRequests(sessionID, "cancelled", "任务已中断")
 	cardID := model.NewID("notice")
 	if turnID != "" {
 		cardID = "turn-aborted-" + turnID
@@ -3562,9 +3992,13 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 	if session.ThreadID != "" {
 		return session.ThreadID, nil
 	}
-	selectedHostID := session.SelectedHostID
-	if selectedHostID == "" {
-		selectedHostID = model.ServerLocalHostID
+	return a.ensureThreadWithSpec(ctx, sessionID, a.buildSingleHostThreadStartSpec(ctx, sessionID))
+}
+
+func (a *App) ensureThreadWithSpec(ctx context.Context, sessionID string, spec threadStartSpec) (string, error) {
+	session := a.store.EnsureSession(sessionID)
+	if session.ThreadID != "" {
+		return session.ThreadID, nil
 	}
 
 	var result struct {
@@ -3572,28 +4006,88 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	profile := a.mainAgentProfile()
 	params := map[string]any{
-		"model":                 profile.Runtime.Model,
-		"cwd":                   a.cfg.DefaultWorkspace,
-		"approvalPolicy":        profile.Runtime.ApprovalPolicy,
-		"sandbox":               profile.Runtime.SandboxMode,
-		"developerInstructions": a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false),
+		"model":                 spec.Model,
+		"cwd":                   spec.Cwd,
+		"approvalPolicy":        spec.ApprovalPolicy,
+		"sandbox":               spec.SandboxMode,
+		"developerInstructions": spec.DeveloperInstructions,
 	}
-	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
-		params["config"] = threadConfig
+	if len(spec.Config) > 0 {
+		params["config"] = spec.Config
 	}
-	if isRemoteHostID(selectedHostID) {
-		params["dynamicTools"] = a.remoteDynamicTools()
+	if len(spec.DynamicTools) > 0 {
+		params["dynamicTools"] = spec.DynamicTools
 	}
-	err := a.codexRequest(ctx, "thread/start", params, &result)
-	if err != nil {
+	startedAt := time.Now()
+	requestID := firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-")
+	a.markTurnTraceThreadStartBegin(sessionID)
+	log.Printf(
+		"codex thread start begin session=%s request=%s cwd=%s model=%s sandbox=%s approval=%s dynamic_tools=%d",
+		sessionID,
+		requestID,
+		spec.Cwd,
+		spec.Model,
+		spec.SandboxMode,
+		spec.ApprovalPolicy,
+		len(spec.DynamicTools),
+	)
+	if err := a.codexRequest(ctx, "thread/start", params, &result); err != nil {
+		log.Printf("codex thread start failed session=%s request=%s err=%v duration=%s", sessionID, requestID, err, time.Since(startedAt))
 		return "", err
 	}
 	a.store.SetThread(sessionID, result.Thread.ID)
-	a.store.SetThreadConfigHash(sessionID, a.mainAgentThreadConfigHash(selectedHostID))
+	a.store.SetThreadConfigHash(sessionID, spec.ThreadConfigHash)
+	a.markTurnTraceThreadStarted(sessionID, result.Thread.ID)
+	log.Printf("codex thread start ok session=%s request=%s thread=%s duration=%s", sessionID, requestID, result.Thread.ID, time.Since(startedAt))
 	a.broadcastSnapshot(sessionID)
 	return result.Thread.ID, nil
+}
+
+func (a *App) requestTurnWithSpec(ctx context.Context, sessionID, threadID string, spec turnStartSpec) error {
+	var result map[string]any
+	params := map[string]any{
+		"threadId":              threadID,
+		"cwd":                   spec.Cwd,
+		"approvalPolicy":        spec.ApprovalPolicy,
+		"developerInstructions": spec.DeveloperInstructions,
+		"sandboxPolicy": map[string]any{
+			"type":          codexSandboxPolicyType(spec.SandboxMode),
+			"writableRoots": append([]string(nil), spec.WritableRoots...),
+		},
+		"input": spec.Input,
+	}
+	if spec.ReasoningEffort != "" {
+		params["reasoningEffort"] = spec.ReasoningEffort
+	}
+	startedAt := time.Now()
+	requestID := firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-")
+	a.markTurnTraceTurnStartBegin(sessionID, threadID)
+	log.Printf(
+		"codex turn start begin session=%s request=%s thread=%s cwd=%s sandbox=%s approval=%s input_items=%d reasoning=%s",
+		sessionID,
+		requestID,
+		threadID,
+		spec.Cwd,
+		spec.SandboxMode,
+		spec.ApprovalPolicy,
+		len(spec.Input),
+		spec.ReasoningEffort,
+	)
+	if err := a.codexRequest(ctx, "turn/start", params, &result); err != nil {
+		log.Printf("codex turn start failed session=%s request=%s thread=%s err=%v duration=%s", sessionID, requestID, threadID, err, time.Since(startedAt))
+		return err
+	}
+	if turnID := getTurnID(result); turnID != "" {
+		a.store.SetTurn(sessionID, turnID)
+		a.scheduleTurnStallMonitor(sessionID, stalledTurnTimeout)
+		a.markTurnTraceTurnStarted(sessionID, threadID, turnID)
+		log.Printf("codex turn start ok session=%s request=%s thread=%s turn=%s duration=%s", sessionID, requestID, threadID, turnID, time.Since(startedAt))
+		return nil
+	}
+	a.markTurnTraceTurnStarted(sessionID, threadID, "")
+	log.Printf("codex turn start ok session=%s request=%s thread=%s turn=<missing> duration=%s", sessionID, requestID, threadID, time.Since(startedAt))
+	return nil
 }
 
 func (a *App) agentProfileIDFromRequest(r *http.Request) string {
@@ -4221,6 +4715,7 @@ func (a *App) snapshot(sessionID string) model.Snapshot {
 
 func (a *App) broadcastSnapshot(sessionID string) {
 	snapshot := a.snapshot(sessionID)
+	a.relaySnapshotToOrchestrator(sessionID, snapshot)
 	a.wsMu.Lock()
 	defer a.wsMu.Unlock()
 	for conn := range a.wsClients[sessionID] {
@@ -4240,7 +4735,18 @@ func (a *App) broadcastAllSnapshots() {
 func (a *App) serveFrontend() http.Handler {
 	distPath := filepath.Join("web", "dist")
 	if info, err := os.Stat(distPath); err == nil && info.IsDir() {
-		return http.FileServer(http.Dir(distPath))
+		fs := http.Dir(distPath)
+		fileServer := http.FileServer(fs)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Try to serve the file directly. If it doesn't exist (SPA route),
+			// fall back to index.html so Vue Router can handle it.
+			path := filepath.Join(distPath, filepath.Clean(r.URL.Path))
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				http.ServeFile(w, r, filepath.Join(distPath, "index.html"))
+				return
+			}
+			fileServer.ServeHTTP(w, r)
+		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -4416,6 +4922,7 @@ func (a *App) monitorHosts(ctx context.Context) {
 				a.failRemoteTerminalsForHost(hostID, "remote host heartbeat timed out")
 				a.failRemoteExecsForHost(hostID, "remote host heartbeat timed out")
 				a.failAgentResponseWaitersForHost(hostID, "remote host heartbeat timed out")
+				a.reconcileOrchestratorHostUnavailable(hostID, "remote host heartbeat timed out")
 				a.notifyRemoteHostUnavailable(hostID, "远程主机连接超时", "远程主机心跳超时，当前操作已中断，可重试或刷新主机状态。")
 				a.audit("agent.timeout", map[string]any{
 					"hostId": hostID,
@@ -4740,6 +5247,19 @@ func (a *App) notifyRemoteHostUnavailable(hostID, title, message string) {
 			CreatedAt: now,
 			UpdatedAt: now,
 		})
+	}
+}
+
+func (a *App) clearRemoteHostUnavailableCards(hostID string) {
+	hostID = defaultHostID(strings.TrimSpace(hostID))
+	if hostID == "" {
+		return
+	}
+	cardID := fmt.Sprintf("remote-host-error-%s", hostID)
+	for _, sessionID := range a.store.SessionIDs() {
+		if a.store.RemoveCard(sessionID, cardID) {
+			log.Printf("remote host recovered host_id=%s session=%s cleared_card=%s", hostID, sessionID, cardID)
+		}
 	}
 }
 

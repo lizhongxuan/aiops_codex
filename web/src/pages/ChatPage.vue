@@ -1,14 +1,15 @@
 <script setup>
-import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { computed, defineAsyncComponent, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
 import CardItem from "../components/CardItem.vue";
 import Omnibar from "../components/Omnibar.vue";
 import ThinkingCard from "../components/ThinkingCard.vue";
 import PlanCard from "../components/PlanCard.vue";
-import { BotIcon, WifiOffIcon, RefreshCwIcon } from "lucide-vue-next";
+import { BotIcon, WifiOffIcon, RefreshCwIcon, TerminalIcon } from "lucide-vue-next";
 
 const store = useAppStore();
+const WorkspaceHostTerminal = defineAsyncComponent(() => import("../components/workspace/WorkspaceHostTerminal.vue"));
 
 const composerMessage = ref("");
 const scrollContainer = ref(null);
@@ -18,7 +19,14 @@ const showSearchDetails = ref(false);
 const authCardCollapsed = ref(false);
 const approvalFollowupMode = ref(false);
 const autoFollowTail = ref(true);
+const terminalDockVisible = ref(false);
+const terminalDockHeight = ref(320);
+const terminalDockSessionLive = ref(false);
+const terminalDockRef = ref(null);
+const terminalDockDragging = ref(false);
 let contentResizeObserver = null;
+let terminalDockDragState = null;
+let terminalDockMaxHeight = 560;
 
 /* ---- ThinkingCard local state ---- */
 const showThinking = ref(false);
@@ -279,6 +287,52 @@ const activeApprovalQueueNote = computed(() => {
 });
 
 const allowFollowUpComposer = computed(() => approvalFollowupMode.value && !activeApprovalCard.value);
+const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
+const workspaceSessionLabel = computed(() => (isWorkspaceSession.value ? "工作台会话" : ""));
+const workspaceDetailLinkLabel = computed(() => (isWorkspaceSession.value ? "查看只读详情" : ""));
+
+const latestTerminalCard = computed(() => {
+  const cards = store.snapshot.cards || [];
+  for (let i = cards.length - 1; i >= 0; i -= 1) {
+    const card = cards[i];
+    if (!card || !card.output) {
+      continue;
+    }
+    if (card.hostId && card.hostId !== store.snapshot.selectedHostId) {
+      continue;
+    }
+    return card;
+  }
+  return null;
+});
+
+const terminalDockHost = computed(() => store.selectedHost || { id: store.snapshot.selectedHostId || "server-local" });
+const terminalDockHostLabel = computed(() => resolveHostDisplay(terminalDockHost.value) || terminalDockHost.value.id || "server-local");
+const terminalDockTitle = computed(() => latestTerminalCard.value?.title || "终端面板");
+const terminalDockSubtitle = computed(() => {
+  if (latestTerminalCard.value?.summary) return latestTerminalCard.value.summary;
+  if (selectedHostAlert.value) return selectedHostAlert.value;
+  const status = terminalDockHost.value.status || "unknown";
+  return `当前主机 ${terminalDockHostLabel.value} · ${status}`;
+});
+const terminalDockOutput = computed(() => {
+  const card = latestTerminalCard.value;
+  if (!card) return "";
+  return card.output || card.stdout || card.text || card.summary || "";
+});
+const terminalDockCanTakeover = computed(() => store.canOpenTerminal);
+const terminalDockPanelHeight = computed(() => `${Math.max(140, terminalDockHeight.value - 108)}px`);
+const terminalDockToolbarLabel = computed(() => {
+  if (!terminalDockVisible.value) return "终端已收起";
+  if (terminalDockSessionLive.value) return `终端已连接 · ${terminalDockHostLabel.value}`;
+  if (!terminalDockCanTakeover.value) return `终端不可用 · ${terminalDockHostLabel.value}`;
+  return `终端准备中 · ${terminalDockHostLabel.value}`;
+});
+const chatContainerStyle = computed(() => ({
+  paddingBottom: terminalDockVisible.value
+    ? `${terminalDockHeight.value + (activePlanCard.value || activeApprovalCard.value ? 260 : 220)}px`
+    : "240px",
+}));
 
 const visibleCards = computed(() => {
   return store.snapshot.cards.filter((card) => {
@@ -540,6 +594,97 @@ function handleRefresh() {
   window.location.reload();
 }
 
+function isEditableTarget(target) {
+  if (!target || !(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName ? target.tagName.toLowerCase() : "";
+  return target.isContentEditable || tagName === "input" || tagName === "textarea" || tagName === "select";
+}
+
+async function ensureTerminalDockConnected() {
+  await nextTick();
+  if (!terminalDockVisible.value) return;
+  if (terminalDockRef.value?.takeover) {
+    await terminalDockRef.value.takeover();
+  }
+}
+
+function toggleTerminalDock(forceVisible) {
+  terminalDockVisible.value = typeof forceVisible === "boolean" ? forceVisible : !terminalDockVisible.value;
+  if (!terminalDockVisible.value) {
+    terminalDockSessionLive.value = false;
+    return;
+  }
+  terminalDockSessionLive.value = terminalDockSessionLive.value || false;
+  void ensureTerminalDockConnected();
+}
+
+function syncTerminalDockToHost() {
+  if (!terminalDockRef.value) {
+    return;
+  }
+  if (typeof terminalDockRef.value.reconnect === "function") {
+    terminalDockRef.value.reconnect();
+    return;
+  }
+  if (typeof terminalDockRef.value.takeover === "function") {
+    terminalDockRef.value.takeover();
+  }
+}
+
+function handleTerminalDockConnected() {
+  terminalDockSessionLive.value = true;
+}
+
+function handleTerminalDockDisconnected() {
+  terminalDockSessionLive.value = false;
+}
+
+function handleTerminalDockError() {
+  terminalDockSessionLive.value = false;
+}
+
+function handleTerminalDockToggleKeydown(e) {
+  const isBackquote = e.key === "`" || e.code === "Backquote";
+  if (!isBackquote || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) {
+    return;
+  }
+  e.preventDefault();
+  toggleTerminalDock();
+}
+
+function handleTerminalDockResizeStart(e) {
+  if (!terminalDockVisible.value) {
+    return;
+  }
+  e.preventDefault();
+  terminalDockDragging.value = true;
+  const startY = e.clientY;
+  const startHeight = terminalDockHeight.value;
+  terminalDockMaxHeight = Math.max(260, Math.floor(window.innerHeight * 0.72));
+
+  const handleMove = (moveEvent) => {
+    const delta = startY - moveEvent.clientY;
+    const nextHeight = Math.max(220, Math.min(terminalDockMaxHeight, startHeight + delta));
+    terminalDockHeight.value = nextHeight;
+  };
+
+  const handleUp = () => {
+    terminalDockDragging.value = false;
+    window.removeEventListener("mousemove", handleMove);
+    window.removeEventListener("mouseup", handleUp);
+    terminalDockDragState = null;
+  };
+
+  terminalDockDragState = { handleMove, handleUp };
+  window.addEventListener("mousemove", handleMove);
+  window.addEventListener("mouseup", handleUp, { once: true });
+}
+
+function openWorkspaceProtocol() {
+  if (!isWorkspaceSession.value) return;
+  window.location.href = "/protocol";
+}
+
 function handleScroll(e) {
   const el = e.target;
   autoFollowTail.value = isNearBottom(el);
@@ -610,6 +755,14 @@ onBeforeUnmount(() => {
     contentResizeObserver.disconnect();
     contentResizeObserver = null;
   }
+  window.removeEventListener("keydown", handleTerminalDockToggleKeydown);
+  if (terminalDockDragState?.handleMove) {
+    window.removeEventListener("mousemove", terminalDockDragState.handleMove);
+  }
+  if (terminalDockDragState?.handleUp) {
+    window.removeEventListener("mouseup", terminalDockDragState.handleUp);
+  }
+  terminalDockDragState = null;
 });
 
 onMounted(() => {
@@ -621,7 +774,43 @@ onMounted(() => {
     scrollToBottom();
   });
   contentResizeObserver.observe(scrollContent.value);
+  window.addEventListener("keydown", handleTerminalDockToggleKeydown);
+  terminalDockMaxHeight = Math.max(260, Math.floor(window.innerHeight * 0.72));
 });
+
+watch(
+  () => store.snapshot.selectedHostId,
+  () => {
+    if (!terminalDockSessionLive.value && !terminalDockVisible.value) {
+      return;
+    }
+    syncTerminalDockToHost();
+  },
+);
+
+watch(
+  () => store.canOpenTerminal,
+  (canOpenTerminal, previous) => {
+    if (!canOpenTerminal || canOpenTerminal === previous) {
+      return;
+    }
+    if (!terminalDockVisible.value && !terminalDockSessionLive.value) {
+      return;
+    }
+    syncTerminalDockToHost();
+  },
+);
+
+watch(
+  () => terminalDockVisible.value,
+  async (visible, previous) => {
+    if (visible === previous || !visible) {
+      return;
+    }
+    terminalDockVisible.value = true;
+    await ensureTerminalDockConnected();
+  },
+);
 </script>
 
 <template>
@@ -639,10 +828,18 @@ onMounted(() => {
     <span>{{ codexReconnectLabel }}</span>
   </div>
 
-  <div class="chat-container" ref="scrollContainer" @scroll="handleScroll">
+  <div class="chat-container" ref="scrollContainer" :style="chatContainerStyle" @scroll="handleScroll">
     <div class="chat-stream-inner" ref="scrollContent">
       <div v-if="store.loading" class="chat-banner loading-banner">
         <span class="spinner"></span> 正在初始化...
+      </div>
+
+      <div v-if="isWorkspaceSession" class="workspace-banner">
+        <div class="workspace-banner-copy">
+          <strong>{{ workspaceSessionLabel }}</strong>
+          <span>下方卡片是后端投影出的只读过程和结果，不会直接改写当前会话。</span>
+        </div>
+        <button class="workspace-banner-btn" @click="openWorkspaceProtocol">{{ workspaceDetailLinkLabel }}</button>
       </div>
 
       <div v-if="!visibleCards.length && !store.loading && !showThinking" class="empty-state-canvas">
@@ -666,6 +863,7 @@ onMounted(() => {
         >
           <CardItem
             :card="card"
+            :session-kind="store.snapshot.kind"
             @approval="decideApproval"
             @choice="handleChoice"
             @retry="handleRetry"
@@ -716,8 +914,59 @@ onMounted(() => {
 
   <footer class="omnibar-dock">
     <div class="omnibar-stack">
+      <div class="chat-terminal-dock-wrap">
+        <div class="chat-terminal-toolbar">
+          <button
+            data-testid="chat-terminal-toggle"
+            class="chat-terminal-toggle"
+            :class="{ active: terminalDockVisible }"
+            :disabled="isWorkspaceSession"
+            @click="toggleTerminalDock()"
+          >
+            <TerminalIcon size="14" />
+            <span>{{ terminalDockVisible ? "隐藏终端" : "显示终端" }}</span>
+          </button>
+          <span class="chat-terminal-toolbar-label">{{ terminalDockToolbarLabel }}</span>
+          <span class="chat-terminal-shortcut">Ctrl + `</span>
+        </div>
+
+        <div
+          v-if="terminalDockVisible"
+          data-testid="chat-terminal-dock"
+          class="chat-terminal-dock"
+          :class="{ dragging: terminalDockDragging }"
+          :style="{ height: `${terminalDockHeight}px` }"
+        >
+          <button
+            data-testid="chat-terminal-resizer"
+            class="chat-terminal-resizer"
+            title="拖拽调整终端高度"
+            @mousedown="handleTerminalDockResizeStart"
+          >
+            拖拽调整高度
+          </button>
+          <div class="chat-terminal-frame">
+            <WorkspaceHostTerminal
+              :key="terminalDockHost.id || store.snapshot.selectedHostId"
+              ref="terminalDockRef"
+              :host-id="terminalDockHost.id || store.snapshot.selectedHostId"
+              :host-name="terminalDockHostLabel"
+              :title="terminalDockTitle"
+              :subtitle="terminalDockSubtitle"
+              :output="terminalDockOutput"
+              :allow-takeover="terminalDockCanTakeover"
+              :auto-takeover="terminalDockCanTakeover"
+              :panel-height="terminalDockPanelHeight"
+              @connected="handleTerminalDockConnected"
+              @disconnected="handleTerminalDockDisconnected"
+              @error="handleTerminalDockError"
+            />
+          </div>
+        </div>
+      </div>
+
       <div v-if="activePlanCard" class="runtime-plan-dock">
-        <PlanCard :card="activePlanCard" compact />
+        <PlanCard :card="activePlanCard" :session-kind="store.snapshot.kind" compact />
       </div>
 
       <!-- Auth Overlay -->
@@ -731,7 +980,7 @@ onMounted(() => {
              <button class="icon-btn auth-collapse-btn" @click="authCardCollapsed = true">折叠审批工作台</button>
           </div>
           <div v-if="activeApprovalQueueNote" class="auth-overlay-queue-note">{{ activeApprovalQueueNote }}</div>
-          <CardItem :card="activeApprovalCard" :is-overlay="true" @approval="decideApproval" />
+          <CardItem :card="activeApprovalCard" :session-kind="store.snapshot.kind" :is-overlay="true" @approval="decideApproval" />
         </div>
         
         <button v-else class="auth-restore-btn" @click="authCardCollapsed = false">
@@ -793,6 +1042,54 @@ onMounted(() => {
   background: #fef3c7;
 }
 
+.workspace-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0 6px;
+  padding: 12px 14px;
+  margin-left: 48px;
+  max-width: 760px;
+  border-radius: 14px;
+  border: 1px solid #dbeafe;
+  background: linear-gradient(135deg, #eff6ff, #ffffff);
+}
+
+.workspace-banner-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #1e293b;
+}
+
+.workspace-banner-copy strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.workspace-banner-copy span {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.workspace-banner-btn {
+  flex-shrink: 0;
+  border: 1px solid #bfdbfe;
+  background: #ffffff;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workspace-banner-btn:hover {
+  background: #eff6ff;
+}
+
 .activity-summary {
   display: flex;
   flex-direction: column;
@@ -839,6 +1136,92 @@ onMounted(() => {
 
 .activity-detail-item {
   line-height: 1.5;
+}
+
+.chat-terminal-dock-wrap {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.chat-terminal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 8px;
+}
+
+.chat-terminal-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.86);
+  color: #0f172a;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chat-terminal-toggle.active {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: rgba(96, 165, 250, 0.45);
+}
+
+.chat-terminal-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.chat-terminal-toolbar-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-terminal-shortcut {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.chat-terminal-dock {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.98);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+}
+
+.chat-terminal-dock.dragging {
+  box-shadow: 0 22px 56px rgba(15, 23, 42, 0.24);
+}
+
+.chat-terminal-resizer {
+  border: none;
+  width: 100%;
+  padding: 7px 12px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(15, 23, 42, 0.9));
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: ns-resize;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.chat-terminal-frame {
+  flex: 1;
+  min-height: 0;
 }
 
 .omnibar-stack {

@@ -6,6 +6,10 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  sessionKind: {
+    type: String,
+    default: "",
+  },
 });
 
 const statusTone = computed(() => {
@@ -21,6 +25,8 @@ const badgeLabel = computed(() => {
   if (props.card.status === "completed") return "完成";
   return "进行中";
 });
+
+const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台投影" : ""));
 
 function compactText(value) {
   return (value || "").trim().replace(/\s+/g, " ");
@@ -57,6 +63,7 @@ const detailTone = computed(() => {
 <template>
   <div class="process-line-card" :class="[statusTone, detailTone]">
     <span class="process-badge">{{ badgeLabel }}</span>
+    <span v-if="contextLabel" class="process-context">{{ contextLabel }}</span>
     <span class="process-lead">{{ summaryParts.lead }}</span>
     <span v-if="summaryParts.detail" class="process-detail">{{ summaryParts.detail }}</span>
   </div>
@@ -96,6 +103,20 @@ const detailTone = computed(() => {
   border-radius: 999px;
   background: #eef2ff;
   color: #3730a3;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.process-context {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
