@@ -1,0 +1,56 @@
+services:
+  # ============================================================
+  # ai-server: 核心服务 (HTTP + gRPC + Codex app-server)
+  # ============================================================
+  ai-server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/ai-server.Dockerfile
+      args:
+        TARGETOS: linux
+        TARGETARCH: amd64
+    ports:
+      - "18080:8080"      # HTTP + WebSocket + 前端
+      - "18090:18090"     # gRPC (host-agent 接入)
+      - "1455:14550"      # 宿主机 1455 → 容器 14550 (socat) → 127.0.0.1:1455 (codex)
+    volumes:
+      - ai-data:/data
+    environment:
+      - AIOPS_HTTP_ADDR=0.0.0.0:8080
+      - AIOPS_GRPC_ADDR=0.0.0.0:18090
+      - DEFAULT_WORKSPACE=/data/workspace
+      - APP_STATE_PATH=/data/ai-server-state.json
+      - APP_AUDIT_LOG_PATH=/data/ai-audit.log
+      - CODEX_HOME=/data/codex-home
+      - CODEX_APP_SERVER_PATH=/usr/local/bin/codex
+      - HOST_AGENT_BOOTSTRAP_TOKEN=${HOST_AGENT_BOOTSTRAP_TOKEN:-change-me}
+      - FRONTEND_REDIRECT_URL=http://127.0.0.1:18080/
+      - CODEX_API_KEY=${CODEX_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/api/v1/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ============================================================
+  # host-agent: 本机测试用 agent (可选)
+  # ============================================================
+  host-agent-local:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/host-agent.Dockerfile
+    environment:
+      - AIOPS_SERVER_GRPC_ADDR=ai-server:18090
+      - AIOPS_AGENT_HOST_ID=docker-local
+      - AIOPS_AGENT_HOSTNAME=docker-local
+      - AIOPS_AGENT_BOOTSTRAP_TOKEN=${HOST_AGENT_BOOTSTRAP_TOKEN:-change-me}
+      - AIOPS_AGENT_LABELS=env=docker,role=test
+    depends_on:
+      ai-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ai-data:

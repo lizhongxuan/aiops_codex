@@ -8,13 +8,15 @@ const emit = defineEmits(["close"]);
 const store = useAppStore();
 const router = useRouter();
 
-function selectHost(hostId) {
-  store.selectHost(hostId);
+async function selectHost(hostId) {
+  const ok = await store.selectHost(hostId);
+  if (!ok) return;
   emit("close");
 }
 
-function openTerminal(hostId) {
-  store.selectHost(hostId);
+async function openTerminal(hostId) {
+  const ok = await store.selectHost(hostId);
+  if (!ok) return;
   emit("close");
   router.push(`/terminal/${hostId}`);
 }
@@ -35,16 +37,19 @@ function openTerminal(hostId) {
         </div>
         <div class="host-info">
           <div class="host-name">{{ host.name }}</div>
+          <div class="host-id">ID: {{ host.id }}</div>
           <div class="host-meta">
             <span class="badge" :class="host.status === 'online' ? 'online' : 'offline'">
               {{ host.status }}
             </span>
             <span class="host-kind">{{ host.kind }}</span>
-            <span v-if="!host.executable" class="badge readonly">只读展示</span>
+            <span v-if="host.kind === 'agent' && host.executable" class="badge terminal">远程可管</span>
+            <span v-else-if="host.terminalCapable && !host.executable" class="badge terminal">远程终端</span>
+            <span v-else-if="!host.executable" class="badge readonly">只读展示</span>
           </div>
         </div>
         <button
-          v-if="host.executable && host.status === 'online'"
+          v-if="(host.terminalCapable || host.executable) && host.status === 'online'"
           type="button"
           class="host-action-btn"
           @click.stop="openTerminal(host.id)"
@@ -124,6 +129,12 @@ function openTerminal(hostId) {
   color: #0f172a;
 }
 
+.host-id {
+  font-size: 12px;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .host-meta {
   display: flex;
   align-items: center;
@@ -158,6 +169,12 @@ function openTerminal(hostId) {
   background: #fffedd;
   color: #854d0e;
   border: 1px solid #fef08a;
+}
+
+.badge.terminal {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
 }
 
 .text-blue {

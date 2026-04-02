@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 )
 
@@ -62,6 +63,7 @@ type terminalSession struct {
 	Shell          string
 	StartedAt      string
 	Status         string
+	Remote         bool
 	cmd            *exec.Cmd
 	stdin          io.WriteCloser
 	subscribers    map[*websocket.Conn]struct{}
@@ -83,15 +85,29 @@ func (a *App) handleTerminalCreate(w http.ResponseWriter, r *http.Request, sessi
 	if req.HostID == "" {
 		req.HostID = model.ServerLocalHostID
 	}
-	if req.HostID != model.ServerLocalHostID {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "MVP only supports server-local terminal"})
+	if err := a.ensureCapabilityAllowedForHost(req.HostID, "terminal"); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		return
 	}
 
-	host := a.findHost(req.HostID)
-	if !host.Executable || host.Status != "online" {
+	host, ok := a.knownHost(req.HostID)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "selected host not found"})
+		return
+	}
+	if !hostSupportsTerminal(host) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "selected host is not available for terminal access"})
 		return
+	}
+	if _, switched, err := a.switchSelectedHost(sessionID, req.HostID, false); err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "执行中") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	} else if switched {
+		a.broadcastSnapshot(sessionID)
 	}
 
 	terminal, err := a.createTerminalSession(sessionID, req)
@@ -163,12 +179,32 @@ func (a *App) handleTerminalWS(w http.ResponseWriter, r *http.Request, sessionID
 				a.writeTerminalJSON(conn, terminalEnvelope{Type: "error", Message: err.Error()})
 			}
 		case "resize":
+			if terminal.Remote {
+				if err := a.sendAgentEnvelope(terminal.HostID, &agentrpc.Envelope{
+					Kind: "terminal/resize",
+					TerminalResize: &agentrpc.TerminalResize{
+						SessionID: terminal.ID,
+						Cols:      msg.Cols,
+						Rows:      msg.Rows,
+					},
+				}); err != nil {
+					a.writeTerminalJSON(conn, terminalEnvelope{Type: "error", Message: err.Error()})
+					continue
+				}
+			}
 			a.broadcastTerminal(terminal.ID, terminalEnvelope{Type: "status", Status: terminal.Status})
 		}
 	}
 }
 
 func (a *App) createTerminalSession(ownerSessionID string, req terminalCreateRequest) (*terminalSession, error) {
+	if req.HostID != model.ServerLocalHostID {
+		return a.createRemoteTerminalSession(ownerSessionID, req)
+	}
+	return a.createLocalTerminalSession(ownerSessionID, req)
+}
+
+func (a *App) createLocalTerminalSession(ownerSessionID string, req terminalCreateRequest) (*terminalSession, error) {
 	cwd, err := resolveTerminalCwd(req.Cwd, a.cfg.DefaultWorkspace)
 	if err != nil {
 		return nil, err
@@ -225,8 +261,50 @@ func (a *App) createTerminalSession(ownerSessionID string, req terminalCreateReq
 	go a.streamTerminalOutput(terminal, stdout)
 	go a.streamTerminalOutput(terminal, stderr)
 	go a.waitTerminalExit(terminal)
-	go a.expireUnusedTerminalSession(terminal.ID, 20*time.Second)
+	go a.expireUnusedTerminalSession(terminal.ID, terminalSubscriberGraceTTL)
 
+	return terminal, nil
+}
+
+func (a *App) createRemoteTerminalSession(ownerSessionID string, req terminalCreateRequest) (*terminalSession, error) {
+	cwd := resolveRemoteTerminalCwd(req.Cwd)
+	shell := strings.TrimSpace(req.Shell)
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+
+	terminal := &terminalSession{
+		ID:             model.NewID("term"),
+		OwnerSessionID: ownerSessionID,
+		HostID:         req.HostID,
+		Cwd:            cwd,
+		Shell:          shell,
+		StartedAt:      model.NowString(),
+		Status:         "connecting",
+		Remote:         true,
+		subscribers:    make(map[*websocket.Conn]struct{}),
+	}
+
+	a.terminalMu.Lock()
+	a.terminals[terminal.ID] = terminal
+	a.terminalMu.Unlock()
+
+	if err := a.sendAgentEnvelope(req.HostID, &agentrpc.Envelope{
+		Kind: "terminal/open",
+		TerminalOpen: &agentrpc.TerminalOpen{
+			SessionID: terminal.ID,
+			Cwd:       cwd,
+			Shell:     shell,
+			Cols:      req.Cols,
+			Rows:      req.Rows,
+		},
+	}); err != nil {
+		a.shutdownTerminalSession(terminal.ID)
+		return nil, err
+	}
+
+	go a.expireUnusedTerminalSession(terminal.ID, terminalSubscriberGraceTTL)
+	go a.expireConnectingTerminalSession(terminal.ID, terminalConnectTimeout)
 	return terminal, nil
 }
 
@@ -287,9 +365,26 @@ func (a *App) waitTerminalExit(terminal *terminalSession) {
 		Code:   exitCode,
 		Status: "disconnected",
 	})
+	go a.reapExitedTerminalSession(terminal.ID, terminalExitRetention)
 }
 
 func (a *App) writeTerminalInput(terminal *terminalSession, data string) error {
+	if terminal.Remote {
+		terminal.mu.Lock()
+		exited := terminal.exited
+		terminal.mu.Unlock()
+		if exited {
+			return errors.New("terminal session has already exited")
+		}
+		return a.sendAgentEnvelope(terminal.HostID, &agentrpc.Envelope{
+			Kind: "terminal/input",
+			TerminalInput: &agentrpc.TerminalInput{
+				SessionID: terminal.ID,
+				Data:      data,
+			},
+		})
+	}
+
 	terminal.mu.Lock()
 	defer terminal.mu.Unlock()
 	if terminal.exited {
@@ -303,6 +398,22 @@ func (a *App) writeTerminalInput(terminal *terminalSession, data string) error {
 }
 
 func (a *App) signalTerminal(terminal *terminalSession, signalName string) error {
+	if terminal.Remote {
+		terminal.mu.Lock()
+		exited := terminal.exited
+		terminal.mu.Unlock()
+		if exited {
+			return errors.New("terminal session has already exited")
+		}
+		return a.sendAgentEnvelope(terminal.HostID, &agentrpc.Envelope{
+			Kind: "terminal/signal",
+			TerminalSignal: &agentrpc.TerminalSignal{
+				SessionID: terminal.ID,
+				Signal:    signalName,
+			},
+		})
+	}
+
 	terminal.mu.Lock()
 	defer terminal.mu.Unlock()
 	if terminal.cmd == nil || terminal.cmd.Process == nil {
@@ -354,17 +465,40 @@ func (a *App) shutdownTerminalSession(terminalID string) {
 	}
 
 	terminal.mu.Lock()
-	defer terminal.mu.Unlock()
-	if terminal.cmd != nil && terminal.cmd.Process != nil && !terminal.exited {
-		_ = syscall.Kill(-terminal.cmd.Process.Pid, syscall.SIGHUP)
+	remote := terminal.Remote
+	hostID := terminal.HostID
+	subscribers := make([]*websocket.Conn, 0, len(terminal.subscribers))
+	for conn := range terminal.subscribers {
+		subscribers = append(subscribers, conn)
+		delete(terminal.subscribers, conn)
 	}
-	if terminal.stdin != nil {
-		_ = terminal.stdin.Close()
-		terminal.stdin = nil
+	if remote {
+		terminal.exited = true
+		terminal.Status = "disconnected"
+	} else {
+		if terminal.cmd != nil && terminal.cmd.Process != nil && !terminal.exited {
+			_ = syscall.Kill(-terminal.cmd.Process.Pid, syscall.SIGHUP)
+		}
+		if terminal.stdin != nil {
+			_ = terminal.stdin.Close()
+			terminal.stdin = nil
+		}
 	}
+	terminal.mu.Unlock()
 	a.terminalMu.Lock()
 	delete(a.terminals, terminalID)
 	a.terminalMu.Unlock()
+	if remote {
+		_ = a.sendAgentEnvelope(hostID, &agentrpc.Envelope{
+			Kind: "terminal/close",
+			TerminalClose: &agentrpc.TerminalClose{
+				SessionID: terminalID,
+			},
+		})
+	}
+	for _, conn := range subscribers {
+		_ = conn.Close()
+	}
 }
 
 func (a *App) broadcastTerminal(terminalID string, payload terminalEnvelope) {
@@ -421,6 +555,14 @@ func resolveTerminalCwd(requested, fallback string) (string, error) {
 	return resolved, nil
 }
 
+func resolveRemoteTerminalCwd(requested string) string {
+	cwd := strings.TrimSpace(requested)
+	if cwd == "" || cwd == "~" {
+		return "~"
+	}
+	return cwd
+}
+
 func sanitizeTerminalChunk(chunk string) string {
 	return strings.ReplaceAll(chunk, "^D\b\b", "")
 }
@@ -431,6 +573,60 @@ func terminalExitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return 1
+}
+
+func (a *App) expireConnectingTerminalSession(terminalID string, ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = terminalConnectTimeout
+	}
+	timer := time.NewTimer(ttl)
+	defer timer.Stop()
+
+	<-timer.C
+	terminal, ok := a.terminalSession(terminalID)
+	if !ok {
+		return
+	}
+
+	terminal.mu.Lock()
+	stillConnecting := !terminal.exited && terminal.Status == "connecting"
+	terminal.mu.Unlock()
+	if !stillConnecting {
+		return
+	}
+
+	a.broadcastTerminal(terminalID, terminalEnvelope{
+		Type:    "error",
+		Status:  "error",
+		Message: "remote terminal connection timed out",
+	})
+	a.broadcastTerminal(terminalID, terminalEnvelope{
+		Type:   "exit",
+		Code:   124,
+		Status: "timeout",
+	})
+	a.shutdownTerminalSession(terminalID)
+}
+
+func (a *App) reapExitedTerminalSession(terminalID string, ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = terminalExitRetention
+	}
+	timer := time.NewTimer(ttl)
+	defer timer.Stop()
+
+	<-timer.C
+	terminal, ok := a.terminalSession(terminalID)
+	if !ok {
+		return
+	}
+
+	terminal.mu.Lock()
+	exited := terminal.exited
+	terminal.mu.Unlock()
+	if exited {
+		a.shutdownTerminalSession(terminalID)
+	}
 }
 
 func (a *App) stopAllTerminals(ctx context.Context) {

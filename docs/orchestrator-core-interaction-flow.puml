@@ -1,0 +1,87 @@
+@startuml
+title ai-server 调度器核心交互流程（MVP）
+
+actor User
+participant "Web 工作台界面" as Web
+participant "ai-server HTTP/API" as API
+participant "会话路由器" as Router
+participant "调度器 Manager" as Orchestrator
+database "聊天 Store" as ChatStore
+database "调度器 Store" as OStore
+participant "PlannerSession\n（Codex 线程）" as Planner
+participant "WorkerSession\n（Codex 线程）" as Worker
+participant "host-agent" as Host
+
+User -> Web : 提交工作台请求
+Web -> API : POST /api/v1/chat/message\n（session kind=workspace）
+API -> Router : handleChatMessage(workspace)
+Router -> Orchestrator : StartMission(workspaceSessionID, userMessage)
+Orchestrator -> OStore : 创建 Mission
+Orchestrator -> ChatStore : 创建隐藏的 PlannerSession
+Orchestrator -> Planner : thread/start + turn/start\n（PlannerPreset）
+
+Planner -> Orchestrator : 工具调用\norchestrator_dispatch_tasks(tasks)
+Orchestrator -> OStore : 校验并入队 TaskRun / HostWorker
+
+loop 在预算内激活 ready hosts
+  Orchestrator -> ChatStore : 确保隐藏的 WorkerSession 存在
+  Orchestrator -> Host : 执行 "mkdir -p <remotePath>"
+  Host --> Orchestrator : 返回 bootstrap 结果
+  Orchestrator -> Worker : thread/start + turn/start\n（WorkerPreset）
+end
+
+Worker -> Host : 调用 remote execute_* / file ops
+Host --> Worker : 输出 / 退出 / 文件结果
+Worker --> Orchestrator : turn 事件 / exec 事件 / 回复摘要
+Orchestrator -> OStore : 更新 worker / task / relay events
+Orchestrator -> ChatStore : Upsert MissionCard / WorkerProgressCard
+Orchestrator --> Web : 回推工作台投影视图
+
+alt Worker 发起审批请求
+  Worker --> Orchestrator : approval_requested(workerSessionID, approvalID)
+  Orchestrator -> OStore : 建立 workspace approval -> worker approval 映射
+  Orchestrator -> ChatStore : Upsert WorkerApprovalCard
+  Orchestrator --> Web : 回推工作台投影视图
+  User -> Web : 通过 / 拒绝
+  Web -> API : POST /api/v1/approvals/{id}/decision\n（current session=workspace）
+  API -> Router : 解析镜像审批路由
+  Router -> Orchestrator : RouteApprovalDecision(...)
+  Orchestrator -> Worker : 转发决策到原始 approval
+end
+
+alt Planner 或 Worker 请求用户输入
+  Planner --> Orchestrator : request_user_input
+  Orchestrator -> OStore : 建立 workspace choice -> origin session 映射
+  Orchestrator -> ChatStore : Upsert 镜像 ChoiceCard
+  Orchestrator --> Web : 回推工作台投影视图
+  User -> Web : 填写输入
+  Web -> API : POST /api/v1/choices/{id}/answer\n（current session=workspace）
+  API -> Router : 解析镜像 choice 路由
+  Router -> Orchestrator : RouteChoiceAnswer(...)
+  Orchestrator -> Planner : 转发答案
+end
+
+alt 用户停止 mission
+  User -> Web : 停止 mission
+  Web -> API : POST /api/v1/chat/stop\n（session kind=workspace）
+  API -> Router : handleChatStop(workspace)
+  Router -> Orchestrator : CancelMission(workspaceSessionID)
+  Orchestrator -> Worker : turn/interrupt（active workers）
+  Orchestrator -> Host : exec/cancel（active remote exec）
+  Orchestrator -> OStore : 标记 queued tasks 为 cancelled
+  Orchestrator -> ChatStore : 更新 MissionCard
+  Orchestrator --> Web : 回推工作台投影视图
+end
+
+Worker --> Orchestrator : turn completed / failed / aborted
+Orchestrator -> OStore : 释放预算
+Orchestrator -> OStore : 选择下一个 ready host
+Orchestrator -> ChatStore : Upsert WorkerCompletionCard / MissionCard
+Orchestrator --> Web : 回推最终工作台投影视图
+
+User -> Web : 打开主机详情
+Web -> ChatStore : 读取投影后的只读详情
+User -> Web : 跳转到单机对话
+Web -> API : 激活或创建\nsession kind=single_host
+
+@enduml

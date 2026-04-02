@@ -1,0 +1,117 @@
+@startuml
+skinparam defaultFontName "PingFang SC", "Microsoft YaHei", sans-serif
+skinparam componentStyle rectangle
+skinparam linetype ortho
+skinparam padding 8
+skinparam roundcorner 10
+skinparam shadowing false
+skinparam Nodesep 60
+skinparam Ranksep 60
+
+' --- 现代化配色体系 (Tailwind 风格) ---
+skinparam arrow {
+    Color #64748B
+    Thickness 1.5
+    FontColor #475569
+    FontSize 13
+}
+skinparam actor {
+    BackgroundColor #F8FAFC
+    BorderColor #475569
+    FontColor #0F172A
+}
+skinparam package {
+    BorderThickness 1.5
+    FontSize 15
+    FontStyle bold
+}
+skinparam component {
+    BorderThickness 1.2
+    FontSize 14
+}
+skinparam database {
+    BorderThickness 1.2
+    FontSize 14
+}
+
+title <size:22><b>通用自我进化系统 (Self-Evolving System) 核心架构</b></size>\n
+
+actor "系统输入\n(初始代码/任务)" as Input
+
+' --- 核心模块定义 ---
+
+package "1. 领域适配与评估环境 (Evaluation Sandbox)" <<Sandbox>> #F0F9FF {
+    component "状态解析器\n(State Parser)" as Parser #BAE6FD
+    component "隔离安全沙盒\n(Docker/gVisor)" as Sandbox #BAE6FD
+    component "多维打分函数\n(Fitness Function)" as Fitness #BAE6FD
+
+    skinparam package<<Sandbox>> {
+        BorderColor #38BDF8
+        FontColor #0284C7
+    }
+    skinparam component {
+        BorderColor<<Sandbox>> #0284C7
+    }
+}
+
+package "3. 进化与搜索策略总线 (Search Controller)" <<Search>> #F0FDF4 {
+    component "种群池\n(Population Pool)" as Population #BBF7D0
+    component "搜索与调度算法\n(MCTS / GA)" as SearchAlgo #BBF7D0
+    component "末位淘汰器\n(Pruner)" as Pruner #BBF7D0
+
+    skinparam package<<Search>> {
+        BorderColor #4ADE80
+        FontColor #16A34A
+    }
+}
+
+package "2. 变异智能体引擎 (Agentic Engine)" <<Agent>> #FFFBEB {
+    component "反思节点\n(Critique)" as Critique #FDE68A
+    component "知识检索\n(RAG Node)" as RAG #FDE68A
+    component "变异生成\n(Mutation)" as Mutation #FDE68A
+    component "本地预检\n(Self-Check)" as SelfCheck #FDE68A
+
+    skinparam package<<Agent>> {
+        BorderColor #FBBF24
+        FontColor #D97706
+    }
+
+    ' Agent内部闭环
+    Critique -right-> RAG : 1. 提取错误特征
+    RAG -down-> Mutation : 2. 注入上下文/经验
+    Mutation -left-> SelfCheck : 3. 生成新变体
+    SelfCheck -up-> Critique : <color:#EF4444><b>[预检失败]</b> 重试</color>
+}
+
+package "4. 进化记忆库 (Evolutionary Memory)" <<Memory>> #FAF5FF {
+    database "血统追踪树\n(Lineage Graph)" as Lineage #E9D5FF
+    database "经验向量库\n(Vector DB)" as MemoryDB #E9D5FF
+
+    skinparam package<<Memory>> {
+        BorderColor #C084FC
+        FontColor #9333EA
+    }
+}
+
+' --- 全局流转路径控制 ---
+
+Input -down-> Parser : 提交任务
+Parser -down-> Population : 初始化初代种群
+
+Population -down-> SearchAlgo : 提供最优候选者
+SearchAlgo -right-> Critique : 分配变异任务\n(传入父代代码)
+
+SelfCheck -down-> Sandbox : <color:#10B981><b>[预检通过]</b></color>\n提交运行
+Sandbox -right-> Fitness : 收集指标/日志
+
+Fitness -up-> Critique : <color:#EF4444><b>[未达标/报错]</b></color>\n闭环反馈
+Fitness -up-> Pruner : <color:#10B981><b>[运行成功]</b></color>\n提交评分
+
+Pruner -left-> Population : 更新种群\n(淘汰/保留)
+
+' 记忆库的交互与沉淀
+Mutation .down.> MemoryDB : 检索避坑指南
+Pruner -right-> MemoryDB : 沉淀全局经验
+SearchAlgo <-right-> Lineage : 维护演进树
+
+@enduml

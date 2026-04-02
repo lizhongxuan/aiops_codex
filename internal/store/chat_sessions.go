@@ -90,9 +90,16 @@ func (s *Store) EnsureActiveSession(browserID string) string {
 }
 
 func (s *Store) CreateSession(browserID string) *SessionState {
+	return s.CreateSessionWithMeta(browserID, model.DefaultSessionMeta(), true)
+}
+
+func (s *Store) CreateSessionWithMeta(browserID string, meta model.SessionMeta, attachToBrowser bool) *SessionState {
 	s.mu.Lock()
-	browser, _ := s.ensureBrowserSessionLocked(browserID)
-	session := s.createSessionLocked(browser)
+	var browser *BrowserSessionState
+	if browserID != "" {
+		browser, _ = s.ensureBrowserSessionLocked(browserID)
+	}
+	session := s.createSessionLockedWithMeta(browser, meta, attachToBrowser)
 	cloned := cloneSession(session)
 	s.mu.Unlock()
 	s.SaveStableState("")
@@ -125,7 +132,7 @@ func (s *Store) SessionSummaries(browserID string) []model.SessionSummary {
 	out := make([]model.SessionSummary, 0, len(browser.SessionIDs))
 	for _, sessionID := range browser.SessionIDs {
 		session := s.sessions[sessionID]
-		if session == nil {
+		if session == nil || !session.Meta.Visible {
 			continue
 		}
 		out = append(out, summarizeSession(session))
@@ -223,9 +230,14 @@ func (s *Store) ensureBrowserSessionLocked(browserID string) (*BrowserSessionSta
 }
 
 func (s *Store) createSessionLocked(browser *BrowserSessionState) *SessionState {
+	return s.createSessionLockedWithMeta(browser, model.DefaultSessionMeta(), true)
+}
+
+func (s *Store) createSessionLockedWithMeta(browser *BrowserSessionState, meta model.SessionMeta, attachToBrowser bool) *SessionState {
 	now := model.NowString()
 	sessionID := model.NewID("sess")
 	session := defaultSession(sessionID)
+	session.Meta = normalizeSessionMetaForCreate(meta)
 	session.CreatedAt = now
 	session.LastActivityAt = now
 
@@ -245,9 +257,11 @@ func (s *Store) createSessionLocked(browser *BrowserSessionState) *SessionState 
 				s.linkAuthSessionLocked(sessionID, session.AuthSessionID)
 			}
 		}
-		browser.SessionIDs = append(browser.SessionIDs, sessionID)
-		browser.ActiveSessionID = sessionID
-		browser.UpdatedAt = now
+		if attachToBrowser {
+			browser.SessionIDs = append(browser.SessionIDs, sessionID)
+			browser.ActiveSessionID = sessionID
+			browser.UpdatedAt = now
+		}
 	}
 	s.sessions[sessionID] = session
 	return session
@@ -300,14 +314,14 @@ func (s *Store) loadSessionTranscriptLocked(statePath, sessionID string) error {
 }
 
 func summarizeSession(session *SessionState) model.SessionSummary {
-	title := "New Thread"
+	title := "新建会话"
 	preview := "暂无消息"
 	messageCount := 0
 	for _, card := range session.Cards {
 		if isConversationCard(card) {
 			messageCount++
 		}
-		if title == "New Thread" && isUserCard(card) {
+		if title == "新建会话" && isUserCard(card) {
 			if text := summarizeCardText(card); text != "" {
 				title = truncateRunes(text, 24)
 			}
@@ -321,6 +335,7 @@ func summarizeSession(session *SessionState) model.SessionSummary {
 	}
 	return model.SessionSummary{
 		ID:             session.ID,
+		Kind:           session.Meta.Kind,
 		Title:          title,
 		Preview:        preview,
 		SelectedHostID: session.SelectedHostID,

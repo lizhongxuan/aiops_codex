@@ -9,6 +9,10 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  sessionKind: {
+    type: String,
+    default: "",
+  },
 });
 
 const emit = defineEmits(["choice"]);
@@ -35,6 +39,7 @@ const choiceQuestions = computed(() => {
 });
 
 const resolvedSummary = computed(() => props.card.answerSummary || []);
+const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台输入请求" : ""));
 
 watch(
   choiceQuestions,
@@ -112,7 +117,10 @@ function onSubmit() {
   <div class="choice-card">
     <div class="choice-header">
       <ListIcon size="16" class="choice-icon" />
-      <span class="choice-title">{{ card.title || "请选择" }}</span>
+      <div class="choice-title-group">
+        <span v-if="contextLabel" class="choice-context">{{ contextLabel }}</span>
+        <span class="choice-title">{{ card.title || "请选择" }}</span>
+      </div>
     </div>
 
     <div class="choice-body">
@@ -194,21 +202,21 @@ function onSubmit() {
 
 <style scoped>
 .choice-card {
-  border-radius: 16px;
+  border-radius: 12px;
   background: #ffffff;
   border: 1px solid #e5e7eb;
   overflow: hidden;
-  margin-top: 4px;
-  margin-left: 48px;
-  max-width: 720px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+  margin-top: 2px;
+  margin-left: 36px;
+  max-width: 680px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
 }
 
 .choice-header {
-  padding: 14px 20px;
+  padding: 10px 16px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: #f9fafb;
   border-bottom: 1px solid #f3f4f6;
 }
@@ -218,13 +226,27 @@ function onSubmit() {
 }
 
 .choice-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: #1f2937;
 }
 
+.choice-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.choice-context {
+  font-size: 11px;
+  color: #475569;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .choice-body {
-  padding: 16px 20px;
+  padding: 12px 16px;
 }
 
 .choice-question-block + .choice-question-block {
@@ -243,29 +265,29 @@ function onSubmit() {
 }
 
 .choice-question {
-  margin: 0 0 14px;
-  font-size: 14px;
-  line-height: 1.6;
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
   color: #374151;
 }
 
 .choice-options {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .choice-option {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: 10px;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   color: #374151;
   transition: background 0.15s;
-  min-height: 44px;
+  min-height: 36px;
 }
 
 .choice-option:hover {

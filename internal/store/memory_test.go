@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -32,7 +33,108 @@ func TestMarkStaleHostsMarksOffline(t *testing.T) {
 	}
 }
 
-func TestApprovalGrantPersistsAndRestores(t *testing.T) {
+func TestSessionMetaDefaultsAndPersistence(t *testing.T) {
+	st := New()
+	sessionID := "sess-meta"
+
+	session := st.EnsureSession(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to be created")
+	}
+	if got := session.Meta; got != model.DefaultSessionMeta() {
+		t.Fatalf("expected default session meta, got %#v", got)
+	}
+
+	created := st.EnsureSessionWithMeta("sess-planner", model.SessionMeta{
+		Kind:      model.SessionKindPlanner,
+		Visible:   false,
+		MissionID: "mission-1",
+	})
+	if created == nil {
+		t.Fatalf("expected session with meta to be created")
+	}
+	if created.Meta.Kind != model.SessionKindPlanner || created.Meta.Visible {
+		t.Fatalf("expected hidden planner session, got %#v", created.Meta)
+	}
+	if created.Meta.RuntimePreset != model.SessionRuntimePresetPlanner {
+		t.Fatalf("expected planner runtime preset, got %#v", created.Meta)
+	}
+
+	st.UpdateSessionMeta(sessionID, func(meta *model.SessionMeta) {
+		meta.Kind = model.SessionKindWorker
+		meta.Visible = false
+		meta.MissionID = "mission-2"
+		meta.WorkspaceSessionID = "sess-workspace"
+		meta.WorkerHostID = "host-1"
+	})
+
+	got := st.SessionMeta(sessionID)
+	if got.Kind != model.SessionKindWorker || got.Visible {
+		t.Fatalf("expected updated hidden worker meta, got %#v", got)
+	}
+	if got.RuntimePreset != model.SessionRuntimePresetWorker {
+		t.Fatalf("expected worker runtime preset, got %#v", got)
+	}
+	if got.MissionID != "mission-2" || got.WorkspaceSessionID != "sess-workspace" || got.WorkerHostID != "host-1" {
+		t.Fatalf("expected updated linkage fields, got %#v", got)
+	}
+
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	st.SetStatePath(statePath)
+	if err := st.SaveStableState(statePath); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStatePath(statePath)
+	if err := reloaded.LoadStableState(statePath); err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	loaded := reloaded.SessionMeta(sessionID)
+	if loaded != got {
+		t.Fatalf("expected worker meta to persist, got %#v want %#v", loaded, got)
+	}
+	planner := reloaded.SessionMeta("sess-planner")
+	if planner.Kind != model.SessionKindPlanner || planner.Visible {
+		t.Fatalf("expected hidden planner meta to persist, got %#v", planner)
+	}
+	if planner.RuntimePreset != model.SessionRuntimePresetPlanner {
+		t.Fatalf("expected planner runtime preset to persist, got %#v", planner)
+	}
+}
+
+func TestLegacyStableStateDefaultsSessionMeta(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "legacy-state.json")
+	legacy := []byte(`{
+  "sessions": {
+    "sess-legacy": {
+      "id": "sess-legacy",
+      "selectedHostId": "server-local",
+      "createdAt": "2026-03-27T10:00:00Z",
+      "lastActivityAt": "2026-03-27T10:00:00Z"
+    }
+  }
+}`)
+	if err := os.WriteFile(statePath, legacy, 0o600); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	st := New()
+	if err := st.LoadStableState(statePath); err != nil {
+		t.Fatalf("load legacy state: %v", err)
+	}
+
+	meta := st.SessionMeta("sess-legacy")
+	if meta.Kind != model.SessionKindSingleHost || !meta.Visible {
+		t.Fatalf("expected legacy session meta to default to visible single_host, got %#v", meta)
+	}
+	if meta.RuntimePreset != model.SessionRuntimePresetSingleHost {
+		t.Fatalf("expected legacy session runtime preset to default, got %#v", meta)
+	}
+}
+
+func TestApprovalGrantDoesNotPersistAcrossStableState(t *testing.T) {
 	st := New()
 	sessionID := "sess-test"
 	st.EnsureSession(sessionID)
@@ -64,12 +166,33 @@ func TestApprovalGrantPersistsAndRestores(t *testing.T) {
 		t.Fatalf("load state: %v", err)
 	}
 
-	got, ok := reloaded.ApprovalGrant(sessionID, grant.Fingerprint)
-	if !ok {
-		t.Fatalf("expected approval grant to be restored")
+	if got, ok := reloaded.ApprovalGrant(sessionID, grant.Fingerprint); ok {
+		t.Fatalf("expected approval grant not to be restored, got %#v", got)
 	}
-	if got.Command != grant.Command || got.HostID != grant.HostID {
-		t.Fatalf("unexpected restored grant: %#v", got)
+}
+
+func TestApprovalGrantIsClearedOnHostSwitch(t *testing.T) {
+	st := New()
+	sessionID := "sess-host-switch"
+	st.EnsureSession(sessionID)
+	st.AddApprovalGrant(sessionID, model.ApprovalGrant{
+		ID:          "grant-1",
+		HostID:      model.ServerLocalHostID,
+		Type:        "command",
+		Fingerprint: "command|server-local|/tmp|rm /tmp/demo.txt",
+		Command:     "rm /tmp/demo.txt",
+		Cwd:         "/tmp",
+		CreatedAt:   model.NowString(),
+	})
+
+	if _, ok := st.ApprovalGrant(sessionID, "command|server-local|/tmp|rm /tmp/demo.txt"); !ok {
+		t.Fatalf("expected approval grant to exist before host switch")
+	}
+
+	st.SetSelectedHost(sessionID, "linux-01")
+
+	if _, ok := st.ApprovalGrant(sessionID, "command|server-local|/tmp|rm /tmp/demo.txt"); ok {
+		t.Fatalf("expected approval grant to be cleared after host switch")
 	}
 }
 
@@ -100,6 +223,36 @@ func TestThreadIDIsNotRestoredFromStableState(t *testing.T) {
 	}
 	if got := reloaded.SessionIDByThread("thread-stale"); got != "" {
 		t.Fatalf("expected stale thread mapping to be cleared, got %q", got)
+	}
+}
+
+func TestSessionSummariesAndHostSessionsHideInternalSessions(t *testing.T) {
+	st := New()
+	browserID := "browser-meta"
+
+	visible := st.CreateSessionWithMeta(browserID, model.DefaultSessionMeta(), true)
+	hidden := st.CreateSessionWithMeta(browserID, model.SessionMeta{
+		Kind:    model.SessionKindWorker,
+		Visible: false,
+	}, true)
+
+	st.SetSelectedHost(visible.ID, "web-01")
+	st.SetSelectedHost(hidden.ID, "web-01")
+
+	summaries := st.SessionSummaries(browserID)
+	if len(summaries) != 1 {
+		t.Fatalf("expected only visible session summary, got %d", len(summaries))
+	}
+	if summaries[0].ID != visible.ID {
+		t.Fatalf("expected visible session summary, got %#v", summaries[0])
+	}
+
+	hostSessions := st.HostSessions("web-01", 10)
+	if len(hostSessions) != 1 {
+		t.Fatalf("expected only visible host session, got %d", len(hostSessions))
+	}
+	if hostSessions[0].SessionID != visible.ID {
+		t.Fatalf("expected visible host session, got %#v", hostSessions[0])
 	}
 }
 
@@ -295,4 +448,199 @@ func TestSessionTranscriptRestoresAfterReload(t *testing.T) {
 	if restoredSession.Cards[0].Text != "hello history" {
 		t.Fatalf("unexpected restored card: %#v", restoredSession.Cards[0])
 	}
+}
+
+func TestAgentProfilesBackfillDefaultsOnLoad(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"browserSessions":{},"sessions":{},"authSessions":{},"threadToSession":{},"loginToSession":{},"hosts":{}}`), 0o600); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+
+	st := New()
+	st.SetStatePath(statePath)
+	if err := st.LoadStableState(statePath); err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	profiles := st.AgentProfiles()
+	if len(profiles) < 2 {
+		t.Fatalf("expected default profiles to be backfilled, got %d", len(profiles))
+	}
+
+	mainProfile, ok := st.AgentProfile(string(model.AgentProfileTypeMainAgent))
+	if !ok {
+		t.Fatalf("expected main-agent profile to exist")
+	}
+	if mainProfile.Name != "Main Agent" || mainProfile.Type != string(model.AgentProfileTypeMainAgent) {
+		t.Fatalf("unexpected main-agent profile: %#v", mainProfile)
+	}
+	if mainProfile.SystemPrompt.Content == "" || mainProfile.CommandPermissions.DefaultMode == "" {
+		t.Fatalf("expected main-agent defaults to be populated: %#v", mainProfile)
+	}
+
+	hostProfile, ok := st.AgentProfile(string(model.AgentProfileTypeHostAgentDefault))
+	if !ok {
+		t.Fatalf("expected host-agent-default profile to exist")
+	}
+	if hostProfile.Name != "Host Agent Default" || hostProfile.Type != string(model.AgentProfileTypeHostAgentDefault) {
+		t.Fatalf("unexpected host-agent-default profile: %#v", hostProfile)
+	}
+}
+
+func TestAgentProfileUpsertPersistsAndReloads(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	st := New()
+	st.SetStatePath(statePath)
+
+	st.UpsertAgentProfile(model.AgentProfile{
+		ID:          string(model.AgentProfileTypeMainAgent),
+		Type:        string(model.AgentProfileTypeMainAgent),
+		Name:        "Primary Agent",
+		Description: "Customized main profile",
+		SystemPrompt: model.AgentSystemPrompt{
+			Content: "Be concise and concrete.",
+			Version: "v2",
+		},
+		Runtime: model.AgentRuntimeSettings{
+			Model:           "gpt-5.4-mini",
+			ReasoningEffort: "high",
+			ApprovalPolicy:  "untrusted",
+			SandboxMode:     "workspace-write",
+		},
+		CommandPermissions: model.AgentCommandPermissions{
+			Enabled:               boolPtr(true),
+			DefaultMode:           model.AgentPermissionModeAllow,
+			AllowShellWrapper:     boolPtr(true),
+			AllowSudo:             boolPtr(true),
+			DefaultTimeoutSeconds: 45,
+			AllowedWritableRoots:  []string{"/tmp/work"},
+			CategoryPolicies: map[string]string{
+				"filesystem_mutation": model.AgentPermissionModeApprovalRequired,
+			},
+		},
+		CapabilityPermissions: model.AgentCapabilityPermissions{
+			CommandExecution: model.AgentCapabilityEnabled,
+			FileRead:         model.AgentCapabilityEnabled,
+			FileSearch:       model.AgentCapabilityEnabled,
+			FileChange:       model.AgentCapabilityDisabled,
+			Terminal:         model.AgentCapabilityEnabled,
+			WebSearch:        model.AgentCapabilityEnabled,
+			WebOpen:          model.AgentCapabilityEnabled,
+			Approval:         model.AgentCapabilityEnabled,
+			MultiAgent:       model.AgentCapabilityDisabled,
+			Plan:             model.AgentCapabilityEnabled,
+			Summary:          model.AgentCapabilityEnabled,
+		},
+		Skills: []model.AgentSkill{
+			{
+				ID:             "skill-1",
+				Name:           "review",
+				Description:    "Review code changes",
+				Source:         "builtin",
+				Enabled:        true,
+				ActivationMode: "manual",
+			},
+		},
+		MCPs: []model.AgentMCP{
+			{
+				ID:         "mcp-1",
+				Name:       "local-files",
+				Type:       "filesystem",
+				Source:     "builtin",
+				Enabled:    true,
+				Permission: "read_write",
+			},
+		},
+		UpdatedBy: "tester",
+	})
+
+	beforeSave, ok := st.AgentProfile(string(model.AgentProfileTypeMainAgent))
+	if !ok {
+		t.Fatalf("expected profile to exist before save")
+	}
+	if beforeSave.Name != "Primary Agent" || !boolValue(beforeSave.CommandPermissions.AllowSudo, false) {
+		t.Fatalf("unexpected profile before save: %#v", beforeSave)
+	}
+
+	if err := st.SaveStableState(statePath); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStatePath(statePath)
+	if err := reloaded.LoadStableState(statePath); err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+
+	afterSave, ok := reloaded.AgentProfile(string(model.AgentProfileTypeMainAgent))
+	if !ok {
+		t.Fatalf("expected profile to survive reload")
+	}
+	if afterSave.Name != "Primary Agent" || afterSave.Description != "Customized main profile" {
+		t.Fatalf("unexpected reloaded profile: %#v", afterSave)
+	}
+	if afterSave.Runtime.Model != "gpt-5.4-mini" || afterSave.CommandPermissions.DefaultTimeoutSeconds != 45 || !boolValue(afterSave.CommandPermissions.AllowSudo, false) {
+		t.Fatalf("expected command permissions to persist, got %#v", afterSave.CommandPermissions)
+	}
+	if afterSave.CapabilityPermissions.FileChange != model.AgentCapabilityDisabled {
+		t.Fatalf("expected capability permissions to persist, got %#v", afterSave.CapabilityPermissions)
+	}
+	if !containsSkill(afterSave.Skills, "skill-1") {
+		t.Fatalf("expected custom skill to persist, got %#v", afterSave.Skills)
+	}
+	if !containsMCP(afterSave.MCPs, "mcp-1") {
+		t.Fatalf("expected custom mcp to persist, got %#v", afterSave.MCPs)
+	}
+}
+
+func TestResetAgentProfileRestoresDefaultProfile(t *testing.T) {
+	st := New()
+	st.UpsertAgentProfile(model.AgentProfile{
+		ID:   string(model.AgentProfileTypeHostAgentDefault),
+		Type: string(model.AgentProfileTypeHostAgentDefault),
+		Name: "Custom Host Profile",
+	})
+
+	st.ResetAgentProfile(string(model.AgentProfileTypeHostAgentDefault))
+
+	profile, ok := st.AgentProfile(string(model.AgentProfileTypeHostAgentDefault))
+	if !ok {
+		t.Fatalf("expected host-agent-default profile to exist")
+	}
+	if profile.Name != "Host Agent Default" {
+		t.Fatalf("expected host-agent-default name to be restored, got %q", profile.Name)
+	}
+	if profile.SystemPrompt.Content == "" {
+		t.Fatalf("expected restored profile to have system prompt content")
+	}
+}
+
+func boolPtr(value bool) *bool {
+	v := value
+	return &v
+}
+
+func boolValue(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func containsSkill(items []model.AgentSkill, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func containsMCP(items []model.AgentMCP, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
 }

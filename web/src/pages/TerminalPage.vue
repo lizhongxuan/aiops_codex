@@ -8,8 +8,6 @@ import "@xterm/xterm/css/xterm.css";
 import {
   ArrowLeftIcon,
   TerminalIcon,
-  WifiIcon,
-  WifiOffIcon,
   RotateCcwIcon,
   Trash2Icon,
   XIcon,
@@ -48,6 +46,47 @@ const hostInfo = computed(() => {
 });
 
 const isOnline = computed(() => hostInfo.value.status === "online");
+const statusText = computed(() => {
+  switch (connectionStatus.value) {
+    case "connected":
+      return "已连接";
+    case "connecting":
+      return "连接中";
+    case "reconnecting":
+      return "重连中";
+    case "disconnected":
+      return "已断开";
+    case "error":
+      return "异常";
+    default:
+      return connectionStatus.value;
+  }
+});
+const connectionHint = computed(() => {
+  if (!isOnline.value) {
+    return `主机 ${hostInfo.value.name}（${hostInfo.value.id}）当前离线，终端不会回退到 server-local。`;
+  }
+  if (connectionStatus.value === "error") {
+    return "终端连接失败，请检查 host-agent 在线状态、心跳和 shell 环境后重试。";
+  }
+  if (connectionStatus.value === "disconnected") {
+    return "终端会话已结束或远程连接已断开，可重新建立会话。";
+  }
+  if (connectionStatus.value === "connecting" || connectionStatus.value === "reconnecting") {
+    return "正在与当前选中的远程主机建立会话。";
+  }
+  return "";
+});
+const canReconnect = computed(() => isOnline.value);
+
+async function ensureSelectedHost() {
+  const ok = await store.selectHost(props.hostId);
+  if (!ok) {
+    connectionStatus.value = "error";
+    term?.write("\r\n\x1b[31m无法切换当前主机上下文\x1b[0m\r\n");
+  }
+  return ok;
+}
 
 function goBack() {
   router.push("/");
@@ -161,6 +200,11 @@ function clearScreen() {
 }
 
 function reconnect() {
+  if (!canReconnect.value) {
+    term?.write("\r\n\x1b[33m主机离线，无法重连到远程终端\x1b[0m\r\n");
+    connectionStatus.value = "error";
+    return;
+  }
   if (ws) {
     ws.close();
   }
@@ -206,8 +250,11 @@ function initTerminal() {
 }
 
 onMounted(() => {
-  nextTick(() => {
+  nextTick(async () => {
     initTerminal();
+    if (!(await ensureSelectedHost())) {
+      return;
+    }
     if (isOnline.value) {
       createSession();
     } else {
@@ -225,6 +272,38 @@ onBeforeUnmount(() => {
     term.dispose();
   }
 });
+
+watch(
+  () => store.snapshot.selectedHostId,
+  (selectedHostId) => {
+    if (!selectedHostId || selectedHostId === props.hostId) return;
+    router.replace(`/terminal/${selectedHostId}`);
+  }
+);
+
+watch(
+  () => props.hostId,
+  async (nextHostId, previousHostId) => {
+    if (!nextHostId || nextHostId === previousHostId) return;
+    if (ws) {
+      ws.close();
+      ws = null;
+    }
+    sessionId.value = "";
+    connectionStatus.value = "connecting";
+    term?.clear();
+    term?.write("正在连接到 " + nextHostId + " ...\r\n");
+    if (!(await ensureSelectedHost())) {
+      return;
+    }
+    if (hostInfo.value.status === "online") {
+      createSession();
+      return;
+    }
+    connectionStatus.value = "error";
+    term?.write("\r\n\x1b[33m主机当前离线，无法建立终端连接\x1b[0m\r\n");
+  }
+);
 </script>
 
 <template>
@@ -236,7 +315,10 @@ onBeforeUnmount(() => {
           <ArrowLeftIcon size="16" />
         </button>
         <TerminalIcon size="16" class="topbar-icon" />
-        <span class="topbar-host">{{ hostInfo.name }}</span>
+        <div class="topbar-host-meta">
+          <span class="topbar-host">{{ hostInfo.name }}</span>
+          <span class="topbar-host-id">ID {{ hostInfo.id }}</span>
+        </div>
         <span
           class="topbar-status-dot"
           :class="{
@@ -245,7 +327,7 @@ onBeforeUnmount(() => {
             offline: connectionStatus === 'disconnected' || connectionStatus === 'error',
           }"
         ></span>
-        <span class="topbar-status-text">{{ connectionStatus }}</span>
+        <span class="topbar-status-text">{{ statusText }}</span>
       </div>
 
       <div class="topbar-center">
@@ -261,7 +343,7 @@ onBeforeUnmount(() => {
           <Trash2Icon size="14" />
           <span>清屏</span>
         </button>
-        <button class="topbar-btn" @click="reconnect" title="重新连接">
+        <button class="topbar-btn" :disabled="!canReconnect" @click="reconnect" title="重新连接">
           <RotateCcwIcon size="14" />
           <span>重连</span>
         </button>
@@ -270,6 +352,17 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </header>
+
+    <div
+      v-if="connectionHint"
+      class="term-alert"
+      :class="{
+        danger: !isOnline || connectionStatus === 'error',
+        subtle: connectionStatus === 'connecting' || connectionStatus === 'reconnecting',
+      }"
+    >
+      {{ connectionHint }}
+    </div>
 
     <div class="term-main-area">
       <!-- Terminal body -->
@@ -291,7 +384,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="info-row">
             <span class="info-label">状态</span>
-            <span class="info-value">{{ connectionStatus }}</span>
+            <span class="info-value">{{ statusText }}</span>
           </div>
           <div class="info-row">
             <span class="info-label">启动时间</span>
@@ -347,6 +440,18 @@ onBeforeUnmount(() => {
   color: #e2e8f0;
 }
 
+.topbar-host-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.topbar-host-id {
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .topbar-status-dot {
   width: 7px;
   height: 7px;
@@ -398,11 +503,37 @@ onBeforeUnmount(() => {
   color: #e2e8f0;
 }
 
+.topbar-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Main area */
 .term-main-area {
   flex: 1;
   display: flex;
   overflow: hidden;
+}
+
+.term-alert {
+  padding: 10px 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #fdba74;
+  background: rgba(194, 65, 12, 0.16);
+  border-bottom: 1px solid rgba(251, 146, 60, 0.2);
+}
+
+.term-alert.danger {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.45);
+  border-bottom-color: rgba(248, 113, 113, 0.28);
+}
+
+.term-alert.subtle {
+  color: #cbd5f5;
+  background: rgba(30, 41, 59, 0.9);
+  border-bottom-color: rgba(148, 163, 184, 0.18);
 }
 
 .term-canvas {

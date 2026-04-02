@@ -1,0 +1,223 @@
+@startuml AIOps智能运维平台架构
+
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 12
+skinparam roundCorner 8
+skinparam shadowing false
+skinparam linetype ortho
+
+skinparam rectangle {
+  BorderColor #555555
+  BackgroundColor #FFFFFF
+  FontColor #333333
+}
+
+skinparam component {
+  BorderColor #555555
+  BackgroundColor #FFFFFF
+}
+
+skinparam database {
+  BorderColor #555555
+  BackgroundColor #FFFFFF
+}
+
+skinparam cloud {
+  BorderColor #555555
+  BackgroundColor #FFFFFF
+}
+
+skinparam package {
+  BorderColor #888888
+  BackgroundColor #F8F9FA
+  FontColor #333333
+  FontStyle bold
+}
+
+skinparam note {
+  BorderColor #AAAAAA
+  BackgroundColor #FFFDE7
+}
+
+title **AIOps 智能运维平台 — 总体架构**\n
+
+' ============================================================
+' 用户入口
+' ============================================================
+actor "运维工程师 / SRE" as User #E3F2FD
+
+package "接入层" as EntryLayer {
+  rectangle "Web Dashboard\n(运维态势 / 任务面板 / 日志)" as Dashboard #E3F2FD
+  rectangle "CLI / API Gateway" as CLI #E3F2FD
+}
+
+' ============================================================
+' AI 核心引擎
+' ============================================================
+package "AI 核心引擎 (Codex App-Server)" as AICore #EDE7F6 {
+
+  rectangle "**主 Agent (Planner)**\n━━━━━━━━━━━━━━━━━━━\n• 意图理解 & 任务规划\n• 黑板 DAG 生成 & 调度\n• 子任务拆分 & 分发\n• 结果汇总 & 决策" as MainAgent #D1C4E9
+
+  rectangle "**黑板系统 (Blackboard)**\n━━━━━━━━━━━━━━━━━━━\n• 任务 DAG 图\n• 状态流转 & 依赖管理\n• 子 Agent 结果收集\n• 全局上下文共享" as Blackboard #D1C4E9
+
+  MainAgent -right-> Blackboard : 写入/读取\n任务状态
+}
+
+' ============================================================
+' 子 Agent 集群
+' ============================================================
+package "子 Agent 集群 (会话隔离)" as SubAgents #E8F5E9 {
+
+  rectangle "**子 Agent - Host A**\n━━━━━━━━━━━━━━━━━━━\n独立会话 | 终端连接\n执行运维指令" as AgentA #C8E6C9
+  rectangle "**子 Agent - Host B**\n━━━━━━━━━━━━━━━━━━━\n独立会话 | 终端连接\n执行运维指令" as AgentB #C8E6C9
+  rectangle "**子 Agent - Host N**\n━━━━━━━━━━━━━━━━━━━\n独立会话 | 终端连接\n执行运维指令" as AgentN #C8E6C9
+}
+
+note right of SubAgents
+  每个子 Agent:
+  • 1:1 绑定目标主机
+  • 独立 Codex 会话 (session)
+  • 接收主 Agent 下发的子任务
+  • 通过 SSH/终端 执行运维操作
+  • 结果回写黑板
+end note
+
+' ============================================================
+' 主机资源
+' ============================================================
+package "主机资源层" as HostLayer #FFF3E0 {
+  rectangle "Host A\n(Terminal)" as HostA #FFE0B2
+  rectangle "Host B\n(Terminal)" as HostB #FFE0B2
+  rectangle "Host N\n(Terminal)" as HostN #FFE0B2
+}
+
+' ============================================================
+' 可观测平台
+' ============================================================
+package "可观测平台 (Coroot)" as Observability #E1F5FE {
+
+  rectangle "**监控数据查询 API**\n━━━━━━━━━━━━━━━━━━━\n• Metrics / Logs / Traces\n• 服务拓扑 & 依赖\n• SLO / SLI 指标" as MonitorAPI #B3E5FC
+
+  rectangle "**RCA 报告引擎**\n━━━━━━━━━━━━━━━━━━━\n• 组件级根因分析\n• 告警关联 & 归因\n• 影响面评估\n• 修复建议生成" as RCAEngine #B3E5FC
+}
+
+' ============================================================
+' Runner 引擎
+' ============================================================
+package "Runner 引擎" as RunnerEngine #FFF9C4 {
+
+  rectangle "**Playbook 管理**\n━━━━━━━━━━━━━━━━━━━\n• 多步骤 YAML 脚本\n• Agent 经验 → Playbook\n• 版本管理 & 审批" as Playbook #FFF59D
+
+  rectangle "**批量分发引擎**\n━━━━━━━━━━━━━━━━━━━\n• 大规模并行执行\n  (如 1000 台安装 nginx)\n• 分批 & 限速策略\n• 进度追踪 & 汇报" as BatchRunner #FFF59D
+
+  rectangle "**失败回退 → Agent**\n━━━━━━━━━━━━━━━━━━━\n• 失败任务自动检测\n• 启动子 Agent 介入\n• 智能修复 & 重试" as FailoverAgent #FFF59D
+}
+
+note right of RunnerEngine
+  Runner vs Agent 策略:
+  ─────────────────────
+  • 确定性任务 → Runner 批量执行
+    (高效, 低成本)
+  • Runner 失败 → 子 Agent 介入
+    (智能诊断, 自适应修复)
+  • Agent 成功经验 → 沉淀为 Playbook
+end note
+
+' ============================================================
+' 记忆系统
+' ============================================================
+package "记忆系统 (Memory)" as MemorySystem #FCE4EC {
+
+  rectangle "**短期记忆**\n━━━━━━━━━━━━━━━━━━━\n• 当前任务上下文\n• 会话内推理链\n• 临时变量 & 状态" as ShortMemory #F8BBD0
+
+  rectangle "**长期记忆**\n━━━━━━━━━━━━━━━━━━━\n• 运维经验库\n• 主机画像 & 特征\n  (OS/配置/历史问题)\n• 故障模式 & 解法" as LongMemory #F8BBD0
+
+  rectangle "**经验包库**\n(参考 EvoMap 设计)\n━━━━━━━━━━━━━━━━━━━\n• 场景化经验包\n• 可组合 & 可继承\n• 社区共享 & 评分\n• 版本演进 & 淘汰" as ExpPack #F8BBD0
+}
+
+' ============================================================
+' 数据存储
+' ============================================================
+package "数据存储层" as Storage {
+  database "任务 DB\n(DAG/状态/日志)" as TaskDB
+  database "Playbook 仓库\n(YAML/版本)" as PlaybookDB
+  database "记忆向量库\n(Embedding)" as VectorDB
+  database "主机 CMDB\n(资产/配置)" as CMDB
+}
+
+' ============================================================
+' 连线 — 接入层
+' ============================================================
+User --> Dashboard
+User --> CLI
+
+Dashboard --> MainAgent : 下发任务
+CLI --> MainAgent : 下发任务
+
+' ============================================================
+' 连线 — 主 Agent ↔ 子系统
+' ============================================================
+MainAgent -down-> SubAgents : 下发子任务\n(独立会话)
+Blackboard -down-> SubAgents : 任务上下文\n& 依赖
+
+AgentA -down-> HostA : gRPC长连接
+AgentB -down-> HostB : gRPC长连接
+AgentN -down-> HostN : gRPC长连接
+
+' ============================================================
+' 连线 — 可观测
+' ============================================================
+MainAgent -right-> MonitorAPI : 查询监控数据
+MainAgent -right-> RCAEngine : 请求 RCA 报告
+SubAgents .right.> MonitorAPI : 查询主机指标
+
+' ============================================================
+' 连线 — Runner
+' ============================================================
+MainAgent -left-> Playbook : 匹配已有\nPlaybook
+MainAgent -left-> BatchRunner : 批量任务分发
+BatchRunner -down-> HostLayer : 并行执行\n(Agent)
+FailoverAgent -right-> SubAgents : 失败时启动\n子 Agent
+
+' ============================================================
+' 连线 — 记忆系统
+' ============================================================
+MainAgent ..> ShortMemory : 读写当前上下文
+MainAgent ..> LongMemory : 检索运维经验
+MainAgent ..> ExpPack : 加载经验包
+SubAgents ..> LongMemory : 回写执行经验
+SubAgents ..> ShortMemory : 任务内记忆
+
+' ============================================================
+' 连线 — 经验沉淀闭环
+' ============================================================
+SubAgents -left-> Playbook : 成功经验\n沉淀为 Playbook
+LongMemory --> ExpPack : 经验归纳\n& 打包
+
+' ============================================================
+' 连线 — 存储
+' ============================================================
+Blackboard ..> TaskDB
+Playbook ..> PlaybookDB
+LongMemory ..> VectorDB
+ExpPack ..> VectorDB
+MainAgent ..> CMDB : 查询主机信息
+
+' ============================================================
+' 图例
+' ============================================================
+legend bottom
+  |= 颜色 |= 模块 |
+  |<#EDE7F6> | AI 核心引擎 (Codex App-Server) |
+  |<#E8F5E9> | 子 Agent 集群 (会话隔离) |
+  |<#E1F5FE> | 可观测平台 (Coroot) |
+  |<#FFF9C4> | Runner 引擎 (批量执行) |
+  |<#FCE4EC> | 记忆系统 (短期/长期/经验包) |
+  |<#FFF3E0> | 主机资源层 |
+endlegend
+
+footer \n AIOps 智能运维平台 v1.0 | 架构设计图 | %date("yyyy-MM-dd")
+
+@enduml

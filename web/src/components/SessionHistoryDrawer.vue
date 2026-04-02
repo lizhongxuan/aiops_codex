@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from "vue";
-import { HistoryIcon, PlusIcon, XIcon, LoaderCircleIcon } from "lucide-vue-next";
+import { HistoryIcon, PlusIcon, XIcon, LoaderCircleIcon, PanelsTopLeftIcon } from "lucide-vue-next";
 
 const props = defineProps({
   sessions: {
@@ -21,7 +21,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["close", "create", "select"]);
+const emit = defineEmits(["close", "create", "create-workspace", "select"]);
 
 const hasSessions = computed(() => props.sessions.length > 0);
 
@@ -70,10 +70,16 @@ function handleSelect(sessionId) {
         </button>
       </div>
 
-      <button class="history-create-btn" :disabled="switchingDisabled" @click="emit('create')">
-        <PlusIcon size="16" />
-        <span>新建会话</span>
-      </button>
+      <div class="history-create-actions">
+        <button class="history-create-btn" :disabled="switchingDisabled" @click="emit('create')">
+          <PlusIcon size="16" />
+          <span>新建会话</span>
+        </button>
+        <button class="history-create-btn secondary" :disabled="switchingDisabled" @click="emit('create-workspace')">
+          <PanelsTopLeftIcon size="16" />
+          <span>新建工作台</span>
+        </button>
+      </div>
 
       <div v-if="switchingDisabled" class="history-tip">
         当前任务执行中，完成后再切换或新建会话。
@@ -183,6 +189,17 @@ function handleSelect(sessionId) {
   justify-content: center;
   gap: 8px;
   cursor: pointer;
+}
+
+.history-create-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.history-create-btn.secondary {
+  background: #f8fafc;
+  color: #0f172a;
 }
 
 .history-create-btn:disabled {

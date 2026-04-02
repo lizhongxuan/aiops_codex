@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,8 +18,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,27 +32,66 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/codex"
 	"github.com/lizhongxuan/aiops-codex/internal/config"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
+	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 	"github.com/lizhongxuan/aiops-codex/internal/store"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
 )
 
+const (
+	stalledTurnTimeout                   = 45 * time.Second
+	silentTurnCompletionDelay            = 1200 * time.Millisecond
+	autoThreadResetIdleThreshold         = 4 * time.Hour
+	autoThreadResetCardThreshold         = 80
+	autoThreadResetConversationThreshold = 24
+	autoThreadResetShortPromptRuneLimit  = 32
+	codexReconnectNoticeCardID           = "__codex_reconnect__"
+	terminalSubscriberGraceTTL           = 20 * time.Second
+	terminalConnectTimeout               = 15 * time.Second
+	terminalExitRetention                = 30 * time.Second
+)
+
+var codexReconnectMessagePattern = regexp.MustCompile(`(?i)^reconnecting\.\.\.\s*(\d+)\s*/\s*(\d+)\s*$`)
+var contextualFollowupPattern = regexp.MustCompile(`(?i)(继续|刚才|上面|前面|前文|上一|这个|那个|第\s*\d+\s*步|same|above|previous|continue|earlier|step\s*\d+)`)
+
 type App struct {
-	cfg         config.Config
-	store       *store.Store
-	codex       *codex.Client
-	upgrader    websocket.Upgrader
-	wsMu        sync.Mutex
-	wsClients   map[string]map[*websocket.Conn]struct{}
-	turnMu      sync.Mutex
-	turnCancels map[string]context.CancelFunc
-	terminalMu  sync.Mutex
-	terminals   map[string]*terminalSession
-	oauthMu     sync.Mutex
-	oauthStates map[string]string
-	auditMu     sync.Mutex
-	httpServer  *http.Server
-	grpcServer  *grpc.Server
+	cfg              config.Config
+	store            *store.Store
+	codex            *codex.Client
+	orchestrator     *orchestrator.Manager
+	codexRequestFunc func(context.Context, string, any, any) error
+	codexRespondFunc func(context.Context, string, any) error
+	upgrader         websocket.Upgrader
+	agentMu          sync.Mutex
+	agents           map[string]*agentConnection
+	wsMu             sync.Mutex
+	wsClients        map[string]map[*websocket.Conn]struct{}
+	turnMu           sync.Mutex
+	turnCancels      map[string]context.CancelFunc
+	terminalMu       sync.Mutex
+	terminals        map[string]*terminalSession
+	execMu           sync.Mutex
+	execs            map[string]*remoteExecSession
+	fileReqMu        sync.Mutex
+	fileReqs         map[string]*agentResponseWaiter
+	approvalMu       sync.Mutex
+	fileChangeClaims map[string]struct{}
+	oauthMu          sync.Mutex
+	oauthStates      map[string]string
+	auditMu          sync.Mutex
+	turnTraceMu      sync.Mutex
+	turnTraces       map[string]*turnTrace
+	orchestratorMu   sync.Mutex
+	orchestratorJobs map[string]string
+	broadcastThrotMu sync.Mutex
+	broadcastTimers  map[string]*time.Timer
+	threadStarts     []time.Time
+	turnStarts       []time.Time
+	httpServer       *http.Server
+	grpcServer       *grpc.Server
+	commandRunner    commandRunner
 }
 
 type authLoginRequest struct {
@@ -65,6 +108,31 @@ type chatRequest struct {
 	HostID  string `json:"hostId"`
 }
 
+type turnTrace struct {
+	RequestID            string
+	SessionID            string
+	Kind                 string
+	HostID               string
+	RequestStartedAt     time.Time
+	RuntimeStartedAt     time.Time
+	ThreadStartBeganAt   time.Time
+	ThreadStartedAt      time.Time
+	ThreadID             string
+	TurnStartBeganAt     time.Time
+	TurnStartedAt        time.Time
+	TurnID               string
+	FirstItemStartedAt   time.Time
+	FirstItemID          string
+	FirstItemType        string
+	FirstAssistantAt     time.Time
+	FirstAssistantItemID string
+	FirstAssistantSource string
+}
+
+type hostSelectionRequest struct {
+	HostID string `json:"hostId"`
+}
+
 type approvalDecisionRequest struct {
 	Decision string `json:"decision"`
 }
@@ -79,6 +147,44 @@ type choiceAnswerRequest struct {
 	Answers []choiceAnswerInput `json:"answers"`
 }
 
+type agentProfileResetRequest struct {
+	ProfileID string `json:"profileId"`
+}
+
+type agentProfilePreviewResponse struct {
+	ProfileID         string                     `json:"profileId"`
+	ProfileType       string                     `json:"profileType"`
+	SystemPrompt      string                     `json:"systemPrompt"`
+	SystemPromptLines int                        `json:"systemPromptLines"`
+	CommandSummary    []string                   `json:"commandSummary"`
+	CapabilitySummary []string                   `json:"capabilitySummary"`
+	EnabledSkills     []model.AgentSkill         `json:"enabledSkills"`
+	EnabledMCPs       []model.AgentMCP           `json:"enabledMcps"`
+	Runtime           model.AgentRuntimeSettings `json:"runtime"`
+}
+
+type agentProfileUpdateRequest struct {
+	model.AgentProfile
+	RiskConfirmed bool `json:"riskConfirmed"`
+}
+
+type agentProfileErrorResponse struct {
+	Error       string            `json:"error"`
+	FieldErrors map[string]string `json:"fieldErrors,omitempty"`
+}
+
+type agentProfileValidationError struct {
+	message     string
+	fieldErrors map[string]string
+}
+
+func (e agentProfileValidationError) Error() string {
+	if strings.TrimSpace(e.message) != "" {
+		return e.message
+	}
+	return "agent profile validation failed"
+}
+
 type loginResponse struct {
 	AuthURL string `json:"authUrl,omitempty"`
 }
@@ -86,13 +192,14 @@ type loginResponse struct {
 func New(cfg config.Config) *App {
 	st := store.New()
 	st.UpsertHost(model.Host{
-		ID:         model.ServerLocalHostID,
-		Name:       "server-local",
-		Kind:       "server_local",
-		Status:     "online",
-		Executable: true,
-		OS:         runtime.GOOS,
-		Arch:       runtime.GOARCH,
+		ID:              model.ServerLocalHostID,
+		Name:            "server-local",
+		Kind:            "server_local",
+		Status:          "online",
+		Executable:      true,
+		TerminalCapable: true,
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
 	})
 
 	app := &App{
@@ -101,10 +208,18 @@ func New(cfg config.Config) *App {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
-		wsClients:   make(map[string]map[*websocket.Conn]struct{}),
-		turnCancels: make(map[string]context.CancelFunc),
-		terminals:   make(map[string]*terminalSession),
-		oauthStates: make(map[string]string),
+		agents:           make(map[string]*agentConnection),
+		wsClients:        make(map[string]map[*websocket.Conn]struct{}),
+		turnCancels:      make(map[string]context.CancelFunc),
+		terminals:        make(map[string]*terminalSession),
+		execs:            make(map[string]*remoteExecSession),
+		fileReqs:         make(map[string]*agentResponseWaiter),
+		fileChangeClaims: make(map[string]struct{}),
+		oauthStates:      make(map[string]string),
+		turnTraces:       make(map[string]*turnTrace),
+		orchestratorJobs: make(map[string]string),
+		broadcastTimers:  make(map[string]*time.Timer),
+		commandRunner:    defaultCommandRunner,
 	}
 	app.codex = codex.New(cfg.CodexPath, app.handleCodexNotification, app.handleCodexServerRequest)
 	return app
@@ -131,25 +246,57 @@ func (a *App) Start(ctx context.Context) error {
 	if err := a.store.LoadStableState(a.cfg.StatePath); err != nil {
 		return fmt.Errorf("load state store: %w", err)
 	}
+	if err := a.initOrchestrator(); err != nil {
+		return fmt.Errorf("load orchestrator store: %w", err)
+	}
 	a.store.UpsertHost(model.Host{
-		ID:         model.ServerLocalHostID,
-		Name:       "server-local",
-		Kind:       "server_local",
-		Status:     "online",
-		Executable: true,
-		OS:         runtime.GOOS,
-		Arch:       runtime.GOARCH,
+		ID:              model.ServerLocalHostID,
+		Name:            "server-local",
+		Kind:            "server_local",
+		Status:          "online",
+		Executable:      true,
+		TerminalCapable: true,
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
 	})
+	if err := a.cfg.ValidateHostAgentSecurity(); err != nil {
+		return err
+	}
+	if grpcAddrExposed(a.cfg.GRPCAddr) && a.cfg.UsesDefaultBootstrapToken() {
+		log.Printf("warning: grpc agent endpoint %s is exposed with default bootstrap token; rotate HOST_AGENT_BOOTSTRAP_TOKEN immediately", a.cfg.GRPCAddr)
+	}
+	if grpcAddrExposed(a.cfg.GRPCAddr) && len(a.cfg.AllowedAgentHostIDs) == 0 {
+		log.Printf("warning: grpc agent endpoint %s is exposed without HOST_AGENT_ALLOWED_HOST_IDS allowlist", a.cfg.GRPCAddr)
+	}
+	if grpcAddrExposed(a.cfg.GRPCAddr) && len(a.cfg.AllowedAgentCIDRs) == 0 {
+		log.Printf("warning: grpc agent endpoint %s is exposed without HOST_AGENT_ALLOWED_CIDRS source allowlist", a.cfg.GRPCAddr)
+	}
+	if grpcAddrExposed(a.cfg.GRPCAddr) && (strings.TrimSpace(a.cfg.GRPCTLSCertFile) == "" || strings.TrimSpace(a.cfg.GRPCTLSKeyFile) == "") {
+		log.Printf("warning: grpc agent endpoint %s is exposed without TLS; prefer AIOPS_GRPC_TLS_CERT_FILE/AIOPS_GRPC_TLS_KEY_FILE or keep it behind VPN only", a.cfg.GRPCAddr)
+	}
 
 	if err := a.codex.Start(ctx); err != nil {
 		return err
 	}
+	a.reconcileOrchestratorRecoveredWorkers()
 
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/api/v1/healthz", a.handleHealthz)
 	httpMux.HandleFunc("/api/v1/sessions", a.withBrowserSession(a.handleSessions))
 	httpMux.HandleFunc("/api/v1/sessions/", a.withBrowserSession(a.handleSessionActivation))
 	httpMux.HandleFunc("/api/v1/state", a.withSession(a.handleState))
+	httpMux.HandleFunc("/api/v1/workspace/missions", a.withBrowserSession(a.handleWorkspaceMissionHistory))
+	httpMux.HandleFunc("/api/v1/workspace/missions/", a.withBrowserSession(a.handleWorkspaceMissionHistoryDetail))
+	httpMux.HandleFunc("/api/v1/agent-profiles", a.withSession(a.handleAgentProfiles))
+	httpMux.HandleFunc("/api/v1/agent-profiles/", a.withSession(a.handleAgentProfileByID))
+	httpMux.HandleFunc("/api/v1/agent-profiles/export", a.withSession(a.handleAgentProfilesExport))
+	httpMux.HandleFunc("/api/v1/agent-profiles/import", a.withSession(a.handleAgentProfilesImport))
+	httpMux.HandleFunc("/api/v1/agent-profile", a.withSession(a.handleAgentProfile))
+	httpMux.HandleFunc("/api/v1/agent-profile/reset", a.withSession(a.handleAgentProfileReset))
+	httpMux.HandleFunc("/api/v1/agent-profile/preview", a.withSession(a.handleAgentProfilePreview))
+	httpMux.HandleFunc("/api/v1/host/select", a.withSession(a.handleHostSelection))
+	httpMux.HandleFunc("/api/v1/hosts", a.withSession(a.handleHosts))
+	httpMux.HandleFunc("/api/v1/hosts/", a.withSession(a.handleHostByID))
 	httpMux.HandleFunc("/api/v1/thread/reset", a.withSession(a.handleThreadReset))
 	httpMux.HandleFunc("/api/v1/auth/login", a.withSession(a.handleAuthLogin))
 	httpMux.HandleFunc("/api/v1/auth/logout", a.withSession(a.handleAuthLogout))
@@ -161,6 +308,7 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/choices/", a.withSession(a.handleChoiceAnswer))
 	httpMux.HandleFunc("/api/v1/terminal/sessions", a.withSession(a.handleTerminalCreate))
 	httpMux.HandleFunc("/api/v1/terminal/ws", a.withSession(a.handleTerminalWS))
+	httpMux.HandleFunc("/api/v1/files/preview", a.withSession(a.handleFilePreview))
 	httpMux.HandleFunc("/ws", a.withSession(a.handleWS))
 	httpMux.Handle("/", a.serveFrontend())
 
@@ -169,7 +317,13 @@ func (a *App) Start(ctx context.Context) error {
 		Handler: httpMux,
 	}
 
-	a.grpcServer = grpc.NewServer()
+	grpcServerOptions := make([]grpc.ServerOption, 0, 1)
+	if creds, err := a.grpcServerCredentials(); err != nil {
+		return err
+	} else if creds != nil {
+		grpcServerOptions = append(grpcServerOptions, grpc.Creds(creds))
+	}
+	a.grpcServer = grpc.NewServer(grpcServerOptions...)
 	agentrpc.RegisterAgentServiceServer(a.grpcServer, a)
 
 	go a.monitorHosts(ctx)
@@ -217,10 +371,17 @@ func (a *App) Run(ctx context.Context) error {
 
 func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 	var hostID string
+	var conn *agentConnection
 
 	defer func() {
 		if hostID != "" {
+			a.clearAgentConnection(hostID, conn)
+			a.failRemoteTerminalsForHost(hostID, "remote host disconnected")
+			a.failRemoteExecsForHost(hostID, "remote host disconnected")
+			a.failAgentResponseWaitersForHost(hostID, "remote host disconnected")
 			a.store.MarkHostOffline(hostID)
+			a.reconcileOrchestratorHostUnavailable(hostID, "remote host disconnected")
+			a.notifyRemoteHostUnavailable(hostID, "远程主机已断连", "远程主机连接已断开，当前任务可能失败，可稍后重试或刷新。")
 			a.audit("agent.disconnect", map[string]any{
 				"hostId": hostID,
 			})
@@ -243,56 +404,115 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				})
 				continue
 			}
-			if msg.Registration.Token != a.cfg.HostAgentBootstrapToken {
+			sourceAddr := agentPeerRemoteAddress(stream.Context())
+			if !a.cfg.AgentSourceAllowed(sourceAddr) {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: fmt.Sprintf("agent source address %s is not allowed", defaultString(sourceAddr, "unknown")),
+				})
+				continue
+			}
+			registeredHostID := strings.TrimSpace(msg.Registration.HostID)
+			if registeredHostID == "" {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "host id is required",
+				})
+				continue
+			}
+			if hostID != "" {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "host identity is already established for this stream",
+				})
+				continue
+			}
+			if !a.cfg.ValidAgentBootstrapToken(msg.Registration.Token) {
 				_ = stream.Send(&agentrpc.Envelope{
 					Kind:  "error",
 					Error: "invalid bootstrap token",
 				})
 				continue
 			}
+			if !a.cfg.AgentHostAllowed(registeredHostID) {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "host id is not allowed",
+				})
+				continue
+			}
 
-			hostID = msg.Registration.HostID
-			log.Printf("host-agent register host_id=%s hostname=%s", msg.Registration.HostID, msg.Registration.Hostname)
+			hostID = registeredHostID
+			conn = &agentConnection{hostID: hostID, stream: stream}
+			a.setAgentConnection(hostID, conn)
+			log.Printf("host-agent register host_id=%s hostname=%s remote_addr=%s", msg.Registration.HostID, msg.Registration.Hostname, defaultString(sourceAddr, "unknown"))
 			a.audit("agent.register", map[string]any{
-				"hostId":       msg.Registration.HostID,
+				"hostId":       hostID,
 				"hostname":     msg.Registration.Hostname,
 				"os":           msg.Registration.OS,
 				"arch":         msg.Registration.Arch,
 				"agentVersion": msg.Registration.AgentVersion,
+				"remoteAddr":   sourceAddr,
 			})
 			a.store.UpsertHost(model.Host{
-				ID:            msg.Registration.HostID,
-				Name:          msg.Registration.Hostname,
-				Kind:          "agent",
-				Status:        "online",
-				Executable:    false,
-				OS:            msg.Registration.OS,
-				Arch:          msg.Registration.Arch,
-				AgentVersion:  msg.Registration.AgentVersion,
-				Labels:        msg.Registration.Labels,
-				LastHeartbeat: model.NowString(),
+				ID:              hostID,
+				Name:            msg.Registration.Hostname,
+				Kind:            "agent",
+				Status:          "online",
+				Executable:      true,
+				TerminalCapable: true,
+				OS:              msg.Registration.OS,
+				Arch:            msg.Registration.Arch,
+				AgentVersion:    msg.Registration.AgentVersion,
+				Labels:          msg.Registration.Labels,
+				LastHeartbeat:   model.NowString(),
 			})
+			a.clearRemoteHostUnavailableCards(hostID)
 			a.broadcastAllSnapshots()
 
-			_ = stream.Send(&agentrpc.Envelope{
+			_ = conn.send(&agentrpc.Envelope{
 				Kind: "ack",
 				Ack: &agentrpc.Ack{
 					Message:   "registered",
 					Timestamp: time.Now().Unix(),
 				},
 			})
+			if err := a.pushHostAgentProfile(conn); err != nil {
+				log.Printf("push host-agent profile on register failed host=%s err=%v", hostID, err)
+			}
 		case "heartbeat":
 			if msg.Heartbeat == nil {
 				continue
 			}
-			hostID = msg.Heartbeat.HostID
-			log.Printf("host-agent heartbeat host_id=%s", msg.Heartbeat.HostID)
+			heartbeatHostID := strings.TrimSpace(msg.Heartbeat.HostID)
+			if hostID == "" {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "agent is not registered",
+				})
+				continue
+			}
+			if heartbeatHostID != "" && heartbeatHostID != hostID {
+				_ = stream.Send(&agentrpc.Envelope{
+					Kind:  "error",
+					Error: "host identity mismatch",
+				})
+				continue
+			}
+			log.Printf("host-agent heartbeat host_id=%s", hostID)
 			host := a.findHost(hostID)
 			host.Status = "online"
+			host.Executable = true
+			host.TerminalCapable = true
 			host.LastHeartbeat = model.NowString()
 			a.store.UpsertHost(host)
+			a.clearRemoteHostUnavailableCards(hostID)
 			a.broadcastAllSnapshots()
-			_ = stream.Send(&agentrpc.Envelope{
+			target := conn
+			if target == nil {
+				target = &agentConnection{hostID: hostID, stream: stream}
+			}
+			_ = target.send(&agentrpc.Envelope{
 				Kind: "ack",
 				Ack: &agentrpc.Ack{
 					Message:   "heartbeat",
@@ -300,24 +520,151 @@ func (a *App) Connect(stream agentrpc.AgentService_ConnectServer) error {
 				},
 			})
 		case "ping":
-			_ = stream.Send(&agentrpc.Envelope{
+			target := conn
+			if target == nil {
+				target = &agentConnection{hostID: hostID, stream: stream}
+			}
+			_ = target.send(&agentrpc.Envelope{
 				Kind: "pong",
 				Ack: &agentrpc.Ack{
 					Message:   "pong",
 					Timestamp: time.Now().Unix(),
 				},
 			})
+		case "profile/ack":
+			a.handleAgentProfileAck(hostID, msg.ProfileAck)
+		case "terminal/ready":
+			a.handleAgentTerminalReady(hostID, msg.TerminalReady)
+		case "terminal/output":
+			a.handleAgentTerminalOutput(hostID, msg.TerminalOutput)
+		case "terminal/exit":
+			a.handleAgentTerminalExit(hostID, msg.TerminalExit)
+		case "terminal/status", "terminal/error":
+			a.handleAgentTerminalStatus(hostID, msg.TerminalStatus)
+		case "exec/output":
+			a.handleAgentExecOutput(hostID, msg.ExecOutput)
+		case "exec/exit":
+			a.handleAgentExecExit(hostID, msg.ExecExit)
+		case "file/list/result":
+			a.handleAgentFileListResult(hostID, msg.FileListResult)
+		case "file/read/result":
+			a.handleAgentFileReadResult(hostID, msg.FileReadResult)
+		case "file/search/result":
+			a.handleAgentFileSearchResult(hostID, msg.FileSearchResult)
+		case "file/write/result":
+			a.handleAgentFileWriteResult(hostID, msg.FileWriteResult)
 		}
 	}
 }
 
 func DialAgent(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+	dialCreds, err := agentDialCredentialsFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if dialCreds == nil {
+		dialCreds = insecure.NewCredentials()
+	}
 	return grpc.DialContext(
 		ctx,
 		addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(dialCreds),
 		grpc.WithDefaultCallOptions(grpc.CallContentSubtype("json")),
 	)
+}
+
+func (a *App) grpcServerCredentials() (credentials.TransportCredentials, error) {
+	certFile := strings.TrimSpace(a.cfg.GRPCTLSCertFile)
+	keyFile := strings.TrimSpace(a.cfg.GRPCTLSKeyFile)
+	if certFile == "" || keyFile == "" {
+		return nil, nil
+	}
+
+	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load grpc tls key pair: %w", err)
+	}
+	tlsConfig := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{certificate},
+	}
+
+	clientCAFile := strings.TrimSpace(a.cfg.GRPCTLSClientCAFile)
+	if clientCAFile != "" {
+		caBytes, err := os.ReadFile(clientCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read grpc client ca file: %w", err)
+		}
+		clientPool := x509.NewCertPool()
+		if !clientPool.AppendCertsFromPEM(caBytes) {
+			return nil, errors.New("append grpc client ca pem failed")
+		}
+		tlsConfig.ClientCAs = clientPool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return credentials.NewTLS(tlsConfig), nil
+}
+
+func agentDialCredentialsFromEnv() (credentials.TransportCredentials, error) {
+	caFile := strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_CA_FILE"))
+	certFile := strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_CERT_FILE"))
+	keyFile := strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_KEY_FILE"))
+	serverName := strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_SERVER_NAME"))
+	skipVerify := strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_AGENT_TLS_INSECURE_SKIP_VERIFY")), "true")
+
+	if caFile == "" && certFile == "" && keyFile == "" && serverName == "" && !skipVerify {
+		return nil, nil
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         serverName,
+		InsecureSkipVerify: skipVerify,
+	}
+	if caFile != "" {
+		caBytes, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read agent ca file: %w", err)
+		}
+		rootPool := x509.NewCertPool()
+		if !rootPool.AppendCertsFromPEM(caBytes) {
+			return nil, errors.New("append agent ca pem failed")
+		}
+		tlsConfig.RootCAs = rootPool
+	}
+	if certFile != "" || keyFile != "" {
+		if certFile == "" || keyFile == "" {
+			return nil, errors.New("both AIOPS_AGENT_TLS_CERT_FILE and AIOPS_AGENT_TLS_KEY_FILE are required for mTLS")
+		}
+		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load agent tls key pair: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{certificate}
+	}
+	return credentials.NewTLS(tlsConfig), nil
+}
+
+func grpcAddrExposed(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		host = strings.TrimSpace(addr)
+	}
+	switch host {
+	case "", "127.0.0.1", "::1", "localhost":
+		return false
+	default:
+		return true
+	}
+}
+
+func agentPeerRemoteAddress(ctx context.Context) string {
+	info, ok := peer.FromContext(ctx)
+	if !ok || info.Addr == nil {
+		return ""
+	}
+	return info.Addr.String()
 }
 
 func (a *App) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -346,7 +693,19 @@ func (a *App) handleSessions(w http.ResponseWriter, r *http.Request, browserID s
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "当前任务执行中，暂时无法新建会话"})
 			return
 		}
-		session := a.store.CreateSession(browserID)
+		createReq := sessionCreateRequest{}
+		if r.Body != nil {
+			if err := json.NewDecoder(r.Body).Decode(&createReq); err != nil && !errors.Is(err, io.EOF) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+		}
+		kind, err := normalizeSessionCreateKind(createReq.Kind)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		session := a.store.CreateSessionWithMeta(browserID, sessionCreateMeta(kind), true)
 		a.syncAccountState(r.Context(), session.ID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"activeSessionId": session.ID,
@@ -398,6 +757,180 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request, sessionID stri
 	writeJSON(w, http.StatusOK, a.snapshot(sessionID))
 }
 
+func (a *App) handleAgentProfiles(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	a.store.EnsureSession(sessionID)
+	a.store.TouchSession(sessionID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":         a.store.AgentProfiles(),
+		"configVersion": model.AgentProfileConfigVersion,
+	})
+}
+
+func (a *App) handleAgentProfileByID(w http.ResponseWriter, r *http.Request, sessionID string) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/agent-profiles/"), "/")
+	if path == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	parts := strings.Split(path, "/")
+	profileID := strings.TrimSpace(parts[0])
+	if profileID == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	if len(parts) == 1 {
+		switch r.Method {
+		case http.MethodGet:
+			a.handleAgentProfileGet(w, profileID)
+		case http.MethodPut:
+			a.handleAgentProfilePut(w, r, sessionID, profileID)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+		return
+	}
+	if len(parts) == 2 && parts[1] == "reset" {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		a.handleAgentProfileResetWithID(w, sessionID, profileID)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile route not found"})
+}
+
+func (a *App) handleAgentProfile(w http.ResponseWriter, r *http.Request, sessionID string) {
+	switch r.Method {
+	case http.MethodGet:
+		a.handleAgentProfileGet(w, a.agentProfileIDFromRequest(r))
+	case http.MethodPut:
+		a.handleAgentProfilePut(w, r, sessionID, a.agentProfileIDFromRequest(r))
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (a *App) handleAgentProfileReset(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req agentProfileResetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	profileID := strings.TrimSpace(req.ProfileID)
+	if profileID == "" {
+		profileID = a.agentProfileIDFromRequest(r)
+	}
+	a.handleAgentProfileResetWithID(w, sessionID, profileID)
+}
+
+func (a *App) handleAgentProfileGet(w http.ResponseWriter, profileID string) {
+	profile, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, profile)
+}
+
+func (a *App) handleAgentProfilePut(w http.ResponseWriter, r *http.Request, sessionID, requestedProfileID string) {
+	var req agentProfileUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	merged, before, err := a.mergeAndValidateAgentProfile(sessionID, requestedProfileID, req.AgentProfile, req.RiskConfirmed)
+	if err != nil {
+		a.writeAgentProfileError(w, http.StatusBadRequest, err)
+		return
+	}
+	a.store.UpsertAgentProfile(merged)
+	if merged.ID == string(model.AgentProfileTypeHostAgentDefault) {
+		a.pushHostAgentProfileToConnectedAgents()
+	}
+	a.audit("agent_profile.updated", map[string]any{
+		"sessionId":     sessionID,
+		"profileId":     merged.ID,
+		"profileType":   merged.Type,
+		"operator":      a.auditOperator(sessionID),
+		"before":        a.agentProfileAuditSummary(before),
+		"after":         a.agentProfileAuditSummary(merged),
+		"configVersion": model.AgentProfileConfigVersion,
+	})
+	writeJSON(w, http.StatusOK, merged)
+}
+
+func (a *App) handleAgentProfileResetWithID(w http.ResponseWriter, sessionID, profileID string) {
+	before, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	a.store.ResetAgentProfile(profileID)
+	profile, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	if profile.ID == string(model.AgentProfileTypeHostAgentDefault) {
+		a.pushHostAgentProfileToConnectedAgents()
+	}
+	a.audit("agent_profile.reset", map[string]any{
+		"sessionId":     sessionID,
+		"profileId":     profile.ID,
+		"profileType":   profile.Type,
+		"operator":      a.auditOperator(sessionID),
+		"before":        a.agentProfileAuditSummary(before),
+		"after":         a.agentProfileAuditSummary(profile),
+		"configVersion": model.AgentProfileConfigVersion,
+	})
+	writeJSON(w, http.StatusOK, profile)
+}
+
+func (a *App) writeAgentProfileError(w http.ResponseWriter, status int, err error) {
+	var validationErr agentProfileValidationError
+	if errors.As(err, &validationErr) {
+		writeJSON(w, status, agentProfileErrorResponse{
+			Error:       validationErr.Error(),
+			FieldErrors: cloneStringMap(validationErr.fieldErrors),
+		})
+		return
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (a *App) handleAgentProfilePreview(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	profileID := a.agentProfileIDFromRequest(r)
+	profile, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent profile not found"})
+		return
+	}
+	selectedHostID := strings.TrimSpace(r.URL.Query().Get("hostId"))
+	if selectedHostID == "" {
+		session := a.store.Session(sessionID)
+		if session != nil {
+			selectedHostID = defaultHostID(session.SelectedHostID)
+		}
+	}
+	if selectedHostID == "" {
+		selectedHostID = model.ServerLocalHostID
+	}
+	writeJSON(w, http.StatusOK, a.buildAgentProfilePreview(profile, selectedHostID))
+}
+
 func (a *App) handleThreadReset(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -435,7 +968,7 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 		}
 		var result map[string]any
 		log.Printf("auth login session=%s mode=apiKey", sessionID)
-		if err := a.codex.Request(ctx, "account/login/start", map[string]any{
+		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
 			"type":   "apiKey",
 			"apiKey": req.APIKey,
 		}, &result); err != nil {
@@ -467,7 +1000,7 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 			LoginID string `json:"loginId"`
 		}
 		log.Printf("auth login session=%s mode=chatgpt", sessionID)
-		if err := a.codex.Request(ctx, "account/login/start", map[string]any{
+		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
 			"type": "chatgpt",
 		}, &result); err != nil {
 			a.audit("auth.login_failed", map[string]any{
@@ -503,7 +1036,7 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 		}
 		var result map[string]any
 		log.Printf("auth login session=%s mode=chatgptAuthTokens", sessionID)
-		if err := a.codex.Request(ctx, "account/login/start", map[string]any{
+		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
 			"type":             "chatgptAuthTokens",
 			"accessToken":      req.AccessToken,
 			"chatgptAccountId": accountID,
@@ -550,7 +1083,7 @@ func (a *App) handleAuthLogout(w http.ResponseWriter, r *http.Request, sessionID
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	var result map[string]any
-	_ = a.codex.Request(ctx, "account/logout", map[string]any{}, &result)
+	_ = a.codexRequest(ctx, "account/logout", map[string]any{}, &result)
 	log.Printf("auth logout session=%s", sessionID)
 	a.audit("auth.logout", map[string]any{
 		"sessionId": sessionID,
@@ -632,7 +1165,7 @@ func (a *App) handleOAuthCallback(w http.ResponseWriter, r *http.Request, sessio
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	var result map[string]any
-	err = a.codex.Request(ctx, "account/login/start", map[string]any{
+	err = a.codexRequest(ctx, "account/login/start", map[string]any{
 		"type":             "chatgptAuthTokens",
 		"accessToken":      tokenResp.AccessToken,
 		"chatgptAccountId": a.cfg.OAuthAccountID,
@@ -686,15 +1219,63 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录 GPT 账号"})
 		return
 	}
-	if req.HostID != model.ServerLocalHostID {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "MVP only supports server-local execution"})
+	requestStartedAt := time.Now()
+	kind := a.sessionKind(sessionID)
+	switch kind {
+	case model.SessionKindWorkspace:
+		a.handleWorkspaceChatMessage(w, r, sessionID, req, requestStartedAt)
+		return
+	default:
+		if a.orchestrator != nil && a.isOrchestratorInternalSession(sessionID) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "internal session 不支持前台直接发送消息"})
+			return
+		}
+	}
+	host := a.findHost(req.HostID)
+	if host.Status != "online" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "选中的主机当前离线"})
+		return
+	}
+	if !host.Executable {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "选中的主机暂不支持 Codex 执行"})
 		return
 	}
 
-	a.store.EnsureSession(sessionID)
+	session := a.store.EnsureSession(sessionID)
+	previousHostID := defaultHostID(session.SelectedHostID)
+	if previousHostID != req.HostID && session.ThreadID != "" {
+		a.clearSessionThreadBinding(sessionID)
+		a.appendHostSwitchCard(sessionID, previousHostID, req.HostID)
+		session.ThreadID = ""
+	} else if a.shouldRefreshThreadForAgentRuntime(session, req.HostID) {
+		a.clearSessionThreadBinding(sessionID)
+		a.appendAgentProfileRuntimeRefreshCard(sessionID)
+		session.ThreadID = ""
+	} else if a.shouldAutoResetThread(session, req.Message) {
+		log.Printf(
+			"auto thread reset session=%s host=%s cards=%d conversationCards=%d lastActivityAt=%s",
+			sessionID,
+			req.HostID,
+			len(session.Cards),
+			conversationCardCount(session.Cards),
+			session.LastActivityAt,
+		)
+		a.clearSessionThreadBinding(sessionID)
+		a.appendAutoThreadRefreshCard(sessionID)
+		session.ThreadID = ""
+	}
+	a.clearTransientCodexReconnectNotice(sessionID)
 	a.store.TouchSession(sessionID)
 	a.store.SetSelectedHost(sessionID, req.HostID)
-	log.Printf("chat message session=%s host=%s text=%q", sessionID, req.HostID, truncate(req.Message, 120))
+	requestID := a.beginTurnTraceRequest(sessionID, req.HostID)
+	log.Printf(
+		"chat request begin session=%s request=%s kind=%s host=%s text=%q",
+		sessionID,
+		requestID,
+		a.sessionKind(sessionID),
+		req.HostID,
+		truncate(req.Message, 120),
+	)
 	a.audit("chat.message", map[string]any{
 		"sessionId": sessionID,
 		"hostId":    req.HostID,
@@ -724,12 +1305,29 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	err := a.startTurn(ctx, sessionID, req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) && a.turnWasInterrupted(sessionID) {
+			log.Printf(
+				"chat request interrupted session=%s request=%s kind=%s host=%s duration=%s",
+				sessionID,
+				requestID,
+				a.sessionKind(sessionID),
+				req.HostID,
+				time.Since(requestStartedAt),
+			)
 			writeJSON(w, http.StatusAccepted, map[string]any{
 				"accepted":    false,
 				"interrupted": true,
 			})
 			return
 		}
+		log.Printf(
+			"chat request failed session=%s request=%s kind=%s host=%s duration=%s err=%v",
+			sessionID,
+			requestID,
+			a.sessionKind(sessionID),
+			req.HostID,
+			time.Since(requestStartedAt),
+			err,
+		)
 		a.finishRuntimeTurn(sessionID, "failed")
 		a.store.UpsertCard(sessionID, model.Card{
 			ID:        model.NewID("error"),
@@ -746,13 +1344,64 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		return
 	}
 
+	log.Printf(
+		"chat request accepted session=%s request=%s kind=%s host=%s duration=%s",
+		sessionID,
+		requestID,
+		a.sessionKind(sessionID),
+		req.HostID,
+		time.Since(requestStartedAt),
+	)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+}
+
+func (a *App) handleHostSelection(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var req hostSelectionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	host, switched, err := a.switchSelectedHost(sessionID, req.HostID, true)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "执行中") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	a.audit("host.selected", map[string]any{
+		"sessionId": sessionID,
+		"hostId":    host.ID,
+		"hostName":  host.Name,
+		"switched":  switched,
+	})
+	a.broadcastSnapshot(sessionID)
+	writeJSON(w, http.StatusOK, a.snapshot(sessionID))
 }
 
 func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
+	}
+	kind := a.sessionKind(sessionID)
+	switch kind {
+	case model.SessionKindWorkspace:
+		a.handleWorkspaceStop(w, r, sessionID)
+		return
+	default:
+		if a.orchestrator != nil && a.isOrchestratorInternalSession(sessionID) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "internal session 不支持前台直接 stop"})
+			return
+		}
 	}
 
 	session := a.store.Session(sessionID)
@@ -781,7 +1430,7 @@ func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID s
 			params["turnId"] = turnID
 		}
 		var result map[string]any
-		if err := a.codex.Request(ctx, "turn/interrupt", params, &result); err != nil && !cancelledPending {
+		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil && !cancelledPending {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 			return
 		}
@@ -825,31 +1474,7 @@ func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) 
 }
 
 func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req chatRequest) error {
-	var result map[string]any
-	err := a.codex.Request(ctx, "turn/start", map[string]any{
-		"threadId":       threadID,
-		"cwd":            a.cfg.DefaultWorkspace,
-		"approvalPolicy": "untrusted",
-		"developerInstructions": fmt.Sprintf(
-			"Current selected host is %s. Operate only on this host. The default writable workspace is %s. Do not assume access outside the workspace unless explicitly requested and approved.",
-			req.HostID,
-			a.cfg.DefaultWorkspace,
-		),
-		"sandboxPolicy": map[string]any{
-			"type":          "workspaceWrite",
-			"writableRoots": []string{a.cfg.DefaultWorkspace},
-		},
-		"input": []map[string]any{
-			{"type": "text", "text": req.Message},
-		},
-	}, &result)
-	if err != nil {
-		return err
-	}
-	if turnID := getTurnID(result); turnID != "" {
-		a.store.SetTurn(sessionID, turnID)
-	}
-	return nil
+	return a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildSingleHostTurnStartSpec(ctx, req))
 }
 
 func (a *App) appendThreadResetCard(sessionID string) {
@@ -865,8 +1490,140 @@ func (a *App) appendThreadResetCard(sessionID string) {
 	})
 }
 
+func (a *App) appendAutoThreadRefreshCard(sessionID string) {
+	now := model.NowString()
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("notice"),
+		Type:      "NoticeCard",
+		Title:     "Thread refreshed",
+		Text:      "当前会话历史较长或间隔过久，已自动切换到新的线程以保持响应速度。",
+		Status:    "notice",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+func (a *App) appendHostSwitchCard(sessionID, fromHostID, toHostID string) {
+	now := model.NowString()
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("notice"),
+		Type:      "NoticeCard",
+		Title:     "Host context switched",
+		Text:      fmt.Sprintf("已从 %s 切换到 %s，后续请求会在新的主机线程中继续。", fromHostID, toHostID),
+		Status:    "notice",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+func (a *App) clearSessionThreadBinding(sessionID string) {
+	a.store.ClearThread(sessionID)
+	a.store.ClearTurn(sessionID)
+}
+
+func (a *App) knownHost(hostID string) (model.Host, bool) {
+	hostID = defaultHostID(strings.TrimSpace(hostID))
+	for _, host := range a.store.Hosts() {
+		if host.ID == hostID {
+			return host, true
+		}
+	}
+	return model.Host{}, false
+}
+
+func hostNameOrID(host model.Host) string {
+	if name := strings.TrimSpace(host.Name); name != "" {
+		return name
+	}
+	return defaultHostID(strings.TrimSpace(host.ID))
+}
+
+func applyCardHost(card *model.Card, host model.Host) {
+	card.HostID = defaultHostID(strings.TrimSpace(host.ID))
+	card.HostName = hostNameOrID(host)
+}
+
+func (a *App) sessionTargetHost(sessionID string) model.Host {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return a.findHost(model.ServerLocalHostID)
+	}
+	hostID := defaultHostID(session.Runtime.Turn.HostID)
+	if hostID == model.ServerLocalHostID && session.SelectedHostID != "" {
+		hostID = defaultHostID(session.SelectedHostID)
+	}
+	return a.findHost(hostID)
+}
+
+func (a *App) switchSelectedHost(sessionID, hostID string, appendSwitchCard bool) (model.Host, bool, error) {
+	hostID = defaultHostID(strings.TrimSpace(hostID))
+	if hostID == "" {
+		hostID = model.ServerLocalHostID
+	}
+	host, ok := a.knownHost(hostID)
+	if !ok {
+		return model.Host{}, false, errors.New("selected host not found")
+	}
+
+	session := a.store.EnsureSession(sessionID)
+	currentHostID := defaultHostID(session.SelectedHostID)
+	if currentHostID == hostID {
+		a.store.SetSelectedHost(sessionID, hostID)
+		return host, false, nil
+	}
+	if session.Runtime.Turn.Active {
+		return model.Host{}, false, errors.New("当前任务执行中，完成后再切换主机")
+	}
+
+	hadThreadBinding := session.ThreadID != "" || session.TurnID != ""
+	a.clearSessionThreadBinding(sessionID)
+	a.store.SetSelectedHost(sessionID, hostID)
+	if appendSwitchCard && hadThreadBinding {
+		a.appendHostSwitchCard(sessionID, currentHostID, hostID)
+	}
+	return host, true, nil
+}
+
 func isThreadNotFoundError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "thread not found")
+}
+
+func (a *App) shouldAutoResetThread(session *store.SessionState, message string) bool {
+	if session == nil || session.ThreadID == "" || session.Runtime.Turn.Active {
+		return false
+	}
+	if len(session.Cards) >= autoThreadResetCardThreshold {
+		return true
+	}
+	if conversationCardCount(session.Cards) >= autoThreadResetConversationThreshold && isShortStandalonePrompt(message) {
+		return true
+	}
+	lastActivityAt, err := time.Parse(time.RFC3339, session.LastActivityAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(lastActivityAt) >= autoThreadResetIdleThreshold
+}
+
+func conversationCardCount(cards []model.Card) int {
+	count := 0
+	for _, card := range cards {
+		if card.Type == "UserMessageCard" || card.Type == "MessageCard" {
+			count++
+		}
+	}
+	return count
+}
+
+func isShortStandalonePrompt(message string) bool {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" || strings.Contains(trimmed, "\n") {
+		return false
+	}
+	if contextualFollowupPattern.MatchString(trimmed) {
+		return false
+	}
+	return len([]rune(trimmed)) <= autoThreadResetShortPromptRuneLimit
 }
 
 func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -877,8 +1634,11 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 
 	approvalID := strings.TrimPrefix(r.URL.Path, "/api/v1/approvals/")
 	approvalID = strings.TrimSuffix(approvalID, "/decision")
-	approval, ok := a.store.Approval(sessionID, approvalID)
+	targetSessionID, approval, ok := a.resolveApprovalTargetSession(sessionID, approvalID)
 	if !ok {
+		// Clean up any stale pending approval cards that reference this approval
+		a.dismissStaleApprovalCards(sessionID, approvalID)
+		a.broadcastSnapshot(sessionID)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found"})
 		return
 	}
@@ -888,20 +1648,101 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	decision := req.Decision
-	if decision == "" {
-		decision = "accept"
-	}
-	log.Printf("approval decision session=%s approval=%s decision=%s", sessionID, approvalID, decision)
+	decision := normalizeApprovalDecisionInput(req.Decision)
+	log.Printf("approval decision session=%s target=%s approval=%s decision=%s", sessionID, targetSessionID, approvalID, decision)
 	if decision == "accept_session" {
-		a.store.AddApprovalGrant(sessionID, approvalGrantFromApproval(approval))
+		a.store.AddApprovalGrant(targetSessionID, approvalGrantFromApproval(approval))
+	}
+	if approval.Type == "remote_command" || approval.Type == "remote_file_change" {
+		if approval.Type == "remote_file_change" && approval.Status != "pending" {
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+		if approval.Type == "remote_file_change" && (decision == "accept" || decision == "accept_session") {
+			if !a.claimRemoteFileChangeExecution(targetSessionID, approval.ID) {
+				writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+				return
+			}
+		}
+		now := model.NowString()
+		cardStatus := approvalStatusFromDecision(decision)
+		a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
+		approval.Status = cardStatus
+		approval.ResolvedAt = now
+		a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
+		if sessionID != targetSessionID {
+			a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
+		}
+
+		if decision == "decline" {
+			a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
+				card.Status = cardStatus
+				card.UpdatedAt = now
+			})
+			a.setRuntimeTurnPhase(targetSessionID, "thinking")
+			if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
+				_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
+			}
+			a.recordOrchestratorApprovalResolved(targetSessionID, approval)
+			a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
+			a.broadcastSnapshot(targetSessionID)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := a.respondCodex(ctx, approval.RequestIDRaw, toolResponse("User declined the requested system mutation.", false)); err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+
+		createdAt := now
+		if existing := a.cardByID(sessionID, approval.ItemID); existing != nil && existing.CreatedAt != "" {
+			createdAt = existing.CreatedAt
+		}
+		if approval.Type == "remote_file_change" {
+			card := model.Card{
+				ID:        approval.ItemID,
+				Type:      "FileChangeCard",
+				Title:     "Remote file change",
+				Status:    "inProgress",
+				Changes:   approval.Changes,
+				CreatedAt: createdAt,
+				UpdatedAt: now,
+			}
+			applyCardHost(&card, a.findHost(approval.HostID))
+			a.store.UpsertCard(targetSessionID, card)
+		} else {
+			card := model.Card{
+				ID:        approval.ItemID,
+				Type:      "CommandCard",
+				Title:     "Command execution",
+				Command:   approval.Command,
+				Cwd:       approval.Cwd,
+				Status:    "inProgress",
+				CreatedAt: createdAt,
+				UpdatedAt: now,
+			}
+			applyCardHost(&card, a.findHost(approval.HostID))
+			a.store.UpsertCard(targetSessionID, card)
+		}
+		a.setRuntimeTurnPhase(targetSessionID, "executing")
+		if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
+			_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "executing")
+		}
+		a.recordOrchestratorApprovalResolved(targetSessionID, approval)
+		a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
+		a.broadcastSnapshot(targetSessionID)
+		go a.executeApprovedRemoteOperation(targetSessionID, approval)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
 	}
 
 	codexDecision := mapApprovalDecision(decision, approval)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	err := a.codex.Respond(ctx, approval.RequestIDRaw, map[string]any{
+	err := a.respondCodex(ctx, approval.RequestIDRaw, map[string]any{
 		"decision": codexDecision,
 	})
 	if err != nil {
@@ -910,33 +1751,37 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	cardStatus := approvalStatusFromDecision(decision)
-	a.store.ResolveApproval(sessionID, approvalID, cardStatus, model.NowString())
+	resolvedAt := model.NowString()
+	a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
+	approval.Status = cardStatus
+	approval.ResolvedAt = resolvedAt
 	nextPhase := "thinking"
-	if a.hasPendingApprovals(sessionID) {
+	if a.hasPendingApprovals(targetSessionID) {
 		nextPhase = "waiting_approval"
 	} else if decision == "accept" || decision == "accept_session" {
 		nextPhase = "executing"
 	}
-	a.setRuntimeTurnPhase(sessionID, nextPhase)
-	a.audit("approval.decision", map[string]any{
-		"sessionId":  sessionID,
-		"approvalId": approvalID,
-		"type":       approval.Type,
-		"hostId":     approval.HostID,
-		"decision":   cardStatus,
-	})
+	a.setRuntimeTurnPhase(targetSessionID, nextPhase)
+	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
+		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, nextPhase)
+	}
+	a.recordOrchestratorApprovalResolved(targetSessionID, approval)
+	a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, model.NowString(), nil)
 	if approval.Type == "command" {
-		a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
+		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
 			card.Status = cardStatus
 			card.UpdatedAt = model.NowString()
 		})
 	} else {
-		a.store.UpdateCard(sessionID, approval.ItemID, func(card *model.Card) {
+		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
 			card.Status = cardStatus
 			card.UpdatedAt = model.NowString()
 		})
 	}
-	a.broadcastSnapshot(sessionID)
+	a.broadcastSnapshot(targetSessionID)
+	if sessionID != targetSessionID {
+		a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -948,7 +1793,7 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 
 	choiceID := strings.TrimPrefix(r.URL.Path, "/api/v1/choices/")
 	choiceID = strings.TrimSuffix(choiceID, "/answer")
-	choice, ok := a.store.Choice(sessionID, choiceID)
+	targetSessionID, choice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "choice not found"})
 		return
@@ -990,7 +1835,7 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	if err := a.codex.Respond(ctx, choice.RequestIDRaw, map[string]any{
+	if err := a.respondCodex(ctx, choice.RequestIDRaw, map[string]any{
 		"answers": codexAnswers,
 	}); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -998,27 +1843,36 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 	}
 
 	now := model.NowString()
-	a.store.ResolveChoice(sessionID, choiceID, "completed", now)
-	a.store.UpdateCard(sessionID, choice.ItemID, func(card *model.Card) {
+	a.store.ResolveChoice(targetSessionID, choiceID, "completed", now)
+	a.store.UpdateCard(targetSessionID, choice.ItemID, func(card *model.Card) {
 		card.Status = "completed"
 		card.AnswerSummary = choiceAnswerSummary(choice.Questions, req.Answers)
 		card.UpdatedAt = now
 	})
-	a.setRuntimeTurnPhase(sessionID, "thinking")
+	a.setRuntimeTurnPhase(targetSessionID, "thinking")
+	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
+		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
+	}
+	a.recordOrchestratorChoiceResolved(targetSessionID, choice, req.Answers)
 	a.audit("choice.answer", map[string]any{
-		"sessionId": sessionID,
+		"sessionId": targetSessionID,
 		"choiceId":  choiceID,
 		"answers":   len(req.Answers),
 	})
-	a.broadcastSnapshot(sessionID)
+	a.broadcastSnapshot(targetSessionID)
+	if sessionID != targetSessionID {
+		a.resolveMirroredChoiceCard(sessionID, choiceID, req.Answers, choice.Questions)
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string) {
 	conn, err := a.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("session ws upgrade failed session=%s remote_addr=%s err=%v", sessionID, r.RemoteAddr, err)
 		return
 	}
+	log.Printf("session ws connected session=%s remote_addr=%s", sessionID, r.RemoteAddr)
 
 	a.wsMu.Lock()
 	conns := a.wsClients[sessionID]
@@ -1036,11 +1890,13 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string)
 		delete(a.wsClients[sessionID], conn)
 		a.wsMu.Unlock()
 		_ = conn.Close()
+		log.Printf("session ws closed session=%s remote_addr=%s", sessionID, r.RemoteAddr)
 	}()
 
 	for {
 		messageType, payload, err := conn.ReadMessage()
 		if err != nil {
+			log.Printf("session ws read failed session=%s remote_addr=%s err=%v", sessionID, r.RemoteAddr, err)
 			return
 		}
 		if messageType != websocket.TextMessage {
@@ -1057,15 +1913,32 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string)
 			writeErr := conn.WriteJSON(map[string]string{"type": "heartbeat"})
 			a.wsMu.Unlock()
 			if writeErr != nil {
+				log.Printf("session ws heartbeat write failed session=%s remote_addr=%s err=%v", sessionID, r.RemoteAddr, writeErr)
 				return
 			}
 		}
 	}
 }
 
+func (a *App) claimRemoteFileChangeExecution(sessionID string, approvalID string) bool {
+	key := sessionID + ":" + approvalID
+	a.approvalMu.Lock()
+	defer a.approvalMu.Unlock()
+	if _, ok := a.fileChangeClaims[key]; ok {
+		return false
+	}
+	a.fileChangeClaims[key] = struct{}{}
+	return true
+}
+
 func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 	var payload map[string]any
 	_ = json.Unmarshal(params, &payload)
+	if method != "error" {
+		if sessionID := a.sessionIDFromPayload(payload); sessionID != "" {
+			a.clearTransientCodexReconnectNotice(sessionID)
+		}
+	}
 
 	switch method {
 	case "account/updated":
@@ -1123,6 +1996,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
+		a.markTurnTraceTurnStarted(sessionID, getStringAny(payload, "threadId", "thread_id"), getTurnID(payload))
 	case "turn/plan/updated":
 		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
 		if sessionID == "" {
@@ -1132,6 +2006,9 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
+		if a.isWorkspaceRouteThread(sessionID) {
+			return
+		}
 		a.setRuntimeTurnPhase(sessionID, "planning")
 		cardID := "plan-" + getString(payload, "turnId")
 		planItems := toPlanItems(payload["plan"])
@@ -1158,6 +2035,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		}
 		a.bindTurnToSession(sessionID, payload)
 		itemID := getString(payload, "itemId")
+		a.markTurnTraceFirstAssistant(sessionID, itemID, "delta")
 		if a.cardIsFinal(sessionID, itemID) {
 			return
 		}
@@ -1185,6 +2063,10 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			card.Text += getString(payload, "delta")
 			card.UpdatedAt = model.NowString()
 		})
+		if a.isWorkspaceRouteThread(sessionID) {
+			a.throttledBroadcast(sessionID)
+			return
+		}
 		a.broadcastSnapshot(sessionID)
 	case "item/commandExecution/outputDelta":
 		sessionID := a.sessionIDFromPayload(payload)
@@ -1251,10 +2133,20 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		} else {
 			a.finishRuntimeTurn(sessionID, "failed")
 		}
+		a.recordOrchestratorTurnPhase(sessionID, normalizeCardStatus(turnStatus))
 		a.finalizeOpenTurnCards(sessionID, normalizeCardStatus(turnStatus))
 		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
 		log.Printf("turn completed session=%s turn=%s status=%s", sessionID, getString(turn, "id"), turnStatus)
+		if a.isWorkspaceRouteThread(sessionID) {
+			a.flushThrottledBroadcast(sessionID)
+			a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
+			a.recordOrchestratorReply(sessionID)
+			a.broadcastSnapshot(sessionID)
+			return
+		}
+		a.recordOrchestratorReply(sessionID)
 		a.broadcastSnapshot(sessionID)
+		a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
 	case "turn/aborted":
 		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
@@ -1263,6 +2155,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		a.bindTurnToSession(sessionID, payload)
 		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
 		a.markTurnInterrupted(sessionID, getTurnID(payload))
+		a.recordOrchestratorTurnPhase(sessionID, "aborted")
 		a.broadcastSnapshot(sessionID)
 	case "error":
 		errorPayload := getMap(payload, "error")
@@ -1273,6 +2166,13 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			if sessionID := a.store.SessionIDByThread(threadID); sessionID != "" {
 				sessionIDs = []string{sessionID}
 			}
+		}
+		if attempt, retryMax, ok := parseCodexReconnectProgress(text); ok {
+			for _, id := range sessionIDs {
+				a.upsertTransientCodexReconnectNotice(id, attempt, retryMax)
+				a.broadcastSnapshot(id)
+			}
+			return
 		}
 		for _, id := range sessionIDs {
 			a.finishRuntimeTurn(id, "failed")
@@ -1289,6 +2189,51 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			a.broadcastSnapshot(id)
 		}
 	}
+}
+
+func parseCodexReconnectProgress(message string) (int, int, bool) {
+	matches := codexReconnectMessagePattern.FindStringSubmatch(strings.TrimSpace(message))
+	if len(matches) != 3 {
+		return 0, 0, false
+	}
+	attempt, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	retryMax, err := strconv.Atoi(matches[2])
+	if err != nil {
+		return 0, 0, false
+	}
+	if attempt <= 0 || retryMax <= 0 {
+		return 0, 0, false
+	}
+	return attempt, retryMax, true
+}
+
+func (a *App) upsertTransientCodexReconnectNotice(sessionID string, attempt, retryMax int) {
+	now := model.NowString()
+	createdAt := now
+	if existing := a.cardByID(sessionID, codexReconnectNoticeCardID); existing != nil && existing.CreatedAt != "" {
+		createdAt = existing.CreatedAt
+	}
+	text := fmt.Sprintf("与 GPT 的连接波动，正在自动重连 %d/%d", attempt, retryMax)
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        codexReconnectNoticeCardID,
+		Type:      "NoticeCard",
+		Title:     "连接恢复中",
+		Text:      text,
+		Message:   text,
+		Status:    "inProgress",
+		CreatedAt: createdAt,
+		UpdatedAt: now,
+	})
+}
+
+func (a *App) clearTransientCodexReconnectNotice(sessionID string) {
+	a.store.UpdateCard(sessionID, codexReconnectNoticeCardID, func(card *model.Card) {
+		card.Status = "completed"
+		card.UpdatedAt = model.NowString()
+	})
 }
 
 func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, params json.RawMessage) {
@@ -1310,6 +2255,10 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 	case "item/commandExecution/requestApproval":
 		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
+			return
+		}
+		if host, ok := a.selectedRemoteHostForSession(sessionID); ok {
+			a.rejectUnexpectedLocalApproval(sessionID, string(rawID), "commandExecution", getString(payload, "command"), host)
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
@@ -1334,18 +2283,36 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			Decisions:    toStringSlice(payload["availableDecisions"]),
 			RequestedAt:  model.NowString(),
 		}
+		commandState := a.mainAgentCapabilityState("commandExecution")
+		decision, policyErr := a.evaluateCommandPolicy(approval.Command)
+		if capabilityDisabled(commandState) {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command execution blocked", "commandExecution capability is disabled by the current main-agent profile")
+			return
+		}
+		if policyErr != nil {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by profile", policyErr.Error())
+			return
+		}
+		if decision.Category == "filesystem_mutation" && approval.Cwd != "" {
+			if err := a.ensureWritableRoots([]string{approval.Cwd}); err != nil {
+				a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by writable roots", err.Error())
+				return
+			}
+		}
+		if timeoutSec, ok := getIntAny(payload, "timeoutSec", "timeoutSeconds", "timeout"); ok && timeoutSec > a.mainAgentProfile().CommandPermissions.DefaultTimeoutSeconds {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by timeout policy", "requested timeout exceeds the current main-agent profile limit")
+			return
+		}
 		if a.autoApproveBySessionGrant(sessionID, approval) {
 			return
 		}
+		if !capabilityNeedsApproval(commandState) && (decision.Mode == model.AgentPermissionModeAllow || decision.Mode == model.AgentPermissionModeReadonlyOnly) {
+			if a.autoApproveLocalApprovalByProfile(sessionID, approval) {
+				return
+			}
+		}
 		log.Printf("approval requested type=command session=%s item=%s command=%q", sessionID, approval.ItemID, approval.Command)
-		a.audit("approval.requested", map[string]any{
-			"sessionId":  sessionID,
-			"approvalId": approval.ID,
-			"type":       approval.Type,
-			"hostId":     approval.HostID,
-			"command":    approval.Command,
-			"cwd":        approval.Cwd,
-		})
+		a.auditApprovalRequested(sessionID, approval, nil)
 		a.store.AddApproval(sessionID, approval)
 		card := model.Card{
 			ID:      approval.ItemID,
@@ -1363,11 +2330,29 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			CreatedAt: model.NowString(),
 			UpdatedAt: model.NowString(),
 		}
+		applyCardHost(&card, a.findHost(approval.HostID))
 		a.store.UpsertCard(sessionID, card)
+		a.recordOrchestratorApprovalRequested(sessionID, approval)
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
+			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+			if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
+				a.activateQueuedMissionWorkers(workspaceSessionID)
+			}
+		}
 		a.broadcastSnapshot(sessionID)
 	case "item/fileChange/requestApproval":
 		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
+			return
+		}
+		if host, ok := a.selectedRemoteHostForSession(sessionID); ok {
+			filePath := ""
+			cachedItem := a.store.Item(sessionID, getString(payload, "itemId"))
+			changes := toChanges(cachedItem["changes"])
+			if len(changes) > 0 {
+				filePath = changes[0].Path
+			}
+			a.rejectUnexpectedLocalApproval(sessionID, string(rawID), "fileChange", filePath, host)
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
@@ -1395,16 +2380,30 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			Decisions:    []string{"accept", "decline"},
 			RequestedAt:  model.NowString(),
 		}
+		fileChangeState := a.mainAgentCapabilityState("fileChange")
+		if capabilityDisabled(fileChangeState) {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "File change blocked", "fileChange capability is disabled by the current main-agent profile")
+			return
+		}
+		if err := a.ensureWritableRoots(changePaths(approval.Changes)); err != nil {
+			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "File change blocked by writable roots", err.Error())
+			return
+		}
 		if a.autoApproveBySessionGrant(sessionID, approval) {
 			return
 		}
+		if !capabilityNeedsApproval(fileChangeState) {
+			if a.autoApproveLocalApprovalByProfile(sessionID, approval) {
+				return
+			}
+		}
 		log.Printf("approval requested type=file_change session=%s item=%s", sessionID, itemID)
-		a.audit("approval.requested", map[string]any{
-			"sessionId":  sessionID,
-			"approvalId": approval.ID,
-			"type":       approval.Type,
-			"hostId":     approval.HostID,
-			"grantRoot":  approval.GrantRoot,
+		filePath := ""
+		if len(approval.Changes) > 0 {
+			filePath = approval.Changes[0].Path
+		}
+		a.auditApprovalRequested(sessionID, approval, map[string]any{
+			"filePath": emptyToNil(strings.TrimSpace(filePath)),
 		})
 		a.store.AddApproval(sessionID, approval)
 		card := model.Card{
@@ -1422,9 +2421,17 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			CreatedAt: model.NowString(),
 			UpdatedAt: model.NowString(),
 		}
+		applyCardHost(&card, a.findHost(approval.HostID))
 		a.store.UpsertCard(sessionID, card)
+		a.recordOrchestratorApprovalRequested(sessionID, approval)
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
+			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+			if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
+				a.activateQueuedMissionWorkers(workspaceSessionID)
+			}
+		}
 		a.broadcastSnapshot(sessionID)
-	case "request_user_input":
+	case "item/tool/requestUserInput", "request_user_input":
 		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			_ = a.codex.RespondError(context.Background(), string(rawID), -32000, "session not found for request_user_input")
@@ -1463,13 +2470,29 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		}
 		a.store.AddChoice(sessionID, choice)
 		a.store.UpsertCard(sessionID, card)
+		a.recordOrchestratorChoiceRequested(sessionID, choice)
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
+			a.mirrorInternalChoiceToWorkspace(sessionID, choice, card)
+		}
 		a.audit("choice.requested", map[string]any{
 			"sessionId": sessionID,
 			"choiceId":  choice.ID,
 			"questions": len(questions),
 		})
 		a.broadcastSnapshot(sessionID)
+	case "item/tool/call":
+		a.handleDynamicToolCall(string(rawID), payload)
 	}
+}
+
+func (a *App) codexRequest(ctx context.Context, method string, params any, result any) error {
+	if a.codexRequestFunc != nil {
+		return a.codexRequestFunc(ctx, method, params, result)
+	}
+	if a.codex == nil {
+		return errors.New("codex client not configured")
+	}
+	return a.codex.Request(ctx, method, params, result)
 }
 
 func (a *App) handleItemStarted(payload map[string]any) {
@@ -1484,11 +2507,25 @@ func (a *App) handleItemStarted(payload map[string]any) {
 	item := getMap(payload, "item")
 	itemID := getString(item, "id")
 	itemType := getString(item, "type")
+	log.Printf(
+		"turn item started session=%s request=%s turn=%s item=%s type=%s",
+		sessionID,
+		firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-"),
+		a.sessionTurnID(sessionID),
+		itemID,
+		itemType,
+	)
+	a.markTurnTraceFirstItem(sessionID, itemID, itemType)
+	if host, ok := a.selectedRemoteHostForSession(sessionID); ok && (itemType == "commandExecution" || itemType == "fileChange") {
+		a.blockUnexpectedLocalExecution(sessionID, payload, item, host)
+		return
+	}
 	a.store.RememberItem(sessionID, itemID, item)
 	a.updateActivityFromItem(sessionID, item, false)
 	a.syncProcessLineCard(sessionID, itemID, item, false)
 
 	now := model.NowString()
+	host := a.sessionTargetHost(sessionID)
 	switch itemType {
 	case "commandExecution":
 		a.setRuntimeTurnPhase(sessionID, "executing")
@@ -1503,6 +2540,7 @@ func (a *App) handleItemStarted(payload map[string]any) {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
+		applyCardHost(&card, host)
 		a.store.UpsertCard(sessionID, card)
 	case "fileChange":
 		a.setRuntimeTurnPhase(sessionID, "executing")
@@ -1515,6 +2553,7 @@ func (a *App) handleItemStarted(payload map[string]any) {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
+		applyCardHost(&card, host)
 		a.store.UpsertCard(sessionID, card)
 	case "agentMessage":
 		a.setRuntimeTurnPhase(sessionID, "finalizing")
@@ -1528,7 +2567,10 @@ func (a *App) handleItemStarted(payload map[string]any) {
 		}
 		a.store.UpsertCard(sessionID, card)
 		a.scheduleFinalizingExecutionCleanup(sessionID, getStringAny(payload, "threadId", "thread_id"))
-		a.scheduleSilentTurnCompletionCheck(sessionID, 6*time.Second)
+		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
+	}
+	if itemType == "agentMessage" && a.isWorkspaceRouteThread(sessionID) {
+		return
 	}
 	a.broadcastSnapshot(sessionID)
 }
@@ -1551,9 +2593,20 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 
 	now := model.NowString()
 	durationMS := a.cardDurationMS(sessionID, itemID, now)
+	log.Printf(
+		"turn item completed session=%s request=%s turn=%s item=%s type=%s duration_ms=%d status=%s",
+		sessionID,
+		firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-"),
+		a.sessionTurnID(sessionID),
+		itemID,
+		itemType,
+		durationMS,
+		normalizeCardStatus(getString(item, "status")),
+	)
 
 	switch itemType {
 	case "agentMessage":
+		a.markTurnTraceFirstAssistant(sessionID, itemID, "completed")
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
 			card.Status = "completed"
 			if card.Text == "" {
@@ -1575,8 +2628,18 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			if aggregated := getString(item, "aggregatedOutput"); aggregated != "" && len(aggregated) >= len(output) {
 				output = aggregated
 			}
+			result, finalStatus, summary, highlights, kvRows := buildLocalCommandCardPresentation(item, output)
 			card.Output = output
-			card.Status = completedCommandStatus(item, output)
+			card.Stdout = result.Stdout
+			card.Stderr = result.Stderr
+			card.ExitCode = result.ExitCode
+			card.Timeout = result.Timeout
+			card.Cancelled = result.Cancelled
+			card.Error = result.Error
+			card.Summary = summary
+			card.Highlights = highlights
+			card.KVRows = kvRows
+			card.Status = finalStatus
 			if itemDuration, ok := getIntAny(item, "durationMs", "duration_ms"); ok && itemDuration > 0 {
 				card.DurationMS = int64(itemDuration)
 			} else {
@@ -1595,7 +2658,12 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 		a.resumeThinkingAfterExecution(sessionID)
 	}
 	if itemType == "agentMessage" {
-		a.scheduleSilentTurnCompletionCheck(sessionID, 6*time.Second)
+		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
+		if a.isWorkspaceRouteThread(sessionID) {
+			a.flushThrottledBroadcast(sessionID)
+			a.broadcastSnapshot(sessionID)
+			return
+		}
 	}
 	a.broadcastSnapshot(sessionID)
 }
@@ -1633,11 +2701,7 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 		UpdatedAt: now,
 	})
 	log.Printf("approval auto accepted by session grant session=%s approval=%s type=%s", sessionID, approval.ID, approval.Type)
-	a.audit("approval.auto_accepted", map[string]any{
-		"sessionId":   sessionID,
-		"approvalId":  approval.ID,
-		"type":        approval.Type,
-		"hostId":      approval.HostID,
+	a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, "accept_session", approval.Status, approval.RequestedAt, now, map[string]any{
 		"fingerprint": approval.Fingerprint,
 	})
 	a.broadcastSnapshot(sessionID)
@@ -1653,15 +2717,26 @@ func (a *App) startRuntimeTurn(sessionID, hostID string) {
 		runtime.Turn.HostID = defaultHostID(hostID)
 		runtime.Turn.StartedAt = startedAt
 		runtime.Activity = model.ActivityRuntime{
-			ViewedFiles:        make([]model.ActivityEntry, 0),
-			SearchedWebQueries: make([]model.ActivityEntry, 0),
+			ViewedFiles:            make([]model.ActivityEntry, 0),
+			SearchedWebQueries:     make([]model.ActivityEntry, 0),
+			SearchedContentQueries: make([]model.ActivityEntry, 0),
 		}
 	})
+	a.markTurnTraceRuntimeStart(sessionID, hostID)
 }
 
 func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
+	phase = normalizeRuntimeTurnPhase(phase)
+	session := a.store.Session(sessionID)
+	if session != nil && session.Runtime.Turn.Phase == phase {
+		currentActive := phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
+		if session.Runtime.Turn.Active == currentActive && (session.Runtime.Turn.StartedAt != "" || !currentActive) {
+			return
+		}
+	}
+
 	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
-		runtime.Turn.Active = phase != "" && phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
+		runtime.Turn.Active = phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
 		runtime.Turn.Phase = phase
 		if runtime.Turn.StartedAt == "" && runtime.Turn.Active {
 			runtime.Turn.StartedAt = model.NowString()
@@ -1670,6 +2745,19 @@ func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
 			runtime.Turn.HostID = model.ServerLocalHostID
 		}
 	})
+	a.recordOrchestratorTurnPhase(sessionID, phase)
+}
+
+func normalizeRuntimeTurnPhase(phase string) string {
+	phase = strings.TrimSpace(phase)
+	switch phase {
+	case "", "idle":
+		return "idle"
+	case "thinking", "planning", "waiting_approval", "waiting_input", "executing", "finalizing", "completed", "failed", "aborted":
+		return phase
+	default:
+		return "thinking"
+	}
 }
 
 func (a *App) finishRuntimeTurn(sessionID, phase string) {
@@ -1677,8 +2765,383 @@ func (a *App) finishRuntimeTurn(sessionID, phase string) {
 		runtime.Turn.Active = false
 		runtime.Turn.Phase = phase
 		runtime.Activity.CurrentReadingFile = ""
+		runtime.Activity.CurrentChangingFile = ""
+		runtime.Activity.CurrentListingPath = ""
+		runtime.Activity.CurrentSearchKind = ""
+		runtime.Activity.CurrentSearchQuery = ""
 		runtime.Activity.CurrentWebSearchQuery = ""
 	})
+	a.completeTurnTrace(sessionID, phase)
+}
+
+func (a *App) beginTurnTraceRequest(sessionID, hostID string) string {
+	now := time.Now()
+	requestID := model.NewID("req")
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := &turnTrace{
+		RequestID:        requestID,
+		SessionID:        sessionID,
+		Kind:             a.sessionKind(sessionID),
+		HostID:           defaultHostID(hostID),
+		RequestStartedAt: now,
+	}
+	a.turnTraces[sessionID] = trace
+	return requestID
+}
+
+func (a *App) markTurnTraceRuntimeStart(sessionID, hostID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	requestStartedAt := time.Time{}
+	if trace != nil {
+		requestStartedAt = trace.RequestStartedAt
+	}
+	a.turnTraces[sessionID] = &turnTrace{
+		RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+		SessionID:        sessionID,
+		Kind:             a.sessionKind(sessionID),
+		HostID:           defaultHostID(hostID),
+		RequestStartedAt: requestStartedAt,
+		RuntimeStartedAt: now,
+	}
+}
+
+func (a *App) markTurnTraceThreadStartBegin(sessionID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	if trace.ThreadStartBeganAt.IsZero() {
+		trace.ThreadStartBeganAt = now
+	}
+}
+
+func (a *App) markTurnTraceThreadStarted(sessionID, threadID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	trace.ThreadID = strings.TrimSpace(threadID)
+	if trace.ThreadStartedAt.IsZero() {
+		trace.ThreadStartedAt = now
+	}
+}
+
+func (a *App) markTurnTraceTurnStartBegin(sessionID, threadID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	trace.ThreadID = firstNonEmptyValue(strings.TrimSpace(threadID), trace.ThreadID)
+	if trace.TurnStartBeganAt.IsZero() {
+		trace.TurnStartBeganAt = now
+	}
+}
+
+func (a *App) markTurnTraceTurnStarted(sessionID, threadID, turnID string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	trace.ThreadID = firstNonEmptyValue(strings.TrimSpace(threadID), trace.ThreadID)
+	trace.TurnID = firstNonEmptyValue(strings.TrimSpace(turnID), trace.TurnID)
+	if trace.TurnStartedAt.IsZero() {
+		trace.TurnStartedAt = now
+	}
+}
+
+func (a *App) markTurnTraceFirstItem(sessionID, itemID, itemType string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	shouldLog := trace.FirstItemStartedAt.IsZero()
+	if shouldLog {
+		trace.FirstItemStartedAt = now
+		trace.FirstItemID = strings.TrimSpace(itemID)
+		trace.FirstItemType = strings.TrimSpace(itemType)
+	}
+	turnID := trace.TurnID
+	requestID := trace.RequestID
+	sinceRequest := formatTurnTraceDuration(trace.RequestStartedAt, trace.FirstItemStartedAt)
+	sinceTurnStart := formatTurnTraceDuration(trace.TurnStartedAt, trace.FirstItemStartedAt)
+	a.turnTraceMu.Unlock()
+	if shouldLog {
+		log.Printf(
+			"turn first progress session=%s request=%s turn=%s item=%s type=%s since_request=%s since_turn_start=%s",
+			sessionID,
+			firstNonEmptyValue(requestID, "-"),
+			firstNonEmptyValue(turnID, a.sessionTurnID(sessionID)),
+			itemID,
+			itemType,
+			sinceRequest,
+			sinceTurnStart,
+		)
+	}
+}
+
+func (a *App) markTurnTraceFirstAssistant(sessionID, itemID, source string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		trace = &turnTrace{
+			RequestID:        firstNonEmptyValue(a.turnTraceRequestIDLocked(sessionID), ""),
+			SessionID:        sessionID,
+			Kind:             a.sessionKind(sessionID),
+			HostID:           defaultHostID(a.sessionHostID(sessionID)),
+			RuntimeStartedAt: now,
+		}
+		a.turnTraces[sessionID] = trace
+	}
+	shouldLog := trace.FirstAssistantAt.IsZero()
+	if shouldLog {
+		trace.FirstAssistantAt = now
+		trace.FirstAssistantItemID = strings.TrimSpace(itemID)
+		trace.FirstAssistantSource = strings.TrimSpace(source)
+	}
+	turnID := trace.TurnID
+	requestID := trace.RequestID
+	sinceRequest := formatTurnTraceDuration(trace.RequestStartedAt, trace.FirstAssistantAt)
+	sinceTurnStart := formatTurnTraceDuration(trace.TurnStartedAt, trace.FirstAssistantAt)
+	sinceFirstItem := formatTurnTraceDuration(trace.FirstItemStartedAt, trace.FirstAssistantAt)
+	a.turnTraceMu.Unlock()
+	if shouldLog {
+		log.Printf(
+			"turn first assistant session=%s request=%s turn=%s item=%s source=%s since_request=%s since_turn_start=%s since_first_item=%s",
+			sessionID,
+			firstNonEmptyValue(requestID, "-"),
+			firstNonEmptyValue(turnID, a.sessionTurnID(sessionID)),
+			itemID,
+			source,
+			sinceRequest,
+			sinceTurnStart,
+			sinceFirstItem,
+		)
+	}
+}
+
+func (a *App) completeTurnTrace(sessionID, finalPhase string) {
+	now := time.Now()
+	a.turnTraceMu.Lock()
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		a.turnTraceMu.Unlock()
+		return
+	}
+	delete(a.turnTraces, sessionID)
+	summary := fmt.Sprintf(
+		"turn trace complete session=%s request=%s kind=%s host=%s turn=%s phase=%s total=%s request_to_thread=%s request_to_turn=%s turn_to_first_item=%s first_item_to_first_assistant=%s first_assistant_to_finish=%s",
+		sessionID,
+		firstNonEmptyValue(trace.RequestID, "-"),
+		firstNonEmptyValue(trace.Kind, a.sessionKind(sessionID)),
+		firstNonEmptyValue(trace.HostID, defaultHostID(a.sessionHostID(sessionID))),
+		firstNonEmptyValue(trace.TurnID, a.sessionTurnID(sessionID)),
+		finalPhase,
+		formatTurnTraceTotal(trace, now),
+		formatTurnTraceStage(trace.RequestStartedAt, trace.ThreadStartedAt),
+		formatTurnTraceStage(trace.RequestStartedAt, trace.TurnStartedAt),
+		formatTurnTraceStage(trace.TurnStartedAt, trace.FirstItemStartedAt),
+		formatTurnTraceStage(trace.FirstItemStartedAt, trace.FirstAssistantAt),
+		formatTurnTraceStage(trace.FirstAssistantAt, now),
+	)
+	a.turnTraceMu.Unlock()
+	log.Print(summary)
+}
+
+func formatTurnTraceStage(start, end time.Time) string {
+	if start.IsZero() || end.IsZero() || end.Before(start) {
+		return "-"
+	}
+	return end.Sub(start).String()
+}
+
+func formatTurnTraceDuration(start, end time.Time) string {
+	return formatTurnTraceStage(start, end)
+}
+
+func formatTurnTraceTotal(trace *turnTrace, end time.Time) string {
+	if trace == nil {
+		return "-"
+	}
+	start := trace.RequestStartedAt
+	if start.IsZero() {
+		start = trace.RuntimeStartedAt
+	}
+	return formatTurnTraceStage(start, end)
+}
+
+func (a *App) sessionHostID(sessionID string) string {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return model.ServerLocalHostID
+	}
+	return defaultHostID(firstNonEmptyValue(session.Runtime.Turn.HostID, session.SelectedHostID))
+}
+
+func (a *App) turnTraceRequestID(sessionID string) string {
+	a.turnTraceMu.Lock()
+	defer a.turnTraceMu.Unlock()
+	return a.turnTraceRequestIDLocked(sessionID)
+}
+
+func (a *App) turnTraceRequestIDLocked(sessionID string) string {
+	trace := a.turnTraces[sessionID]
+	if trace == nil {
+		return ""
+	}
+	return strings.TrimSpace(trace.RequestID)
+}
+
+func (a *App) scheduleTurnStallMonitor(sessionID string, delay time.Duration) {
+	session := a.store.Session(sessionID)
+	if session == nil || session.TurnID == "" {
+		return
+	}
+	turnID := session.TurnID
+
+	go func() {
+		ticker := time.NewTicker(delay)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			current := a.store.Session(sessionID)
+			if current == nil || current.TurnID != turnID {
+				return
+			}
+			if !current.Runtime.Turn.Active {
+				return
+			}
+			if !isStallWatchPhase(current.Runtime.Turn.Phase) {
+				continue
+			}
+			if a.hasPendingApprovals(sessionID) || a.hasPendingChoices(sessionID) {
+				continue
+			}
+
+			lastActivityAt, err := time.Parse(time.RFC3339, current.LastActivityAt)
+			if err != nil || time.Since(lastActivityAt) < delay {
+				continue
+			}
+
+			a.failStalledTurn(sessionID, turnID, delay)
+			return
+		}
+	}()
+}
+
+func isStallWatchPhase(phase string) bool {
+	switch phase {
+	case "thinking", "planning", "finalizing":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) failStalledTurn(sessionID, turnID string, delay time.Duration) {
+	current := a.store.Session(sessionID)
+	if current == nil || current.TurnID != turnID || !current.Runtime.Turn.Active {
+		return
+	}
+	if !isStallWatchPhase(current.Runtime.Turn.Phase) {
+		return
+	}
+	log.Printf(
+		"turn stalled session=%s request=%s turn=%s phase=%s last_activity_at=%s delay=%s",
+		sessionID,
+		firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-"),
+		turnID,
+		current.Runtime.Turn.Phase,
+		current.LastActivityAt,
+		delay,
+	)
+
+	now := model.NowString()
+	a.finishRuntimeTurn(sessionID, "failed")
+	a.finalizeOpenTurnCards(sessionID, "failed")
+	a.resolvePendingTurnRequests(sessionID, now)
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("error"),
+		Type:      "ErrorCard",
+		Title:     "Codex 响应超时",
+		Message:   fmt.Sprintf("这次请求在 %.0f 秒内没有返回任何进展，已自动结束。请重试；如果频繁出现，多半是 Codex 到 GPT 的连接不稳定。", delay.Seconds()),
+		Text:      fmt.Sprintf("这次请求在 %.0f 秒内没有返回任何进展，已自动结束。请重试；如果频繁出现，多半是 Codex 到 GPT 的连接不稳定。", delay.Seconds()),
+		Status:    "failed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.broadcastSnapshot(sessionID)
+
+	if current.ThreadID == "" || !a.codex.Alive() {
+		return
+	}
+	go func(threadID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		params := map[string]any{
+			"threadId":                   threadID,
+			"clean_background_terminals": true,
+		}
+		if turnID != "" {
+			params["turnId"] = turnID
+		}
+		var result map[string]any
+		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil {
+			log.Printf("stalled turn interrupt failed session=%s turn=%s err=%s", sessionID, turnID, truncate(err.Error(), 200))
+		}
+	}(current.ThreadID)
 }
 
 func (a *App) resumeThinkingAfterExecution(sessionID string) {
@@ -1703,6 +3166,31 @@ func (a *App) hasPendingApprovals(sessionID string) bool {
 		}
 	}
 	return false
+}
+
+// dismissStaleApprovalCards marks any pending approval cards that reference a
+// missing approval as "expired" so they no longer appear in the UI after refresh.
+func (a *App) dismissStaleApprovalCards(sessionID, approvalID string) {
+	now := model.NowString()
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return
+	}
+	for _, card := range session.Cards {
+		if card.Status != "pending" {
+			continue
+		}
+		if card.Type != "CommandApprovalCard" && card.Type != "FileChangeApprovalCard" {
+			continue
+		}
+		if card.Approval == nil || card.Approval.RequestID != approvalID {
+			continue
+		}
+		a.store.UpdateCard(sessionID, card.ID, func(c *model.Card) {
+			c.Status = "expired"
+			c.UpdatedAt = now
+		})
+	}
 }
 
 func (a *App) hasPendingChoices(sessionID string) bool {
@@ -1789,9 +3277,18 @@ func (a *App) finalizeLingeringExecutionCards(sessionID string) bool {
 					durationMS = durationBetween(existing.CreatedAt, now)
 				}
 			}
-			status := completedCommandStatus(item, output)
+			result, status, summary, highlights, kvRows := buildLocalCommandCardPresentation(item, output)
 			a.store.UpdateCard(sessionID, existing.ID, func(card *model.Card) {
 				card.Output = output
+				card.Stdout = result.Stdout
+				card.Stderr = result.Stderr
+				card.ExitCode = result.ExitCode
+				card.Timeout = result.Timeout
+				card.Cancelled = result.Cancelled
+				card.Error = result.Error
+				card.Summary = summary
+				card.Highlights = highlights
+				card.KVRows = kvRows
 				card.Status = status
 				card.DurationMS = durationMS
 				card.UpdatedAt = now
@@ -1935,7 +3432,7 @@ func (a *App) shouldIgnoreTurnPayload(sessionID string, payload map[string]any) 
 	if session == nil {
 		return false
 	}
-	if session.Runtime.Turn.Active || session.Runtime.Turn.Phase != "aborted" {
+	if session.Runtime.Turn.Active || (session.Runtime.Turn.Phase != "aborted" && session.Runtime.Turn.Phase != "failed") {
 		return false
 	}
 	turnID := getTurnID(payload)
@@ -1944,6 +3441,14 @@ func (a *App) shouldIgnoreTurnPayload(sessionID string, payload map[string]any) 
 	}
 	threadID := getStringAny(payload, "threadId", "thread_id")
 	return threadID != "" && threadID == session.ThreadID
+}
+
+func (a *App) isWorkspaceRouteThread(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	return session.Meta.Kind == model.SessionKindWorkspace && strings.HasSuffix(strings.TrimSpace(session.ThreadConfigHash), ":workspace-route")
 }
 
 func (a *App) cardIsFinal(sessionID, cardID string) bool {
@@ -1991,6 +3496,12 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 		switch kind {
 		case "file_read":
 			if completed {
+				if activityItemStatus(kind, item) != "completed" {
+					if runtime.Activity.CurrentReadingFile == currentLabel {
+						runtime.Activity.CurrentReadingFile = ""
+					}
+					return
+				}
 				if runtime.Activity.CurrentReadingFile == currentLabel {
 					runtime.Activity.CurrentReadingFile = ""
 				}
@@ -2001,24 +3512,82 @@ func (a *App) updateActivityFromItem(sessionID string, item map[string]any, comp
 				return
 			}
 			runtime.Activity.CurrentReadingFile = currentLabel
+		case "file_search":
+			if completed {
+				if activityItemStatus(kind, item) != "completed" {
+					if runtime.Activity.CurrentSearchKind == "content" && runtime.Activity.CurrentSearchQuery == currentLabel {
+						runtime.Activity.CurrentSearchKind = ""
+						runtime.Activity.CurrentSearchQuery = ""
+					}
+					return
+				}
+				if runtime.Activity.CurrentSearchKind == "content" && runtime.Activity.CurrentSearchQuery == currentLabel {
+					runtime.Activity.CurrentSearchKind = ""
+					runtime.Activity.CurrentSearchQuery = ""
+				}
+				appendUniqueActivityEntry(&runtime.Activity.SearchedContentQueries, entry, func(existing, next model.ActivityEntry) bool {
+					return existing.Query != "" && existing.Query == next.Query && existing.Path == next.Path
+				})
+				runtime.Activity.SearchCount = len(runtime.Activity.SearchedWebQueries) + len(runtime.Activity.SearchedContentQueries)
+				return
+			}
+			runtime.Activity.CurrentSearchKind = "content"
+			runtime.Activity.CurrentSearchQuery = currentLabel
 		case "web_search":
 			if completed {
+				if activityItemStatus(kind, item) != "completed" {
+					if runtime.Activity.CurrentSearchKind == "web" && runtime.Activity.CurrentSearchQuery == currentLabel {
+						runtime.Activity.CurrentSearchKind = ""
+						runtime.Activity.CurrentSearchQuery = ""
+					}
+					if runtime.Activity.CurrentWebSearchQuery == currentLabel {
+						runtime.Activity.CurrentWebSearchQuery = ""
+					}
+					return
+				}
+				if runtime.Activity.CurrentSearchKind == "web" && runtime.Activity.CurrentSearchQuery == currentLabel {
+					runtime.Activity.CurrentSearchKind = ""
+					runtime.Activity.CurrentSearchQuery = ""
+				}
 				if runtime.Activity.CurrentWebSearchQuery == currentLabel {
 					runtime.Activity.CurrentWebSearchQuery = ""
 				}
 				appendUniqueActivityEntry(&runtime.Activity.SearchedWebQueries, entry, func(existing, next model.ActivityEntry) bool {
 					return existing.Query != "" && existing.Query == next.Query
 				})
-				runtime.Activity.SearchCount = len(runtime.Activity.SearchedWebQueries)
+				runtime.Activity.SearchCount = len(runtime.Activity.SearchedWebQueries) + len(runtime.Activity.SearchedContentQueries)
 				return
 			}
+			runtime.Activity.CurrentSearchKind = "web"
+			runtime.Activity.CurrentSearchQuery = currentLabel
 			runtime.Activity.CurrentWebSearchQuery = currentLabel
 		case "list":
 			if completed {
+				if activityItemStatus(kind, item) != "completed" {
+					if runtime.Activity.CurrentListingPath == currentLabel {
+						runtime.Activity.CurrentListingPath = ""
+					}
+					return
+				}
+				if runtime.Activity.CurrentListingPath == currentLabel {
+					runtime.Activity.CurrentListingPath = ""
+				}
 				runtime.Activity.ListCount++
+				return
 			}
+			runtime.Activity.CurrentListingPath = currentLabel
 		}
 	})
+}
+
+func activityItemStatus(kind string, item map[string]any) string {
+	switch kind {
+	case "command":
+		output := getStringAny(item, "aggregatedOutput", "output", "stdout", "stderr")
+		return completedCommandStatus(item, output)
+	default:
+		return completedItemStatus(item)
+	}
 }
 
 func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any, completed bool) {
@@ -2038,13 +3607,19 @@ func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any,
 	status := "inProgress"
 	durationMS := int64(0)
 	if completed {
-		status = "completed"
+		status = activityItemStatus(kind, item)
 		durationMS = durationBetween(createdAt, now)
+	}
+
+	hostID := ""
+	if session := a.store.Session(sessionID); session != nil {
+		hostID = session.SelectedHostID
 	}
 
 	a.store.UpsertCard(sessionID, model.Card{
 		ID:         cardID,
 		Type:       "ProcessLineCard",
+		HostID:     hostID,
 		Text:       processLineText(kind, entry, currentLabel, completed),
 		Status:     status,
 		DurationMS: durationMS,
@@ -2059,9 +3634,11 @@ func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any,
 
 func (a *App) markTurnInterrupted(sessionID, turnID string) {
 	now := model.NowString()
+	a.cancelRemoteExecsForSession(sessionID, "任务已中断")
 	a.finishRuntimeTurn(sessionID, "aborted")
 	a.finalizeOpenTurnCards(sessionID, "failed")
 	a.resolvePendingTurnRequests(sessionID, now)
+	a.resolveMirroredPendingTurnRequests(sessionID, "cancelled", "任务已中断")
 	cardID := model.NewID("notice")
 	if turnID != "" {
 		cardID = "turn-aborted-" + turnID
@@ -2091,7 +3668,7 @@ func (a *App) cleanBackgroundTerminalsWithTimeout(threadID string, timeout time.
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	var result map[string]any
-	if err := a.codex.Request(ctx, "thread/backgroundTerminals/clean", map[string]any{
+	if err := a.codexRequest(ctx, "thread/backgroundTerminals/clean", map[string]any{
 		"threadId": threadID,
 	}, &result); err != nil {
 		log.Printf("background terminal cleanup skipped thread=%s err=%s", threadID, truncate(err.Error(), 200))
@@ -2113,14 +3690,45 @@ func (a *App) finalizeOpenTurnCards(sessionID, finalStatus string) {
 		case "CommandCard", "FileChangeCard", "ProcessLineCard", "CommandApprovalCard", "FileChangeApprovalCard", "ChoiceCard":
 			cardID := existing.ID
 			durationMS := durationBetween(existing.CreatedAt, now)
+			cardStatus, terminalText := finalizeOpenTurnCardStatus(existing, finalStatus)
 			a.store.UpdateCard(sessionID, cardID, func(card *model.Card) {
-				card.Status = finalStatus
+				card.Status = cardStatus
+				if terminalText != "" {
+					switch card.Type {
+					case "CommandCard":
+						card.Output = appendExecMessage(card.Output, terminalText)
+						if card.Summary == "" {
+							card.Summary = terminalText
+						}
+					case "FileChangeCard":
+						if strings.TrimSpace(card.Text) == "" {
+							card.Text = terminalText
+						}
+					}
+				}
 				if card.DurationMS == 0 {
 					card.DurationMS = durationMS
 				}
 				card.UpdatedAt = now
 			})
 		}
+	}
+}
+
+func finalizeOpenTurnCardStatus(card model.Card, finalStatus string) (string, string) {
+	if finalStatus != "completed" {
+		return finalStatus, ""
+	}
+	if normalizeCardStatus(card.Status) != "inProgress" {
+		return finalStatus, ""
+	}
+	switch card.Type {
+	case "CommandCard":
+		return "failed", "任务已结束，但这条命令没有返回最终结果，已按失败处理。"
+	case "FileChangeCard":
+		return "failed", "任务已结束，但这次文件修改没有返回最终结果，已按失败处理。"
+	default:
+		return finalStatus, ""
 	}
 }
 
@@ -2168,6 +3776,8 @@ func processLineText(kind string, entry model.ActivityEntry, currentLabel string
 		switch kind {
 		case "file_read":
 			return "已浏览 " + currentLabel
+		case "file_search":
+			return "已搜索文件（" + currentLabel + "）"
 		case "web_search":
 			return "已搜索网页（" + currentLabel + "）"
 		case "web_open":
@@ -2176,6 +3786,8 @@ func processLineText(kind string, entry model.ActivityEntry, currentLabel string
 			return "已页内查找（" + currentLabel + "）"
 		case "list":
 			return "已列出 " + currentLabel
+		case "command":
+			return "已处理 1 个命令"
 		default:
 			return strings.TrimSpace(entry.Label)
 		}
@@ -2183,6 +3795,8 @@ func processLineText(kind string, entry model.ActivityEntry, currentLabel string
 	switch kind {
 	case "file_read":
 		return "现在浏览 " + currentLabel
+	case "file_search":
+		return "现在搜索文件（" + currentLabel + "）"
 	case "web_search":
 		return "现在搜索网页（" + currentLabel + "）"
 	case "web_open":
@@ -2191,6 +3805,8 @@ func processLineText(kind string, entry model.ActivityEntry, currentLabel string
 		return "现在页内查找（" + currentLabel + "）"
 	case "list":
 		return "现在列出 " + currentLabel
+	case "command":
+		return "现在执行命令（" + currentLabel + "）"
 	default:
 		return strings.TrimSpace(entry.Label)
 	}
@@ -2225,13 +3841,179 @@ func durationBetween(startedAt, endedAt string) int64 {
 }
 
 func autoApprovalNoticeText(approval model.ApprovalRequest) string {
-	if approval.Type == "command" && approval.Command != "" {
+	if (approval.Type == "command" || approval.Type == "remote_command") && approval.Command != "" {
 		return fmt.Sprintf("已自动批准本会话内同类命令：%s", truncate(approval.Command, 72))
 	}
-	if approval.Type == "file_change" {
+	if approval.Type == "file_change" || approval.Type == "remote_file_change" {
 		return "已自动批准本会话内同类文件修改。"
 	}
 	return "已自动批准本会话内同类操作。"
+}
+
+func approvalMemoCard(host model.Host, approval model.ApprovalRequest, decision, now string) model.Card {
+	return model.Card{
+		ID:        "approval-memo-" + approval.ID,
+		Type:      "NoticeCard",
+		Text:      approvalMemoText(host, approval, decision),
+		Status:    approvalStatusFromDecision(decision),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func approvalMemoText(host model.Host, approval model.ApprovalRequest, decision string) string {
+	hostName := strings.TrimSpace(host.Name)
+	if hostName == "" {
+		hostName = strings.TrimSpace(approval.HostID)
+	}
+	if hostName == "" {
+		hostName = "当前主机"
+	}
+
+	prefix := "已同意在"
+	switch decision {
+	case "accept_session":
+		prefix = "已同意并记住在"
+	case "decline":
+		prefix = "已拒绝在"
+	}
+
+	action := "执行远程操作"
+	switch approval.Type {
+	case "remote_command", "command":
+		if approval.Command != "" {
+			action = "执行：" + truncate(approval.Command, 88)
+		}
+	case "remote_file_change", "file_change":
+		if len(approval.Changes) == 1 {
+			action = "修改文件：" + truncate(approval.Changes[0].Path, 88)
+		} else if len(approval.Changes) > 1 {
+			action = fmt.Sprintf("修改 %d 个文件（%s 等）", len(approval.Changes), truncate(approval.Changes[0].Path, 48))
+		} else {
+			action = "修改远程文件"
+		}
+	}
+
+	return fmt.Sprintf("%s %s %s", prefix, hostName, action)
+}
+
+func (a *App) auditApprovalRequested(sessionID string, approval model.ApprovalRequest, fields map[string]any) {
+	a.auditApprovalLifecycleEvent("approval.requested", sessionID, approval, "", approval.Status, approval.RequestedAt, "", fields)
+}
+
+func (a *App) auditApprovalLifecycleEvent(event, sessionID string, approval model.ApprovalRequest, approvalDecision, status, startedAt, endedAt string, fields map[string]any) {
+	payload := map[string]any{
+		"sessionId":        sessionID,
+		"approvalId":       approval.ID,
+		"type":             approval.Type,
+		"threadId":         firstNonEmptyString([]string{approval.ThreadID, a.sessionThreadID(sessionID)}),
+		"turnId":           firstNonEmptyString([]string{approval.TurnID, a.sessionTurnID(sessionID)}),
+		"hostId":           defaultHostID(strings.TrimSpace(approval.HostID)),
+		"hostName":         hostNameOrID(a.findHost(approval.HostID)),
+		"operator":         a.auditOperator(sessionID),
+		"toolName":         approvalAuditToolName(approval),
+		"command":          emptyToNil(strings.TrimSpace(approval.Command)),
+		"filePath":         approvalAuditFilePath(approval, fields),
+		"cwd":              a.approvalAuditCwd(approval),
+		"approvalDecision": emptyToNil(strings.TrimSpace(approvalDecision)),
+		"startedAt":        emptyToNil(strings.TrimSpace(startedAt)),
+		"endedAt":          emptyToNil(strings.TrimSpace(endedAt)),
+		"status":           emptyToNil(strings.TrimSpace(status)),
+		"exitCode":         nil,
+	}
+	if approval.Reason != "" {
+		payload["reason"] = emptyToNil(strings.TrimSpace(approval.Reason))
+	}
+	if approval.GrantRoot != "" {
+		payload["grantRoot"] = emptyToNil(strings.TrimSpace(approval.GrantRoot))
+	}
+	if approval.Fingerprint != "" {
+		payload["fingerprint"] = emptyToNil(strings.TrimSpace(approval.Fingerprint))
+	}
+	for key, value := range fields {
+		payload[key] = value
+	}
+	a.audit(event, payload)
+}
+
+func (a *App) sessionThreadID(sessionID string) string {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return ""
+	}
+	return strings.TrimSpace(session.ThreadID)
+}
+
+func (a *App) sessionTurnID(sessionID string) string {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return ""
+	}
+	return strings.TrimSpace(session.TurnID)
+}
+
+func (a *App) auditOperator(sessionID string) string {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return "unknown"
+	}
+	if email := strings.TrimSpace(session.Auth.Email); email != "" {
+		return email
+	}
+	if email := strings.TrimSpace(session.Tokens.Email); email != "" {
+		return email
+	}
+	if mode := strings.TrimSpace(session.Auth.Mode); mode != "" {
+		return mode
+	}
+	if session.AuthSessionID != "" {
+		return session.AuthSessionID
+	}
+	return "unknown"
+}
+
+func approvalAuditToolName(approval model.ApprovalRequest) string {
+	switch approval.Type {
+	case "command":
+		return "commandExecution"
+	case "file_change":
+		return "fileChange"
+	case "remote_command", "remote_file_change":
+		return "execute_system_mutation"
+	default:
+		return approval.Type
+	}
+}
+
+func approvalAuditFilePath(approval model.ApprovalRequest, fields map[string]any) any {
+	if fields != nil {
+		if value, ok := fields["filePath"]; ok {
+			return value
+		}
+	}
+	if approval.Type == "file_change" || approval.Type == "remote_file_change" {
+		if len(approval.Changes) > 0 {
+			return emptyToNil(strings.TrimSpace(approval.Changes[0].Path))
+		}
+	}
+	return nil
+}
+
+func (a *App) approvalAuditCwd(approval model.ApprovalRequest) any {
+	switch approval.Type {
+	case "file_change", "remote_file_change":
+		if cwd := strings.TrimSpace(approval.Cwd); cwd != "" {
+			return emptyToNil(cwd)
+		}
+		if grantRoot := strings.TrimSpace(approval.GrantRoot); grantRoot != "" {
+			return emptyToNil(grantRoot)
+		}
+	case "command", "remote_command":
+		if cwd := strings.TrimSpace(approval.Cwd); cwd != "" {
+			return emptyToNil(cwd)
+		}
+	}
+	return emptyToNil(strings.TrimSpace(approval.Cwd))
 }
 
 func approvalGrantFromApproval(approval model.ApprovalRequest) model.ApprovalGrant {
@@ -2250,7 +4032,7 @@ func mapApprovalDecision(decision string, approval model.ApprovalRequest) string
 	switch decision {
 	case "accept", "accept_session":
 		return "accept"
-	case "decline":
+	case "decline", "reject":
 		if slices.Contains(approval.Decisions, "decline") {
 			return "decline"
 		}
@@ -2262,6 +4044,9 @@ func mapApprovalDecision(decision string, approval model.ApprovalRequest) string
 }
 
 func approvalStatusFromDecision(decision string) string {
+	if decision == "reject" {
+		return "decline"
+	}
 	if decision == "accept_session" {
 		return "accepted_for_session"
 	}
@@ -2286,9 +4071,13 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 	if session.ThreadID != "" {
 		return session.ThreadID, nil
 	}
-	selectedHostID := session.SelectedHostID
-	if selectedHostID == "" {
-		selectedHostID = model.ServerLocalHostID
+	return a.ensureThreadWithSpec(ctx, sessionID, a.buildSingleHostThreadStartSpec(ctx, sessionID))
+}
+
+func (a *App) ensureThreadWithSpec(ctx context.Context, sessionID string, spec threadStartSpec) (string, error) {
+	session := a.store.EnsureSession(sessionID)
+	if session.ThreadID != "" {
+		return session.ThreadID, nil
 	}
 
 	var result struct {
@@ -2296,38 +4085,703 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	err := a.codex.Request(ctx, "thread/start", map[string]any{
-		"model":          "gpt-5.4",
-		"cwd":            a.cfg.DefaultWorkspace,
-		"approvalPolicy": "untrusted",
-		"sandbox":        "workspace-write",
-		"developerInstructions": fmt.Sprintf(strings.TrimSpace(`
-You are embedded inside a web AI ops console.
-Operate only on the selected host %q.
-Use the working directory as the default root and keep writes inside it unless the user explicitly requests otherwise.
-Summarize command results clearly for the web UI.
-`), selectedHostID),
-	}, &result)
-	if err != nil {
+	params := map[string]any{
+		"model":                 spec.Model,
+		"cwd":                   spec.Cwd,
+		"approvalPolicy":        spec.ApprovalPolicy,
+		"sandbox":               spec.SandboxMode,
+		"developerInstructions": spec.DeveloperInstructions,
+	}
+	if len(spec.Config) > 0 {
+		params["config"] = spec.Config
+	}
+	if len(spec.DynamicTools) > 0 {
+		params["dynamicTools"] = spec.DynamicTools
+	}
+	startedAt := time.Now()
+	requestID := firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-")
+	a.markTurnTraceThreadStartBegin(sessionID)
+	log.Printf(
+		"codex thread start begin session=%s request=%s cwd=%s model=%s sandbox=%s approval=%s dynamic_tools=%d",
+		sessionID,
+		requestID,
+		spec.Cwd,
+		spec.Model,
+		spec.SandboxMode,
+		spec.ApprovalPolicy,
+		len(spec.DynamicTools),
+	)
+	if err := a.codexRequest(ctx, "thread/start", params, &result); err != nil {
+		log.Printf("codex thread start failed session=%s request=%s err=%v duration=%s", sessionID, requestID, err, time.Since(startedAt))
 		return "", err
 	}
 	a.store.SetThread(sessionID, result.Thread.ID)
+	a.store.SetThreadConfigHash(sessionID, spec.ThreadConfigHash)
+	a.markTurnTraceThreadStarted(sessionID, result.Thread.ID)
+	log.Printf("codex thread start ok session=%s request=%s thread=%s duration=%s", sessionID, requestID, result.Thread.ID, time.Since(startedAt))
 	a.broadcastSnapshot(sessionID)
 	return result.Thread.ID, nil
+}
+
+func (a *App) requestTurnWithSpec(ctx context.Context, sessionID, threadID string, spec turnStartSpec) error {
+	var result map[string]any
+	params := map[string]any{
+		"threadId":              threadID,
+		"cwd":                   spec.Cwd,
+		"approvalPolicy":        spec.ApprovalPolicy,
+		"developerInstructions": spec.DeveloperInstructions,
+		"sandboxPolicy": map[string]any{
+			"type":          codexSandboxPolicyType(spec.SandboxMode),
+			"writableRoots": append([]string(nil), spec.WritableRoots...),
+		},
+		"input": spec.Input,
+	}
+	if spec.ReasoningEffort != "" {
+		params["reasoningEffort"] = spec.ReasoningEffort
+	}
+	startedAt := time.Now()
+	requestID := firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-")
+	a.markTurnTraceTurnStartBegin(sessionID, threadID)
+	log.Printf(
+		"codex turn start begin session=%s request=%s thread=%s cwd=%s sandbox=%s approval=%s input_items=%d reasoning=%s",
+		sessionID,
+		requestID,
+		threadID,
+		spec.Cwd,
+		spec.SandboxMode,
+		spec.ApprovalPolicy,
+		len(spec.Input),
+		spec.ReasoningEffort,
+	)
+	if err := a.codexRequest(ctx, "turn/start", params, &result); err != nil {
+		log.Printf("codex turn start failed session=%s request=%s thread=%s err=%v duration=%s", sessionID, requestID, threadID, err, time.Since(startedAt))
+		return err
+	}
+	if turnID := getTurnID(result); turnID != "" {
+		a.store.SetTurn(sessionID, turnID)
+		a.scheduleTurnStallMonitor(sessionID, stalledTurnTimeout)
+		a.markTurnTraceTurnStarted(sessionID, threadID, turnID)
+		log.Printf("codex turn start ok session=%s request=%s thread=%s turn=%s duration=%s", sessionID, requestID, threadID, turnID, time.Since(startedAt))
+		return nil
+	}
+	a.markTurnTraceTurnStarted(sessionID, threadID, "")
+	log.Printf("codex turn start ok session=%s request=%s thread=%s turn=<missing> duration=%s", sessionID, requestID, threadID, time.Since(startedAt))
+	return nil
+}
+
+func (a *App) agentProfileIDFromRequest(r *http.Request) string {
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	if profileID == "" {
+		profileID = string(model.AgentProfileTypeMainAgent)
+	}
+	return profileID
+}
+
+func (a *App) mainAgentProfile() model.AgentProfile {
+	profile, ok := a.store.AgentProfile(string(model.AgentProfileTypeMainAgent))
+	if !ok {
+		return model.DefaultAgentProfile(string(model.AgentProfileTypeMainAgent))
+	}
+	return model.CompleteAgentProfile(profile)
+}
+
+func (a *App) mainAgentWritableRoots(profile model.AgentProfile) []string {
+	roots := make([]string, 0, len(profile.CommandPermissions.AllowedWritableRoots))
+	for _, root := range profile.CommandPermissions.AllowedWritableRoots {
+		if trimmed := strings.TrimSpace(root); trimmed != "" {
+			roots = append(roots, trimmed)
+		}
+	}
+	if len(roots) == 0 {
+		roots = append(roots, a.cfg.DefaultWorkspace)
+	}
+	return roots
+}
+
+func (a *App) renderMainAgentDeveloperInstructions(profile model.AgentProfile, hostID string, turnScoped bool) string {
+	hostID = defaultHostID(hostID)
+	sections := []string{strings.TrimSpace(profile.SystemPrompt.Content)}
+	contextLines := []string{
+		"You are embedded inside a web AI ops console.",
+		fmt.Sprintf("Operate only on the selected host %q.", hostID),
+		fmt.Sprintf("Use %q as the default writable workspace.", a.cfg.DefaultWorkspace),
+		fmt.Sprintf("Writable roots: %s.", strings.Join(a.mainAgentWritableRoots(profile), ", ")),
+	}
+	if turnScoped {
+		contextLines = append(contextLines, "Summarize execution results clearly for the web UI.")
+	}
+	sections = append(sections, strings.Join(contextLines, "\n"))
+	if enabled := defaultEnabledAgentSkillNames(profile); len(enabled) > 0 {
+		sections = append(sections, "Default-enabled skills:\n- "+strings.Join(enabled, "\n- "))
+	}
+	if explicit := explicitOnlyAgentSkillNames(profile); len(explicit) > 0 {
+		sections = append(sections, "Explicit-only skills (use them only when the user explicitly asks or the workflow requires them):\n- "+strings.Join(explicit, "\n- "))
+	}
+	if enabled := a.enabledAgentMCPNames(profile, hostID); len(enabled) > 0 {
+		sections = append(sections, "Enabled MCP connectors:\n- "+strings.Join(enabled, "\n- "))
+	}
+	if gated := a.explicitApprovalMCPNames(profile, hostID); len(gated) > 0 {
+		sections = append(sections, "The following MCP connectors require explicit user approval before any write or state-changing action:\n- "+strings.Join(gated, "\n- "))
+	}
+	if isRemoteHostID(hostID) {
+		sections = append(sections, remoteThreadDeveloperInstructions(hostID))
+	}
+	return strings.TrimSpace(strings.Join(sections, "\n\n"))
+}
+
+func codexSandboxPolicyType(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "read-only":
+		return "readOnly"
+	case "danger-full-access":
+		return "dangerFullAccess"
+	default:
+		return "workspaceWrite"
+	}
+}
+
+func (a *App) mergeAndValidateAgentProfile(sessionID, requestedProfileID string, incoming model.AgentProfile, riskConfirmed bool) (model.AgentProfile, model.AgentProfile, error) {
+	profileID := strings.TrimSpace(incoming.ID)
+	if profileID == "" {
+		profileID = strings.TrimSpace(requestedProfileID)
+	}
+	if profileID == "" {
+		profileID = string(model.AgentProfileTypeMainAgent)
+	}
+	current, ok := a.store.AgentProfile(profileID)
+	if !ok {
+		current = model.DefaultAgentProfile(profileID)
+	}
+	merged := current
+	if strings.TrimSpace(incoming.ID) != "" {
+		merged.ID = strings.TrimSpace(incoming.ID)
+	}
+	if strings.TrimSpace(incoming.Name) != "" {
+		merged.Name = strings.TrimSpace(incoming.Name)
+	}
+	if strings.TrimSpace(incoming.Type) != "" {
+		merged.Type = strings.TrimSpace(incoming.Type)
+	}
+	merged.Description = strings.TrimSpace(incoming.Description)
+	if strings.TrimSpace(incoming.Runtime.Model) != "" {
+		merged.Runtime.Model = strings.TrimSpace(incoming.Runtime.Model)
+	}
+	if strings.TrimSpace(incoming.Runtime.ReasoningEffort) != "" {
+		merged.Runtime.ReasoningEffort = strings.TrimSpace(incoming.Runtime.ReasoningEffort)
+	}
+	if strings.TrimSpace(incoming.Runtime.ApprovalPolicy) != "" {
+		merged.Runtime.ApprovalPolicy = strings.TrimSpace(incoming.Runtime.ApprovalPolicy)
+	}
+	if strings.TrimSpace(incoming.Runtime.SandboxMode) != "" {
+		merged.Runtime.SandboxMode = strings.TrimSpace(incoming.Runtime.SandboxMode)
+	}
+	if incoming.SystemPrompt.Content != "" {
+		merged.SystemPrompt.Content = strings.TrimSpace(incoming.SystemPrompt.Content)
+	}
+	if incoming.SystemPrompt.Version != "" {
+		merged.SystemPrompt.Version = strings.TrimSpace(incoming.SystemPrompt.Version)
+	}
+	merged.SystemPrompt.Notes = strings.TrimSpace(incoming.SystemPrompt.Notes)
+	if incoming.CommandPermissions.Enabled != nil {
+		merged.CommandPermissions.Enabled = cloneBoolPtr(incoming.CommandPermissions.Enabled)
+	}
+	if incoming.CommandPermissions.AllowShellWrapper != nil {
+		merged.CommandPermissions.AllowShellWrapper = cloneBoolPtr(incoming.CommandPermissions.AllowShellWrapper)
+	}
+	if incoming.CommandPermissions.AllowSudo != nil {
+		merged.CommandPermissions.AllowSudo = cloneBoolPtr(incoming.CommandPermissions.AllowSudo)
+	}
+	if incoming.CommandPermissions.DefaultMode != "" {
+		merged.CommandPermissions.DefaultMode = strings.TrimSpace(incoming.CommandPermissions.DefaultMode)
+	}
+	if incoming.CommandPermissions.DefaultTimeoutSeconds > 0 {
+		merged.CommandPermissions.DefaultTimeoutSeconds = incoming.CommandPermissions.DefaultTimeoutSeconds
+	}
+	if incoming.CommandPermissions.AllowedWritableRoots != nil {
+		merged.CommandPermissions.AllowedWritableRoots = append([]string(nil), incoming.CommandPermissions.AllowedWritableRoots...)
+	}
+	if incoming.CommandPermissions.CategoryPolicies != nil {
+		merged.CommandPermissions.CategoryPolicies = cloneStringMap(incoming.CommandPermissions.CategoryPolicies)
+	}
+	if incoming.CapabilityPermissions != (model.AgentCapabilityPermissions{}) {
+		merged.CapabilityPermissions = incoming.CapabilityPermissions
+	}
+	if incoming.Skills != nil {
+		merged.Skills = append([]model.AgentSkill(nil), incoming.Skills...)
+	}
+	if incoming.MCPs != nil {
+		merged.MCPs = append([]model.AgentMCP(nil), incoming.MCPs...)
+	}
+	merged = model.CompleteAgentProfile(merged)
+	merged.UpdatedAt = model.NowString()
+	merged.UpdatedBy = a.auditOperator(sessionID)
+	if err := validateAgentProfile(merged); err != nil {
+		return model.AgentProfile{}, model.AgentProfile{}, err
+	}
+	if err := validateAgentProfileRiskChange(current, merged, riskConfirmed); err != nil {
+		return model.AgentProfile{}, model.AgentProfile{}, err
+	}
+	return merged, current, nil
+}
+
+func validateAgentProfile(profile model.AgentProfile) error {
+	fieldErrors := make(map[string]string)
+	addFieldError := func(field, message string) {
+		if strings.TrimSpace(field) == "" || strings.TrimSpace(message) == "" {
+			return
+		}
+		if _, exists := fieldErrors[field]; exists {
+			return
+		}
+		fieldErrors[field] = message
+	}
+	profileID := strings.TrimSpace(profile.ID)
+	switch profileID {
+	case string(model.AgentProfileTypeMainAgent), string(model.AgentProfileTypeHostAgentDefault):
+	default:
+		addFieldError("id", fmt.Sprintf("unsupported profile id %q", profileID))
+	}
+	switch strings.TrimSpace(profile.Type) {
+	case string(model.AgentProfileTypeMainAgent), string(model.AgentProfileTypeHostAgentDefault):
+	default:
+		addFieldError("type", fmt.Sprintf("unsupported profile type %q", profile.Type))
+	}
+	if strings.TrimSpace(profile.Name) == "" {
+		addFieldError("name", "profile name is required")
+	}
+	if prompt := strings.TrimSpace(profile.SystemPrompt.Content); prompt == "" {
+		addFieldError("systemPrompt.content", "system prompt is required")
+	} else if len([]rune(prompt)) > 12000 {
+		addFieldError("systemPrompt.content", "system prompt is too long")
+	}
+	if timeout := profile.CommandPermissions.DefaultTimeoutSeconds; timeout <= 0 || timeout > 3600 {
+		addFieldError("commandPermissions.defaultTimeoutSeconds", "default timeout must be between 1 and 3600 seconds")
+	}
+	validCommandModes := map[string]struct{}{
+		model.AgentPermissionModeAllow:            {},
+		model.AgentPermissionModeApprovalRequired: {},
+		model.AgentPermissionModeReadonlyOnly:     {},
+		model.AgentPermissionModeDeny:             {},
+	}
+	validCommandCategories := map[string]struct{}{
+		"system_inspection":   {},
+		"service_read":        {},
+		"network_read":        {},
+		"file_read":           {},
+		"service_mutation":    {},
+		"filesystem_mutation": {},
+		"package_mutation":    {},
+	}
+	if _, ok := validCommandModes[profile.CommandPermissions.DefaultMode]; !ok {
+		addFieldError("commandPermissions.defaultMode", fmt.Sprintf("unsupported command default mode %q", profile.CommandPermissions.DefaultMode))
+	}
+	for category, mode := range profile.CommandPermissions.CategoryPolicies {
+		if _, ok := validCommandCategories[category]; !ok {
+			addFieldError("commandPermissions.categoryPolicies."+category, fmt.Sprintf("unsupported command category %q", category))
+			continue
+		}
+		if _, ok := validCommandModes[mode]; !ok {
+			addFieldError("commandPermissions.categoryPolicies."+category, fmt.Sprintf("unsupported command mode %q for %s", mode, category))
+		}
+	}
+	for index, root := range profile.CommandPermissions.AllowedWritableRoots {
+		if strings.TrimSpace(root) == "" {
+			addFieldError(fmt.Sprintf("commandPermissions.allowedWritableRoots.%d", index), "writable roots must not contain empty paths")
+		}
+	}
+	validCapabilityStates := map[string]struct{}{
+		model.AgentCapabilityEnabled:          {},
+		model.AgentCapabilityApprovalRequired: {},
+		model.AgentCapabilityDisabled:         {},
+	}
+	capabilityFields := map[string]string{
+		"capabilityPermissions.commandExecution": profile.CapabilityPermissions.CommandExecution,
+		"capabilityPermissions.fileRead":         profile.CapabilityPermissions.FileRead,
+		"capabilityPermissions.fileSearch":       profile.CapabilityPermissions.FileSearch,
+		"capabilityPermissions.fileChange":       profile.CapabilityPermissions.FileChange,
+		"capabilityPermissions.terminal":         profile.CapabilityPermissions.Terminal,
+		"capabilityPermissions.webSearch":        profile.CapabilityPermissions.WebSearch,
+		"capabilityPermissions.webOpen":          profile.CapabilityPermissions.WebOpen,
+		"capabilityPermissions.approval":         profile.CapabilityPermissions.Approval,
+		"capabilityPermissions.multiAgent":       profile.CapabilityPermissions.MultiAgent,
+		"capabilityPermissions.plan":             profile.CapabilityPermissions.Plan,
+		"capabilityPermissions.summary":          profile.CapabilityPermissions.Summary,
+	}
+	for field, state := range capabilityFields {
+		if _, ok := validCapabilityStates[state]; !ok {
+			addFieldError(field, fmt.Sprintf("unsupported capability state %q", state))
+		}
+	}
+	supportedSkillIDs := make(map[string]struct{}, len(model.SupportedAgentSkills()))
+	for _, item := range model.SupportedAgentSkills() {
+		supportedSkillIDs[item.ID] = struct{}{}
+	}
+	validActivationModes := map[string]struct{}{
+		model.AgentSkillActivationDefault:  {},
+		model.AgentSkillActivationExplicit: {},
+		model.AgentSkillActivationDisabled: {},
+	}
+	for index, skill := range profile.Skills {
+		if _, ok := supportedSkillIDs[strings.TrimSpace(skill.ID)]; !ok {
+			addFieldError(fmt.Sprintf("skills.%d.id", index), fmt.Sprintf("unsupported skill id %q", skill.ID))
+		}
+		if _, ok := validActivationModes[model.NormalizeAgentSkillActivationMode(skill.ActivationMode)]; !ok {
+			addFieldError(fmt.Sprintf("skills.%d.activationMode", index), fmt.Sprintf("unsupported activation mode %q", skill.ActivationMode))
+		}
+	}
+	supportedMCPIDs := make(map[string]struct{}, len(model.SupportedAgentMCPs()))
+	for _, item := range model.SupportedAgentMCPs() {
+		supportedMCPIDs[item.ID] = struct{}{}
+	}
+	validMCPPermissions := map[string]struct{}{
+		model.AgentMCPPermissionReadonly:  {},
+		model.AgentMCPPermissionReadwrite: {},
+	}
+	for index, item := range profile.MCPs {
+		if _, ok := supportedMCPIDs[strings.TrimSpace(item.ID)]; !ok {
+			addFieldError(fmt.Sprintf("mcps.%d.id", index), fmt.Sprintf("unsupported MCP id %q", item.ID))
+		}
+		if _, ok := validMCPPermissions[model.NormalizeAgentMCPPermission(item.Permission)]; !ok {
+			addFieldError(fmt.Sprintf("mcps.%d.permission", index), fmt.Sprintf("unsupported MCP permission %q", item.Permission))
+		}
+	}
+	if len(fieldErrors) > 0 {
+		return newAgentProfileValidationError(fieldErrors)
+	}
+	return nil
+}
+
+func newAgentProfileValidationError(fieldErrors map[string]string) error {
+	if len(fieldErrors) == 0 {
+		return nil
+	}
+	message := "agent profile validation failed"
+	if len(fieldErrors) == 1 {
+		for _, item := range fieldErrors {
+			message = item
+		}
+	}
+	return agentProfileValidationError{
+		message:     message,
+		fieldErrors: cloneStringMap(fieldErrors),
+	}
+}
+
+func validateAgentProfileRiskChange(before, after model.AgentProfile, riskConfirmed bool) error {
+	fieldErrors := detectHighRiskProfileChanges(before, after)
+	if len(fieldErrors) == 0 || riskConfirmed {
+		return nil
+	}
+	return agentProfileValidationError{
+		message:     "high-risk profile changes require explicit confirmation",
+		fieldErrors: fieldErrors,
+	}
+}
+
+func detectHighRiskProfileChanges(before, after model.AgentProfile) map[string]string {
+	before = model.CompleteAgentProfile(before)
+	after = model.CompleteAgentProfile(after)
+	fieldErrors := make(map[string]string)
+	add := func(field, message string) {
+		if _, exists := fieldErrors[field]; exists {
+			return
+		}
+		fieldErrors[field] = message
+	}
+	if !boolValue(before.CommandPermissions.AllowSudo, false) && boolValue(after.CommandPermissions.AllowSudo, false) {
+		add("commandPermissions.allowSudo", "allowSudo 从关闭改为开启，需要显式确认高风险变更")
+	}
+	if before.Runtime.SandboxMode != "danger-full-access" && after.Runtime.SandboxMode == "danger-full-access" {
+		add("runtime.sandboxMode", "sandboxMode 切到 danger-full-access，需要显式确认高风险变更")
+	}
+	for _, category := range []string{"filesystem_mutation", "service_mutation", "package_mutation"} {
+		beforeMode := before.CommandPermissions.CategoryPolicies[category]
+		afterMode := after.CommandPermissions.CategoryPolicies[category]
+		if beforeMode != model.AgentPermissionModeAllow && afterMode == model.AgentPermissionModeAllow {
+			add("commandPermissions.categoryPolicies."+category, fmt.Sprintf("%s 改为 allow，需要显式确认高风险变更", category))
+		}
+	}
+	beforeCaps := map[string]string{
+		"commandExecution": before.CapabilityPermissions.CommandExecution,
+		"fileChange":       before.CapabilityPermissions.FileChange,
+		"terminal":         before.CapabilityPermissions.Terminal,
+		"webOpen":          before.CapabilityPermissions.WebOpen,
+	}
+	afterCaps := map[string]string{
+		"commandExecution": after.CapabilityPermissions.CommandExecution,
+		"fileChange":       after.CapabilityPermissions.FileChange,
+		"terminal":         after.CapabilityPermissions.Terminal,
+		"webOpen":          after.CapabilityPermissions.WebOpen,
+	}
+	for key, afterState := range afterCaps {
+		beforeState := beforeCaps[key]
+		if beforeState != model.AgentCapabilityEnabled && afterState == model.AgentCapabilityEnabled {
+			add("capabilityPermissions."+key, fmt.Sprintf("%s 改为 enabled，需要显式确认高风险变更", key))
+		}
+	}
+	for _, item := range after.MCPs {
+		if !item.Enabled {
+			continue
+		}
+		beforeItem, ok := findAgentMCP(before.MCPs, item.ID)
+		if !ok {
+			beforeItem = model.AgentMCP{}
+		}
+		if model.NormalizeAgentMCPPermission(beforeItem.Permission) != model.AgentMCPPermissionReadwrite &&
+			model.NormalizeAgentMCPPermission(item.Permission) == model.AgentMCPPermissionReadwrite &&
+			!item.RequiresExplicitUserApproval {
+			add("mcps."+item.ID, fmt.Sprintf("%s 开启 readwrite 且未要求显式审批，需要确认高风险变更", item.ID))
+		}
+	}
+	return fieldErrors
+}
+
+func findAgentMCP(items []model.AgentMCP, id string) (model.AgentMCP, bool) {
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) == strings.TrimSpace(id) {
+			return item, true
+		}
+	}
+	return model.AgentMCP{}, false
+}
+
+func defaultEnabledAgentSkillNames(profile model.AgentProfile) []string {
+	names := make([]string, 0, len(profile.Skills))
+	for _, item := range profile.Skills {
+		if !item.Enabled || model.NormalizeAgentSkillActivationMode(item.ActivationMode) != model.AgentSkillActivationDefault {
+			continue
+		}
+		if label := strings.TrimSpace(item.Name); label != "" {
+			names = append(names, label)
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			names = append(names, id)
+		}
+	}
+	return names
+}
+
+func explicitOnlyAgentSkillNames(profile model.AgentProfile) []string {
+	names := make([]string, 0, len(profile.Skills))
+	for _, item := range profile.Skills {
+		if !item.Enabled || model.NormalizeAgentSkillActivationMode(item.ActivationMode) != model.AgentSkillActivationExplicit {
+			continue
+		}
+		if label := strings.TrimSpace(item.Name); label != "" {
+			names = append(names, label)
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			names = append(names, id)
+		}
+	}
+	return names
+}
+
+func requiredCapabilityForMCP(item model.AgentMCP) string {
+	switch strings.TrimSpace(item.ID) {
+	case "filesystem", "host-files", "host-logs":
+		return "fileRead"
+	case "docs":
+		return "webSearch"
+	case "metrics":
+		return "commandExecution"
+	default:
+		return ""
+	}
+}
+
+func (a *App) effectiveEnabledAgentMCPs(profile model.AgentProfile, hostID string) []model.AgentMCP {
+	items := make([]model.AgentMCP, 0, len(profile.MCPs))
+	for _, item := range profile.MCPs {
+		if !item.Enabled {
+			continue
+		}
+		requiredCapability := requiredCapabilityForMCP(item)
+		if requiredCapability != "" && capabilityDisabled(a.effectiveCapabilityState(hostID, requiredCapability)) {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (a *App) enabledAgentMCPNames(profile model.AgentProfile, hostID string) []string {
+	names := make([]string, 0, len(profile.MCPs))
+	for _, item := range a.effectiveEnabledAgentMCPs(profile, hostID) {
+		label := strings.TrimSpace(item.Name)
+		if label == "" {
+			label = strings.TrimSpace(item.ID)
+		}
+		if label == "" {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%s (%s)", label, model.NormalizeAgentMCPPermission(item.Permission)))
+	}
+	return names
+}
+
+func (a *App) explicitApprovalMCPNames(profile model.AgentProfile, hostID string) []string {
+	names := make([]string, 0, len(profile.MCPs))
+	for _, item := range a.effectiveEnabledAgentMCPs(profile, hostID) {
+		if !item.RequiresExplicitUserApproval {
+			continue
+		}
+		label := strings.TrimSpace(item.Name)
+		if label == "" {
+			label = strings.TrimSpace(item.ID)
+		}
+		if label == "" {
+			continue
+		}
+		names = append(names, label)
+	}
+	return names
+}
+
+func (a *App) buildAgentProfilePreview(profile model.AgentProfile, hostID string) agentProfilePreviewResponse {
+	profile = model.CompleteAgentProfile(profile)
+	commandSummary := make([]string, 0, len(profile.CommandPermissions.CategoryPolicies)+4)
+	commandSummary = append(commandSummary,
+		fmt.Sprintf("命令执行: %s", yesNo(boolValue(profile.CommandPermissions.Enabled, true))),
+		fmt.Sprintf("默认模式: %s", profile.CommandPermissions.DefaultMode),
+		fmt.Sprintf("允许 shell wrapper: %s", yesNo(boolValue(profile.CommandPermissions.AllowShellWrapper, true))),
+		fmt.Sprintf("允许 sudo: %s", yesNo(boolValue(profile.CommandPermissions.AllowSudo, false))),
+	)
+	categories := make([]string, 0, len(profile.CommandPermissions.CategoryPolicies))
+	for category := range profile.CommandPermissions.CategoryPolicies {
+		categories = append(categories, category)
+	}
+	slices.Sort(categories)
+	for _, category := range categories {
+		commandSummary = append(commandSummary, fmt.Sprintf("%s: %s", agentCommandCategoryLabel(category), profile.CommandPermissions.CategoryPolicies[category]))
+	}
+	capabilitySummary := []string{
+		fmt.Sprintf("命令执行: %s", profile.CapabilityPermissions.CommandExecution),
+		fmt.Sprintf("文件读取: %s", profile.CapabilityPermissions.FileRead),
+		fmt.Sprintf("文件搜索: %s", profile.CapabilityPermissions.FileSearch),
+		fmt.Sprintf("文件修改: %s", profile.CapabilityPermissions.FileChange),
+		fmt.Sprintf("终端: %s", profile.CapabilityPermissions.Terminal),
+		fmt.Sprintf("网页搜索: %s", profile.CapabilityPermissions.WebSearch),
+		fmt.Sprintf("网页打开: %s", profile.CapabilityPermissions.WebOpen),
+		fmt.Sprintf("审批: %s", profile.CapabilityPermissions.Approval),
+		fmt.Sprintf("多 Agent: %s", profile.CapabilityPermissions.MultiAgent),
+		fmt.Sprintf("计划: %s", profile.CapabilityPermissions.Plan),
+		fmt.Sprintf("总结: %s", profile.CapabilityPermissions.Summary),
+	}
+	enabledSkills := make([]model.AgentSkill, 0, len(profile.Skills))
+	for _, skill := range profile.Skills {
+		if skill.Enabled && model.NormalizeAgentSkillActivationMode(skill.ActivationMode) != model.AgentSkillActivationDisabled {
+			enabledSkills = append(enabledSkills, skill)
+		}
+	}
+	enabledMCPs := a.effectiveEnabledAgentMCPs(profile, hostID)
+	systemPrompt := strings.TrimSpace(profile.SystemPrompt.Content)
+	if profile.ID == string(model.AgentProfileTypeMainAgent) {
+		systemPrompt = a.renderMainAgentDeveloperInstructions(profile, hostID, true)
+	}
+	return agentProfilePreviewResponse{
+		ProfileID:         profile.ID,
+		ProfileType:       profile.Type,
+		SystemPrompt:      systemPrompt,
+		SystemPromptLines: len(strings.Split(systemPrompt, "\n")),
+		CommandSummary:    commandSummary,
+		CapabilitySummary: capabilitySummary,
+		EnabledSkills:     enabledSkills,
+		EnabledMCPs:       enabledMCPs,
+		Runtime:           profile.Runtime,
+	}
+}
+
+func (a *App) agentProfileAuditSummary(profile model.AgentProfile) map[string]any {
+	if profile.ID == "" {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"id":                profile.ID,
+		"type":              profile.Type,
+		"name":              profile.Name,
+		"model":             profile.Runtime.Model,
+		"reasoningEffort":   profile.Runtime.ReasoningEffort,
+		"approvalPolicy":    profile.Runtime.ApprovalPolicy,
+		"sandboxMode":       profile.Runtime.SandboxMode,
+		"systemPrompt":      profile.SystemPrompt.Preview,
+		"writableRoots":     append([]string(nil), profile.CommandPermissions.AllowedWritableRoots...),
+		"commandEnabled":    boolValue(profile.CommandPermissions.Enabled, true),
+		"allowShellWrapper": boolValue(profile.CommandPermissions.AllowShellWrapper, true),
+		"allowSudo":         boolValue(profile.CommandPermissions.AllowSudo, false),
+	}
+}
+
+func agentCommandCategoryLabel(category string) string {
+	switch category {
+	case "system_inspection":
+		return "系统检查"
+	case "service_read":
+		return "服务读取"
+	case "network_read":
+		return "网络读取"
+	case "file_read":
+		return "文件读取"
+	case "service_mutation":
+		return "服务变更"
+	case "filesystem_mutation":
+		return "文件系统变更"
+	case "package_mutation":
+		return "包管理变更"
+	default:
+		return category
+	}
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "是"
+	}
+	return "否"
+}
+
+func cloneBoolPtr(in *bool) *bool {
+	if in == nil {
+		return nil
+	}
+	value := *in
+	return &value
+}
+
+func boolValue(in *bool, fallback bool) bool {
+	if in == nil {
+		return fallback
+	}
+	return *in
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return make(map[string]string)
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (a *App) snapshot(sessionID string) model.Snapshot {
 	snapshot := a.store.Snapshot(sessionID, model.UIConfig{
 		OAuthConfigured: a.cfg.OAuthConfigured(),
-		CodexAlive:      a.codex.Alive(),
+		CodexAlive:      a.codex != nil && a.codex.Alive(),
 	})
 	snapshot.Runtime.Codex.RetryMax = 5
-	if a.codex.Alive() {
+	if a.codex != nil && a.codex.Alive() {
 		snapshot.Runtime.Codex.Status = "connected"
 		snapshot.Runtime.Codex.LastError = ""
 	} else {
 		snapshot.Runtime.Codex.Status = "stopped"
-		snapshot.Runtime.Codex.LastError = a.codex.LastExitError()
+		if a.codex != nil {
+			snapshot.Runtime.Codex.LastError = a.codex.LastExitError()
+		}
 	}
 	if snapshot.Runtime.Turn.Phase == "" {
 		snapshot.Runtime.Turn.Phase = "idle"
@@ -2340,6 +4794,7 @@ func (a *App) snapshot(sessionID string) model.Snapshot {
 
 func (a *App) broadcastSnapshot(sessionID string) {
 	snapshot := a.snapshot(sessionID)
+	a.relaySnapshotToOrchestrator(sessionID, snapshot)
 	a.wsMu.Lock()
 	defer a.wsMu.Unlock()
 	for conn := range a.wsClients[sessionID] {
@@ -2356,10 +4811,52 @@ func (a *App) broadcastAllSnapshots() {
 	}
 }
 
+// throttledBroadcast coalesces rapid delta broadcasts for a session.
+// It waits 150ms after the last call before actually broadcasting,
+// so token-level deltas don't flood the WebSocket.
+func (a *App) throttledBroadcast(sessionID string) {
+	a.broadcastThrotMu.Lock()
+	defer a.broadcastThrotMu.Unlock()
+
+	if existing, ok := a.broadcastTimers[sessionID]; ok {
+		existing.Stop()
+	}
+	a.broadcastTimers[sessionID] = time.AfterFunc(150*time.Millisecond, func() {
+		a.broadcastSnapshot(sessionID)
+		a.broadcastThrotMu.Lock()
+		delete(a.broadcastTimers, sessionID)
+		a.broadcastThrotMu.Unlock()
+	})
+}
+
+// flushThrottledBroadcast fires any pending throttled broadcast immediately.
+func (a *App) flushThrottledBroadcast(sessionID string) {
+	a.broadcastThrotMu.Lock()
+	if t, ok := a.broadcastTimers[sessionID]; ok {
+		t.Stop()
+		delete(a.broadcastTimers, sessionID)
+		a.broadcastThrotMu.Unlock()
+		a.broadcastSnapshot(sessionID)
+		return
+	}
+	a.broadcastThrotMu.Unlock()
+}
+
 func (a *App) serveFrontend() http.Handler {
 	distPath := filepath.Join("web", "dist")
 	if info, err := os.Stat(distPath); err == nil && info.IsDir() {
-		return http.FileServer(http.Dir(distPath))
+		fs := http.Dir(distPath)
+		fileServer := http.FileServer(fs)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Try to serve the file directly. If it doesn't exist (SPA route),
+			// fall back to index.html so Vue Router can handle it.
+			path := filepath.Join(distPath, filepath.Clean(r.URL.Path))
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				http.ServeFile(w, r, filepath.Join(distPath, "index.html"))
+				return
+			}
+			fileServer.ServeHTTP(w, r)
+		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -2443,7 +4940,7 @@ func (a *App) syncAccountState(ctx context.Context, sessionID string) {
 		RequiresOpenAIAuth bool           `json:"requiresOpenaiAuth"`
 	}
 	refreshToken := currentAuth.Pending || !currentAuth.Connected
-	if err := a.codex.Request(ctx, "account/read", map[string]any{"refreshToken": refreshToken}, &result); err != nil {
+	if err := a.codexRequest(ctx, "account/read", map[string]any{"refreshToken": refreshToken}, &result); err != nil {
 		log.Printf("account sync skipped session=%s err=%s", sessionID, truncate(err.Error(), 200))
 		return
 	}
@@ -2457,7 +4954,7 @@ func (a *App) syncAccountState(ctx context.Context, sessionID string) {
 					Account            map[string]any `json:"account"`
 					RequiresOpenAIAuth bool           `json:"requiresOpenaiAuth"`
 				}
-				if err := a.codex.Request(ctx, "account/read", map[string]any{"refreshToken": false}, &retryResult); err == nil {
+				if err := a.codexRequest(ctx, "account/read", map[string]any{"refreshToken": false}, &retryResult); err == nil {
 					result = retryResult
 				}
 			}
@@ -2531,6 +5028,12 @@ func (a *App) monitorHosts(ctx context.Context) {
 			}
 			for _, hostID := range changed {
 				log.Printf("host-agent timeout host_id=%s marked offline", hostID)
+				a.clearAgentConnection(hostID, nil)
+				a.failRemoteTerminalsForHost(hostID, "remote host heartbeat timed out")
+				a.failRemoteExecsForHost(hostID, "remote host heartbeat timed out")
+				a.failAgentResponseWaitersForHost(hostID, "remote host heartbeat timed out")
+				a.reconcileOrchestratorHostUnavailable(hostID, "remote host heartbeat timed out")
+				a.notifyRemoteHostUnavailable(hostID, "远程主机连接超时", "远程主机心跳超时，当前操作已中断，可重试或刷新主机状态。")
 				a.audit("agent.timeout", map[string]any{
 					"hostId": hostID,
 				})
@@ -2584,7 +5087,7 @@ func (a *App) restoreStoredCodexAuth(ctx context.Context, sessionID string, toke
 	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var result map[string]any
-	if err := a.codex.Request(requestCtx, "account/login/start", map[string]any{
+	if err := a.codexRequest(requestCtx, "account/login/start", map[string]any{
 		"type":             "chatgptAuthTokens",
 		"accessToken":      tokens.AccessToken,
 		"chatgptAccountId": tokens.ChatGPTAccountID,
@@ -2608,6 +5111,163 @@ func (a *App) restoreStoredCodexAuth(ctx context.Context, sessionID string, toke
 
 func (a *App) signSessionCookie(sessionID string) string {
 	return sessionID + "." + a.signatureForSession(sessionID)
+}
+
+func (a *App) respondCodex(ctx context.Context, rawID string, result any) error {
+	if a.codexRespondFunc != nil {
+		return a.codexRespondFunc(ctx, rawID, result)
+	}
+	if a.codex == nil {
+		return errors.New("codex app-server not ready")
+	}
+	return a.codex.Respond(ctx, rawID, result)
+}
+
+func (a *App) selectedRemoteHostForSession(sessionID string) (model.Host, bool) {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return model.Host{}, false
+	}
+	hostID := defaultHostID(session.SelectedHostID)
+	if !isRemoteHostID(hostID) {
+		return model.Host{}, false
+	}
+	return a.findHost(hostID), true
+}
+
+func localToolDisplayName(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "commandExecution":
+		return "commandExecution"
+	case "fileChange":
+		return "fileChange"
+	default:
+		return defaultHostID(strings.TrimSpace(toolName))
+	}
+}
+
+func remoteLocalFallbackMessage(host model.Host, toolName, target string) string {
+	detail := strings.TrimSpace(target)
+	if detail == "" {
+		detail = "当前操作"
+	}
+	return fmt.Sprintf("当前选中的是远程主机 %s（%s），已阻止本地 %s 回退：%s。请改用携带 host=%s 的远程 execute_* 工具，系统不会静默回退到 server-local。",
+		hostNameOrID(host),
+		defaultHostID(host.ID),
+		localToolDisplayName(toolName),
+		detail,
+		defaultHostID(host.ID),
+	)
+}
+
+func (a *App) upsertRemoteFallbackErrorCard(sessionID string, host model.Host, title, message string) {
+	now := model.NowString()
+	retryable := true
+	card := model.Card{
+		ID:        model.NewID("error"),
+		Type:      "ErrorCard",
+		Title:     title,
+		Message:   message,
+		Text:      message,
+		Status:    "failed",
+		Retryable: &retryable,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	applyCardHost(&card, host)
+	a.store.UpsertCard(sessionID, card)
+}
+
+func (a *App) rejectUnexpectedLocalApproval(sessionID, rawID, toolName, target string, host model.Host) {
+	message := remoteLocalFallbackMessage(host, toolName, target)
+	a.setRuntimeTurnPhase(sessionID, "thinking")
+	a.upsertRemoteFallbackErrorCard(sessionID, host, "已阻止回退到本地执行", message)
+	a.audit("remote.local_fallback_blocked", map[string]any{
+		"sessionId": sessionID,
+		"hostId":    host.ID,
+		"hostName":  hostNameOrID(host),
+		"toolName":  toolName,
+		"target":    emptyToNil(strings.TrimSpace(target)),
+		"phase":     "approval",
+	})
+	a.broadcastSnapshot(sessionID)
+	_ = a.respondCodex(context.Background(), rawID, map[string]any{
+		"decision": "decline",
+	})
+}
+
+func (a *App) interruptTurnAsync(threadID, turnID string) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" || a.codex == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		params := map[string]any{
+			"threadId":                   threadID,
+			"clean_background_terminals": true,
+		}
+		if turnID = strings.TrimSpace(turnID); turnID != "" {
+			params["turnId"] = turnID
+		}
+		var result map[string]any
+		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil {
+			log.Printf("interrupt unexpected local fallback failed thread=%s turn=%s err=%s", threadID, turnID, truncate(err.Error(), 200))
+		}
+	}()
+}
+
+func (a *App) blockUnexpectedLocalExecution(sessionID string, payload, item map[string]any, host model.Host) {
+	itemID := getString(item, "id")
+	itemType := getString(item, "type")
+	target := getString(item, "command")
+	title := "已阻止回退到本地执行"
+	if itemType == "fileChange" {
+		title = "已阻止本地文件修改回退"
+		changes := toChanges(item["changes"])
+		if len(changes) > 0 {
+			target = changes[0].Path
+		}
+	}
+	message := remoteLocalFallbackMessage(host, itemType, target)
+	now := model.NowString()
+
+	if itemID != "" {
+		card := model.Card{
+			ID:        itemID,
+			Type:      "CommandCard",
+			Title:     title,
+			Status:    "failed",
+			Command:   target,
+			Output:    message,
+			Text:      message,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if itemType == "fileChange" {
+			card.Type = "FileChangeCard"
+			card.Command = ""
+			card.Changes = toChanges(item["changes"])
+		}
+		applyCardHost(&card, host)
+		a.store.UpsertCard(sessionID, card)
+	}
+
+	a.finishRuntimeTurn(sessionID, "failed")
+	a.upsertRemoteFallbackErrorCard(sessionID, host, title, message)
+	a.audit("remote.local_fallback_blocked", map[string]any{
+		"sessionId": sessionID,
+		"threadId":  getStringAny(payload, "threadId", "thread_id"),
+		"turnId":    getTurnID(payload),
+		"hostId":    host.ID,
+		"hostName":  hostNameOrID(host),
+		"toolName":  itemType,
+		"target":    emptyToNil(strings.TrimSpace(target)),
+		"phase":     "started",
+	})
+	a.broadcastSnapshot(sessionID)
+	a.interruptTurnAsync(getStringAny(payload, "threadId", "thread_id"), getTurnID(payload))
 }
 
 func (a *App) verifySessionCookie(value string) (string, bool) {
@@ -2662,6 +5322,54 @@ func (a *App) audit(event string, fields map[string]any) {
 
 	if _, err := file.Write(append(content, '\n')); err != nil {
 		log.Printf("audit write failed path=%s err=%s", a.cfg.AuditLogPath, truncate(err.Error(), 200))
+	}
+}
+
+func (a *App) notifyRemoteHostUnavailable(hostID, title, message string) {
+	now := model.NowString()
+	retryable := true
+	host := a.findHost(hostID)
+	fullMessage := strings.TrimSpace(message)
+	if !strings.Contains(fullMessage, "server-local") {
+		fullMessage += " 系统不会静默回退到 server-local。"
+	}
+	for _, sessionID := range a.store.SessionIDs() {
+		session := a.store.Session(sessionID)
+		if session == nil {
+			continue
+		}
+		if defaultHostID(session.SelectedHostID) != hostID && defaultHostID(session.Runtime.Turn.HostID) != hostID {
+			continue
+		}
+		if session.Runtime.Turn.Active {
+			a.finishRuntimeTurn(sessionID, "failed")
+		}
+		a.store.UpsertCard(sessionID, model.Card{
+			ID:        fmt.Sprintf("remote-host-error-%s", hostID),
+			Type:      "ErrorCard",
+			Title:     title,
+			Message:   fullMessage,
+			Text:      fullMessage,
+			Status:    "failed",
+			Retryable: &retryable,
+			HostID:    defaultHostID(host.ID),
+			HostName:  hostNameOrID(host),
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+}
+
+func (a *App) clearRemoteHostUnavailableCards(hostID string) {
+	hostID = defaultHostID(strings.TrimSpace(hostID))
+	if hostID == "" {
+		return
+	}
+	cardID := fmt.Sprintf("remote-host-error-%s", hostID)
+	for _, sessionID := range a.store.SessionIDs() {
+		if a.store.RemoveCard(sessionID, cardID) {
+			log.Printf("remote host recovered host_id=%s session=%s cleared_card=%s", hostID, sessionID, cardID)
+		}
 	}
 }
 
@@ -2739,11 +5447,12 @@ func (a *App) findHost(hostID string) model.Host {
 		}
 	}
 	return model.Host{
-		ID:         hostID,
-		Name:       hostID,
-		Kind:       "agent",
-		Status:     "online",
-		Executable: false,
+		ID:              hostID,
+		Name:            hostID,
+		Kind:            "inventory",
+		Status:          "offline",
+		Executable:      false,
+		TerminalCapable: false,
 	}
 }
 
@@ -2916,6 +5625,18 @@ func normalizeCardStatus(status string) string {
 	}
 }
 
+func normalizeApprovalDecisionInput(decision string) string {
+	normalized := strings.ToLower(strings.TrimSpace(decision))
+	switch normalized {
+	case "", "accept":
+		return "accept"
+	case "reject":
+		return "decline"
+	default:
+		return normalized
+	}
+}
+
 func completedItemStatus(item map[string]any) string {
 	status := normalizeCardStatus(getString(item, "status"))
 	if status != "inProgress" {
@@ -3019,6 +5740,12 @@ func detectActivitySignal(item map[string]any) (kind string, entry model.Activit
 			Label: "Search the web: " + query,
 			Query: query,
 		}, query, true
+	case query != "" && filePath != "" && isFileSearchDescriptor(descriptorText):
+		return "file_search", model.ActivityEntry{
+			Label: "Search files in " + filePath + " for " + query,
+			Path:  filePath,
+			Query: query,
+		}, query, true
 	case filePath != "" && isListDescriptor(descriptorText):
 		return "list", model.ActivityEntry{
 			Label: "List " + filePath,
@@ -3042,9 +5769,75 @@ func detectProtocolActivitySignal(item map[string]any) (kind string, entry model
 	switch strings.ToLower(getString(item, "type")) {
 	case "websearch":
 		return detectWebSearchSignal(item)
+	case "filesearch":
+		return detectFileSearchSignal(item)
+	case "filelist":
+		return detectFileListSignal(item)
+	case "fileread":
+		return detectFileReadSignal(item)
+	case "commandexecution":
+		return detectCommandExecutionSignal(item)
 	default:
 		return "", model.ActivityEntry{}, "", false
 	}
+}
+
+func detectCommandExecutionSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	command := strings.TrimSpace(getStringAny(item, "command", "commandLine", "command_line"))
+	if command == "" {
+		command = strings.TrimSpace(composeCommandFromProgramArgs(item))
+	}
+	if command == "" {
+		return "", model.ActivityEntry{}, "", false
+	}
+	label := truncate(command, 96)
+	return "command", model.ActivityEntry{
+		Label: "Execute command: " + command,
+		Query: command,
+	}, label, true
+}
+
+func detectFileSearchSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	path := strings.TrimSpace(getStringAny(item, "path", "directory", "root", "scope"))
+	query := strings.TrimSpace(getStringAny(item, "query", "searchQuery", "search_query", "pattern"))
+	if query == "" || path == "" {
+		return "", model.ActivityEntry{}, "", false
+	}
+	return "file_search", model.ActivityEntry{
+		Label: "Search files in " + path + " for " + query,
+		Path:  path,
+		Query: query,
+	}, query, true
+}
+
+func detectFileListSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	path := strings.TrimSpace(getStringAny(item, "path", "directory", "root"))
+	if path == "" {
+		return "", model.ActivityEntry{}, "", false
+	}
+	label := filepath.Base(path)
+	if label == "." || label == "/" || label == "" {
+		label = path
+	}
+	return "list", model.ActivityEntry{
+		Label: "List " + path,
+		Path:  path,
+	}, label, true
+}
+
+func detectFileReadSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
+	path := strings.TrimSpace(getStringAny(item, "path", "file", "filePath"))
+	if path == "" {
+		return "", model.ActivityEntry{}, "", false
+	}
+	label := filepath.Base(path)
+	if label == "." || label == "/" || label == "" {
+		label = path
+	}
+	return "file_read", model.ActivityEntry{
+		Label: "Read " + label,
+		Path:  path,
+	}, label, true
 }
 
 func detectWebSearchSignal(item map[string]any) (kind string, entry model.ActivityEntry, currentLabel string, ok bool) {
@@ -3171,6 +5964,14 @@ func isWebSearchDescriptor(text string) bool {
 		strings.Contains(text, "websearch") ||
 		strings.Contains(text, "web_search") ||
 		strings.Contains(text, "web search")
+}
+
+func isFileSearchDescriptor(text string) bool {
+	return descriptorHasToken(text, "search") ||
+		descriptorHasToken(text, "find") ||
+		descriptorHasToken(text, "grep") ||
+		strings.Contains(text, "file search") ||
+		strings.Contains(text, "search files")
 }
 
 func isListDescriptor(text string) bool {

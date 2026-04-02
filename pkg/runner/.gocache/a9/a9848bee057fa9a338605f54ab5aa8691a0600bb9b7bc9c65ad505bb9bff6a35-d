@@ -1,0 +1,6 @@
+# test log
+getenv RUNNER_UI_BASE_PATH
+getenv RUNNER_TOKEN
+getenv RUNNER_SERVER_ADDR
+getenv RUNNER_UI_DIST_DIR
+getenv RUNNER_UI_BASE_PATH
