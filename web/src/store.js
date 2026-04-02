@@ -17,8 +17,27 @@ function isAssistantCard(card) {
   return card?.type === "AssistantMessageCard" || (card?.type === "MessageCard" && card?.role === "assistant");
 }
 
+function isTerminalTurnPhase(phase) {
+  return ["idle", "completed", "failed", "aborted"].includes(String(phase || "").trim().toLowerCase());
+}
+
+function normalizeTurnRuntime(turn = {}, fallbackHostId = "server-local") {
+  const phase = String(turn?.phase || "idle").trim().toLowerCase() || "idle";
+  return {
+    active: !isTerminalTurnPhase(phase) && !!turn?.active,
+    phase,
+    hostId: turn?.hostId || fallbackHostId,
+    startedAt: turn?.startedAt || null,
+    ...turn,
+    active: !isTerminalTurnPhase(phase) && !!turn?.active,
+    phase,
+    hostId: turn?.hostId || fallbackHostId,
+    startedAt: turn?.startedAt || null,
+  };
+}
+
 function deriveSessionStatus(cards, runtime) {
-  if (runtime?.turn?.active) {
+  if (runtime?.turn?.active && !isTerminalTurnPhase(runtime?.turn?.phase)) {
     return runtime.turn.phase === "waiting_approval" ? "waiting_approval" : "running";
   }
   if (!cards?.length) return "empty";
@@ -1028,13 +1047,7 @@ export const useAppStore = defineStore("app", {
       this.snapshot.config = data.config || this.snapshot.config;
       /* Merge runtime if server sends it */
       if (data.runtime) {
-        this.runtime.turn = {
-          active: false,
-          phase: "idle",
-          hostId: this.snapshot.selectedHostId || "server-local",
-          startedAt: null,
-          ...(data.runtime.turn || {}),
-        };
+        this.runtime.turn = normalizeTurnRuntime(data.runtime.turn || {}, this.snapshot.selectedHostId || "server-local");
         this.runtime.codex = {
           status: "connected",
           retryAttempt: this.runtime.codex.retryAttempt,
@@ -1110,8 +1123,14 @@ export const useAppStore = defineStore("app", {
       return this.activateSession(workspaceSession.id);
     },
     setTurnPhase(phase) {
-      this.runtime.turn.active = phase !== "idle" && phase !== "completed" && phase !== "failed" && phase !== "aborted";
-      this.runtime.turn.phase = phase;
+      this.runtime.turn = normalizeTurnRuntime(
+        {
+          ...this.runtime.turn,
+          phase,
+          active: !isTerminalTurnPhase(phase),
+        },
+        this.snapshot.selectedHostId || "server-local",
+      );
     },
     resetActivity() {
       this.runtime.activity = {

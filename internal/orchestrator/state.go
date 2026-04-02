@@ -7,6 +7,8 @@ type SessionKind string
 const (
 	SessionKindSingleHost SessionKind = "single_host"
 	SessionKindWorkspace  SessionKind = "workspace"
+	// Legacy-only: kept so old planner-backed missions can still be loaded and
+	// explicitly failed during reconcile after planner removal.
 	SessionKindPlanner    SessionKind = "planner"
 	SessionKindWorker     SessionKind = "worker"
 )
@@ -16,6 +18,7 @@ type RuntimePreset string
 const (
 	RuntimePresetSingleHostDefault RuntimePreset = "single_host_default"
 	RuntimePresetWorkspaceFront    RuntimePreset = "workspace_front"
+	// Legacy-only: new workspace missions no longer create planner runtimes.
 	RuntimePresetPlannerInternal   RuntimePreset = "planner_internal"
 	RuntimePresetWorkerInternal    RuntimePreset = "worker_internal"
 )
@@ -61,6 +64,8 @@ const (
 type LeaseKind string
 
 const (
+	// Legacy-only: no new planner lease is allocated; this kind remains only so
+	// old persisted missions can still be deserialized.
 	LeaseKindPlanner LeaseKind = "planner"
 	LeaseKindWorker  LeaseKind = "worker"
 )
@@ -90,6 +95,7 @@ type SessionMeta struct {
 	WorkspaceSessionID string        `json:"workspaceSessionId,omitempty"`
 	WorkerHostID       string        `json:"workerHostId,omitempty"`
 	RuntimePreset      RuntimePreset `json:"runtimePreset,omitempty"`
+	// Legacy-only: preserved for old planner-backed missions.
 	PlannerThreadID    string        `json:"plannerThreadId,omitempty"`
 	WorkerThreadID     string        `json:"workerThreadId,omitempty"`
 	CreatedAt          string        `json:"createdAt,omitempty"`
@@ -99,6 +105,7 @@ type SessionMeta struct {
 type Mission struct {
 	ID                  string                     `json:"id"`
 	WorkspaceSessionID  string                     `json:"workspaceSessionId,omitempty"`
+	// Legacy-only compatibility fields. New missions are workspace + worker only.
 	PlannerSessionID    string                     `json:"plannerSessionId,omitempty"`
 	PlannerThreadID     string                     `json:"plannerThreadId,omitempty"`
 	Title               string                     `json:"title,omitempty"`

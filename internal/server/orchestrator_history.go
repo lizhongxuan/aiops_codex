@@ -20,29 +20,6 @@ type workspaceMissionHistoryDetailResponse struct {
 	PlanDetail orchestrator.PlanDetailView `json:"planDetail"`
 }
 
-func plannerConversationModelItems(threadID string, items []orchestrator.PlannerConversationExcerptView) []model.ConversationExcerpt {
-	if len(items) == 0 {
-		return nil
-	}
-	out := make([]model.ConversationExcerpt, 0, len(items))
-	for _, item := range items {
-		out = append(out, model.ConversationExcerpt{
-			ID:        strings.TrimSpace(item.ID),
-			SessionID: strings.TrimSpace(item.SessionID),
-			ThreadID:  strings.TrimSpace(threadID),
-			Role:      strings.TrimSpace(item.Role),
-			Source:    strings.TrimSpace(item.Source),
-			CardType:  strings.TrimSpace(item.Type),
-			Title:     strings.TrimSpace(item.Summary),
-			Text:      strings.TrimSpace(item.Text),
-			Summary:   strings.TrimSpace(item.Summary),
-			CreatedAt: strings.TrimSpace(item.CreatedAt),
-			UpdatedAt: strings.TrimSpace(item.CreatedAt),
-		})
-	}
-	return out
-}
-
 func workerConversationModelItems(hostID string, taskID string, threadID string, items []orchestrator.WorkerConversationExcerptView) []model.ConversationExcerpt {
 	if len(items) == 0 {
 		return nil
@@ -162,7 +139,6 @@ func (a *App) buildMissionHistoryDetail(mission *orchestrator.Mission) (model.Mi
 		return detail, planDetail
 	}
 
-	detail.PlannerConversation = plannerConversationModelItems(mission.PlannerThreadID, planDetail.PlannerConversation)
 	detail.DispatchEvents = dispatchEventModelItems(mission.ID, planDetail.DispatchEvents)
 	detail.TaskBindings = taskHostBindingModelItems(mission.ID, planDetail.TaskHostBindings)
 

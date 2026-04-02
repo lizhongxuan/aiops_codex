@@ -215,6 +215,396 @@ func TestHandleChoiceAnswerRoutesToWorkerSessionMirror(t *testing.T) {
 	}
 }
 
+func TestWorkspaceStateQueryAnswersFromAIServerProjection(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
+		payload := map[string]any{}
+		switch method {
+		case "thread/start":
+			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-state-1"}}
+		case "turn/start":
+			payload = map[string]any{"turnId": "turn-workspace-state-1"}
+		}
+		content, _ := json.Marshal(payload)
+		return json.Unmarshal(content, result)
+	}
+
+	workspaceSessionID := "workspace-state-query"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.UpsertHost(model.Host{ID: "web-01", Name: "web-01", Kind: "remote", Status: "online", Executable: true})
+	app.store.UpsertHost(model.Host{ID: "db-04", Name: "db-04", Kind: "remote", Status: "offline", Executable: true})
+	app.store.AddApproval(workspaceSessionID, model.ApprovalRequest{
+		ID:          "approval-state-1",
+		HostID:      "server-local",
+		Type:        "command",
+		Status:      "pending",
+		Command:     `/bin/zsh -lc "find .. -maxdepth 2"`,
+		RequestedAt: model.NowString(),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/message", nil)
+	rec := httptest.NewRecorder()
+	app.handleWorkspaceChatMessage(rec, req, workspaceSessionID, chatRequest{Message: "有哪些主机在线"}, time.Now())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
+		t.Fatalf("expected state query route without starting mission, got %#v", mission)
+	}
+
+	session := app.store.Session(workspaceSessionID)
+	if session == nil {
+		t.Fatalf("expected workspace session")
+	}
+	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-route") {
+		t.Fatalf("expected workspace route thread config hash, got %q", got)
+	}
+	for _, card := range session.Cards {
+		if card.Type == "NoticeCard" && strings.Contains(card.Title, "主 Agent 正在思考") {
+			t.Fatalf("did not expect route-thinking notice, got %#v", card)
+		}
+	}
+}
+
+func TestWorkspaceReadonlyQuestionUsesSelectedRemoteHostDirectly(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
+		payload := map[string]any{}
+		switch method {
+		case "thread/start":
+			payload = map[string]any{"thread": map[string]any{"id": "thread-readonly-1"}}
+		case "turn/start":
+			payload = map[string]any{"turnId": "turn-readonly-1"}
+		}
+		content, _ := json.Marshal(payload)
+		return json.Unmarshal(content, result)
+	}
+
+	app.store.UpsertHost(model.Host{
+		ID:              "host-1",
+		Name:            "host-1",
+		Kind:            "linux",
+		Status:          "online",
+		Executable:      true,
+		TerminalCapable: true,
+	})
+	workspaceSessionID := "workspace-readonly"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetSelectedHost(workspaceSessionID, "host-1")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/message", nil)
+	rec := httptest.NewRecorder()
+	app.handleWorkspaceChatMessage(rec, req, workspaceSessionID, chatRequest{Message: "看下 CPU"}, time.Now())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted readonly request, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
+		t.Fatalf("expected readonly host query without mission, got %#v", mission)
+	}
+	session := app.store.Session(workspaceSessionID)
+	if session == nil || session.SelectedHostID != "host-1" {
+		t.Fatalf("expected selected host host-1, got %#v", session)
+	}
+}
+
+func TestWorkspaceSimpleConversationRepliesDirectlyWithoutMission(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
+		payload := map[string]any{}
+		switch method {
+		case "thread/start":
+			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-direct-1"}}
+		case "turn/start":
+			payload = map[string]any{"turnId": "turn-workspace-direct-1"}
+		}
+		content, _ := json.Marshal(payload)
+		return json.Unmarshal(content, result)
+	}
+
+	workspaceSessionID := "workspace-direct"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/message", nil)
+	rec := httptest.NewRecorder()
+	app.handleWorkspaceChatMessage(rec, req, workspaceSessionID, chatRequest{Message: "你好"}, time.Now())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted direct reply request, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
+		t.Fatalf("expected simple conversation without mission, got %#v", mission)
+	}
+	session := app.store.Session(workspaceSessionID)
+	if session == nil {
+		t.Fatalf("expected workspace session")
+	}
+	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-route") {
+		t.Fatalf("expected route workspace thread config hash, got %q", got)
+	}
+	for _, card := range session.Cards {
+		if card.Type == "NoticeCard" && strings.Contains(card.Title, "主 Agent 正在思考") {
+			t.Fatalf("did not expect route notice card, got %#v", card)
+		}
+	}
+}
+
+func TestWorkspaceRouteConversationIgnoresPlanUpdatedEvents(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	workspaceSessionID := "workspace-route-plan-ignore"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetThread(workspaceSessionID, "thread-workspace-route-ignore")
+	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash(model.ServerLocalHostID))
+
+	params, err := json.Marshal(map[string]any{
+		"threadId": "thread-workspace-route-ignore",
+		"turnId":   "turn-workspace-route-ignore",
+		"plan": []map[string]any{
+			{"step": "你好", "status": "completed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	app.handleCodexNotification("turn/plan/updated", params)
+
+	session := app.store.Session(workspaceSessionID)
+	if session == nil {
+		t.Fatalf("expected workspace session")
+	}
+	for _, card := range session.Cards {
+		if card.Type == "PlanCard" {
+			t.Fatalf("expected route workspace conversation to ignore plan card, got %#v", card)
+		}
+	}
+}
+
+func TestWorkspaceRouteCompletionSanitizesDirectReply(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	workspaceSessionID := "workspace-route-direct-complete"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash(model.ServerLocalHostID))
+	now := model.NowString()
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "msg-user-1",
+		Type:      "UserMessageCard",
+		Role:      "user",
+		Text:      "你好",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "msg-assistant-1",
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      "```json\n{\"route\":\"direct_answer\",\"reason\":\"greeting\",\"targetHostId\":\"\",\"needsPlan\":false,\"needsWorker\":false}\n```\n你好，有什么需要我处理的？",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
+
+	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
+		t.Fatalf("expected no mission for direct answer, got %#v", mission)
+	}
+	reply := app.latestCompletedAssistantText(workspaceSessionID)
+	if strings.Contains(reply, "\"route\"") || strings.Contains(reply, "```json") {
+		t.Fatalf("expected sanitized assistant text, got %q", reply)
+	}
+	if !strings.Contains(reply, "你好，有什么需要我处理的") {
+		t.Fatalf("expected visible direct answer, got %q", reply)
+	}
+}
+
+func TestWorkspaceRouteCompletionStartsPlanningForComplexTask(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
+		payload := map[string]any{}
+		switch method {
+		case "thread/start":
+			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-route-plan-1"}}
+		case "turn/start":
+			payload = map[string]any{"turnId": "turn-workspace-route-plan-1"}
+		}
+		content, _ := json.Marshal(payload)
+		return json.Unmarshal(content, result)
+	}
+
+	workspaceSessionID := "workspace-route-complex-complete"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash(model.ServerLocalHostID))
+	now := model.NowString()
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "msg-user-1",
+		Type:      "UserMessageCard",
+		Role:      "user",
+		Text:      "帮我执行一轮全网 nginx 巡检",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "msg-assistant-1",
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      "```json\n{\"route\":\"complex_task\",\"reason\":\"requires multi-step execution\",\"targetHostId\":\"\",\"needsPlan\":true,\"needsWorker\":true}\n```\n我先整理计划，准备在需要时协调 worker。",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
+
+	mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
+	if !ok || mission == nil {
+		t.Fatalf("expected mission to start for complex task")
+	}
+	if got := strings.TrimSpace(app.store.Session(workspaceSessionID).ThreadConfigHash); !strings.HasSuffix(got, ":workspace-orchestration") {
+		t.Fatalf("expected orchestration thread config hash, got %q", got)
+	}
+	foundPlanningNotice := false
+	for _, card := range app.store.Session(workspaceSessionID).Cards {
+		if card.Type == "NoticeCard" && strings.Contains(card.Title, "plan 正在运行中") {
+			foundPlanningNotice = true
+			break
+		}
+	}
+	if !foundPlanningNotice {
+		t.Fatalf("expected planning notice after complex route")
+	}
+}
+
+func TestWorkspacePlanReplyDispatchesTasks(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
+		payload := map[string]any{}
+		switch method {
+		case "thread/start":
+			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-plan-1"}}
+		case "turn/start":
+			payload = map[string]any{"turnId": "turn-workspace-plan-1"}
+		}
+		content, _ := json.Marshal(payload)
+		return json.Unmarshal(content, result)
+	}
+
+	app.store.UpsertHost(model.Host{
+		ID:              "host-1",
+		Name:            "host-1",
+		Kind:            "linux",
+		Status:          "online",
+		Executable:      true,
+		TerminalCapable: true,
+	})
+	stream := &remoteStatusUnifyAgentStream{
+		onSend: func(msg *agentrpc.Envelope) error {
+			if msg.Kind != "exec/start" || msg.ExecStart == nil {
+				return nil
+			}
+			app.handleAgentExecExit("host-1", &agentrpc.ExecExit{
+				ExecID:   msg.ExecStart.ExecID,
+				Status:   "completed",
+				ExitCode: 0,
+			})
+			return nil
+		},
+	}
+	app.setAgentConnection("host-1", &agentConnection{hostID: "host-1", stream: stream})
+
+	workspaceSessionID := "workspace-plan-dispatch"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+		WorkspaceSessionID: workspaceSessionID,
+		PlannerSessionID:   "planner-plan-dispatch",
+		Title:              "plan dispatch demo",
+		Summary:            "plan dispatch demo",
+	})
+	if err != nil {
+		t.Fatalf("start mission: %v", err)
+	}
+
+	reply := "先完成 host-1 的只读检查，再继续后续操作。\n```json\n" +
+		"{\"missionTitle\":\"plan dispatch demo\",\"summary\":\"先完成只读检查\",\"tasks\":[{\"taskId\":\"task-1\",\"hostId\":\"host-1\",\"title\":\"inspect host\",\"instruction\":\"inspect nginx status\"}]}\n" +
+		"```"
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "workspace-plan-reply-1",
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      reply,
+		Status:    "completed",
+		CreatedAt: model.NowString(),
+		UpdatedAt: model.NowString(),
+	})
+
+	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
+
+	updatedMission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
+	if !ok {
+		t.Fatalf("expected mission after workspace plan dispatch")
+	}
+	if updatedMission.ID != mission.ID {
+		t.Fatalf("expected same mission id, got %s vs %s", updatedMission.ID, mission.ID)
+	}
+	worker := updatedMission.Workers["host-1"]
+	if worker == nil {
+		t.Fatalf("expected worker for host-1")
+	}
+	if task := updatedMission.Tasks["task-1"]; task == nil {
+		t.Fatalf("expected task-1 after workspace dispatch")
+	}
+	planCard := app.cardByID(workspaceSessionID, "workspace-plan-"+mission.ID)
+	if planCard == nil {
+		t.Fatalf("expected workspace plan card after dispatch")
+	}
+	if _, ok := planCard.Detail["planner_conversation"]; ok {
+		t.Fatalf("expected planner conversation to be omitted from workspace plan detail, got %#v", planCard.Detail["planner_conversation"])
+	}
+}
+
 func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
@@ -257,7 +647,6 @@ func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 	app.setAgentConnection("host-1", &agentConnection{hostID: "host-1", stream: stream})
 
 	workspaceSessionID := "workspace-1"
-	plannerSessionID := "planner-1"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -266,25 +655,16 @@ func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
 
-	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+	_, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-1",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "demo",
 		Summary:            "demo summary",
 	})
 	if err != nil {
 		t.Fatalf("start mission: %v", err)
 	}
-	app.ensureInternalSessionFromWorkspace(plannerSessionID, workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	}, model.ServerLocalHostID)
-
-	app.handlePlannerDispatchTasks("raw-dispatch", plannerSessionID, map[string]any{
+	app.handleWorkspaceDispatchTasks("raw-dispatch", workspaceSessionID, map[string]any{
 		"tasks": []map[string]any{
 			{
 				"taskId":      "task-1",
@@ -339,6 +719,74 @@ func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTurnKeepsReplyAfterDispatch(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+
+	app.store.UpsertHost(model.Host{
+		ID:         "host-1",
+		Name:       "host-1",
+		Kind:       "remote",
+		Status:     "online",
+		Executable: true,
+	})
+
+	workspaceSessionID := "workspace-planner-reply"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+
+	_, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+		MissionID:          "mission-planner-reply",
+		WorkspaceSessionID: workspaceSessionID,
+		Title:              "检查主机状态",
+		Summary:            "检查主机状态",
+	})
+	if err != nil {
+		t.Fatalf("start mission: %v", err)
+	}
+	app.handleWorkspaceDispatchTasks("raw-dispatch", workspaceSessionID, map[string]any{
+		"summary": "先收集在线主机状态，再决定是否继续执行。",
+		"tasks": []map[string]any{
+			{
+				"taskId":      "task-1",
+				"hostId":      "host-1",
+				"title":       "检查 host-1",
+				"instruction": "检查 nginx 状态",
+			},
+		},
+	})
+
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "workspace-assistant-1",
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      "巡检计划已生成，准备派发到 1 台主机执行。",
+		Status:    "completed",
+		CreatedAt: model.NowString(),
+		UpdatedAt: model.NowString(),
+	})
+	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
+
+	session := app.store.Session(workspaceSessionID)
+	if session == nil {
+		t.Fatalf("expected workspace session")
+	}
+	foundReply := false
+	for _, card := range session.Cards {
+		if card.Type == "AssistantMessageCard" && strings.Contains(card.Text, "巡检计划已生成，准备派发到 1 台主机执行") {
+			foundReply = true
+			break
+		}
+	}
+	if !foundReply {
+		t.Fatalf("expected workspace reply to stay visible after dispatch, got %#v", session.Cards)
+	}
+}
+
 func TestWorkspaceProjectionIncludesRichPlanAndWorkerReadModels(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
@@ -364,7 +812,6 @@ func TestWorkspaceProjectionIncludesRichPlanAndWorkerReadModels(t *testing.T) {
 	})
 
 	workspaceSessionID := "workspace-rich"
-	plannerSessionID := "planner-rich"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -373,25 +820,16 @@ func TestWorkspaceProjectionIncludesRichPlanAndWorkerReadModels(t *testing.T) {
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
 
-	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+	_, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-rich",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "rich projection",
 		Summary:            "collect richer read models",
 	})
 	if err != nil {
 		t.Fatalf("start mission: %v", err)
 	}
-	app.ensureInternalSessionFromWorkspace(plannerSessionID, workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	}, model.ServerLocalHostID)
-
-	app.handlePlannerDispatchTasks("raw-dispatch-rich", plannerSessionID, map[string]any{
+	app.handleWorkspaceDispatchTasks("raw-dispatch-rich", workspaceSessionID, map[string]any{
 		"tasks": []map[string]any{
 			{
 				"taskId":      "task-1",
@@ -413,22 +851,6 @@ func TestWorkspaceProjectionIncludesRichPlanAndWorkerReadModels(t *testing.T) {
 	}
 
 	now := model.NowString()
-	app.store.UpsertCard(plannerSessionID, model.Card{
-		ID:        "planner-user-1",
-		Type:      "UserMessageCard",
-		Role:      "user",
-		Text:      "请先检查 nginx 状态再考虑 reload",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-	app.store.UpsertCard(plannerSessionID, model.Card{
-		ID:        "planner-assistant-1",
-		Type:      "AssistantMessageCard",
-		Role:      "assistant",
-		Text:      "已拆成 host-1 检查步骤，并保留审批锚点。",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
 	app.store.UpsertCard(worker.SessionID, model.Card{
 		ID:        "cmd-host-1",
 		Type:      "CommandCard",
@@ -466,15 +888,14 @@ func TestWorkspaceProjectionIncludesRichPlanAndWorkerReadModels(t *testing.T) {
 	if planCard == nil {
 		t.Fatalf("expected workspace plan card")
 	}
-	plannerConversation, ok := planCard.Detail["planner_conversation"].([]any)
-	if !ok || len(plannerConversation) < 2 {
-		t.Fatalf("expected planner conversation excerpts, got %#v", planCard.Detail["planner_conversation"])
+	if _, ok := planCard.Detail["planner_conversation"]; ok {
+		t.Fatalf("expected planner conversation to be omitted, got %#v", planCard.Detail["planner_conversation"])
 	}
-	dispatchEvents, ok := planCard.Detail["dispatch_events"].([]any)
+	dispatchEvents, ok := planCard.Detail["dispatch_events"].([]orchestrator.DispatchEventView)
 	if !ok || len(dispatchEvents) == 0 {
 		t.Fatalf("expected dispatch events, got %#v", planCard.Detail["dispatch_events"])
 	}
-	taskBindings, ok := planCard.Detail["task_host_bindings"].([]any)
+	taskBindings, ok := planCard.Detail["task_host_bindings"].([]orchestrator.TaskHostBindingView)
 	if !ok || len(taskBindings) != 1 {
 		t.Fatalf("expected one task binding, got %#v", planCard.Detail["task_host_bindings"])
 	}
@@ -523,7 +944,6 @@ func TestPlannerDispatchTasksRejectsOfflineHost(t *testing.T) {
 	})
 
 	workspaceSessionID := "workspace-offline"
-	plannerSessionID := "planner-offline"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -532,25 +952,16 @@ func TestPlannerDispatchTasksRejectsOfflineHost(t *testing.T) {
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
 
-	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+	_, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-offline",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "offline host demo",
 		Summary:            "offline host demo",
 	})
 	if err != nil {
 		t.Fatalf("start mission: %v", err)
 	}
-	app.ensureInternalSessionFromWorkspace(plannerSessionID, workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	}, model.ServerLocalHostID)
-
-	app.handlePlannerDispatchTasks("raw-dispatch-offline", plannerSessionID, map[string]any{
+	app.handleWorkspaceDispatchTasks("raw-dispatch-offline", workspaceSessionID, map[string]any{
 		"tasks": []map[string]any{
 			{
 				"taskId":      "task-1",
@@ -563,10 +974,10 @@ func TestPlannerDispatchTasksRejectsOfflineHost(t *testing.T) {
 
 	resp, ok := responses.result("raw-dispatch-offline")
 	if !ok {
-		t.Fatalf("expected planner dispatch response")
+		t.Fatalf("expected workspace dispatch response")
 	}
 	if success, _ := resp["success"].(bool); success {
-		t.Fatalf("expected failed planner dispatch response, got %#v", resp)
+		t.Fatalf("expected failed workspace dispatch response, got %#v", resp)
 	}
 	if !strings.Contains(asString(resp["contentItems"]), "当前离线") {
 		t.Fatalf("expected offline host error, got %#v", resp)
@@ -621,7 +1032,6 @@ func TestPlannerDispatchTaskStartFailureFailsWorkerSession(t *testing.T) {
 	app.setAgentConnection("host-1", &agentConnection{hostID: "host-1", stream: stream})
 
 	workspaceSessionID := "workspace-start-fail"
-	plannerSessionID := "planner-start-fail"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -630,25 +1040,16 @@ func TestPlannerDispatchTaskStartFailureFailsWorkerSession(t *testing.T) {
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
 
-	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+	_, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-start-fail",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "worker start fail demo",
 		Summary:            "worker start fail demo",
 	})
 	if err != nil {
 		t.Fatalf("start mission: %v", err)
 	}
-	app.ensureInternalSessionFromWorkspace(plannerSessionID, workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	}, model.ServerLocalHostID)
-
-	app.handlePlannerDispatchTasks("raw-dispatch-start-fail", plannerSessionID, map[string]any{
+	app.handleWorkspaceDispatchTasks("raw-dispatch-start-fail", workspaceSessionID, map[string]any{
 		"tasks": []map[string]any{
 			{
 				"taskId":      "task-1",
@@ -721,7 +1122,6 @@ func TestWorkspaceProjectionUpdatesAfterWorkerCompletion(t *testing.T) {
 	app.setAgentConnection("host-1", &agentConnection{hostID: "host-1", stream: stream})
 
 	workspaceSessionID := "workspace-1"
-	plannerSessionID := "planner-1"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -730,25 +1130,16 @@ func TestWorkspaceProjectionUpdatesAfterWorkerCompletion(t *testing.T) {
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
 
-	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+	_, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-1",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "demo",
 		Summary:            "demo summary",
 	})
 	if err != nil {
 		t.Fatalf("start mission: %v", err)
 	}
-	app.ensureInternalSessionFromWorkspace(plannerSessionID, workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	}, model.ServerLocalHostID)
-
-	app.handlePlannerDispatchTasks("raw-dispatch", plannerSessionID, map[string]any{
+	app.handleWorkspaceDispatchTasks("raw-dispatch", workspaceSessionID, map[string]any{
 		"tasks": []map[string]any{
 			{
 				"taskId":      "task-1",
@@ -877,7 +1268,6 @@ func TestStartWorkerTaskRefreshesExpiredIdleWorkerThread(t *testing.T) {
 	app.setAgentConnection("host-1", &agentConnection{hostID: "host-1", stream: stream})
 
 	workspaceSessionID := "workspace-recycle"
-	plannerSessionID := "planner-recycle"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -886,25 +1276,16 @@ func TestStartWorkerTaskRefreshesExpiredIdleWorkerThread(t *testing.T) {
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
 
-	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+	_, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-recycle",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "thread recycle demo",
 		Summary:            "thread recycle demo",
 	})
 	if err != nil {
 		t.Fatalf("start mission: %v", err)
 	}
-	app.ensureInternalSessionFromWorkspace(plannerSessionID, workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	}, model.ServerLocalHostID)
-
-	app.handlePlannerDispatchTasks("raw-dispatch-initial", plannerSessionID, map[string]any{
+	app.handleWorkspaceDispatchTasks("raw-dispatch-initial", workspaceSessionID, map[string]any{
 		"tasks": []map[string]any{
 			{
 				"taskId":      "task-1",
@@ -939,7 +1320,7 @@ func TestStartWorkerTaskRefreshesExpiredIdleWorkerThread(t *testing.T) {
 	})
 	app.handleMissionTurnCompleted(worker.SessionID, "completed")
 
-	app.handlePlannerDispatchTasks("raw-dispatch-follow-up", plannerSessionID, map[string]any{
+	app.handleWorkspaceDispatchTasks("raw-dispatch-follow-up", workspaceSessionID, map[string]any{
 		"tasks": []map[string]any{
 			{
 				"taskId":      "task-2",
@@ -985,7 +1366,6 @@ func TestReconcileOrchestratorHostUnavailableUpdatesWorkspaceProjection(t *testi
 	})
 
 	workspaceSessionID := "workspace-1"
-	plannerSessionID := "planner-1"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -997,7 +1377,6 @@ func TestReconcileOrchestratorHostUnavailableUpdatesWorkspaceProjection(t *testi
 	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-1",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "demo",
 		Summary:            "demo summary",
 	})
@@ -1096,7 +1475,6 @@ func TestHandleWorkspaceStopCancelsMissionAndClearsWorkerQueue(t *testing.T) {
 	}
 
 	workspaceSessionID := "workspace-stop"
-	plannerSessionID := "planner-stop"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -1107,23 +1485,15 @@ func TestHandleWorkspaceStopCancelsMissionAndClearsWorkerQueue(t *testing.T) {
 	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-stop",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "stop demo",
 		Summary:            "stop demo",
 	})
 	if err != nil {
 		t.Fatalf("start mission: %v", err)
 	}
-	app.ensureInternalSessionFromWorkspace(plannerSessionID, workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	}, model.ServerLocalHostID)
-	app.store.SetThread(plannerSessionID, "thread-planner-stop")
-	app.store.SetTurn(plannerSessionID, "turn-planner-stop")
-	app.startRuntimeTurn(plannerSessionID, model.ServerLocalHostID)
+	app.store.SetThread(workspaceSessionID, "thread-workspace-stop")
+	app.store.SetTurn(workspaceSessionID, "turn-workspace-stop")
+	app.startRuntimeTurn(workspaceSessionID, model.ServerLocalHostID)
 
 	_, err = app.orchestrator.Dispatch(context.Background(), orchestrator.DispatchRequest{
 		MissionID: mission.ID,
@@ -1182,6 +1552,45 @@ func TestHandleWorkspaceStopCancelsMissionAndClearsWorkerQueue(t *testing.T) {
 	resultCard := app.cardByID(workspaceSessionID, "workspace-result-mission-stop")
 	if resultCard == nil || resultCard.Status != "failed" {
 		t.Fatalf("expected cancelled workspace result card, got %#v", resultCard)
+	}
+}
+
+func TestEnsureMissionForWorkspaceSessionStartsFreshMissionWhenRunningMissionIsStale(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+
+	workspaceSessionID := "workspace-stale"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		MissionID:          "mission-stale",
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	staleMission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+		MissionID:          "mission-stale",
+		WorkspaceSessionID: workspaceSessionID,
+		PlannerSessionID:   "planner-stale",
+		Title:              "stale mission",
+		Summary:            "stale mission",
+	})
+	if err != nil {
+		t.Fatalf("start mission: %v", err)
+	}
+
+	mission, err := app.ensureMissionForWorkspaceSession(context.Background(), workspaceSessionID, "看下CPU")
+	if err != nil {
+		t.Fatalf("ensure mission: %v", err)
+	}
+	if mission.ID == staleMission.ID {
+		t.Fatalf("expected a fresh mission instead of reusing stale mission %s", staleMission.ID)
+	}
+
+	updatedStaleMission, ok := app.orchestrator.Mission(staleMission.ID)
+	if !ok {
+		t.Fatalf("expected stale mission to remain queryable")
+	}
+	if updatedStaleMission.Status != orchestrator.MissionStatusCancelled {
+		t.Fatalf("expected stale mission cancelled, got %s", updatedStaleMission.Status)
 	}
 }
 
@@ -1270,7 +1679,6 @@ func TestReconcileOrchestratorRecoveredWorkersFailsStaleWorkerTurn(t *testing.T)
 	})
 
 	workspaceSessionID := "workspace-1"
-	plannerSessionID := "planner-1"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -1282,7 +1690,6 @@ func TestReconcileOrchestratorRecoveredWorkersFailsStaleWorkerTurn(t *testing.T)
 	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-1",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "demo",
 		Summary:            "demo summary",
 	})
@@ -1363,7 +1770,6 @@ func TestReconcileOrchestratorAfterLoadFailsWorkerWithoutThread(t *testing.T) {
 	})
 
 	workspaceSessionID := "workspace-restart-worker"
-	plannerSessionID := "planner-restart-worker"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -1375,7 +1781,6 @@ func TestReconcileOrchestratorAfterLoadFailsWorkerWithoutThread(t *testing.T) {
 	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:          "mission-restart-worker",
 		WorkspaceSessionID: workspaceSessionID,
-		PlannerSessionID:   plannerSessionID,
 		Title:              "restart worker",
 		Summary:            "restart worker",
 	})
@@ -1437,7 +1842,7 @@ func TestReconcileOrchestratorAfterLoadFailsWorkerWithoutThread(t *testing.T) {
 	}
 }
 
-func TestReconcileOrchestratorAfterLoadFailsPlannerWithoutThread(t *testing.T) {
+func TestReconcileOrchestratorAfterLoadFailsLegacyPlannerWithoutThread(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 
 	workspaceSessionID := "workspace-restart-planner"
@@ -1477,13 +1882,10 @@ func TestReconcileOrchestratorAfterLoadFailsPlannerWithoutThread(t *testing.T) {
 		t.Fatalf("expected reconciled mission")
 	}
 	if reconciledMission.Status != orchestrator.MissionStatusFailed {
-		t.Fatalf("expected failed mission after planner reconcile, got %s", reconciledMission.Status)
+		t.Fatalf("expected failed mission after legacy planner reconcile, got %s", reconciledMission.Status)
 	}
 	card := app.cardByID(workspaceSessionID, "workspace-reconcile-"+plannerSessionID)
-	if card == nil {
-		t.Fatalf("expected planner restart reconcile card")
-	}
-	if card.Type != "ResultSummaryCard" || card.Status != "failed" {
-		t.Fatalf("expected failed planner reconcile card, got %#v", card)
+	if card == nil || card.Status != "failed" {
+		t.Fatalf("expected failed planner reconcile card after planner removal, got %#v", card)
 	}
 }

@@ -13,7 +13,7 @@ const props = defineProps({
   },
   activeTab: {
     type: String,
-    default: "planner-ai",
+    default: "main-agent-plan",
   },
   title: {
     type: String,
@@ -21,15 +21,15 @@ const props = defineProps({
   },
   subtitle: {
     type: String,
-    default: "按 tab 查看 planner、host 与终端上下文。",
+    default: "按 tab 查看主 Agent 计划摘要、worker 对话、Host Terminal 与审批上下文。",
   },
   tabs: {
     type: Array,
     default: () => [
-      { value: "planner-ai", label: "planner-ai" },
-      { value: "planner-host", label: "planner-host" },
-      { value: "host-ai", label: "host-ai" },
-      { value: "terminal", label: "terminal" },
+      { value: "main-agent-plan", label: "主 Agent 计划摘要" },
+      { value: "worker-conversation", label: "Worker 对话" },
+      { value: "host-terminal", label: "Host Terminal" },
+      { value: "approval-context", label: "审批上下文" },
     ],
   },
   panels: {
@@ -164,23 +164,23 @@ onBeforeUnmount(() => {
           </nav>
 
           <div class="modal-body">
-            <template v-if="displayTab === 'planner-ai'">
-              <slot name="planner-ai" :panel="activePanel">
+            <template v-if="displayTab === 'main-agent-plan'">
+              <slot name="main-agent-plan" :panel="activePanel">
                 <EvidencePanelFallback :panel="activePanel" />
               </slot>
             </template>
-            <template v-else-if="displayTab === 'planner-host'">
-              <slot name="planner-host" :panel="activePanel">
+            <template v-else-if="displayTab === 'worker-conversation'">
+              <slot name="worker-conversation" :panel="activePanel">
                 <EvidencePanelFallback :panel="activePanel" />
               </slot>
             </template>
-            <template v-else-if="displayTab === 'host-ai'">
-              <slot name="host-ai" :panel="activePanel">
+            <template v-else-if="displayTab === 'host-terminal'">
+              <slot name="host-terminal" :panel="activePanel">
                 <EvidencePanelFallback :panel="activePanel" />
               </slot>
             </template>
-            <template v-else-if="displayTab === 'terminal'">
-              <slot name="terminal" :panel="activePanel">
+            <template v-else-if="displayTab === 'approval-context'">
+              <slot name="approval-context" :panel="activePanel">
                 <EvidencePanelFallback :panel="activePanel" />
               </slot>
             </template>

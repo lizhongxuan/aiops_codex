@@ -1,5 +1,5 @@
 <script setup>
-import { ref, nextTick, computed } from "vue";
+import { ref, nextTick, computed, watch } from "vue";
 import { useAppStore } from "../store";
 
 const props = defineProps({
@@ -26,6 +26,14 @@ const props = defineProps({
   forceEnabled: {
     type: Boolean,
     default: false,
+  },
+  busy: {
+    type: Boolean,
+    default: false,
+  },
+  primaryActionOverride: {
+    type: String,
+    default: "",
   },
 });
 
@@ -62,14 +70,39 @@ const activeMentions = computed(() => {
   return mentions;
 });
 
-const canStop = computed(() => store.runtime.turn.active);
-const followUpMode = computed(() => props.allowFollowUp && canStop.value);
-const primaryAction = computed(() => (canStop.value && !followUpMode.value ? "stop" : "send"));
+const canStop = computed(() => {
+  if (props.primaryActionOverride === "send") return false;
+  if (props.primaryActionOverride === "stop") return true;
+  const phase = String(store.runtime.turn.phase || "").trim().toLowerCase();
+  return store.runtime.turn.active && !["idle", "completed", "failed", "aborted"].includes(phase);
+});
+
+// Stabilize the stop button — once active, hold it for at least 2s to prevent flickering
+const stableCanStop = ref(false);
+let stopStabilityTimer = null;
+watch(canStop, (value) => {
+  if (value) {
+    // Immediately show stop button
+    stableCanStop.value = true;
+    if (stopStabilityTimer) { clearTimeout(stopStabilityTimer); stopStabilityTimer = null; }
+  } else {
+    // Delay hiding the stop button to prevent flicker
+    if (!stopStabilityTimer) {
+      stopStabilityTimer = setTimeout(() => {
+        stableCanStop.value = false;
+        stopStabilityTimer = null;
+      }, 2000);
+    }
+  }
+}, { immediate: true });
+
+const followUpMode = computed(() => props.allowFollowUp && stableCanStop.value);
+const primaryAction = computed(() => (stableCanStop.value && !followUpMode.value ? "stop" : "send"));
 const canSendMessage = computed(() => (props.forceEnabled ? true : !!store.canSend));
 const inputDisabled = computed(
-  () => props.disabled || !canSendMessage.value || store.sending || (canStop.value && !followUpMode.value ? true : false),
+  () => props.disabled || props.busy || !canSendMessage.value || store.sending || (stableCanStop.value && !followUpMode.value ? true : false),
 );
-const sendDisabled = computed(() => props.disabled || !canSendMessage.value || store.sending || !props.modelValue.trim());
+const sendDisabled = computed(() => props.disabled || props.busy || !canSendMessage.value || store.sending || !props.modelValue.trim());
 const showSecondaryStop = computed(() => followUpMode.value);
 const hintText = computed(() => {
   if (primaryAction.value === "stop") return "停止当前任务";
@@ -208,10 +241,11 @@ function getCaretCoordinates(element, position) {
            <button
              class="send-btn"
              :class="{ 'stop-btn': primaryAction === 'stop' }"
-             :disabled="primaryAction === 'stop' ? false : sendDisabled"
+             :disabled="primaryAction === 'stop' ? busy : sendDisabled"
              @click="primaryAction === 'stop' ? emit('stop') : emit('send')"
            >
-             <span v-if="primaryAction === 'stop'">■</span>
+             <span v-if="primaryAction === 'stop' && busy" class="spinner-small"></span>
+             <span v-else-if="primaryAction === 'stop'">■</span>
              <span v-else-if="store.sending" class="spinner-small"></span>
              <span v-else>↑</span>
            </button>
@@ -225,16 +259,16 @@ function getCaretCoordinates(element, position) {
 <style scoped>
 .omnibar-wrapper {
   width: 100%;
-  max-width: 860px;
+  max-width: 820px;
   margin: 0 auto;
   background: var(--omnibar-bg);
   border: 1px solid var(--border-color);
-  border-radius: 18px;
-  padding: 12px 14px 11px;
-  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.07);
+  border-radius: 16px;
+  padding: 10px 12px 9px;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   transition: box-shadow 0.2s, border-color 0.2s;
   position: relative;
 }
@@ -257,9 +291,9 @@ function getCaretCoordinates(element, position) {
   background: transparent;
   resize: none;
   outline: none;
-  min-height: 78px;
-  font-size: 15px;
-  line-height: 1.55;
+  min-height: 60px;
+  font-size: 14px;
+  line-height: 1.5;
   padding: 2px 4px 0;
   color: var(--text-main);
   font-family: inherit;
@@ -316,8 +350,8 @@ function getCaretCoordinates(element, position) {
 }
 
 .send-btn {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 999px;
   border: none;
   background: #0f172a;
@@ -327,6 +361,7 @@ function getCaretCoordinates(element, position) {
   justify-content: center;
   cursor: pointer;
   transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
+  font-size: 14px;
 }
 
 .send-btn:disabled {

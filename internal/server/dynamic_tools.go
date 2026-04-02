@@ -273,11 +273,30 @@ func (a *App) remoteDynamicTools() []map[string]any {
 	return tools
 }
 
-func (a *App) plannerDynamicTools() []map[string]any {
-	return []map[string]any{
+func (a *App) workspaceDynamicTools(sessionID string) []map[string]any {
+	tools := []map[string]any{
+		{
+			"name":        "query_ai_server_state",
+			"description": "Read the current ai-server workspace/session/host state for questions about online hosts, mission progress, pending approvals, runtime phase, or other project-local status. Use this before any filesystem inspection when the user asks about current state.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"focus": map[string]any{
+						"type":        "string",
+						"enum":        []string{"summary", "hosts", "runtime", "approvals", "plan", "all"},
+						"description": "Optional area to emphasize in the returned ai-server state snapshot.",
+					},
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "Short explanation of what state you are checking for the user.",
+					},
+				},
+				"additionalProperties": false,
+			},
+		},
 		{
 			"name":        "orchestrator_dispatch_tasks",
-			"description": "Submit structured host tasks to the ai-server orchestrator. Use this after you finish planning and have per-host execution tasks ready.",
+			"description": "Submit structured host tasks to the ai-server orchestrator from the main workspace session. Use this after you finish planning and have per-host execution tasks ready.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -296,7 +315,7 @@ func (a *App) plannerDynamicTools() []map[string]any {
 							"properties": map[string]any{
 								"taskId": map[string]any{
 									"type":        "string",
-									"description": "Stable planner task identifier.",
+									"description": "Stable task identifier.",
 								},
 								"hostId": map[string]any{
 									"type":        "string",
@@ -317,7 +336,7 @@ func (a *App) plannerDynamicTools() []map[string]any {
 								},
 								"externalNodeId": map[string]any{
 									"type":        "string",
-									"description": "Optional planner-local node identifier for debugging.",
+									"description": "Optional node identifier for debugging.",
 								},
 							},
 							"required":             []string{"taskId", "hostId", "instruction"},
@@ -331,6 +350,69 @@ func (a *App) plannerDynamicTools() []map[string]any {
 				"additionalProperties": false,
 			},
 		},
+	}
+	session := a.store.Session(sessionID)
+	selectedHostID := defaultHostID("")
+	if session != nil {
+		selectedHostID = defaultHostID(session.SelectedHostID)
+	}
+	if isRemoteHostID(selectedHostID) {
+		tools = append(tools, a.workspaceReadonlyRemoteDynamicTools()...)
+	}
+	return tools
+}
+
+func (a *App) workspaceDirectDynamicTools(sessionID string) []map[string]any {
+	tools := []map[string]any{
+		{
+			"name":        "query_ai_server_state",
+			"description": "Read the current ai-server workspace/session/host state for questions about online hosts, mission progress, pending approvals, runtime phase, or other project-local status. Use this before any filesystem inspection when the user asks about current state.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"focus": map[string]any{
+						"type":        "string",
+						"enum":        []string{"summary", "hosts", "runtime", "approvals", "plan", "all"},
+						"description": "Optional area to emphasize in the returned ai-server state snapshot.",
+					},
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "Short explanation of what state you are checking for the user.",
+					},
+				},
+				"additionalProperties": false,
+			},
+		},
+	}
+	session := a.store.Session(sessionID)
+	selectedHostID := defaultHostID("")
+	if session != nil {
+		selectedHostID = defaultHostID(session.SelectedHostID)
+	}
+	if isRemoteHostID(selectedHostID) {
+		tools = append(tools, a.workspaceReadonlyRemoteDynamicTools()...)
+	}
+	return tools
+}
+
+func (a *App) workspaceReadonlyRemoteDynamicTools() []map[string]any {
+	readonlyTools := make([]map[string]any, 0, 4)
+	for _, tool := range a.remoteDynamicTools() {
+		name := strings.TrimSpace(getStringAny(tool, "name"))
+		if name == "" || name == "execute_system_mutation" {
+			continue
+		}
+		readonlyTools = append(readonlyTools, tool)
+	}
+	return readonlyTools
+}
+
+func isWorkspaceReadonlyRemoteTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "execute_readonly_query", "list_remote_files", "read_remote_file", "search_remote_files":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -397,16 +479,18 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 		return
 	}
 	switch a.sessionKind(sessionID) {
-	case model.SessionKindPlanner:
-		a.handlePlannerDynamicToolCall(rawID, payload, params, sessionID)
-		return
-	case model.SessionKindWorkspace:
-		_ = a.respondCodex(context.Background(), rawID, toolResponse("WorkspaceSession 不暴露动态工具。", false))
-		return
+	case model.SessionKindPlanner, model.SessionKindWorkspace:
+		if a.handleOrchestratorDynamicToolCall(rawID, payload, params, sessionID) {
+			return
+		}
 	}
 	hostID := defaultHostID(session.SelectedHostID)
 	if !isRemoteHostID(hostID) {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse("The selected host is server-local. Use Codex built-in local tools instead of remote execute_* tools.", false))
+		return
+	}
+	if a.sessionKind(sessionID) == model.SessionKindWorkspace && !isWorkspaceReadonlyRemoteTool(params.Tool) {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("Workspace 主 Agent 只允许直接调用只读远程工具；任何变更都必须通过 worker 派发。", false))
 		return
 	}
 	if err := validateSelectedRemoteToolHost(params.Arguments, hostID); err != nil {
@@ -510,57 +594,201 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 	}
 }
 
-func (a *App) handlePlannerDynamicToolCall(rawID string, _ map[string]any, params dynamicToolCallParams, sessionID string) {
+func (a *App) handleOrchestratorDynamicToolCall(rawID string, _ map[string]any, params dynamicToolCallParams, sessionID string) bool {
 	switch params.Tool {
+	case "query_ai_server_state":
+		a.handleWorkspaceQueryAIServerState(rawID, sessionID, params.Arguments)
+		return true
 	case "orchestrator_dispatch_tasks":
-		a.handlePlannerDispatchTasks(rawID, sessionID, params.Arguments)
+		a.handleWorkspaceDispatchTasks(rawID, sessionID, params.Arguments)
+		return true
 	default:
-		_ = a.respondCodex(context.Background(), rawID, toolResponse("PlannerSession 不支持该动态工具。", false))
+		return false
 	}
 }
 
-func (a *App) handlePlannerDispatchTasks(rawID, sessionID string, arguments map[string]any) {
+func (a *App) handleWorkspaceQueryAIServerState(rawID, sessionID string, arguments map[string]any) {
 	if a.orchestrator == nil {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse("orchestrator 未初始化。", false))
 		return
 	}
-	mission, ok := a.orchestrator.MissionBySession(sessionID)
+	mission, ok := a.resolveOrchestratorMission(sessionID)
 	if !ok || mission == nil {
-		_ = a.respondCodex(context.Background(), rawID, toolResponse("当前 PlannerSession 没有关联 mission。", false))
-		return
+		if a.sessionKind(sessionID) != model.SessionKindWorkspace {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse("当前会话没有关联 workspace mission。", false))
+			return
+		}
 	}
-	var req orchestrator.DispatchRequest
-	if err := remarshalInto(arguments, &req); err != nil {
-		_ = a.respondCodex(context.Background(), rawID, toolResponse("dispatch payload 无法解析。", false))
-		return
+	focus := strings.TrimSpace(getStringAny(arguments, "focus"))
+	workspaceSessionID := strings.TrimSpace(sessionID)
+	if mission != nil && strings.TrimSpace(mission.WorkspaceSessionID) != "" {
+		workspaceSessionID = strings.TrimSpace(mission.WorkspaceSessionID)
+	}
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(a.renderPlannerAIServerState(workspaceSessionID, mission, focus), true))
+}
+
+func (a *App) renderPlannerAIServerState(workspaceSessionID string, mission *orchestrator.Mission, focus string) string {
+	snapshot := a.snapshot(workspaceSessionID)
+	selectedHostID := defaultHostID(snapshot.SelectedHostID)
+
+	remoteOnline := make([]string, 0)
+	remoteOffline := make([]string, 0)
+	localState := "unknown"
+	for _, host := range snapshot.Hosts {
+		hostID := defaultHostID(host.ID)
+		if hostID == model.ServerLocalHostID {
+			if strings.TrimSpace(host.Status) != "" {
+				localState = strings.TrimSpace(host.Status)
+			}
+			continue
+		}
+		label := hostDisplayName(host)
+		if label == "" {
+			label = hostID
+		}
+		if strings.TrimSpace(host.Status) == "online" {
+			remoteOnline = append(remoteOnline, label)
+		} else {
+			remoteOffline = append(remoteOffline, label)
+		}
+	}
+	slices.Sort(remoteOnline)
+	slices.Sort(remoteOffline)
+
+	pendingApprovals := make([]string, 0)
+	for _, approval := range snapshot.Approvals {
+		if strings.TrimSpace(approval.Status) != "pending" {
+			continue
+		}
+		hostLabel := strings.TrimSpace(approval.HostID)
+		if hostLabel == "" {
+			hostLabel = "unknown-host"
+		}
+		commandLabel := strings.TrimSpace(approval.Command)
+		if commandLabel == "" {
+			commandLabel = strings.TrimSpace(approval.Reason)
+		}
+		if commandLabel == "" {
+			commandLabel = "待确认操作"
+		}
+		pendingApprovals = append(pendingApprovals, fmt.Sprintf("%s: %s", hostLabel, truncate(commandLabel, 120)))
+	}
+
+	taskTotal := 0
+	taskRunning := 0
+	taskWaitingApproval := 0
+	taskCompleted := 0
+	taskFailed := 0
+	activeWorkers := make([]string, 0)
+	if mission != nil {
+		taskTotal = len(mission.Tasks)
+		for _, task := range mission.Tasks {
+			if task == nil {
+				continue
+			}
+			switch task.Status {
+			case orchestrator.TaskStatusRunning, orchestrator.TaskStatusDispatching, orchestrator.TaskStatusReady, orchestrator.TaskStatusQueued:
+				taskRunning++
+			case orchestrator.TaskStatusWaitingApproval:
+				taskWaitingApproval++
+			case orchestrator.TaskStatusCompleted:
+				taskCompleted++
+			case orchestrator.TaskStatusFailed:
+				taskFailed++
+			}
+		}
+		for hostID, worker := range mission.Workers {
+			if worker == nil {
+				continue
+			}
+			switch worker.Status {
+			case orchestrator.WorkerStatusRunning, orchestrator.WorkerStatusDispatching, orchestrator.WorkerStatusQueued, orchestrator.WorkerStatusWaiting:
+				activeWorkers = append(activeWorkers, fmt.Sprintf("%s(%s)", hostID, workerStatusLabel(worker.Status)))
+			}
+		}
+		slices.Sort(activeWorkers)
+	}
+
+	lines := []string{
+		fmt.Sprintf("主 Agent 当前状态快照（focus=%s）", firstNonEmptyValue(focus, "summary")),
+		fmt.Sprintf("workspaceSession=%s selectedHost=%s", workspaceSessionID, selectedHostID),
+		fmt.Sprintf("runtime phase=%s", firstNonEmptyValue(strings.TrimSpace(snapshot.Runtime.Turn.Phase), "idle")),
+	}
+
+	if mission != nil {
+		lines = append(lines,
+			fmt.Sprintf("mission=%s status=%s", mission.ID, missionStatusLabel(mission.Status)),
+			fmt.Sprintf("task summary: total=%d running_or_queued=%d waiting_approval=%d completed=%d failed=%d", taskTotal, taskRunning, taskWaitingApproval, taskCompleted, taskFailed),
+		)
+	}
+
+	switch focus {
+	case "hosts":
+		lines = append(lines,
+			fmt.Sprintf("remote online hosts (%d): %s", len(remoteOnline), joinOrDash(remoteOnline)),
+			fmt.Sprintf("remote offline hosts (%d): %s", len(remoteOffline), joinOrDash(remoteOffline)),
+			fmt.Sprintf("local host server-local: %s", localState),
+		)
+	case "approvals":
+		lines = append(lines, fmt.Sprintf("pending approvals (%d): %s", len(pendingApprovals), joinOrDash(pendingApprovals)))
+	case "runtime":
+		lines = append(lines, fmt.Sprintf("active workers (%d): %s", len(activeWorkers), joinOrDash(activeWorkers)))
+	case "plan":
+		if mission != nil {
+			planDetail := a.buildWorkspacePlanDetail(mission)
+			lines = append(lines,
+				fmt.Sprintf("plan goal: %s", firstNonEmptyValue(strings.TrimSpace(planDetail.Goal), strings.TrimSpace(mission.Summary), "-")),
+				fmt.Sprintf("plan version: %s", firstNonEmptyValue(strings.TrimSpace(planDetail.Version), "plan-v1")),
+			)
+		}
+	default:
+		lines = append(lines,
+			fmt.Sprintf("remote online hosts (%d): %s", len(remoteOnline), joinOrDash(remoteOnline)),
+			fmt.Sprintf("pending approvals (%d): %s", len(pendingApprovals), joinOrDash(pendingApprovals)),
+			fmt.Sprintf("active workers (%d): %s", len(activeWorkers), joinOrDash(activeWorkers)),
+		)
+	}
+
+	lines = append(lines, "这是 ai-server 的当前投影结果；回答当前状态问题时优先基于这份信息，不要再去遍历目录或远程主机。")
+	return strings.Join(lines, "\n")
+}
+
+func joinOrDash(items []string) string {
+	if len(items) == 0 {
+		return "-"
+	}
+	return strings.Join(items, ", ")
+}
+
+func (a *App) dispatchOrchestratorTasks(sessionID string, req orchestrator.DispatchRequest) (*orchestrator.DispatchResult, error) {
+	if a.orchestrator == nil {
+		return nil, errors.New("orchestrator 未初始化")
+	}
+	mission, ok := a.resolveOrchestratorMission(sessionID)
+	if !ok || mission == nil {
+		return nil, errors.New("当前会话没有关联 mission")
 	}
 	req.MissionID = mission.ID
 	if len(req.Tasks) == 0 {
-		_ = a.respondCodex(context.Background(), rawID, toolResponse("dispatch tasks 不能为空。", false))
-		return
+		return nil, errors.New("dispatch tasks 不能为空")
 	}
 	for _, task := range req.Tasks {
 		host := a.findHost(task.HostID)
 		switch {
 		case strings.TrimSpace(task.HostID) == "":
-			_ = a.respondCodex(context.Background(), rawID, toolResponse("所有任务都必须提供 hostId。", false))
-			return
+			return nil, errors.New("所有任务都必须提供 hostId")
 		case task.HostID == model.ServerLocalHostID:
-			_ = a.respondCodex(context.Background(), rawID, toolResponse("worker 任务当前只支持 remote host，不支持 server-local。", false))
-			return
+			return nil, errors.New("worker 任务当前只支持 remote host，不支持 server-local")
 		case host.Status != "online":
-			_ = a.respondCodex(context.Background(), rawID, toolResponse(fmt.Sprintf("host %s 当前离线。", task.HostID), false))
-			return
+			return nil, fmt.Errorf("host %s 当前离线", task.HostID)
 		case !host.Executable:
-			_ = a.respondCodex(context.Background(), rawID, toolResponse(fmt.Sprintf("host %s 当前不支持执行。", task.HostID), false))
-			return
+			return nil, fmt.Errorf("host %s 当前不支持执行", task.HostID)
 		}
 	}
 
 	result, err := a.orchestrator.Dispatch(context.Background(), req)
 	if err != nil {
-		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
-		return
+		return nil, err
 	}
 
 	if workspaceSessionID := strings.TrimSpace(mission.WorkspaceSessionID); workspaceSessionID != "" {
@@ -594,10 +822,53 @@ func (a *App) handlePlannerDispatchTasks(rawID, sessionID string, arguments map[
 	defer cancel()
 	_ = a.activateDispatchResult(ctx, mission, result)
 
-	_ = a.respondCodex(context.Background(), rawID, toolResponse(
-		fmt.Sprintf("dispatch accepted=%d activated=%d queued=%d", result.Accepted, result.Activated, result.Queued),
-		true,
-	))
+	return result, nil
+}
+
+func (a *App) resolveOrchestratorMission(sessionID string) (*orchestrator.Mission, bool) {
+	if a == nil || a.orchestrator == nil {
+		return nil, false
+	}
+	if mission, ok := a.orchestrator.MissionBySession(sessionID); ok && mission != nil {
+		return mission, true
+	}
+	if mission, ok := a.orchestrator.MissionByWorkspaceSession(sessionID); ok && mission != nil {
+		return mission, true
+	}
+	if meta := a.sessionMeta(sessionID); meta.MissionID != "" {
+		if mission, ok := a.orchestrator.Mission(meta.MissionID); ok && mission != nil {
+			return mission, true
+		}
+	}
+	if meta := a.sessionMeta(sessionID); strings.TrimSpace(meta.WorkspaceSessionID) != "" {
+		if mission, ok := a.orchestrator.MissionByWorkspaceSession(strings.TrimSpace(meta.WorkspaceSessionID)); ok && mission != nil {
+			return mission, true
+		}
+	}
+	return nil, false
+}
+
+func (a *App) handleWorkspaceDispatchTasks(rawID, sessionID string, arguments map[string]any) {
+	var req orchestrator.DispatchRequest
+	if err := remarshalInto(arguments, &req); err != nil {
+		if rawID != "" {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse("dispatch payload 无法解析。", false))
+		}
+		return
+	}
+	result, err := a.dispatchOrchestratorTasks(sessionID, req)
+	if err != nil {
+		if rawID != "" {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		}
+		return
+	}
+	if rawID != "" {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(
+			fmt.Sprintf("dispatch accepted=%d activated=%d queued=%d", result.Accepted, result.Activated, result.Queued),
+			true,
+		))
+	}
 }
 
 func (a *App) executeReadonlyDynamicTool(sessionID, hostID, rawID string, params dynamicToolCallParams, args execToolArgs) {

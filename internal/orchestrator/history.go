@@ -16,7 +16,6 @@ func ProjectMissionHistorySummary(m *Mission) model.MissionHistorySummary {
 	summary := model.MissionHistorySummary{
 		ID:                       m.ID,
 		WorkspaceSessionID:       m.WorkspaceSessionID,
-		PlannerSessionID:         m.PlannerSessionID,
 		Title:                    firstNonEmpty(m.Title, "Mission"),
 		Summary:                  strings.TrimSpace(m.Summary),
 		Status:                   string(m.Status),
@@ -107,7 +106,6 @@ func missionHistoryOverviewRows(m *Mission, summary model.MissionHistorySummary)
 		{Key: "标题", Value: firstNonEmpty(summary.Title, m.Title)},
 		{Key: "状态", Value: summary.Status},
 		{Key: "WorkspaceSession", Value: summary.WorkspaceSessionID},
-		{Key: "PlannerSession", Value: summary.PlannerSessionID},
 		{Key: "ProjectionMode", Value: summary.ProjectionMode},
 		{Key: "任务数", Value: fmt.Sprintf("%d", summary.TaskCount)},
 		{Key: "主机数", Value: fmt.Sprintf("%d", summary.WorkerCount)},

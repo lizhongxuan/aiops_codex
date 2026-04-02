@@ -4,6 +4,17 @@ export function compactText(value) {
     .replace(/\s+/g, " ");
 }
 
+/** Resolve a human-friendly host label: IP for remote hosts, "local" for server-local */
+export function resolveHostLabel(hostId, hostMeta) {
+  const id = compactText(hostId || hostMeta?.id || "");
+  if (!id || id === "server-local") return "local";
+  const address = compactText(hostMeta?.address || "");
+  const name = compactText(hostMeta?.name || "");
+  if (address) return address;
+  if (name && name !== id) return name;
+  return id;
+}
+
 export function compactStrings(values) {
   if (!Array.isArray(values)) return [];
   return values.map((value) => compactText(value)).filter(Boolean);
@@ -87,7 +98,7 @@ export function phaseLabel(phase) {
     case "thinking":
       return "主 Agent 思考中";
     case "planning":
-      return "PlannerSession 生成计划";
+      return "主 Agent 生成计划";
     case "waiting_approval":
       return "等待审批";
     case "waiting_input":
@@ -270,7 +281,7 @@ export function buildWorkspaceHostRows({ cards = [], hosts = [], approvalCards =
       const approvalCard = approvalByHostId.get(card.hostId) || null;
       const rawStatusLabel = kvRows["状态"] || compactText(dispatch.status) || card.status || "";
       const queueCount = asNumber(kvRows["排队"] || worker?.terminal?.queueTaskIds?.length || worker?.terminal?.queue_task_ids?.length || 0);
-      const hostLabel = kvRows["主机"] || compactText(hostMeta.name) || compactText(card.title) || compactText(dispatch.host) || compactText(card.hostId) || "未命名主机";
+      const hostLabel = kvRows["主机"] || resolveHostLabel(card.hostId, hostMeta) || compactText(card.title) || compactText(dispatch.host) || "local";
       const taskTitle = kvRows["任务"] || compactText(dispatch?.request?.title) || compactText(card.summary) || "等待调度器分配任务";
       const statusKey = deriveHostState({
         card,
@@ -363,7 +374,7 @@ export function buildWorkspaceNotificationItems({
       tone: "warning",
       timestamp: parseTimestampFn(card.updatedAt || card.createdAt),
       time: formatTimeFn(card.updatedAt || card.createdAt),
-      title: `${card.hostId || "主机"} 等待审批`,
+      title: `${resolveHostLabel(card.hostId, null)} 等待审批`,
       text: approvalPreviewFn(card) || compactText(card.text) || "待确认操作",
       action: "approval",
       hostId: card.hostId || "",
@@ -591,13 +602,13 @@ export function buildWorkspaceOrchestrationLanes({
     },
     {
       id: "planner",
-      title: "Planner Agent",
-      summary: plannerSessionLabel || "等待 PlannerSession",
+      title: "主 Agent 计划",
+      summary: plannerSessionLabel || "等待主 Agent 计划",
       caption: planVersion ? `当前版本 ${planVersion}` : "负责拆分结构化步骤并解释计划。",
       status: plannerSessionLabel ? "计划已挂载" : "待生成",
       tone: plannerSessionLabel ? "info" : "neutral",
       meta: [
-        { key: "Planner", value: plannerSessionLabel || "-" },
+        { key: "主 Agent", value: plannerSessionLabel || "-" },
         { key: "待审批", value: pendingApprovalCount || 0 },
       ],
     },
@@ -627,6 +638,9 @@ export function buildWorkspaceLiveTimeline({
   noticeCards = [],
 } = {}) {
   const items = [];
+  // Build a lookup for resolving host display names
+  const hostMetaById = new Map(hostRows.map((row) => [row.hostId, row.hostMeta || {}]));
+  const resolveHost = (hostId) => resolveHostLabel(hostId, hostMetaById.get(hostId));
 
   if (planCard) {
     items.push({
@@ -682,7 +696,7 @@ export function buildWorkspaceLiveTimeline({
       tone: "warning",
       time: formatShortTime(card.updatedAt || card.createdAt),
       timestamp: parseTimestamp(card.updatedAt || card.createdAt),
-      title: `${card.hostId || "主机"} 等待审批`,
+      title: `${resolveHost(card.hostId)} 等待审批`,
       text: approvalPreview(card) || compactText(card.text),
       targetType: "approval",
       targetId: card.id,
@@ -706,16 +720,21 @@ export function buildWorkspaceLiveTimeline({
 
   if (!(Array.isArray(dispatchEvents) && dispatchEvents.length)) {
     for (const row of hostRows) {
+      const cmdText = compactText(row.dispatch?.request?.command || row.dispatch?.request?.title || row.dispatch?.request?.summary || "");
       const latest = compactText(row.highlights[row.highlights.length - 1] || row.summary);
-      if (!latest) continue;
+      const text = cmdText
+        ? (latest ? `${cmdText}\n${latest}` : cmdText)
+        : (latest || row.statusLabel || "");
+      if (!text) continue;
+      const hostDisplayLabel = resolveHostLabel(row.hostId, row.hostMeta);
       items.push({
         id: `host-${row.hostId}`,
-        source: row.displayName,
+        source: hostDisplayLabel,
         tone: statusTone(row.statusKey),
         time: formatShortTime(row.updatedAt),
         timestamp: parseTimestamp(row.updatedAt),
-        title: `${row.displayName} · ${row.statusLabel}`,
-        text: latest,
+        title: `${hostDisplayLabel} · ${row.statusLabel}`,
+        text,
         targetType: "host",
         targetId: row.hostId,
         hostId: row.hostId,
@@ -784,22 +803,22 @@ export function buildWorkspaceTraceItems({
       if (!text) continue;
       items.push({
         id: `planner-${item.id || item.createdAt || text}`,
-        source: "Planner->AI",
-        sourceKey: "planner",
+        source: "主 Agent 计划摘要",
+        sourceKey: "main-agent-plan",
         tone: "info",
         time: formatShortTime(item?.createdAt),
-        title: compactText(item?.summary || item?.type || item?.role) || "Planner 对话",
+        title: compactText(item?.summary || item?.type || item?.role) || "主 Agent 计划摘要",
         text,
       });
     }
   } else if (planDetail?.goal || plannerTraceRef?.sessionId || plannerTraceRef?.threadId) {
     items.push({
       id: "planner-trace-ref",
-      source: "Planner->AI",
-      sourceKey: "planner",
+      source: "主 Agent 计划摘要",
+      sourceKey: "main-agent-plan",
       tone: "info",
       time: "",
-      title: planDetail?.goal ? "Planner 目标摘要" : "Planner Trace",
+      title: planDetail?.goal ? "主 Agent 目标摘要" : "主 Agent Trace",
       text: compactText(planDetail?.goal) || `Session ${plannerTraceRef?.sessionId || "-"} / Thread ${plannerTraceRef?.threadId || "-"}`,
     });
   }
@@ -848,7 +867,7 @@ export function buildRawTraceSections({
   if (plannerTraceRef?.sessionId || plannerTraceRef?.threadId) {
     sections.push({
       id: "planner-trace",
-      title: "Planner Trace",
+      title: "主 Agent Trace",
       rows: [
         ...(plannerTraceRef.sessionId ? [{ key: "Session", value: plannerTraceRef.sessionId }] : []),
         ...(plannerTraceRef.threadId ? [{ key: "Thread", value: plannerTraceRef.threadId }] : []),

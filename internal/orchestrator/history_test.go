@@ -89,7 +89,7 @@ func TestProjectMissionHistorySummaryAndDetail(t *testing.T) {
 	}
 
 	summary := ProjectMissionHistorySummary(mission)
-	if summary.ID != "mission-1" || summary.WorkspaceSessionID != "workspace-1" || summary.PlannerSessionID != "planner-1" {
+	if summary.ID != "mission-1" || summary.WorkspaceSessionID != "workspace-1" {
 		t.Fatalf("unexpected summary identity: %#v", summary)
 	}
 	if summary.TaskCount != 2 || summary.WorkerCount != 2 || summary.WorkspaceCount != 2 || summary.EventCount != 2 {

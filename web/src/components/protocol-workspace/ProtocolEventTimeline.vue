@@ -95,18 +95,13 @@ function handleSelect(item) {
           <div class="timeline-row">
             <div class="timeline-title">
               <strong>{{ item.title }}</strong>
-              <span v-if="item.host">{{ item.host }}</span>
             </div>
             <span v-if="item.time" class="timeline-time">
               <Clock3Icon size="12" />
               <span>{{ item.time }}</span>
             </span>
           </div>
-          <div class="timeline-meta">
-            <span>{{ item.source }}</span>
-            <span v-if="item.tag">{{ item.tag }}</span>
-          </div>
-          <p>{{ item.text }}</p>
+          <p v-if="item.text">{{ item.text }}</p>
         </div>
 
         <ChevronRightIcon size="14" class="timeline-arrow" />
@@ -235,11 +230,15 @@ function handleSelect(item) {
 }
 
 .timeline-title strong {
-  display: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
 }
 
 .timeline-title span {
-  display: none;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-left: 4px;
 }
 
 .timeline-meta {
@@ -258,10 +257,16 @@ function handleSelect(item) {
 }
 
 .timeline-copy p {
-  margin: 0;
+  margin: 2px 0 0;
   color: #475569;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .timeline-item.warning .timeline-copy p {
@@ -279,12 +284,10 @@ function handleSelect(item) {
 }
 
 .timeline-empty {
-  margin: 0;
-  padding: 14px;
-  border-radius: 0;
-  border: none;
+  padding: 0 14px 14px;
   color: #94a3b8;
   background: transparent;
   font-size: 12px;
+  font-weight: 600;
 }
 </style>

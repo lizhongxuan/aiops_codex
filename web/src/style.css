@@ -14,10 +14,10 @@
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
   --omnibar-bg: #f1f5f9;
-  --radius-card: 16px;
-  --text-body: 15px;
-  --line-height-body: 1.7;
-  --text-meta-size: 12px;
+  --radius-card: 12px;
+  --text-body: 14px;
+  --line-height-body: 1.6;
+  --text-meta-size: 11px;
 }
 
 * {
@@ -395,13 +395,13 @@ button, input, textarea, select {
   flex: 1;
   overflow-y: auto;
   scroll-behavior: smooth;
-  padding: 24px 0 240px; /* Space for omnibar & breathing room */
+  padding: 16px 0 240px;
 }
 
 .chat-stream-inner {
-  max-width: 900px;
+  max-width: 820px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 28px;
 }
 
 .empty-state-canvas {
@@ -421,17 +421,17 @@ button, input, textarea, select {
 }
 
 .empty-state-canvas h2 {
-  font-size: 28px;
+  font-size: 22px;
   color: var(--text-main);
-  margin: 16px 0 8px;
+  margin: 12px 0 6px;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
 .empty-state-canvas p {
-  font-size: 15px;
-  max-width: 480px;
-  line-height: 1.6;
+  font-size: 14px;
+  max-width: 420px;
+  line-height: 1.5;
 }
 
 .empty-icon {
@@ -441,7 +441,7 @@ button, input, textarea, select {
 
 /* Chat Row Cards from old CardItem */
 .stream-row {
-  margin-bottom: 12px;
+  margin-bottom: 6px;
   display: flex;
   width: 100%;
 }
@@ -449,13 +449,13 @@ button, input, textarea, select {
 .row-assistant { justify-content: flex-start; }
 
 .chat-banner {
-  padding: 12px 16px;
-  border-radius: 12px;
-  margin-bottom: 16px;
-  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .loading-banner {
@@ -498,12 +498,12 @@ button, input, textarea, select {
 
 /* Base Card Styles from previous (will be overridden by new components later) */
 .card {
-  width: min(100%, 860px);
-  border-radius: 16px;
-  padding: 16px;
+  width: min(100%, 820px);
+  border-radius: 12px;
+  padding: 12px;
   border: 1px solid var(--border-color);
   background: #ffffff;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.02);
 }
 
 .message-card.user-bubble {
@@ -512,7 +512,7 @@ button, input, textarea, select {
   border: none;
   background: #f3f4f6;
   box-shadow: none;
-  border-radius: var(--radius-card);
+  border-radius: 14px;
 }
 
 .message-card.assistant-block {
@@ -529,21 +529,21 @@ button, input, textarea, select {
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 0 24px 24px;
-  background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.9) 20%, #ffffff 100%);
+  padding: 0 28px 20px;
+  background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.92) 18%, #ffffff 100%);
 }
 
 .omnibar-wrapper {
-  max-width: 900px;
+  max-width: 820px;
   margin: 0 auto;
   background: var(--omnibar-bg);
   border: 1px solid var(--border-color);
-  border-radius: 20px;
-  padding: 12px 14px;
-  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   transition: box-shadow 0.2s, border-color 0.2s;
 }
 
@@ -559,8 +559,8 @@ button, input, textarea, select {
   background: transparent;
   resize: none;
   outline: none;
-  font-size: 15px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.5;
   padding: 0 4px;
   color: var(--text-main);
 }

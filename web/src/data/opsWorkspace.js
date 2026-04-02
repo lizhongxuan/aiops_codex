@@ -339,7 +339,7 @@ export const protocolMission = {
   subtitle: "主 Agent 已完成诊断和批次拆分，当前仅 web-08 的 reload 命令等待批准，其余主机继续执行中。",
   scope: "Fleet · web-cluster",
   strategy: "分批并行 · batch=3",
-  projectionMode: "前台投影 · PlannerSession 驱动",
+  projectionMode: "前台投影 · 主 Agent 驱动",
   approvalMode: "当前命令放行",
   phase: "执行中",
   pack: "nginx-reload-v3.2",
@@ -367,17 +367,17 @@ export const protocolPlanSummaryView = {
   tone: "info",
   status: "已生成",
   stepCount: 3,
-  plannerSessionId: "planner-sess-web-cluster",
+  plannerSessionId: "main-agent-sess-web-cluster",
 };
 
 export const protocolPlanDetailView = {
   id: "plan-detail-001",
-  title: "PlannerSession 计划详情",
+  title: "主 Agent 计划详情",
   version: "plan-v3",
   generatedAt: "19:43",
   ownerSessionLabel: "主 Agent 工作台会话（前台投影）",
-  plannerSessionLabel: "planner-sess-web-cluster",
-  plannerThreadLabel: "thread-planner-web-cluster",
+  plannerSessionLabel: "main-agent-sess-web-cluster",
+  plannerThreadLabel: "thread-main-agent-web-cluster",
   goal: "在发布前对 web 集群做配置守卫、reload 风险收敛和健康验证，只把高风险变更留给单机审批。",
   dagSummary: {
     nodes: 8,
@@ -404,7 +404,7 @@ export const protocolPlanDetailView = {
     {
       id: "process-1",
       label: "监控与上下文收集",
-      summary: "PlannerSession 先读取监控 MCP、经验包和主机画像，确认最近一次 reload 失败集中在 web-08。",
+      summary: "主 Agent 先读取监控 MCP、经验包和主机画像，确认最近一次 reload 失败集中在 web-08。",
       hosts: ["web-07", "web-08", "web-09", "web-10", "db-01"],
       mcpHits: [
         "Metrics MCP: nginx reload 告警与 probe 波动",
@@ -417,7 +417,7 @@ export const protocolPlanDetailView = {
     {
       id: "process-2",
       label: "计划推导与 DAG 生成",
-      summary: "PlannerSession 先确定批量配置守卫，再把 reload 收敛到 web-08 单机审批，其它主机只做健康验证。",
+      summary: "主 Agent 先确定批量配置守卫，再把 reload 收敛到 web-08 单机审批，其它主机只做健康验证。",
       hosts: ["web-07", "web-08", "web-09", "web-10"],
       mcpHits: [],
       skillHits: ["Safe Change Review", "Incident Summary"],
@@ -465,9 +465,9 @@ export const protocolPlanDetailView = {
     },
   ],
   rawPlannerTraceRef: {
-    sessionId: "planner-sess-web-cluster",
-    threadId: "thread-planner-web-cluster",
-    title: "PlannerSession 原始轨迹",
+    sessionId: "main-agent-sess-web-cluster",
+    threadId: "thread-main-agent-web-cluster",
+    title: "主 Agent 原始轨迹",
   },
   rawPlannerTrace: [
     {

@@ -85,10 +85,13 @@ const (
 	AgentMCPPermissionReadwrite     = "readwrite"
 	SessionKindSingleHost           = "single_host"
 	SessionKindWorkspace            = "workspace"
+	// Legacy-only: kept so planner-backed persisted sessions can still load and
+	// be explicitly failed during reconcile after planner removal.
 	SessionKindPlanner              = "planner"
 	SessionKindWorker               = "worker"
 	SessionRuntimePresetSingleHost  = "single_host_default"
 	SessionRuntimePresetWorkspace   = "workspace_front"
+	// Legacy-only: new missions no longer create planner runtimes.
 	SessionRuntimePresetPlanner     = "planner_internal"
 	SessionRuntimePresetWorker      = "worker_internal"
 )
@@ -394,7 +397,9 @@ type SessionSummary struct {
 type MissionHistorySummary struct {
 	ID                       string `json:"id"`
 	WorkspaceSessionID       string `json:"workspaceSessionId,omitempty"`
-	PlannerSessionID         string `json:"plannerSessionId,omitempty"`
+	// Legacy-only: hidden from public JSON, preserved so old history fixtures can
+	// still be loaded during the compatibility window.
+	PlannerSessionID         string `json:"-"`
 	Title                    string `json:"title,omitempty"`
 	Summary                  string `json:"summary,omitempty"`
 	Status                   string `json:"status,omitempty"`
@@ -437,19 +442,19 @@ type MissionHistoryTask struct {
 }
 
 type MissionHistoryWorker struct {
-	MissionID      string                 `json:"missionId,omitempty"`
-	HostID         string                 `json:"hostId,omitempty"`
-	SessionID      string                 `json:"sessionId,omitempty"`
-	ThreadID       string                 `json:"threadId,omitempty"`
-	WorkspaceID    string                 `json:"workspaceId,omitempty"`
-	ActiveTaskID   string                 `json:"activeTaskId,omitempty"`
-	QueueTaskIDs   []string               `json:"queueTaskIds,omitempty"`
-	Status         string                 `json:"status,omitempty"`
-	LastSeenAt     string                 `json:"lastSeenAt,omitempty"`
-	IdleSince      string                 `json:"idleSince,omitempty"`
-	UpdatedAt      string                 `json:"updatedAt,omitempty"`
-	Conversation   []ConversationExcerpt  `json:"conversation,omitempty"`
-	Terminal       map[string]any         `json:"terminal,omitempty"`
+	MissionID      string                  `json:"missionId,omitempty"`
+	HostID         string                  `json:"hostId,omitempty"`
+	SessionID      string                  `json:"sessionId,omitempty"`
+	ThreadID       string                  `json:"threadId,omitempty"`
+	WorkspaceID    string                  `json:"workspaceId,omitempty"`
+	ActiveTaskID   string                  `json:"activeTaskId,omitempty"`
+	QueueTaskIDs   []string                `json:"queueTaskIds,omitempty"`
+	Status         string                  `json:"status,omitempty"`
+	LastSeenAt     string                  `json:"lastSeenAt,omitempty"`
+	IdleSince      string                  `json:"idleSince,omitempty"`
+	UpdatedAt      string                  `json:"updatedAt,omitempty"`
+	Conversation   []ConversationExcerpt   `json:"conversation,omitempty"`
+	Terminal       map[string]any          `json:"terminal,omitempty"`
 	ApprovalAnchor *ApprovalTerminalAnchor `json:"approvalAnchor,omitempty"`
 }
 
@@ -558,14 +563,13 @@ type MissionHistoryReport struct {
 
 type MissionHistoryDetail struct {
 	MissionHistorySummary
-	Report              MissionHistoryReport  `json:"report"`
-	Tasks               []MissionHistoryTask  `json:"tasks,omitempty"`
-	Workers             []MissionHistoryWorker `json:"workers,omitempty"`
-	Workspaces          []MissionHistoryWorkspace `json:"workspaces,omitempty"`
-	Events              []MissionHistoryEvent `json:"events,omitempty"`
-	PlannerConversation []ConversationExcerpt `json:"plannerConversation,omitempty"`
-	DispatchEvents      []DispatchEvent       `json:"dispatchEvents,omitempty"`
-	TaskBindings        []TaskHostBinding     `json:"taskBindings,omitempty"`
+	Report         MissionHistoryReport      `json:"report"`
+	Tasks          []MissionHistoryTask      `json:"tasks,omitempty"`
+	Workers        []MissionHistoryWorker    `json:"workers,omitempty"`
+	Workspaces     []MissionHistoryWorkspace `json:"workspaces,omitempty"`
+	Events         []MissionHistoryEvent     `json:"events,omitempty"`
+	DispatchEvents []DispatchEvent           `json:"dispatchEvents,omitempty"`
+	TaskBindings   []TaskHostBinding         `json:"taskBindings,omitempty"`
 }
 
 func DefaultSessionMeta() SessionMeta {
@@ -587,7 +591,7 @@ func NormalizeSessionMeta(meta SessionMeta) SessionMeta {
 			case SessionKindWorkspace:
 				meta.RuntimePreset = SessionRuntimePresetWorkspace
 			case SessionKindPlanner:
-				meta.RuntimePreset = SessionRuntimePresetPlanner
+				meta.RuntimePreset = SessionRuntimePresetWorkspace
 			case SessionKindWorker:
 				meta.RuntimePreset = SessionRuntimePresetWorker
 			default:

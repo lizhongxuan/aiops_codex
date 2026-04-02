@@ -12,7 +12,7 @@ func MissionWorkspaceRoot(defaultWorkspace, missionID string) string {
 }
 
 func PlannerWorkspacePath(defaultWorkspace, missionID string) string {
-	return filepath.Join(MissionWorkspaceRoot(defaultWorkspace, missionID), "planner")
+	return MissionWorkspaceRoot(defaultWorkspace, missionID)
 }
 
 func WorkerLocalWorkspacePath(defaultWorkspace, missionID, hostID string) string {

@@ -42,35 +42,35 @@ type WorkerCompletionCardView struct {
 }
 
 type PlanSummaryView struct {
-	Label            string `json:"label"`
-	Caption          string `json:"caption,omitempty"`
-	Tone             string `json:"tone,omitempty"`
-	Status           string `json:"status,omitempty"`
-	StepCount        int    `json:"stepCount,omitempty"`
-	PlannerSessionID string `json:"plannerSessionId,omitempty"`
+	Label     string `json:"label"`
+	Caption   string `json:"caption,omitempty"`
+	Tone      string `json:"tone,omitempty"`
+	Status    string `json:"status,omitempty"`
+	StepCount int    `json:"stepCount,omitempty"`
+	// Deprecated: kept only so legacy internal tests can compile while public JSON stays planner-free.
+	PlannerSessionID string `json:"-"`
 }
 
 type PlanDetailView struct {
-	Title               string `json:"title"`
-	Goal                string `json:"goal,omitempty"`
-	Version             string `json:"version,omitempty"`
-	GeneratedAt         string `json:"generatedAt,omitempty"`
-	OwnerSessionLabel   string `json:"ownerSessionLabel,omitempty"`
-	PlannerSessionLabel string `json:"plannerSessionLabel,omitempty"`
-	DAGSummary          struct {
+	Title             string `json:"title"`
+	Goal              string `json:"goal,omitempty"`
+	Version           string `json:"version,omitempty"`
+	GeneratedAt       string `json:"generatedAt,omitempty"`
+	OwnerSessionLabel string `json:"ownerSessionLabel,omitempty"`
+	DAGSummary        struct {
 		Nodes           int `json:"nodes,omitempty"`
 		Running         int `json:"running,omitempty"`
 		WaitingApproval int `json:"waitingApproval,omitempty"`
 		Queued          int `json:"queued,omitempty"`
 	} `json:"dagSummary,omitempty"`
-	StructuredProcess  []string `json:"structured_process,omitempty"`
+	StructuredProcess []string `json:"structured_process,omitempty"`
+	DispatchEvents    []DispatchEventView   `json:"dispatch_events,omitempty"`
+	TaskHostBindings  []TaskHostBindingView `json:"task_host_bindings,omitempty"`
+	// Deprecated: kept only so legacy internal tests can compile while public JSON stays planner-free.
 	RawPlannerTraceRef struct {
 		SessionID string `json:"sessionId,omitempty"`
 		ThreadID  string `json:"threadId,omitempty"`
-	} `json:"raw_planner_trace_ref,omitempty"`
-	PlannerConversation []PlannerConversationExcerptView `json:"planner_conversation,omitempty"`
-	DispatchEvents      []DispatchEventView              `json:"dispatch_events,omitempty"`
-	TaskHostBindings    []TaskHostBindingView            `json:"task_host_bindings,omitempty"`
+	} `json:"-"`
 }
 
 type DispatchSummaryView struct {
@@ -107,17 +107,6 @@ type WorkerReadonlyDetailView struct {
 	Terminal       map[string]any                  `json:"terminal,omitempty"`
 	Approval       map[string]any                  `json:"approval,omitempty"`
 	ApprovalAnchor *ApprovalTerminalAnchorView     `json:"approval_anchor,omitempty"`
-}
-
-type PlannerConversationExcerptView struct {
-	ID        string `json:"id,omitempty"`
-	SessionID string `json:"sessionId,omitempty"`
-	Role      string `json:"role,omitempty"`
-	Type      string `json:"type,omitempty"`
-	Source    string `json:"source,omitempty"`
-	Summary   string `json:"summary,omitempty"`
-	Text      string `json:"text,omitempty"`
-	CreatedAt string `json:"createdAt,omitempty"`
 }
 
 type DispatchEventView struct {
@@ -260,12 +249,11 @@ func ProjectPlanDetail(m *Mission) PlanDetailView {
 	if m == nil {
 		return view
 	}
-	view.Title = "PlannerSession 计划详情"
+	view.Title = "主 Agent 计划详情"
 	view.Goal = firstNonEmpty(m.Summary, m.Title)
 	view.Version = "plan-v1"
 	view.GeneratedAt = m.UpdatedAt
 	view.OwnerSessionLabel = "主 Agent 工作台会话（前台投影）"
-	view.PlannerSessionLabel = m.PlannerSessionID
 	view.DAGSummary.Nodes = len(m.Tasks)
 	view.DAGSummary.Queued = countTasksWithStatus(m, TaskStatusQueued)
 	view.DAGSummary.Running = countTasksWithStatuses(m, TaskStatusReady, TaskStatusDispatching, TaskStatusRunning)

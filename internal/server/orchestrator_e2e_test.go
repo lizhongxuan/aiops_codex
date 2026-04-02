@@ -17,96 +17,6 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 )
 
-func TestHandleChoiceAnswerRoutesToPlannerSession(t *testing.T) {
-	app := newOrchestratorTestApp(t)
-	responses := newCapturedCodexResponses()
-	app.codexRespondFunc = responses.capture
-
-	workspaceSessionID := "workspace-choice-planner"
-	plannerSessionID := "planner-choice-planner"
-	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindWorkspace,
-		Visible:            true,
-		MissionID:          "mission-choice-planner",
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetWorkspace,
-	})
-	app.store.EnsureSessionWithMeta(plannerSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          "mission-choice-planner",
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	})
-	app.startRuntimeTurn(plannerSessionID, model.ServerLocalHostID)
-
-	now := model.NowString()
-	choice := model.ChoiceRequest{
-		ID:           "choice-planner-1",
-		RequestIDRaw: "raw-choice-planner-1",
-		ThreadID:     "thread-choice-planner-1",
-		TurnID:       "turn-choice-planner-1",
-		ItemID:       "choice-planner-1",
-		Status:       "pending",
-		Questions: []model.ChoiceQuestion{{
-			Header:   "排期方案",
-			Question: "选择调度方式",
-			Options: []model.ChoiceOption{
-				{Label: "先检查后重启", Value: "inspect_then_restart"},
-				{Label: "直接重启", Value: "restart_now"},
-			},
-		}},
-		RequestedAt: now,
-	}
-	card := model.Card{
-		ID:        choice.ItemID,
-		Type:      "ChoiceCard",
-		Title:     "选择调度方式",
-		RequestID: choice.ID,
-		Question:  choice.Questions[0].Question,
-		Options:   choice.Questions[0].Options,
-		Questions: choice.Questions,
-		Status:    "pending",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	app.store.AddChoice(plannerSessionID, choice)
-	app.store.UpsertCard(plannerSessionID, card)
-	app.mirrorInternalChoiceToWorkspace(plannerSessionID, choice, card)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/choices/"+choice.ID+"/answer", strings.NewReader(`{"answers":[{"value":"inspect_then_restart","label":"先检查后重启"}]}`))
-	rec := httptest.NewRecorder()
-	app.handleChoiceAnswer(rec, req, workspaceSessionID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-
-	targetChoice, ok := app.store.Choice(plannerSessionID, choice.ID)
-	if !ok || targetChoice.Status != "completed" {
-		t.Fatalf("expected planner choice completed, got %#v, %v", targetChoice, ok)
-	}
-	workspaceCard := app.cardByID(workspaceSessionID, choice.ItemID)
-	if workspaceCard == nil || workspaceCard.Status != "completed" {
-		t.Fatalf("expected mirrored workspace choice card completed, got %#v", workspaceCard)
-	}
-	plannerSession := app.store.Session(plannerSessionID)
-	if plannerSession == nil || plannerSession.Runtime.Turn.Phase != "thinking" {
-		t.Fatalf("expected planner runtime phase thinking, got %#v", plannerSession)
-	}
-	resp, ok := responses.result(choice.RequestIDRaw)
-	if !ok {
-		t.Fatalf("expected codex response for planner choice answer")
-	}
-	answers, ok := resp["answers"].([]any)
-	if !ok || len(answers) != 1 {
-		t.Fatalf("expected one answer in planner codex response, got %#v", resp["answers"])
-	}
-	answer, ok := answers[0].(map[string]any)
-	if !ok || answer["value"] != "inspect_then_restart" {
-		t.Fatalf("unexpected planner answer payload %#v", answers[0])
-	}
-}
-
 func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	responses := newCapturedCodexResponses()
@@ -137,7 +47,6 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	hostIDs := setupBudgetedFanoutHosts(t, app, 32)
 
 	workspaceSessionID := "workspace-e2e"
-	plannerSessionID := "planner-e2e"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
@@ -148,7 +57,6 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
 		MissionID:           "mission-e2e",
 		WorkspaceSessionID:  workspaceSessionID,
-		PlannerSessionID:    plannerSessionID,
 		Title:               "Budgeted fanout",
 		Summary:             "dispatch across 32 hosts with one approval gate",
 		GlobalActiveBudget:  32,
@@ -157,13 +65,6 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start mission: %v", err)
 	}
-	app.ensureInternalSessionFromWorkspace(plannerSessionID, workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindPlanner,
-		Visible:            false,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetPlanner,
-	}, model.ServerLocalHostID)
 
 	tasks := make([]map[string]any, 0, len(hostIDs))
 	for i, hostID := range hostIDs {
@@ -174,7 +75,7 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 			"instruction": fmt.Sprintf("inspect nginx status on %s", hostID),
 		})
 	}
-	app.handlePlannerDispatchTasks("raw-dispatch-e2e", plannerSessionID, map[string]any{"tasks": tasks})
+	app.handleWorkspaceDispatchTasks("raw-dispatch-e2e", workspaceSessionID, map[string]any{"tasks": tasks})
 
 	currentMission := waitForMissionState(t, app, workspaceSessionID, func(m *orchestrator.Mission) bool {
 		return m != nil && len(m.Tasks) == len(hostIDs) && countTasksWithStatus(m, orchestrator.TaskStatusRunning) == 4
@@ -378,7 +279,7 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	}
 	dispatchResp, ok := responses.result("raw-dispatch-e2e")
 	if !ok || !strings.Contains(asString(dispatchResp["contentItems"]), "accepted=32") {
-		t.Fatalf("expected planner dispatch response summary, got %#v", dispatchResp)
+		t.Fatalf("expected workspace dispatch response summary, got %#v", dispatchResp)
 	}
 }
 

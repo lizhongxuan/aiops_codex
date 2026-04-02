@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { AlertTriangleIcon, Loader2Icon, PanelsTopLeftIcon, RefreshCwIcon } from "lucide-vue-next";
 import ProtocolApprovalRail from "../components/protocol-workspace/ProtocolApprovalRail.vue";
 import ProtocolConversationPane from "../components/protocol-workspace/ProtocolConversationPane.vue";
@@ -13,16 +13,19 @@ const store = useAppStore();
 
 const refreshBusy = ref(false);
 const decisionBusy = ref(false);
+const stopBusy = ref(false);
 const composerDraft = ref("");
 const actionNotice = ref("");
 const actionTone = ref("info");
 const evidenceOpen = ref(false);
-const evidenceTab = ref("planner-ai");
+const evidenceTab = ref("main-agent-plan");
 const selectedHostId = ref("");
 const selectedStepId = ref("");
 const selectedApprovalId = ref("");
 const selectedMessageId = ref("");
 const evidenceSource = ref("mission");
+const workspaceBootstrapBusy = ref(false);
+const workspaceBootstrapAttempted = ref(false);
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -92,6 +95,17 @@ const approvalItems = computed(() => workspaceModel.value.approvalItems || []);
 const eventItems = computed(() => workspaceModel.value.eventItems || []);
 const timelineItems = computed(() => [...eventItems.value].reverse());
 const backgroundAgents = computed(() => workspaceModel.value.backgroundAgents || []);
+const canRestartMission = computed(() => workspaceModel.value.nextSendStartsNewMission);
+const statusBanner = computed(() => {
+  const banner = workspaceModel.value.statusBanner;
+  if (!banner || workspaceModel.value.canStopCurrentMission) return null;
+  return {
+    tone: banner.tone,
+    title: banner.title,
+    text: banner.detail,
+    hint: canRestartMission.value ? "继续发送会在当前 workspace 会话里启动一轮新的 mission。" : "",
+  };
+});
 
 const selectedApprovalItem = computed(() => {
   if (selectedApprovalId.value) {
@@ -141,6 +155,27 @@ const conversationSubtitle = computed(() => {
   return "通过主 Agent 对话直接看 plan、step 分配和 host-agent 执行状态。";
 });
 
+const starterCard = computed(() => {
+  const connectedHost = compactText(store.snapshot.selectedHostId || selectedHostRow.value?.displayName || "server-local");
+  const pendingApprovals = approvalItems.value.length;
+  return {
+    eyebrow: "SYSTEM CONTEXT",
+    title: `${connectedHost} 已连接，工作台已就绪。`,
+    text: "可以直接问我当前状态，或者描述你想处理的问题。",
+    meta: pendingApprovals
+      ? `当前有 ${pendingApprovals} 条待审批操作，处理后我会继续推进。`
+      : "当前没有待审批操作。",
+  };
+});
+
+const composerPrimaryActionOverride = computed(() => (workspaceModel.value.canStopCurrentMission ? "" : "send"));
+
+const composerPlaceholder = computed(() =>
+  workspaceModel.value.nextSendStartsNewMission
+    ? "上一轮任务已结束，继续输入会在当前工作台启动新 mission"
+    : "继续输入需求、约束或补充说明",
+);
+
 const planSummaryLabel = computed(() => {
   const total = Number(planCardModel.value.totalSteps || 0);
   const completed = Number(planCardModel.value.completedSteps || 0);
@@ -148,8 +183,8 @@ const planSummaryLabel = computed(() => {
   return `共 ${total} 个任务，已完成 ${completed} 个`;
 });
 
-const planCards = computed(() =>
-  asArray(planCardModel.value.stepItems).map((item) => ({
+const planCards = computed(() => {
+  const stepCards = asArray(planCardModel.value.stepItems).map((item) => ({
     id: item.id,
     step: {
       id: item.id,
@@ -176,8 +211,107 @@ const planCards = computed(() =>
       },
     ],
     index: item.index,
-  })),
-);
+  }));
+  if (stepCards.length) return stepCards;
+
+  const hasPlanProjection = Boolean(
+    workspaceModel.value.cards?.planCard ||
+      compactText(planCardModel.value.summary) ||
+      compactText(planCardModel.value.generatedAt),
+  );
+  if (!hasPlanProjection) return [];
+
+  return [
+    {
+      id: "plan-projection",
+      step: {
+        id: "plan-projection",
+        title: compactText(planCardModel.value.title || "主 Agent 已生成计划摘要"),
+        description: compactText(planCardModel.value.summary || conversationSubtitle.value),
+      },
+      status: workspaceModel.value.missionPhase || "planning",
+      statusLabel: normalizePhaseLabel(workspaceModel.value.missionPhase),
+      hostAgent: asArray(backgroundAgents.value).map((agent) => ({
+        id: compactText(agent.hostId || agent.id),
+        label: compactText(agent.name || agent.hostId || agent.id),
+        status: compactText(agent.status || ""),
+      })),
+      detail: compactText(planCardModel.value.summary || "已收到计划投影，正在同步具体步骤。"),
+      note:
+        approvalItems.value.length > 0
+          ? `当前有 ${approvalItems.value.length} 条审批待处理，具体 step -> host-agent 映射同步后会显示在这里。`
+          : "当前还在整理 step -> host-agent 映射，稍后会直接显示在这里。",
+      tags: [
+        { id: "plan-projection-tag", label: "已收到计划投影" },
+        ...(approvalItems.value.length ? [{ id: "plan-projection-approval", label: `待审批 ${approvalItems.value.length}` }] : []),
+      ],
+      actions: [{ id: "plan-projection-evidence", key: "evidence", label: "查看证据" }],
+      index: 1,
+    },
+  ];
+});
+
+const conversationStatusCard = computed(() => {
+  const phase = workspaceModel.value.missionPhase;
+  const turnActive = store.runtime.turn.active;
+
+  // Show status card for all active phases, including finalizing
+  if (!turnActive && !["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"].includes(phase)) {
+    return null;
+  }
+  // If turn is active but phase looks terminal, still show a status indicator
+  if (turnActive && ["completed", "failed", "aborted", "idle"].includes(phase)) {
+    return {
+      id: "__workspace_status__",
+      type: "ThinkingCard",
+      phase: "executing",
+      hint: "",
+    };
+  }
+  if (!turnActive && !["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"].includes(phase)) {
+    return null;
+  }
+
+  const hasPlanProjection = Boolean(
+    workspaceModel.value.cards?.planCard ||
+      compactText(planCardModel.value.summary) ||
+      compactText(planCardModel.value.generatedAt),
+  );
+
+  let hint = "";
+  if (phase === "planning") {
+    hint =
+      compactText(planCardModel.value.summary) ||
+      (hasPlanProjection ? "已收到计划投影，正在同步 step 和 host-agent 映射。" : "主 Agent 正在理解你的问题并生成 plan。");
+  } else if (phase === "thinking") {
+    // Don't set a hint — the phaseLabel "正在思考" is sufficient
+    hint = "";
+  } else if (phase === "waiting_approval") {
+    const approval = selectedApprovalItem.value || approvalItems.value[0] || null;
+    hint = approval
+      ? `${approval.hostName || approval.hostId || "server-local"} 正在等待审批：${approval.command || approval.summary || "待确认操作"}`
+      : "主 Agent 已生成计划，当前正在等待审批继续推进。";
+  } else if (phase === "waiting_input") {
+    hint = "主 Agent 正在等待补充输入或确认后继续推进。";
+  } else if (phase === "executing") {
+    const agents = asArray(backgroundAgents.value)
+      .slice(0, 2)
+      .map((agent) => compactText(agent.name || agent.hostId || agent.id))
+      .filter(Boolean);
+    hint = agents.length
+      ? `${agents.join("、")} 正在执行`
+      : "";
+  } else if (phase === "finalizing") {
+    hint = "";
+  }
+
+  return {
+    id: "__workspace_status__",
+    type: "ThinkingCard",
+    phase,
+    hint,
+  };
+});
 
 const filteredEventItems = computed(() => {
   const selectedHost = selectedHostRow.value?.hostId;
@@ -189,70 +323,47 @@ const evidenceBase = computed(() =>
   buildProtocolEvidenceTabs({
     planCardModel: planCardModel.value,
     hostRow: selectedHostRow.value,
+    approvalItem: selectedApprovalItem.value,
     eventItems: filteredEventItems.value,
   }),
 );
 
-const plannerAiPanel = computed(() => {
-  const items = evidenceBase.value.plannerAi.length
-    ? evidenceBase.value.plannerAi.map((item) => ({
-        label: item.time || item.title || "Planner",
-        value: item.text,
-      }))
-    : [
-        {
-          label: "Plan",
-          value: compactText(planCardModel.value.summary) || "当前还没有可用的 Planner 对话摘录。",
-        },
-      ];
-
+const mainAgentPlanPanel = computed(() => {
+  const items = [];
+  const hasPlanSummary = Boolean(
+    compactText(planCardModel.value.summary) || asArray(planCardModel.value.stepItems).length || compactText(planCardModel.value.generatedAt),
+  );
+  if (hasPlanSummary) {
+    items.push({
+      label: "计划摘要",
+      value: compactText(planCardModel.value.summary || "当前还没有可用的计划摘要。"),
+    });
+  }
+  for (const [index, step] of asArray(planCardModel.value.stepItems).entries()) {
+    const hostNames = asArray(step.hosts).map((host) => compactText(host.label || host.id)).filter(Boolean).join("、");
+    items.push({
+      label: `Step ${step.index || index + 1}`,
+      value: [step.title, step.statusLabel || step.status, hostNames ? `Host: ${hostNames}` : ""]
+        .map((part) => compactText(part))
+        .filter(Boolean)
+        .join(" · "),
+    });
+  }
   return {
-    title: "Planner -> AI 对话",
-    summary: compactText(planCardModel.value.title || planCardModel.value.version || "查看主 Agent 如何理解并生成 plan。"),
-    items,
-    raw: planCardModel.value.rawPlannerTraceRef,
+    title: "主 Agent 计划摘要",
+    summary: compactText(planCardModel.value.summary || "查看主 Agent 如何生成并拆分 plan。"),
+    items: items.length ? items : [{ label: "状态", value: "当前还没有可用的计划摘要。" }],
+    raw: {
+      version: planCardModel.value.version,
+      generatedAt: planCardModel.value.generatedAt,
+    },
   };
 });
 
-const plannerHostPanel = computed(() => {
-  const rows = [];
-  if (selectedStep.value) {
-    rows.push(
-      { label: "Step", value: selectedStep.value.title },
-      { label: "状态", value: stepStatusLabel(selectedStep.value.status) },
-      { label: "Host-agent", value: asArray(selectedStep.value.hosts).map((host) => host.label).join("、") || "未分配" },
-    );
-  }
-  if (selectedApprovalItem.value) {
-    rows.push(
-      { label: "审批主机", value: selectedApprovalItem.value.hostName || selectedApprovalItem.value.hostId || "未指定" },
-      { label: "命令", value: selectedApprovalItem.value.command || selectedApprovalItem.value.summary || "未提供命令" },
-    );
-    rows.push(
-      ...asArray(selectedApprovalItem.value.detailRows).map((item) => ({
-        label: compactText(item.label || "详情"),
-        value: compactText(item.value || item.text),
-      })),
-    );
-  }
-
-  const eventRows = evidenceBase.value.plannerHost.map((item) => ({
-    label: item.time || item.title || "Dispatcher",
-    value: item.text || item.title,
-  }));
-
-  return {
-    title: "Planner -> Host / Dispatcher",
-    summary: rows.length ? "当前 step / 审批对应的派发与执行上下文。" : "查看 Planner 如何把任务分发给 host-agent。",
-    items: rows.concat(eventRows),
-    raw: selectedApprovalItem.value?.raw || null,
-  };
-});
-
-const hostAiPanel = computed(() => {
-  const transcript = evidenceBase.value.hostConversation.length
-    ? evidenceBase.value.hostConversation.map((item) => ({
-        label: item.time || item.title || "Host",
+const workerConversationPanel = computed(() => {
+  const transcript = evidenceBase.value.workerConversation.length
+    ? evidenceBase.value.workerConversation.map((item) => ({
+        label: item.time || item.title || "Worker",
         value: item.text,
       }))
     : asArray(selectedHostRow.value?.worker?.transcript).map((item, index) => ({
@@ -261,14 +372,14 @@ const hostAiPanel = computed(() => {
       }));
 
   return {
-    title: `${selectedHostRow.value?.displayName || "Host"} -> AI`,
+    title: `${selectedHostRow.value?.displayName || "Worker"} 对话`,
     summary: selectedHostRow.value?.taskTitle || "当前 host-agent 与 AI 的对话摘录。",
     items: transcript.length ? transcript : [{ label: "状态", value: "当前 host-agent 还没有可展示的对话摘录。" }],
     raw: selectedHostRow.value?.worker || null,
   };
 });
 
-const terminalPanel = computed(() => ({
+const hostTerminalPanel = computed(() => ({
   title: `${selectedHostRow.value?.displayName || "Host"} terminal`,
   summary: selectedHostRow.value?.summary || "查看当前 host-agent 对应主机的终端输出。",
   items: asArray(evidenceBase.value.hostTerminalRows).map((row) => ({
@@ -278,55 +389,135 @@ const terminalPanel = computed(() => ({
   raw: evidenceBase.value.hostTerminalOutput || selectedHostRow.value?.worker?.terminal || "",
 }));
 
+const approvalContextPanel = computed(() => {
+  const rows = [];
+  if (selectedApprovalItem.value) {
+    rows.push(
+      { label: "主机", value: selectedApprovalItem.value.hostName || selectedApprovalItem.value.hostId || "未指定" },
+      { label: "审批ID", value: selectedApprovalItem.value.approvalId || selectedApprovalItem.value.id || "未提供" },
+      { label: "命令", value: selectedApprovalItem.value.command || selectedApprovalItem.value.summary || "未提供命令" },
+    );
+    rows.push(
+      ...asArray(selectedApprovalItem.value.detailRows).map((item) => ({
+        label: compactText(item.label || "详情"),
+        value: compactText(item.value || item.text),
+      })),
+    );
+  } else if (evidenceBase.value.approvalContext.length) {
+    rows.push(
+      ...evidenceBase.value.approvalContext.map((item) => ({
+        label: item.label || item.title || "审批上下文",
+        value: item.value || item.text,
+      })),
+    );
+  }
+
+  return {
+    title: "审批上下文",
+    summary: selectedApprovalItem.value
+      ? "通过弹框查看当前审批所关联的命令、主机和证据。"
+      : "当前没有待处理的审批上下文。",
+    items: rows.length
+      ? rows
+      : [
+          {
+            label: "状态",
+            value: "当前没有待处理的审批上下文。",
+          },
+        ],
+    raw: selectedApprovalItem.value?.raw || null,
+  };
+});
+
 const evidencePanels = computed(() => ({
-  "planner-ai": plannerAiPanel.value,
-  "planner-host": plannerHostPanel.value,
-  "host-ai": hostAiPanel.value,
-  terminal: terminalPanel.value,
+  "main-agent-plan": mainAgentPlanPanel.value,
+  "worker-conversation": workerConversationPanel.value,
+  "host-terminal": hostTerminalPanel.value,
+  "approval-context": approvalContextPanel.value,
 }));
 
 const evidenceTabs = computed(() => [
-  { value: "planner-ai", label: "Planner -> AI", badge: plannerAiPanel.value.items?.length || 0 },
-  { value: "planner-host", label: "Planner -> Host", badge: plannerHostPanel.value.items?.length || 0 },
-  { value: "host-ai", label: "Host -> AI", badge: hostAiPanel.value.items?.length || 0 },
-  { value: "terminal", label: "Host Terminal", badge: terminalPanel.value.items?.length || 0 },
+  { value: "main-agent-plan", label: "主 Agent 计划摘要", badge: mainAgentPlanPanel.value.items?.length || 0 },
+  { value: "worker-conversation", label: "Worker 对话", badge: workerConversationPanel.value.items?.length || 0 },
+  { value: "host-terminal", label: "Host Terminal", badge: hostTerminalPanel.value.items?.length || 0 },
+  { value: "approval-context", label: "审批上下文", badge: approvalContextPanel.value.items?.length || 0 },
 ]);
 
 const evidenceTitle = computed(() => {
   if (evidenceSource.value === "approval" && selectedApprovalItem.value) {
-    return `审批证据 · ${selectedApprovalItem.value.hostName || selectedApprovalItem.value.hostId || "Host"}`;
+    return `审批上下文 · ${selectedApprovalItem.value.hostName || selectedApprovalItem.value.hostId || "Host"}`;
   }
   if (evidenceSource.value === "step" && selectedStep.value) {
-    return `步骤证据 · ${selectedStep.value.title}`;
+    return `主 Agent 计划摘要 · ${selectedStep.value.title}`;
   }
   if (evidenceSource.value === "host" && selectedHostRow.value) {
-    return `Host 证据 · ${selectedHostRow.value.displayName}`;
+    const hostLabel = selectedHostRow.value.displayName || selectedHostRow.value.hostId || "Host";
+    if (evidenceTab.value === "host-terminal") {
+      return `命令执行详情 · ${hostLabel}`;
+    }
+    return `执行详情 · ${hostLabel}`;
+  }
+  if (evidenceSource.value === "message" || evidenceSource.value === "dispatch" || evidenceSource.value === "event") {
+    return "主 Agent 计划摘要";
   }
   return "执行证据";
 });
 
 const evidenceSubtitle = computed(() => {
-  if (selectedApprovalItem.value) {
+  if (evidenceSource.value === "approval") {
     return "审批详情通过弹框查看，不占用主页面空间。";
   }
-  if (selectedStep.value) {
-    return "这里汇总当前 step 的 Planner、Dispatcher、Host 与 terminal 上下文。";
+  if (evidenceSource.value === "host") {
+    return "这里汇总当前 worker 对话和 Host Terminal 上下文。";
   }
-  return "按 tab 切换 Planner、Host 与终端视角。";
+  if (evidenceSource.value === "step" || evidenceSource.value === "message" || evidenceSource.value === "dispatch" || evidenceSource.value === "event") {
+    return "这里汇总主 Agent 计划摘要、Worker 对话、Host Terminal 与审批上下文。";
+  }
+  return "按 tab 切换主 Agent 计划摘要、Worker 对话、Host Terminal 与审批上下文。";
 });
 
 const runtimeStatus = computed(() => {
+  if (workspaceModel.value.statusBanner?.runtimeText) {
+    return workspaceModel.value.statusBanner.runtimeText;
+  }
   const phase = normalizePhaseLabel(workspaceModel.value.missionPhase);
   const total = Number(planCardModel.value.totalSteps || 0);
   const completed = Number(planCardModel.value.completedSteps || 0);
-  if (!total) return `${phase} | 等待主 Agent 生成计划`;
+  if (workspaceModel.value.missionPhase === "aborted") {
+    return `已停止 | ${canRestartMission.value ? "可直接发送启动新一轮 mission" : "当前任务已结束"}`;
+  }
+  if (workspaceModel.value.missionPhase === "failed") {
+    return `失败 | ${compactText(workspaceModel.value.currentFailureCard?.title || "查看最近一次失败原因")}`;
+  }
+  if (workspaceModel.value.missionPhase === "completed") {
+    return "已完成 | 可继续补充下一轮需求";
+  }
+  if (!total) {
+    if (workspaceModel.value.missionPhase === "thinking") {
+      return "思考中";
+    }
+    if (workspaceModel.value.cards?.planCard || compactText(planCardModel.value.generatedAt || planCardModel.value.summary)) {
+      return `${phase} | 已收到计划投影，等待步骤同步`;
+    }
+    return `${phase} | 等待主 Agent 生成计划`;
+  }
   return `${phase} | 共 ${total} 个任务，已完成 ${completed} 个`;
 });
 
 const toolbarTone = computed(() => {
   if (store.errorMessage) return "danger";
+  if (!actionNotice.value && workspaceModel.value.statusBanner?.tone) return workspaceModel.value.statusBanner.tone;
   if (actionTone.value) return actionTone.value;
   return "info";
+});
+
+const toolbarMessage = computed(() => {
+  const raw = store.errorMessage || actionNotice.value || workspaceModel.value.statusBanner?.detail || store.noticeMessage || "";
+  // Replace raw "approval not found" with a user-friendly message
+  if (/approval.*not\s*found|not\s*found.*approval/i.test(raw)) {
+    return "该审批已过期或已被处理，请刷新页面查看最新状态。";
+  }
+  return raw;
 });
 
 watch(
@@ -347,7 +538,56 @@ watch(
   { immediate: true, deep: true },
 );
 
-function openEvidence({ source = "mission", hostId = "", stepId = "", approvalId = "", tab = "planner-ai" } = {}) {
+watch(
+  () => ({
+    isWorkspace: isWorkspaceSession.value,
+    turnActive: store.runtime.turn.active,
+    phase: workspaceModel.value.missionPhase,
+    stepCount: Number(planCardModel.value.totalSteps || 0),
+  }),
+  (state, _previous, onCleanup) => {
+    if (
+      !state.isWorkspace ||
+      !state.turnActive ||
+      !["planning", "thinking", "executing", "waiting_approval", "waiting_input"].includes(state.phase)
+    ) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      if (refreshBusy.value || decisionBusy.value) return;
+      void store.fetchState();
+    }, state.stepCount > 0 ? 5000 : 3000);
+
+    onCleanup(() => {
+      window.clearInterval(timer);
+    });
+  },
+  { immediate: true },
+);
+
+watch(
+  () => ({
+    kind: store.snapshot.kind,
+    loading: store.loading,
+    turnActive: store.runtime.turn.active,
+  }),
+  (state) => {
+    if (state.kind === "workspace" || state.loading || state.turnActive || workspaceBootstrapAttempted.value) {
+      return;
+    }
+    void bootstrapWorkspaceSession();
+  },
+  { immediate: false },
+);
+
+onMounted(() => {
+  if (!isWorkspaceSession.value && !store.loading && !store.runtime.turn.active && !workspaceBootstrapAttempted.value) {
+    void bootstrapWorkspaceSession();
+  }
+});
+
+function openEvidence({ source = "mission", hostId = "", stepId = "", approvalId = "", tab = "main-agent-plan" } = {}) {
   if (hostId) selectedHostId.value = hostId;
   if (stepId) selectedStepId.value = stepId;
   if (approvalId) selectedApprovalId.value = approvalId;
@@ -367,21 +607,78 @@ async function refreshProtocolState() {
 }
 
 async function createWorkspaceSession() {
-  const ok = await store.createSession("workspace");
-  if (ok) pushActionNotice("已创建新的协作工作台。", "info");
+  if (workspaceBootstrapBusy.value) return false;
+  workspaceBootstrapBusy.value = true;
+  try {
+    const ok = await store.createSession("workspace");
+    if (ok) {
+      pushActionNotice("已创建新的协作工作台。", "info");
+      return true;
+    }
+    pushActionNotice(store.errorMessage || "创建协作工作台失败。", "danger");
+    return false;
+  } finally {
+    workspaceBootstrapBusy.value = false;
+    workspaceBootstrapAttempted.value = true;
+  }
 }
 
 async function activateRecentWorkspaceSession() {
-  if (!recentWorkspaceSession.value?.id) return;
-  const ok = await store.activateSession(recentWorkspaceSession.value.id);
-  if (ok) pushActionNotice("已切换到最近的工作台。", "info");
+  if (!recentWorkspaceSession.value?.id || workspaceBootstrapBusy.value) return false;
+  workspaceBootstrapBusy.value = true;
+  try {
+    const ok = await store.activateSession(recentWorkspaceSession.value.id);
+    if (ok) {
+      pushActionNotice("已切换到最近的工作台。", "info");
+      return true;
+    }
+    pushActionNotice(store.errorMessage || "切换最近工作台失败。", "danger");
+    return false;
+  } finally {
+    workspaceBootstrapBusy.value = false;
+    workspaceBootstrapAttempted.value = true;
+  }
+}
+
+async function bootstrapWorkspaceSession() {
+  if (isWorkspaceSession.value || workspaceBootstrapBusy.value || store.runtime.turn.active) return false;
+  workspaceBootstrapBusy.value = true;
+  try {
+    await store.fetchSessions();
+    const recent = store.sessionList.find((session) => session.kind === "workspace" && session.id !== store.activeSessionId) || null;
+    if (recent?.id) {
+      const ok = await store.activateSession(recent.id);
+      if (ok) {
+        pushActionNotice("已切换到最近的协作工作台。", "info");
+        return true;
+      }
+    }
+    const ok = await store.createSession("workspace");
+    if (ok) {
+      pushActionNotice("已自动创建新的协作工作台。", "info");
+      return true;
+    }
+    pushActionNotice(store.errorMessage || "进入协作工作台失败。", "danger");
+    return false;
+  } finally {
+    workspaceBootstrapBusy.value = false;
+    workspaceBootstrapAttempted.value = true;
+  }
 }
 
 async function sendWorkspaceMessage(payload = composerDraft.value) {
   if (!canSendWorkspaceMessage.value || !compactText(payload)) return;
+  const restartingMission = canRestartMission.value;
   store.sending = true;
   store.errorMessage = "";
   actionNotice.value = "";
+  if (restartingMission) {
+    selectedApprovalId.value = "";
+    selectedStepId.value = "";
+    selectedHostId.value = "";
+    evidenceOpen.value = false;
+    pushActionNotice("上一轮 mission 已结束，本次发送会在当前工作台启动新的 mission。", "info");
+  }
   store.setTurnPhase("thinking");
   store.resetActivity();
 
@@ -402,7 +699,7 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
       return;
     }
     composerDraft.value = "";
-    pushActionNotice("消息已发送给主 Agent。", "info");
+    pushActionNotice(restartingMission ? "已在当前会话启动新一轮 mission。" : "消息已发送给主 Agent。", "info");
     await Promise.all([store.fetchState(), store.fetchSessions()]);
   } catch (_error) {
     store.errorMessage = "Network error";
@@ -413,7 +710,9 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
 }
 
 async function stopWorkspaceMessage() {
-  if (!store.runtime.turn.active || decisionBusy.value) return;
+  if (!store.runtime.turn.active || decisionBusy.value || stopBusy.value) return;
+  stopBusy.value = true;
+  pushActionNotice("正在中断当前任务...", "info");
   try {
     const response = await fetch("/api/v1/chat/stop", {
       method: "POST",
@@ -432,6 +731,8 @@ async function stopWorkspaceMessage() {
   } catch (_error) {
     store.errorMessage = "Network error";
     store.setTurnPhase("failed");
+  } finally {
+    stopBusy.value = false;
   }
 }
 
@@ -452,7 +753,8 @@ async function submitApprovalDecision(approval, decision) {
   const approvalId = compactText(approval?.approvalId || approval?.requestId || approval?.raw?.approval?.requestId);
   if (!approvalId || decisionBusy.value) return;
 
-  selectedApprovalId.value = compactText(approval?.id);
+  const cardId = compactText(approval?.id);
+  selectedApprovalId.value = cardId;
   decisionBusy.value = true;
   try {
     store.errorMessage = "";
@@ -460,10 +762,43 @@ async function submitApprovalDecision(approval, decision) {
     pushActionNotice(decision === "decline" ? "已提交拒绝，等待主 Agent 调整方案。" : "审批结果已提交。", decision === "decline" ? "warning" : "info");
     await Promise.all([store.fetchState(), store.fetchSessions()]);
   } catch (error) {
-    store.errorMessage = error?.message || "approval failed";
-    store.setTurnPhase("failed");
+    const msg = error?.message || "approval failed";
+    // Friendly message for stale / expired approvals
+    if (/not found|expired|过期|不存在/i.test(msg)) {
+      // Locally dismiss the stale approval card so it disappears from the UI
+      dismissStaleApprovalCard(cardId, approvalId);
+      pushActionNotice("该审批已过期或已被处理，已自动清除。", "warning");
+      store.errorMessage = "";
+      selectedApprovalId.value = "";
+    } else {
+      store.errorMessage = msg;
+      store.setTurnPhase("failed");
+    }
   } finally {
     decisionBusy.value = false;
+  }
+}
+
+/** Locally mark a stale approval card as dismissed so it's filtered out of the pending list */
+function dismissStaleApprovalCard(cardId, approvalId) {
+  const cards = store.snapshot.cards;
+  if (!Array.isArray(cards)) return;
+  for (const card of cards) {
+    if (!card) continue;
+    const isMatch =
+      card.id === cardId ||
+      card.approval?.requestId === approvalId ||
+      card.approvalId === approvalId ||
+      card.requestId === approvalId;
+    if (isMatch && card.status === "pending") {
+      card.status = "dismissed";
+    }
+  }
+  // Also remove from snapshot.approvals
+  if (Array.isArray(store.snapshot.approvals)) {
+    store.snapshot.approvals = store.snapshot.approvals.filter(
+      (a) => a.id !== approvalId && a.requestId !== approvalId,
+    );
   }
 }
 
@@ -475,7 +810,7 @@ function handlePlanAction(payload) {
       source: "host",
       stepId: compactText(plan.id || plan.step?.id || plan.stepId),
       hostId,
-      tab: "host-ai",
+      tab: "worker-conversation",
     });
     return;
   }
@@ -483,7 +818,7 @@ function handlePlanAction(payload) {
     source: "step",
     stepId: compactText(plan.id || plan.step?.id || plan.stepId),
     hostId,
-    tab: "planner-host",
+    tab: "main-agent-plan",
   });
 }
 
@@ -491,31 +826,37 @@ function handleAgentSelect(agent) {
   openEvidence({
     source: "host",
     hostId: compactText(agent?.hostId || agent?.id),
-    tab: "host-ai",
+    tab: "worker-conversation",
   });
 }
 
 function handleMessageSelect(message) {
   selectedMessageId.value = compactText(message?.id);
   if (message?.role === "user") return;
-  openEvidence({ source: "message", tab: "planner-ai" });
+  openEvidence({ source: "message", tab: "main-agent-plan" });
 }
 
 function handleEventSelect(item) {
   const targetType = compactText(item?.targetType).toLowerCase();
   if (targetType === "approval") {
-    openEvidence({ source: "approval", approvalId: compactText(item?.targetId), hostId: compactText(item?.hostId), tab: "planner-host" });
+    openEvidence({ source: "approval", approvalId: compactText(item?.targetId), hostId: compactText(item?.hostId), tab: "approval-context" });
     return;
   }
   if (targetType === "host") {
-    openEvidence({ source: "host", hostId: compactText(item?.hostId || item?.targetId), tab: "host-ai" });
+    // Show terminal output (commands & errors) instead of worker conversation
+    openEvidence({ source: "host", hostId: compactText(item?.hostId || item?.targetId), tab: "host-terminal" });
     return;
   }
   if (targetType === "dispatch") {
-    openEvidence({ source: "dispatch", hostId: compactText(item?.hostId), tab: "planner-host" });
+    openEvidence({ source: "dispatch", hostId: compactText(item?.hostId), tab: "main-agent-plan" });
     return;
   }
-  openEvidence({ source: "event", tab: "planner-ai" });
+  // Default: show terminal for any event with a hostId, otherwise show plan
+  if (item?.hostId) {
+    openEvidence({ source: "host", hostId: compactText(item.hostId), tab: "host-terminal" });
+    return;
+  }
+  openEvidence({ source: "event", tab: "main-agent-plan" });
 }
 
 function handleApprovalDetail(approval) {
@@ -524,7 +865,7 @@ function handleApprovalDetail(approval) {
     source: "approval",
     approvalId: compactText(approval?.id),
     hostId: compactText(approval?.hostId),
-    tab: "planner-host",
+    tab: "approval-context",
   });
 }
 
@@ -550,9 +891,21 @@ function handleApprovalAccept(approval) {
       <PanelsTopLeftIcon size="30" class="empty-icon" />
       <h2>当前不是协作工作台会话</h2>
       <p>新页面只服务主 Agent 编排工作台。你可以直接新建一个 workspace，或者回到最近的工作台继续处理审批和 plan。</p>
+      <p v-if="workspaceBootstrapBusy" class="empty-hint">正在进入协作工作台...</p>
+      <p v-else-if="store.errorMessage || actionNotice" class="empty-hint" :class="toolbarTone">
+        {{ store.errorMessage || actionNotice }}
+      </p>
       <div class="empty-actions">
-        <button class="ops-button primary" type="button" @click="createWorkspaceSession">新建工作台</button>
-        <button v-if="recentWorkspaceSession" class="ops-button ghost" type="button" @click="activateRecentWorkspaceSession">
+        <button class="ops-button primary" type="button" :disabled="workspaceBootstrapBusy" @click="createWorkspaceSession">
+          {{ workspaceBootstrapBusy ? "处理中..." : "新建工作台" }}
+        </button>
+        <button
+          v-if="recentWorkspaceSession"
+          class="ops-button ghost"
+          type="button"
+          :disabled="workspaceBootstrapBusy"
+          @click="activateRecentWorkspaceSession"
+        >
           切到最近工作台
         </button>
       </div>
@@ -560,9 +913,9 @@ function handleApprovalAccept(approval) {
 
     <template v-else>
       <div class="protocol-workspace-toolbar">
-        <div v-if="actionNotice || store.errorMessage || store.noticeMessage" class="toolbar-notice" :class="toolbarTone">
-          <AlertTriangleIcon v-if="store.errorMessage" size="14" />
-          <span>{{ store.errorMessage || actionNotice || store.noticeMessage }}</span>
+        <div v-if="toolbarMessage" class="toolbar-notice" :class="toolbarTone">
+          <AlertTriangleIcon v-if="store.errorMessage || toolbarTone === 'danger'" size="14" />
+          <span>{{ toolbarMessage }}</span>
         </div>
         <button class="toolbar-refresh" type="button" :disabled="refreshBusy" @click="refreshProtocolState">
           <RefreshCwIcon size="14" :class="{ spin: refreshBusy }" />
@@ -577,17 +930,30 @@ function handleApprovalAccept(approval) {
             <span>正在载入工作台...</span>
           </div>
 
+          <article v-else-if="statusBanner" class="workspace-status-banner" :class="statusBanner.tone">
+            <div class="workspace-status-banner-head">
+              <strong>{{ statusBanner.title }}</strong>
+            </div>
+            <p>{{ statusBanner.text }}</p>
+            <span v-if="statusBanner.hint" class="workspace-status-banner-hint">{{ statusBanner.hint }}</span>
+          </article>
+
           <ProtocolConversationPane
-            v-else
+            v-if="!store.loading"
             title="Main Agent"
             :subtitle="conversationSubtitle"
             :messages="conversationItems"
+            :status-card="conversationStatusCard"
             :plan-cards="planCards"
             :plan-summary-label="planSummaryLabel"
             :background-agents="backgroundAgents"
+            :starter-card="starterCard"
             :draft="composerDraft"
+            :draft-placeholder="composerPlaceholder"
             :sending="store.sending"
-            empty-label="这里会显示主 Agent 的对话、plan 解释和风险提示。"
+            :busy="stopBusy"
+            :primary-action-override="composerPrimaryActionOverride"
+            empty-label="工作台已连接，可以直接开始对话。"
             @update:draft="composerDraft = $event"
             @send="sendWorkspaceMessage"
             @stop="stopWorkspaceMessage"
@@ -604,7 +970,7 @@ function handleApprovalAccept(approval) {
             :queue-items="approvalItems"
             :active-approval-id="selectedApprovalId"
             :busy="decisionBusy"
-            empty-label="当前没有待审批操作。"
+            empty-label="当前没有待处理的审批。"
             @detail="handleApprovalDetail"
             @authorize="handleApprovalAuthorize"
             @reject="handleApprovalReject"
@@ -615,6 +981,7 @@ function handleApprovalAccept(approval) {
             title="实时事件"
             subtitle="轻量时间线只保留关键变化，帮助你快速判断当前执行推进到哪里。"
             :items="timelineItems"
+            empty-label="当前还没有可展示的实时事件。"
             :max-items="8"
             @select="handleEventSelect"
           />
@@ -635,7 +1002,7 @@ function handleApprovalAccept(approval) {
       :tabs="evidenceTabs"
       :panels="evidencePanels"
     >
-      <template #terminal="{ panel }">
+      <template #host-terminal="{ panel }">
         <section class="terminal-evidence-panel">
           <div class="terminal-summary">
             <h4>{{ panel.title || "Host terminal" }}</h4>
@@ -737,6 +1104,49 @@ function handleApprovalAccept(approval) {
   flex-direction: column;
 }
 
+.workspace-status-banner {
+  margin: 16px 20px 0;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #334155;
+  flex-shrink: 0;
+}
+
+.workspace-status-banner.danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.workspace-status-banner.warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.workspace-status-banner-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.workspace-status-banner p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.workspace-status-banner-hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.82;
+}
+
 .workspace-side-rail {
   display: flex;
   flex-direction: column;
@@ -795,6 +1205,19 @@ function handleApprovalAccept(approval) {
   max-width: 680px;
   color: #64748b;
   line-height: 1.7;
+}
+
+.empty-hint {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.empty-hint.danger {
+  color: #b91c1c;
+}
+
+.empty-hint.warning {
+  color: #b45309;
 }
 
 .empty-icon {

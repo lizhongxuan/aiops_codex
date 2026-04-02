@@ -142,9 +142,6 @@ func TestWorkspaceMissionHistoryEndpoints(t *testing.T) {
 	if len(detailResp.Mission.Tasks) != 1 || len(detailResp.Mission.Workers) != 1 {
 		t.Fatalf("unexpected detail body: %#v", detailResp.Mission)
 	}
-	if len(detailResp.Mission.PlannerConversation) < 2 {
-		t.Fatalf("expected planner conversation excerpts, got %#v", detailResp.Mission.PlannerConversation)
-	}
 	if len(detailResp.Mission.TaskBindings) != 1 || detailResp.Mission.TaskBindings[0].TaskID != "task-1" {
 		t.Fatalf("expected one task binding, got %#v", detailResp.Mission.TaskBindings)
 	}

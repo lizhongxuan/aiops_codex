@@ -1,9 +1,10 @@
 <script setup>
-import { computed } from "vue";
+import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { BotIcon } from "lucide-vue-next";
 import MessageCard from "../MessageCard.vue";
 import Omnibar from "../Omnibar.vue";
-import ProtocolPlanSummaryCard from "./ProtocolPlanSummaryCard.vue";
+import ThinkingCard from "../ThinkingCard.vue";
+import ProtocolInlinePlanWidget from "./ProtocolInlinePlanWidget.vue";
 import ProtocolBackgroundAgentsCard from "./ProtocolBackgroundAgentsCard.vue";
 
 defineOptions({
@@ -51,6 +52,10 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  statusCard: {
+    type: Object,
+    default: null,
+  },
   draft: {
     type: String,
     default: "",
@@ -63,6 +68,14 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  busy: {
+    type: Boolean,
+    default: false,
+  },
+  primaryActionOverride: {
+    type: String,
+    default: "",
+  },
   showComposer: {
     type: Boolean,
     default: true,
@@ -74,6 +87,10 @@ const props = defineProps({
   emptyLabel: {
     type: String,
     default: "这里会显示主 Agent 的对话流。",
+  },
+  starterCard: {
+    type: Object,
+    default: null,
   },
 });
 
@@ -191,13 +208,62 @@ function selectHost(payload, plan) {
 function selectAgent(agent) {
   emit("agent-select", agent);
 }
+
+/* ---- Auto-scroll ---- */
+const scrollContainer = ref(null);
+const scrollContent = ref(null);
+const autoFollowTail = ref(true);
+let contentResizeObserver = null;
+
+function isNearBottom(el, threshold = 100) {
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+}
+
+function scrollToBottom(force = false) {
+  const el = scrollContainer.value;
+  if (!el || (!force && !autoFollowTail.value)) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+function handleScroll(e) {
+  autoFollowTail.value = isNearBottom(e.target);
+}
+
+watch(
+  () => ({
+    msgCount: normalizedMessages.value.length,
+    lastText: normalizedMessages.value[normalizedMessages.value.length - 1]?.card?.text?.length || 0,
+    hasStatus: !!props.statusCard,
+  }),
+  async () => {
+    await nextTick();
+    scrollToBottom();
+  },
+  { deep: true },
+);
+
+onMounted(() => {
+  nextTick(() => scrollToBottom(true));
+  if (typeof ResizeObserver !== "undefined" && scrollContent.value) {
+    contentResizeObserver = new ResizeObserver(() => scrollToBottom());
+    contentResizeObserver.observe(scrollContent.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (contentResizeObserver) {
+    contentResizeObserver.disconnect();
+    contentResizeObserver = null;
+  }
+});
 </script>
 
 <template>
   <section class="protocol-conversation-pane">
-    <div class="chat-container protocol-chat-container">
-      <div class="chat-stream-inner protocol-chat-inner">
-        <div v-if="normalizedMessages.length" class="chat-stream protocol-chat-stream">
+    <div class="chat-container protocol-chat-container" ref="scrollContainer" @scroll="handleScroll">
+      <div class="chat-stream-inner protocol-chat-inner" ref="scrollContent">
+        <div v-if="normalizedMessages.length || statusCard" class="chat-stream protocol-chat-stream">
           <div
             v-for="message in normalizedMessages"
             :key="message.id"
@@ -207,57 +273,53 @@ function selectAgent(agent) {
           >
             <MessageCard :card="message.card" />
           </div>
+
+          <div v-if="statusCard" class="stream-row row-assistant protocol-thinking-row">
+            <ThinkingCard :card="statusCard" />
+          </div>
         </div>
 
-        <div v-else class="empty-state-canvas protocol-empty-state">
-          <BotIcon size="42" class="empty-icon" />
-          <h2>{{ title }}</h2>
-          <p>{{ emptyLabel }}</p>
+        <div v-else class="protocol-starter-thread">
+          <div class="protocol-starter-kicker">
+            <BotIcon size="14" />
+            <span>{{ starterCard?.eyebrow || "SYSTEM CONTEXT" }}</span>
+          </div>
+          <div class="protocol-starter-copy">
+            <p class="protocol-starter-title">{{ starterCard?.title || title }}</p>
+            <p class="protocol-starter-text">{{ starterCard?.text || emptyLabel }}</p>
+            <div v-if="starterCard?.meta" class="protocol-starter-meta">{{ starterCard.meta }}</div>
+          </div>
         </div>
-
-        <section v-if="normalizedPlanCards.length" class="protocol-plan-section">
-          <div class="protocol-plan-section-head">
-            <div class="protocol-plan-section-copy">
-              <span>工作台计划投影</span>
-              <strong>{{ planSummaryLabel || "主 Agent 生成的 step 和 host-agent 映射会显示在这里。" }}</strong>
-            </div>
-          </div>
-
-          <div class="protocol-plan-section-body">
-            <ProtocolPlanSummaryCard
-              v-for="(plan, index) in normalizedPlanCards"
-              :key="plan.id || plan.key || plan.step?.id || plan.step?.key || index"
-              :step="plan.step || plan.title || plan"
-              :status="plan.status || plan.state || 'pending'"
-              :status-label="plan.statusLabel || plan.statusText || ''"
-              :host-agent="plan.hostAgent || plan.hostAgents || plan.hosts || []"
-              :detail="plan.detail || plan.summary || plan.text || ''"
-              :note="plan.note || ''"
-              :tags="plan.tags || []"
-              :actions="plan.actions || plan.buttons || []"
-              :index="plan.index || index + 1"
-              @action="(payload) => planAction(payload, plan)"
-              @host-select="(host) => selectHost(host, plan)"
-            />
-          </div>
-        </section>
-
-        <ProtocolBackgroundAgentsCard
-          v-if="normalizedBackgroundAgents.length"
-          class="protocol-agent-section"
-          :agents="normalizedBackgroundAgents"
-          @select="selectAgent"
-        />
       </div>
     </div>
 
     <footer v-if="showComposer" class="omnibar-dock protocol-omnibar-dock">
+      <div v-if="normalizedPlanCards.length || normalizedBackgroundAgents.length" class="protocol-composer-widgets">
+        <ProtocolInlinePlanWidget
+          v-if="normalizedPlanCards.length"
+          docked
+          :steps="normalizedPlanCards"
+          :summary-label="planSummaryLabel"
+          @step-action="({ action, plan }) => planAction({ action }, plan)"
+          @host-select="({ host, plan }) => selectHost(host, plan)"
+        />
+
+        <ProtocolBackgroundAgentsCard
+          v-if="normalizedBackgroundAgents.length"
+          docked
+          :agents="normalizedBackgroundAgents"
+          @select="selectAgent"
+        />
+      </div>
+
       <Omnibar
         v-model="draftModel"
         :placeholder="draftPlaceholder"
         :disabled="sending"
+        :busy="busy"
         :force-enabled="true"
         :allow-follow-up="allowFollowUp"
+        :primary-action-override="primaryActionOverride"
         @send="sendDraft"
         @stop="stopDraft"
       />
@@ -277,96 +339,316 @@ function selectAgent(agent) {
 
 .protocol-chat-container {
   padding-top: 20px;
-  padding-bottom: 260px;
+  padding-bottom: 380px;
+  padding-left: 28px;
+  padding-right: 28px;
 }
 
 .protocol-chat-inner {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
 }
 
 .protocol-chat-stream {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 4px;
 }
 
 .protocol-stream-row {
   cursor: pointer;
-}
-
-.protocol-empty-state h2 {
-  margin: 0;
-  font-size: 22px;
-  color: #0f172a;
-}
-
-.protocol-empty-state p {
-  margin: 0;
-  max-width: 480px;
-}
-
-.protocol-plan-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 18px;
-  margin-left: 48px;
-  max-width: 760px;
-  border-radius: 18px;
-  border: 1px solid #e2e8f0;
-  background: #ffffff;
-  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
-}
-
-.protocol-plan-section-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-
-.protocol-plan-section-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.protocol-plan-section-copy span {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.protocol-plan-section-copy strong {
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.5;
-}
-
-.protocol-plan-section-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  margin-bottom: 0;
 }
 
 .protocol-agent-section {
-  margin-left: 48px;
-  max-width: 760px;
+  margin-left: 36px;
+  max-width: 720px;
+}
+
+.protocol-composer-widgets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto 8px;
 }
 
 .protocol-omnibar-dock {
-  padding-bottom: 16px;
+  padding-bottom: 20px;
+  padding-left: 28px;
+  padding-right: 28px;
+}
+
+.protocol-conversation-pane :deep(.message-wrapper) {
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.protocol-conversation-pane :deep(.message-content) {
+  max-width: min(720px, calc(100% - 40px)) !important;
+}
+
+.protocol-conversation-pane :deep(.message-text) {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  letter-spacing: 0;
+  color: #0f172a;
+}
+
+.protocol-conversation-pane :deep(.message-line) {
+  line-height: 1.6 !important;
+}
+
+.protocol-conversation-pane :deep(.rich-message) {
+  gap: 6px;
+}
+
+.protocol-conversation-pane :deep(.message-spacer) {
+  height: 10px;
+}
+
+/* Markdown body spacing in protocol pane */
+.protocol-conversation-pane :deep(.markdown-body p) {
+  margin: 0 0 4px;
+}
+
+.protocol-conversation-pane :deep(.markdown-body ul),
+.protocol-conversation-pane :deep(.markdown-body ol) {
+  margin: 2px 0 4px;
+}
+
+.protocol-conversation-pane :deep(.markdown-body li) {
+  margin: 1px 0;
+}
+
+.protocol-conversation-pane :deep(.avatar),
+.protocol-conversation-pane :deep(.user-avatar) {
+  display: none;
+}
+
+.protocol-conversation-pane :deep(.message-wrapper) {
+  gap: 0;
+  align-items: flex-start;
+}
+
+.protocol-conversation-pane :deep(.message-content) {
+  max-width: min(760px, 100%) !important;
+}
+
+.protocol-conversation-pane :deep(.relative-block) {
+  max-width: min(760px, calc(100vw - 420px)) !important;
+}
+
+.protocol-conversation-pane :deep(.copy-btn) {
+  bottom: 6px;
+  right: -4px;
+  border-radius: 6px;
+}
+
+.protocol-conversation-pane :deep(.is-user .message-content) {
+  max-width: min(480px, 70%) !important;
+}
+
+.protocol-conversation-pane :deep(.is-user .message-text) {
+  background: #f3f4f6 !important;
+  padding: 10px 16px !important;
+  border-radius: 14px !important;
+  color: #0f172a;
+  display: inline-block;
+  font-size: 14px !important;
+  font-weight: 400;
+  line-height: 1.6 !important;
+}
+
+.protocol-conversation-pane :deep(.thinking-wrapper) {
+  padding: 0;
+  margin-left: 0;
+}
+
+.protocol-conversation-pane :deep(.thinking-indicator) {
+  gap: 4px;
+  padding: 7px 12px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
+  color: #475569;
+  max-width: min(640px, calc(100vw - 400px));
+}
+
+.protocol-conversation-pane :deep(.thinking-text) {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.protocol-conversation-pane :deep(.thinking-detail) {
+  color: #64748b;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.protocol-conversation-pane :deep(.omnibar-wrapper) {
+  max-width: 820px !important;
+  border-radius: 16px !important;
+  border: 1px solid var(--border-color);
+  padding: 10px 12px 9px !important;
+  background: var(--omnibar-bg);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
+  gap: 6px;
+}
+
+.protocol-conversation-pane :deep(.omnibar-wrapper:focus-within) {
+  border-color: #cbd5e1;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);
+  background: #ffffff;
+}
+
+.protocol-conversation-pane :deep(.omnibar-input) {
+  min-height: 60px !important;
+  font-size: 14px !important;
+  line-height: 1.5 !important;
+  padding: 2px 4px 0 !important;
+  color: #0f172a;
+}
+
+.protocol-conversation-pane :deep(.omnibar-input::placeholder) {
+  color: #94a3b8;
+}
+
+.protocol-conversation-pane :deep(.omnibar-tools) {
+  padding-top: 0;
+  border-top: none;
+}
+
+.protocol-conversation-pane :deep(.hint-text) {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.protocol-conversation-pane :deep(.pill-tag) {
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+}
+
+.protocol-conversation-pane :deep(.send-btn) {
+  width: 32px;
+  height: 32px;
+  background: #0f172a;
+  box-shadow: none;
+}
+
+.protocol-conversation-pane :deep(.send-btn.stop-btn) {
+  background: #dc2626;
+}
+
+.protocol-starter-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 720px;
+  margin: 12px 0 0 36px;
+  padding-bottom: 6px;
+}
+
+.protocol-starter-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.protocol-starter-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.protocol-starter-title {
+  margin: 0;
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.45;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.protocol-starter-text {
+  margin: 0;
+  color: #4b5563;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.protocol-starter-meta {
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.protocol-conversation-pane :deep(.stop-link-btn) {
+  border-color: rgba(226, 232, 240, 0.95);
+  color: #475569;
+  background: #ffffff;
+}
+
+.protocol-conversation-pane :deep(.stop-link-btn:hover) {
+  background: #f8fafc;
 }
 
 @media (max-width: 900px) {
-  .protocol-plan-section,
   .protocol-agent-section {
     margin-left: 0;
     max-width: 100%;
+  }
+
+  .protocol-chat-container,
+  .protocol-omnibar-dock {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .protocol-conversation-pane :deep(.thinking-wrapper) {
+    margin-left: 0;
+  }
+
+  .protocol-conversation-pane :deep(.relative-block),
+  .protocol-conversation-pane :deep(.thinking-indicator),
+  .protocol-conversation-pane :deep(.message-content),
+  .protocol-conversation-pane :deep(.is-user .message-content) {
+    max-width: 100%;
+  }
+
+  .protocol-conversation-pane :deep(.omnibar-wrapper) {
+    border-radius: 26px !important;
+    padding: 18px 18px 16px !important;
+  }
+
+  .protocol-conversation-pane :deep(.omnibar-input) {
+    min-height: 120px !important;
+  }
+
+  .protocol-starter-thread {
+    max-width: 100%;
+    margin-left: 0;
+  }
+
+  .protocol-starter-title {
+    font-size: 20px;
+  }
+
+  .protocol-starter-text {
+    font-size: 16px;
   }
 }
 </style>

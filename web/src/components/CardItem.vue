@@ -139,13 +139,13 @@ const isMessage = computed(() => {
 }
 
 .generic-card {
-  margin-top: 4px;
-  margin-left: 48px;
-  padding: 12px;
+  margin-top: 2px;
+  margin-left: 36px;
+  padding: 10px;
   background: white;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px dashed #cbd5e1;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

@@ -227,14 +227,14 @@ function summarizeDiff(diff) {
 
 <style scoped>
 .auth-card {
-  border-radius: var(--radius-card, 16px);
+  border-radius: 12px;
   background: #ffffff;
   border: 1px solid var(--border-card, #e5e7eb);
   overflow: hidden;
-  margin-top: 10px;
-  margin-left: 48px;
-  max-width: 700px;
-  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
+  margin-top: 6px;
+  margin-left: 36px;
+  max-width: 660px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
 }
 
 .auth-card.is-overlay {
@@ -246,12 +246,12 @@ function summarizeDiff(diff) {
 }
 
 .auth-intent {
-  padding: 12px 14px 6px;
+  padding: 10px 12px 4px;
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  font-size: 13px;
-  line-height: 1.5;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.45;
   color: #374151;
   font-weight: 600;
 }
@@ -263,10 +263,10 @@ function summarizeDiff(diff) {
 }
 
 .auth-preview {
-  margin: 0 14px 12px;
+  margin: 0 12px 10px;
   background: #f3f4f6;
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: 8px;
+  padding: 8px 10px;
   overflow-x: auto;
 }
 
@@ -450,18 +450,18 @@ function summarizeDiff(diff) {
 .auth-options {
   display: flex;
   flex-direction: column;
-  padding: 0 14px 8px;
-  gap: 6px;
+  padding: 0 12px 6px;
+  gap: 4px;
 }
 
 .option-row {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 10px;
   cursor: pointer;
   border: 1px solid #e5e7eb;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #ffffff;
   transition: background 0.12s, border-color 0.12s;
   text-align: left;
@@ -498,23 +498,23 @@ function summarizeDiff(diff) {
 }
 
 .option-label {
-  font-size: 12px;
+  font-size: 11.5px;
   color: #1f2937;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.35;
 }
 
 .option-description {
-  font-size: 11px;
+  font-size: 10.5px;
   color: #94a3b8;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .auth-resolved {
-  padding: 12px 16px;
+  padding: 10px 14px;
   text-align: center;
   color: #6b7280;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   background: #f9fafb;
 }

@@ -1008,11 +1008,11 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 6px;
+  padding: 6px 14px;
   background: #fef3c7;
   color: #92400e;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   border-bottom: 1px solid #fde68a;
 }
@@ -1046,12 +1046,12 @@ watch(
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin: 10px 0 6px;
-  padding: 12px 14px;
-  margin-left: 48px;
-  max-width: 760px;
-  border-radius: 14px;
+  gap: 10px;
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  margin-left: 36px;
+  max-width: 720px;
+  border-radius: 12px;
   border: 1px solid #dbeafe;
   background: linear-gradient(135deg, #eff6ff, #ffffff);
 }
@@ -1064,14 +1064,14 @@ watch(
 }
 
 .workspace-banner-copy strong {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .workspace-banner-copy span {
-  font-size: 12px;
+  font-size: 11px;
   color: #475569;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .workspace-banner-btn {
@@ -1093,9 +1093,9 @@ watch(
 .activity-summary {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px 0;
-  margin-left: 48px;
+  gap: 3px;
+  padding: 4px 0;
+  margin-left: 36px;
   animation: fadeInUp 0.2s ease-out;
 }
 
@@ -1106,7 +1106,7 @@ watch(
   padding: 0;
   border: none;
   background: transparent;
-  font-size: var(--text-meta-size, 12px);
+  font-size: var(--text-meta-size, 11px);
   color: var(--text-meta, #9ca3af);
   font-weight: 500;
   cursor: pointer;
@@ -1127,39 +1127,39 @@ watch(
 .activity-details {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   margin-top: 2px;
-  padding-left: 12px;
+  padding-left: 10px;
   color: #94a3b8;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .activity-detail-item {
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .chat-terminal-dock-wrap {
   width: 100%;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .chat-terminal-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 4px 8px;
+  gap: 8px;
+  padding: 0 4px 6px;
 }
 
 .chat-terminal-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   border: 1px solid rgba(148, 163, 184, 0.28);
   background: rgba(255, 255, 255, 0.86);
   color: #0f172a;
   border-radius: 999px;
-  padding: 8px 12px;
-  font-size: 12px;
+  padding: 6px 10px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
 }
@@ -1178,7 +1178,7 @@ watch(
 .chat-terminal-toolbar-label {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: 11px;
   color: #64748b;
   white-space: nowrap;
   overflow: hidden;
@@ -1187,7 +1187,7 @@ watch(
 
 .chat-terminal-shortcut {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 10px;
   color: #94a3b8;
   font-weight: 700;
 }
@@ -1196,11 +1196,11 @@ watch(
   display: flex;
   flex-direction: column;
   width: 100%;
-  border-radius: 18px;
+  border-radius: 14px;
   overflow: hidden;
   background: rgba(15, 23, 42, 0.98);
   border: 1px solid rgba(148, 163, 184, 0.18);
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.14);
 }
 
 .chat-terminal-dock.dragging {
@@ -1228,7 +1228,7 @@ watch(
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 860px;
+  max-width: 820px;
   margin: 0 auto;
 }
 
@@ -1251,8 +1251,8 @@ watch(
 .auth-overlay-container {
   background: white;
   border: 1px solid var(--border-color);
-  border-radius: 14px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
   overflow: hidden;
 }
 
@@ -1260,7 +1260,7 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 14px;
+  padding: 6px 12px;
   border-bottom: 1px solid #f1f5f9;
   background: #f8fafc;
 }
@@ -1273,20 +1273,20 @@ watch(
 }
 
 .auth-overlay-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: #fb923c;
 }
 
 .auth-overlay-queue-label {
-  font-size: 11px;
+  font-size: 10px;
   color: #64748b;
   font-weight: 500;
 }
 
 .auth-overlay-queue-note {
-  padding: 8px 14px 0;
-  font-size: 11px;
+  padding: 6px 12px 0;
+  font-size: 10px;
   color: #94a3b8;
 }
 
@@ -1303,16 +1303,16 @@ watch(
 
 .auth-restore-btn {
   width: 100%;
-  padding: 12px;
+  padding: 10px;
   background: #fff7ed;
   border: 1px solid #fed7aa;
-  border-radius: 12px;
+  border-radius: 10px;
   color: #c2410c;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  margin-bottom: 8px;
-  box-shadow: 0 4px 12px rgba(234, 88, 12, 0.05);
+  margin-bottom: 6px;
+  box-shadow: 0 3px 10px rgba(234, 88, 12, 0.04);
   display: flex;
   flex-direction: column;
   align-items: flex-start;

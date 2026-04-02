@@ -17,17 +17,19 @@ function createPlanCard() {
     type: "PlanCard",
     title: "nginx 巡检计划",
     text: "巡检计划已生成，准备派发到 host-agent。",
+    items: [
+      {
+        step: "web-01 [task-1] 采集 nginx 错误日志",
+        status: "running",
+      },
+      {
+        step: "web-02 [task-2] 执行 systemctl reload nginx",
+        status: "waiting_approval",
+      },
+    ],
     detail: {
       goal: "帮我执行一轮全网 nginx 巡检，重点关注错误日志。",
       version: "plan-v3",
-      plannerConversation: [
-        {
-          id: "planner-msg-1",
-          createdAt: "2026-03-31T02:16:00Z",
-          summary: "Planner reasoning",
-          text: "先做日志巡检，再把异常主机提交审批。",
-        },
-      ],
       structured_process: [
         "task-1 [running] @web-01 采集 nginx 错误日志",
         "task-2 [waiting_approval] @web-02 执行 systemctl reload nginx",
@@ -164,6 +166,7 @@ function createApprovalCards() {
 }
 
 function createStoreFixture(overrides = {}) {
+  const { snapshot: snapshotOverrides = null, runtime: runtimeOverrides = null, ...restOverrides } = overrides;
   const state = reactive({
     snapshot: {
       kind: "workspace",
@@ -225,16 +228,32 @@ function createStoreFixture(overrides = {}) {
     createSession: vi.fn(async () => true),
     activateSession: vi.fn(async () => true),
     setTurnPhase: vi.fn((phase) => {
+      state.runtime.turn.active = !["idle", "completed", "failed", "aborted"].includes(String(phase || ""));
       state.runtime.turn.phase = phase;
     }),
     resetActivity: vi.fn(),
-    ...overrides,
+    ...restOverrides,
   });
 
-  if (overrides.snapshot) {
+  if (snapshotOverrides) {
     state.snapshot = reactive({
       ...state.snapshot,
-      ...overrides.snapshot,
+      ...snapshotOverrides,
+    });
+  }
+
+  if (runtimeOverrides) {
+    state.runtime = reactive({
+      ...state.runtime,
+      ...runtimeOverrides,
+      turn: {
+        ...state.runtime.turn,
+        ...(runtimeOverrides.turn || {}),
+      },
+      codex: {
+        ...state.runtime.codex,
+        ...(runtimeOverrides.codex || {}),
+      },
     });
   }
 
@@ -276,6 +295,220 @@ describe("ProtocolWorkspacePage", () => {
     expect(wrapper.text()).toContain("web-02");
   });
 
+  it("auto-activates the most recent workspace session when /protocol opens on a non-workspace session", async () => {
+    const store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        cards: [],
+        approvals: [],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "idle",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+      sessionList: [
+        { id: "single-1", kind: "single_host", title: "普通会话", preview: "hello", status: "completed" },
+        { id: "workspace-9", kind: "workspace", title: "最近工作台", preview: "巡检", status: "completed" },
+      ],
+    });
+    store.fetchSessions = vi.fn(async () => true);
+    store.activateSession = vi.fn(async (sessionId) => {
+      store.activeSessionId = sessionId;
+      store.snapshot.kind = "workspace";
+      store.snapshot.sessionId = sessionId;
+      return true;
+    });
+    mocks.store = store;
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(store.fetchSessions).toHaveBeenCalled();
+    expect(store.activateSession).toHaveBeenCalledWith("workspace-9");
+    expect(wrapper.text()).toContain("已切换到最近的协作工作台");
+    expect(wrapper.text()).toContain("待审批决策");
+  });
+
+  it("auto-creates a workspace session when /protocol opens without an existing workspace", async () => {
+    const store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        cards: [],
+        approvals: [],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "idle",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+      sessionList: [{ id: "single-1", kind: "single_host", title: "普通会话", preview: "hello", status: "completed" }],
+    });
+    store.fetchSessions = vi.fn(async () => true);
+    store.createSession = vi.fn(async () => {
+      store.activeSessionId = "workspace-new";
+      store.snapshot.kind = "workspace";
+      store.snapshot.sessionId = "workspace-new";
+      return true;
+    });
+    mocks.store = store;
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(store.fetchSessions).toHaveBeenCalled();
+    expect(store.createSession).toHaveBeenCalledWith("workspace");
+    expect(wrapper.text()).toContain("已自动创建新的协作工作台");
+    expect(wrapper.text()).toContain("待审批决策");
+  });
+
+  it("shows an inline runtime status card in the conversation while the mission is planning", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "有哪些主机在线",
+            createdAt: "2026-04-01T02:15:00Z",
+            updatedAt: "2026-04-01T02:15:00Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "planning",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("正在规划步骤");
+    expect(wrapper.text()).toContain("主 Agent 正在理解你的问题并生成 plan");
+  });
+
+  it("shows a direct-reply status without rendering the plan widget for simple conversation", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "你好",
+            createdAt: "2026-04-01T02:15:00Z",
+            updatedAt: "2026-04-01T02:15:00Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "thinking",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("正在思考");
+    expect(wrapper.text()).not.toContain("工作台计划投影");
+  });
+
+  it("shows a live starter context instead of an empty placeholder when the workspace has no messages yet", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [],
+        cards: [],
+        selectedHostId: "server-local",
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "idle",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("server-local 已连接，工作台已就绪。");
+    expect(wrapper.text()).toContain("可以直接问我当前状态，或者描述你想处理的问题。");
+    expect(wrapper.text()).toContain("当前没有待审批操作。");
+    expect(wrapper.text()).not.toContain("这里会显示主 Agent 的对话");
+  });
+
+  it("falls back to plan card items when structured_process is not ready yet", async () => {
+    const store = createStoreFixture();
+    const planCard = store.snapshot.cards.find((card) => card.type === "PlanCard");
+    planCard.detail = {
+      ...planCard.detail,
+      structured_process: [],
+      task_host_bindings: [],
+    };
+    mocks.store = store;
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("共 2 个任务，已完成 0 个");
+    expect(wrapper.text()).toContain("采集 nginx 错误日志");
+    expect(wrapper.text()).toContain("执行 systemctl reload nginx");
+  });
+
+  it("renders a plan projection placeholder card before step mappings are fully synchronized", async () => {
+    const store = createStoreFixture();
+    const planCard = store.snapshot.cards.find((card) => card.type === "PlanCard");
+    planCard.items = [];
+    planCard.detail = {
+      ...planCard.detail,
+      structured_process: [],
+      task_host_bindings: [],
+    };
+    mocks.store = store;
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("nginx 巡检计划");
+    expect(wrapper.text()).toContain("已收到计划投影");
+    expect(wrapper.text()).toContain("step -> host-agent 映射");
+  });
+
+  it("renders the plan widget in the composer dock above the input", async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.find(".protocol-composer-widgets .protocol-inline-plan-widget").exists()).toBe(true);
+  });
+
   it("sends a new message from the main agent composer", async () => {
     mocks.store = createStoreFixture({
       runtime: {
@@ -305,7 +538,171 @@ describe("ProtocolWorkspacePage", () => {
     expect(mocks.store.fetchSessions).toHaveBeenCalled();
   });
 
-  it("opens the evidence modal from a step card and shows planner-host context", async () => {
+  it("falls back to send mode when the turn phase is aborted even if active was left true", async () => {
+    mocks.store = createStoreFixture({
+      runtime: {
+        turn: {
+          active: true,
+          phase: "aborted",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.find(".send-btn.stop-btn").exists()).toBe(false);
+    expect(wrapper.text()).toContain("已停止");
+    expect(wrapper.find(".send-btn").exists()).toBe(true);
+  });
+
+  it("does not leak the previous mission plan into the latest user turn", async () => {
+    mocks.store = createStoreFixture({
+      runtime: {
+        turn: {
+          active: false,
+          phase: "idle",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+      snapshot: {
+        approvals: [],
+        cards: [
+          {
+            id: "user-old",
+            type: "UserMessageCard",
+            role: "user",
+            text: "帮我执行一轮全网的 nginx 巡检，重点关注错误日志。",
+            createdAt: "2026-03-31T02:15:00Z",
+            updatedAt: "2026-03-31T02:15:00Z",
+          },
+          createPlanCard(),
+          ...createProcessCards(),
+          ...createApprovalCards(),
+          {
+            id: "notice-old",
+            type: "NoticeCard",
+            title: "Mission stopped",
+            text: "当前工作台 mission 已停止，相关主 Agent / worker 会话已收到取消信号。",
+            status: "notice",
+            createdAt: "2026-03-31T02:22:00Z",
+            updatedAt: "2026-03-31T02:22:00Z",
+          },
+          {
+            id: "user-new",
+            type: "UserMessageCard",
+            role: "user",
+            text: "看下CPU",
+            createdAt: "2026-03-31T02:23:00Z",
+            updatedAt: "2026-03-31T02:23:00Z",
+          },
+        ],
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain("采集 nginx 错误日志");
+    expect(wrapper.find('[data-testid="protocol-approval-approval-card-1"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("idle | 等待主 Agent 生成计划");
+  });
+
+  it("shows the latest fatal reason and restart hint after a stopped mission", async () => {
+    mocks.store = createStoreFixture({
+      runtime: {
+        turn: {
+          active: false,
+          phase: "aborted",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+      snapshot: {
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "看下CPU",
+            createdAt: "2026-04-01T01:15:00Z",
+            updatedAt: "2026-04-01T01:15:00Z",
+          },
+          {
+            id: "err-1",
+            type: "ErrorCard",
+            title: "远程主机连接超时",
+            text: "远程主机心跳超时，当前操作已中断，可重试或刷新主机状态。",
+            status: "failed",
+            createdAt: "2026-04-01T01:15:05Z",
+            updatedAt: "2026-04-01T01:15:05Z",
+          },
+          {
+            id: "notice-1",
+            type: "NoticeCard",
+            title: "Mission stopped",
+            text: "当前工作台 mission 已停止，相关主 Agent / worker 会话已收到取消信号。",
+            status: "notice",
+            createdAt: "2026-04-01T01:15:06Z",
+            updatedAt: "2026-04-01T01:15:06Z",
+          },
+        ],
+        approvals: [],
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("远程主机连接超时");
+    expect(wrapper.text()).toContain("远程主机心跳超时");
+    expect(wrapper.text()).toContain("启动一轮新的 mission");
+  });
+
+  it("announces a new mission when sending after the previous one stopped", async () => {
+    mocks.store = createStoreFixture({
+      runtime: {
+        turn: {
+          active: false,
+          phase: "aborted",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+      snapshot: {
+        approvals: [],
+        cards: [
+          {
+            id: "notice-1",
+            type: "NoticeCard",
+            title: "Mission stopped",
+            text: "当前工作台 mission 已停止，相关主 Agent / worker 会话已收到取消信号。",
+            status: "notice",
+            createdAt: "2026-04-01T01:15:06Z",
+            updatedAt: "2026-04-01T01:15:06Z",
+          },
+        ],
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get(".omnibar-input").setValue("重新看下CPU");
+    await wrapper.get(".send-btn").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("已在当前会话启动新一轮 mission");
+  });
+
+  it("opens the evidence modal from a step card and shows the main-agent plan context", async () => {
     const wrapper = mountPage();
     await flushPromises();
 
@@ -315,8 +712,7 @@ describe("ProtocolWorkspacePage", () => {
     await stepEvidenceButton.trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("步骤证据");
-    expect(wrapper.text()).toContain("Planner -> Host");
+    expect(wrapper.text()).toContain("主 Agent 计划摘要");
     expect(wrapper.text()).toContain("采集 nginx 错误日志");
   });
 
@@ -330,8 +726,8 @@ describe("ProtocolWorkspacePage", () => {
     await hostChip.trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("Host 证据 · web-01");
-    expect(wrapper.text()).toContain("web-01 -> AI");
+    expect(wrapper.text()).toContain("Worker 对话 · web-01");
+    expect(wrapper.text()).toContain("web-01");
   });
 
   it("opens approval evidence and submits decisions from the right rail", async () => {
@@ -347,7 +743,9 @@ describe("ProtocolWorkspacePage", () => {
 
     await detailButton.trigger("click");
     await flushPromises();
-    expect(wrapper.text()).toContain("审批证据 · web-02");
+    expect(wrapper.text()).toContain("审批上下文 · web-02");
+    expect(wrapper.text()).toContain("审批上下文");
+    expect(wrapper.text()).toContain("Host Terminal");
 
     await acceptButton.trigger("click");
     await flushPromises();
@@ -358,6 +756,35 @@ describe("ProtocolWorkspacePage", () => {
         method: "POST",
       }),
     );
+  });
+
+  it("shows immediate feedback when stopping the workspace turn", async () => {
+    let resolveStop;
+    global.fetch = vi.fn((url) => {
+      if (url === "/api/v1/chat/stop") {
+        return new Promise((resolve) => {
+          resolveStop = resolve;
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+      });
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get(".send-btn.stop-btn").trigger("click");
+    await nextTick();
+
+    expect(wrapper.text()).toContain("正在中断当前任务...");
+
+    resolveStop({
+      ok: true,
+      json: async () => ({ accepted: true }),
+    });
+    await flushPromises();
   });
 
   it("focuses the next approval card after the current one is accepted", async () => {
@@ -385,5 +812,22 @@ describe("ProtocolWorkspacePage", () => {
     await nextTick();
 
     expect(wrapper.get('[data-testid="protocol-approval-approval-card-2"]').classes()).toContain("active");
+  });
+
+  it("renders four evidence tabs without legacy planner wording", async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const stepEvidenceButton = wrapper.findAll(".plan-action").find((button) => button.text().includes("查看证据"));
+    expect(stepEvidenceButton).toBeTruthy();
+
+    await stepEvidenceButton.trigger("click");
+    await flushPromises();
+
+    const tabs = wrapper.findAll(".modal-tab").map((button) => button.text());
+    expect(tabs.join(" ")).toContain("主 Agent 计划摘要");
+    expect(tabs.join(" ")).toContain("Worker 对话");
+    expect(tabs.join(" ")).toContain("Host Terminal");
+    expect(tabs.join(" ")).toContain("审批上下文");
   });
 });

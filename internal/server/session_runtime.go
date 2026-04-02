@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
@@ -66,33 +67,97 @@ func (a *App) buildSingleHostTurnStartSpec(ctx context.Context, req chatRequest)
 	}
 }
 
-func (a *App) buildPlannerThreadStartSpec(mission *orchestrator.Mission) threadStartSpec {
-	workspacePath := orchestrator.PlannerWorkspacePath(a.cfg.DefaultWorkspace, mission.ID)
-	preset := orchestrator.PlannerPreset(workspacePath)
-	return threadStartSpec{
-		Model:                 preset.Model,
-		Cwd:                   workspacePath,
-		ApprovalPolicy:        preset.ApprovalPolicy,
-		SandboxMode:           preset.SandboxMode,
-		DeveloperInstructions: orchestrator.BuildPlannerPrompt(mission.Title, mission.Summary, len(mission.Tasks)),
-		DynamicTools:          a.plannerDynamicTools(),
-		ThreadConfigHash:      mission.ID + ":" + string(preset.RuntimePreset),
-	}
+func (a *App) workspaceRouteThreadConfigHash(hostID string) string {
+	return a.mainAgentThreadConfigHash(hostID) + ":workspace-route"
 }
 
-func (a *App) buildPlannerTurnStartSpec(mission *orchestrator.Mission, message string) turnStartSpec {
-	workspacePath := orchestrator.PlannerWorkspacePath(a.cfg.DefaultWorkspace, mission.ID)
-	preset := orchestrator.PlannerPreset(workspacePath)
+func (a *App) workspaceOrchestrationThreadConfigHash(hostID string) string {
+	return a.mainAgentThreadConfigHash(hostID) + ":workspace-orchestration"
+}
+
+func (a *App) buildWorkspaceRouteThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
+	selectedHostID := defaultHostID(hostID)
+	profile := a.mainAgentProfile()
+	developerInstructions := orchestrator.BuildWorkspaceRoutePrompt()
+	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
+		developerInstructions = developerInstructions + "\n\n" + base
+	}
+	spec := threadStartSpec{
+		Model:                 profile.Runtime.Model,
+		Cwd:                   a.cfg.DefaultWorkspace,
+		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
+		SandboxMode:           profile.Runtime.SandboxMode,
+		DeveloperInstructions: developerInstructions,
+		DynamicTools:          a.workspaceDirectDynamicTools(sessionID),
+		ThreadConfigHash:      a.workspaceRouteThreadConfigHash(selectedHostID),
+	}
+	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
+		spec.Config = threadConfig
+	}
+	return spec
+}
+
+func (a *App) buildWorkspaceRouteTurnStartSpec(ctx context.Context, hostID, message string) turnStartSpec {
+	selectedHostID := defaultHostID(hostID)
+	profile := a.mainAgentProfile()
+	developerInstructions := orchestrator.BuildWorkspaceRoutePrompt()
+	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
+		developerInstructions = developerInstructions + "\n\n" + base
+	}
 	return turnStartSpec{
-		Cwd:                   workspacePath,
-		ApprovalPolicy:        preset.ApprovalPolicy,
-		SandboxMode:           preset.SandboxMode,
-		WritableRoots:         []string{workspacePath},
-		DeveloperInstructions: orchestrator.BuildPlannerPrompt(mission.Title, mission.Summary, len(mission.Tasks)),
+		Cwd:                   a.cfg.DefaultWorkspace,
+		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
+		SandboxMode:           profile.Runtime.SandboxMode,
+		WritableRoots:         a.mainAgentWritableRoots(profile),
+		DeveloperInstructions: developerInstructions,
 		Input: []map[string]any{
 			{"type": "text", "text": message},
 		},
-		ReasoningEffort: preset.ReasoningEffort,
+		ReasoningEffort: profile.Runtime.ReasoningEffort,
+	}
+}
+
+func (a *App) buildWorkspaceOrchestrationThreadStartSpec(ctx context.Context, sessionID string, mission *orchestrator.Mission) threadStartSpec {
+	session := a.store.EnsureSession(sessionID)
+	selectedHostID := defaultHostID(session.SelectedHostID)
+	profile := a.mainAgentProfile()
+	developerInstructions := orchestrator.BuildWorkspacePrompt(strings.TrimSpace(mission.Title), strings.TrimSpace(mission.Summary))
+	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
+		developerInstructions = developerInstructions + "\n\n" + base
+	}
+	spec := threadStartSpec{
+		Model:                 profile.Runtime.Model,
+		Cwd:                   a.cfg.DefaultWorkspace,
+		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
+		SandboxMode:           profile.Runtime.SandboxMode,
+		DeveloperInstructions: developerInstructions,
+		DynamicTools:          a.workspaceDynamicTools(sessionID),
+		ThreadConfigHash:      a.workspaceOrchestrationThreadConfigHash(selectedHostID),
+	}
+	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
+		spec.Config = threadConfig
+	}
+	return spec
+}
+
+func (a *App) buildWorkspaceOrchestrationTurnStartSpec(ctx context.Context, sessionID string, mission *orchestrator.Mission, message string) turnStartSpec {
+	session := a.store.EnsureSession(sessionID)
+	selectedHostID := defaultHostID(session.SelectedHostID)
+	profile := a.mainAgentProfile()
+	developerInstructions := orchestrator.BuildWorkspacePrompt(strings.TrimSpace(mission.Title), strings.TrimSpace(mission.Summary))
+	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
+		developerInstructions = developerInstructions + "\n\n" + base
+	}
+	return turnStartSpec{
+		Cwd:                   a.cfg.DefaultWorkspace,
+		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
+		SandboxMode:           profile.Runtime.SandboxMode,
+		WritableRoots:         a.mainAgentWritableRoots(profile),
+		DeveloperInstructions: developerInstructions,
+		Input: []map[string]any{
+			{"type": "text", "text": message},
+		},
+		ReasoningEffort: profile.Runtime.ReasoningEffort,
 	}
 }
 

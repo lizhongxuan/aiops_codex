@@ -36,12 +36,12 @@ const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作
 .notice-line {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 14px;
+  gap: 5px;
+  padding: 3px 12px;
   border-radius: 9999px;
   background: #f8fafc;
   color: #94a3b8;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
 }
 

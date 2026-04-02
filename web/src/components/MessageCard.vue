@@ -1,7 +1,14 @@
 <script setup>
 import { computed, ref } from "vue";
 import { UserIcon, BotIcon, CopyIcon, CheckIcon } from "lucide-vue-next";
+import { marked } from "marked";
 import Modal from "./Modal.vue";
+
+// Configure marked for safe rendering
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+});
 
 const props = defineProps({
   card: {
@@ -11,7 +18,8 @@ const props = defineProps({
 });
 
 const isUser = computed(() => props.card.role === "user");
-const messageText = computed(() => props.card.text || props.card.title || "");
+const rawText = computed(() => props.card.text || props.card.title || "");
+const messageText = computed(() => isUser.value ? rawText.value : cleanDisplayText(rawText.value));
 
 const avatarIcon = computed(() => {
   return isUser.value ? UserIcon : BotIcon;
@@ -22,6 +30,63 @@ const renderAsCode = computed(() => {
   if (containsMarkdownLinks(messageText.value)) return false;
   return looksStructuredText(messageText.value);
 });
+
+// Always render assistant messages as Markdown — marked handles plain text fine
+// and properly formats lists, paragraphs, bold, code blocks, etc.
+const renderAsMarkdown = computed(() => {
+  if (isUser.value) return false;
+  if (renderAsCode.value) return false;
+  return true;
+});
+
+const renderedMarkdown = computed(() => {
+  if (!renderAsMarkdown.value) return "";
+  try {
+    const preprocessed = preprocessForMarkdown(messageText.value);
+    return marked.parse(preprocessed, { breaks: true, gfm: true });
+  } catch {
+    return "";
+  }
+});
+
+/**
+ * Preprocess text for better Markdown rendering:
+ * - If text already has proper line breaks / markdown, leave it alone
+ * - If text is a dense Chinese paragraph with no line breaks, add breaks
+ *   at logical boundaries (after 。followed by a topic shift)
+ */
+function preprocessForMarkdown(text) {
+  if (!text) return text;
+  // If text already has multiple lines, it's already formatted
+  if (text.split("\n").filter((l) => l.trim()).length > 2) return text;
+  // If text has markdown formatting, don't touch it
+  if (/^#{1,6}\s/m.test(text) || /^\s*[-*+]\s/m.test(text) || /^\s*\d+\.\s/m.test(text) || /^```/m.test(text)) return text;
+
+  // For dense single-paragraph Chinese text, add paragraph breaks
+  // at sentence boundaries where a new topic/section starts
+  let result = text;
+  // Break before "- " dash lists that are inline
+  result = result.replace(/([。！？])\s*-\s+/g, "$1\n\n- ");
+  // Break before Chinese dash lists "－"
+  result = result.replace(/([。！？])\s*[－—]\s*/g, "$1\n\n— ");
+  // Break at major topic transitions (after period + space + new sentence starter)
+  result = result.replace(/。\s*(?=[A-Z\u4e00-\u9fff])/g, "。\n\n");
+
+  return result;
+}
+
+function hasMarkdownFormatting(value) {
+  if (!value) return false;
+  // Detect common Markdown patterns
+  return /^#{1,6}\s/m.test(value) ||       // headings
+    /^\s*[-*+]\s/m.test(value) ||           // unordered lists
+    /^\s*\d+\.\s/m.test(value) ||           // ordered lists
+    /\*\*[^*]+\*\*/m.test(value) ||         // bold
+    /`[^`]+`/.test(value) ||                // inline code
+    /^```/m.test(value) ||                  // code blocks
+    /^>\s/m.test(value) ||                  // blockquotes
+    /\|.*\|.*\|/m.test(value);             // tables
+}
 
 function containsMarkdownLinks(value) {
   return /\[([^\]]+)\]\(([^)]+)\)/.test(value || "");
@@ -48,6 +113,34 @@ function looksStructuredText(value) {
     }
   }
   return structuredCount / lines.length >= 0.6;
+}
+
+/**
+ * Clean assistant message text for display:
+ * - Remove embedded JSON routing blocks (```json {"route":...} ```)
+ * - Remove inline JSON routing objects
+ * - Filter out system routing preamble lines
+ */
+function cleanDisplayText(text) {
+  if (!text) return text;
+  let cleaned = text;
+  // Remove ```json ... ``` fenced blocks containing routing metadata (multiline)
+  cleaned = cleaned.replace(/`{3}json[\s\S]*?`{3}/g, (match) => {
+    if (/"route"\s*:/.test(match)) return "";
+    return match; // keep non-routing code blocks
+  });
+  // Fallback: remove unclosed ```json blocks that contain routing metadata
+  cleaned = cleaned.replace(/`{3}json\s*\{[^`]*"route"\s*:[^`]*/g, "");
+  // Remove inline JSON objects containing "route" key
+  cleaned = cleaned.replace(/\{[^{}]*"route"\s*:\s*"[^"]*"[^{}]*\}/g, "");
+  // Remove system routing preamble lines
+  cleaned = cleaned.replace(/^主\s*Agent\s*正在判断[^\n]*\n?/gm, "");
+  cleaned = cleaned.replace(/^这是简单对话[^\n]*\n?/gm, "");
+  cleaned = cleaned.replace(/^(这是|当前).*(简单|直接).*(对话|回答|回复)[^\n]*\n?/gm, "");
+  cleaned = cleaned.replace(/不会生成计划或派发\s*worker[^\n]*\n?/gm, "");
+  // Collapse excessive newlines
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+  return cleaned || text;
 }
 
 function parseInlineChunks(text) {
@@ -222,12 +315,13 @@ function closePreview() {
 <template>
   <div class="message-wrapper" :class="{ 'is-user': isUser }">
     <div class="avatar" v-if="!isUser">
-      <BotIcon size="20" />
+      <BotIcon size="16" />
     </div>
     
     <div class="message-content">
       <div class="content-block relative-block" v-if="!isUser">
         <pre v-if="renderAsCode" class="message-code">{{ messageText }}</pre>
+        <div v-else-if="renderAsMarkdown" class="message-text markdown-body" v-html="renderedMarkdown"></div>
         <div v-else class="message-text rich-message">
           <template v-for="(block, blockIdx) in messageBlocks" :key="blockIdx">
             <div v-if="block.type === 'text'" class="message-line">
@@ -291,7 +385,7 @@ function closePreview() {
     </div>
     
     <div class="avatar user-avatar" v-if="isUser">
-      <UserIcon size="20" />
+      <UserIcon size="16" />
     </div>
   </div>
 
@@ -310,7 +404,7 @@ function closePreview() {
 <style scoped>
 .message-wrapper {
   display: flex;
-  gap: 16px;
+  gap: 10px;
   max-width: 100%;
   width: 100%;
 }
@@ -320,9 +414,9 @@ function closePreview() {
 }
 
 .avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
   background: white;
   border: 1px solid #e2e8f0;
   display: flex;
@@ -330,6 +424,7 @@ function closePreview() {
   justify-content: center;
   color: #64748b;
   flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .user-avatar {
@@ -338,7 +433,7 @@ function closePreview() {
 
 .message-content {
   flex: 1;
-  max-width: calc(100% - 48px);
+  max-width: calc(100% - 36px);
 }
 
 .is-user .message-content {
@@ -348,8 +443,8 @@ function closePreview() {
 }
 
 .message-text {
-  font-size: var(--text-body, 15px);
-  line-height: var(--line-height-body, 1.7);
+  font-size: var(--text-body, 14px);
+  line-height: var(--line-height-body, 1.6);
   color: #0f172a;
   white-space: pre-wrap;
 }
@@ -357,7 +452,7 @@ function closePreview() {
 .rich-message {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .message-line {
@@ -365,7 +460,7 @@ function closePreview() {
 }
 
 .message-spacer {
-  height: 10px;
+  height: 6px;
 }
 
 .file-list-block {
@@ -381,24 +476,25 @@ function closePreview() {
 
 .message-code {
   margin: 0;
-  padding: 14px 16px;
-  border-radius: 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
   border: 1px solid #dbe3ee;
   background: #f8fafc;
   color: #0f172a;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 13px;
-  line-height: 1.65;
+  font-size: 12.5px;
+  line-height: 1.55;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .is-user .message-text {
   background: #f3f4f6;
-  padding: 14px 20px;
-  border-radius: var(--radius-card, 16px);
+  padding: 10px 16px;
+  border-radius: 14px;
   color: #0f172a;
   display: inline-block;
+  font-size: 14px;
 }
 
 .is-user .message-code {
@@ -409,13 +505,13 @@ function closePreview() {
 .ghost-loader {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 6px;
+  margin-top: 6px;
   color: #94a3b8;
 }
 
 .ghost-text {
-  font-size: 13px;
+  font-size: 12px;
   font-style: italic;
 }
 
@@ -576,5 +672,122 @@ function closePreview() {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   max-height: 60vh;
   overflow: auto;
+}
+
+/* Markdown rendered content */
+.markdown-body {
+  font-size: var(--text-body, 14px);
+  line-height: 1.65;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) {
+  margin: 8px 0 4px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #0f172a;
+}
+
+.markdown-body :deep(h1) { font-size: 1.3em; }
+.markdown-body :deep(h2) { font-size: 1.15em; }
+.markdown-body :deep(h3) { font-size: 1.05em; }
+
+.markdown-body :deep(p) {
+  margin: 0 0 4px;
+  line-height: 1.65;
+}
+
+.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  margin: 2px 0 4px;
+  padding-left: 20px;
+}
+
+.markdown-body :deep(li) {
+  margin: 1px 0;
+  line-height: 1.6;
+}
+
+.markdown-body :deep(li p) {
+  margin: 0;
+}
+
+.markdown-body :deep(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88em;
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: #334155;
+}
+
+.markdown-body :deep(pre) {
+  margin: 8px 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  overflow-x: auto;
+}
+
+.markdown-body :deep(pre code) {
+  background: transparent;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.markdown-body :deep(blockquote) {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid #cbd5e1;
+  color: #475569;
+}
+
+.markdown-body :deep(strong) {
+  font-weight: 600;
+}
+
+.markdown-body :deep(table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  border: 1px solid #e2e8f0;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown-body :deep(th) {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 12px 0;
+}
+
+.markdown-body :deep(a) {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.markdown-body :deep(a:hover) {
+  text-decoration: underline;
 }
 </style>

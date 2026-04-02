@@ -137,20 +137,20 @@ function onRefresh() {
 
 <style scoped>
 .error-card {
-  border-radius: 16px;
+  border-radius: 12px;
   background: #fef2f2;
   border: 1px solid #fecaca;
   overflow: hidden;
-  margin-top: 4px;
-  margin-left: 48px;
-  max-width: 680px;
+  margin-top: 2px;
+  margin-left: 36px;
+  max-width: 640px;
 }
 
 .error-header {
-  padding: 14px 20px;
+  padding: 10px 16px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   border-bottom: 1px solid #fee2e2;
 }
 
@@ -160,7 +160,7 @@ function onRefresh() {
 }
 
 .error-title {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   color: #991b1b;
 }
@@ -179,25 +179,25 @@ function onRefresh() {
 }
 
 .error-body {
-  padding: 16px 20px;
+  padding: 12px 16px;
 }
 
 .error-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
 .error-chip {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 3px 8px;
   border-radius: 999px;
   background: #ffffff;
   border: 1px solid #fecaca;
   color: #991b1b;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -216,31 +216,31 @@ function onRefresh() {
 }
 
 .error-message {
-  margin: 0 0 16px;
-  font-size: 14px;
-  line-height: 1.6;
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
   color: #7f1d1d;
 }
 
 .error-hint {
-  margin: -8px 0 16px;
-  font-size: 12px;
-  line-height: 1.6;
+  margin: -6px 0 12px;
+  font-size: 11px;
+  line-height: 1.5;
   color: #92400e;
 }
 
 .error-actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
 }
 
 .action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
   font-weight: 600;
   border: none;
   cursor: pointer;

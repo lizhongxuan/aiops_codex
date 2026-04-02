@@ -212,7 +212,7 @@ func TestManagerDispatchAndCancel(t *testing.T) {
 	}
 }
 
-func TestManagerReconcileAfterLoadReturnsPlannerAndWorkerFailures(t *testing.T) {
+func TestManagerReconcileAfterLoadReturnsLegacyPlannerAndWorkerFailures(t *testing.T) {
 	mgr := newTestOrchestratorManager(t)
 
 	_, err := mgr.StartMission(context.Background(), StartMissionRequest{

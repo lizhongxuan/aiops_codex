@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/lizhongxuan/aiops-codex/internal/model"
@@ -85,8 +86,12 @@ func (a *App) countOrchestratorActiveLocked(missionID, excludeSessionID string) 
 		if session == nil || !session.Runtime.Turn.Active {
 			continue
 		}
+		switch strings.TrimSpace(session.Runtime.Turn.Phase) {
+		case "", "completed", "failed", "aborted", "waiting_approval", "waiting_input":
+			continue
+		}
 		meta := a.sessionMeta(sessionID)
-		if meta.Kind != model.SessionKindPlanner && meta.Kind != model.SessionKindWorker {
+		if meta.Kind != model.SessionKindWorkspace && meta.Kind != model.SessionKindWorker {
 			continue
 		}
 		global++

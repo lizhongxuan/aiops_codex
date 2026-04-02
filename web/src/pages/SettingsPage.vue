@@ -61,7 +61,7 @@ function phaseLabel(phase) {
     case "thinking":
       return "主 Agent 思考中";
     case "planning":
-      return "PlannerSession 生成计划";
+      return "主 Agent 生成计划";
     case "waiting_approval":
       return "等待审批";
     case "waiting_input":

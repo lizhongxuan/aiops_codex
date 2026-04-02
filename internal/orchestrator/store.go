@@ -474,6 +474,9 @@ func (s *Store) indexSessionMetaLocked(sessionID string, meta SessionMeta) {
 			s.state.MissionByWorkspace[sessionID] = meta.MissionID
 		}
 	case SessionKindPlanner:
+		// Legacy-only: new missions never populate planner session metadata, but
+		// old persisted missions still need this index so reconcile can fail them
+		// explicitly instead of leaving them orphaned.
 		if meta.MissionID != "" {
 			s.state.MissionByPlanner[sessionID] = meta.MissionID
 		}
@@ -578,12 +581,14 @@ func (s *persistedState) backfillMissionSessionMeta(mission *Mission) {
 		})
 	}
 	if plannerSessionID := strings.TrimSpace(mission.PlannerSessionID); plannerSessionID != "" {
+		// Legacy-only: keep enough planner metadata to load and explicitly fail old
+		// planner-backed missions after planner removal.
 		s.Sessions[plannerSessionID] = mergeSessionMeta(s.Sessions[plannerSessionID], SessionMeta{
 			Kind:               SessionKindPlanner,
 			Visible:            false,
 			MissionID:          mission.ID,
 			WorkspaceSessionID: mission.WorkspaceSessionID,
-			RuntimePreset:      RuntimePresetPlannerInternal,
+			RuntimePreset:      RuntimePresetWorkspaceFront,
 			PlannerThreadID:    mission.PlannerThreadID,
 		})
 	}
@@ -610,6 +615,7 @@ func (s *persistedState) indexSessionMeta(sessionID string, meta SessionMeta) {
 			s.MissionByWorkspace[sessionID] = meta.MissionID
 		}
 	case SessionKindPlanner:
+		// Legacy-only planner index rebuild for persisted data.
 		if meta.MissionID != "" {
 			s.MissionByPlanner[sessionID] = meta.MissionID
 		}
@@ -770,7 +776,7 @@ func normalizeSessionMeta(meta SessionMeta) SessionMeta {
 		case SessionKindWorkspace:
 			meta.RuntimePreset = RuntimePresetWorkspaceFront
 		case SessionKindPlanner:
-			meta.RuntimePreset = RuntimePresetPlannerInternal
+			meta.RuntimePreset = RuntimePresetWorkspaceFront
 		case SessionKindWorker:
 			meta.RuntimePreset = RuntimePresetWorkerInternal
 		default:

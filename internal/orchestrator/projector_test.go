@@ -93,19 +93,19 @@ func TestProjectMissionAndPlanViews(t *testing.T) {
 	if summary.Caption != card.Caption {
 		t.Fatalf("expected plan summary caption to match mission caption, got %q and %q", summary.Caption, card.Caption)
 	}
-	if summary.Tone != "info" || summary.Status != string(MissionStatusPending) || summary.StepCount != 2 || summary.PlannerSessionID != "planner-1" {
+	if summary.Tone != "info" || summary.Status != string(MissionStatusPending) || summary.StepCount != 2 {
 		t.Fatalf("unexpected plan summary fields: %#v", summary)
 	}
 
 	detail := ProjectPlanDetail(mission)
-	if detail.Title != "PlannerSession 计划详情" {
+	if detail.Title != "主 Agent 计划详情" {
 		t.Fatalf("unexpected plan detail title: %q", detail.Title)
 	}
 	if detail.Goal != "roll out cert fix" {
 		t.Fatalf("unexpected plan detail goal: %q", detail.Goal)
 	}
-	if detail.GeneratedAt != mission.UpdatedAt || detail.RawPlannerTraceRef.SessionID != "planner-1" || detail.RawPlannerTraceRef.ThreadID != "thread-1" {
-		t.Fatalf("unexpected planner trace metadata: %#v", detail.RawPlannerTraceRef)
+	if detail.GeneratedAt != mission.UpdatedAt {
+		t.Fatalf("unexpected generated at: %#v", detail)
 	}
 	if detail.DAGSummary.Nodes != 2 || detail.DAGSummary.Running != 1 || detail.DAGSummary.WaitingApproval != 1 || detail.DAGSummary.Queued != 0 {
 		t.Fatalf("unexpected dag summary: %#v", detail.DAGSummary)

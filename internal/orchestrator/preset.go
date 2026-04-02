@@ -27,17 +27,7 @@ type RuntimeSpec struct {
 }
 
 func PlannerPreset(workspacePath string) Preset {
-	return Preset{
-		Name:            "planner",
-		Kind:            SessionKindPlanner,
-		RuntimePreset:   RuntimePresetPlannerInternal,
-		Model:           "gpt-5.4",
-		ReasoningEffort: "medium",
-		ApprovalPolicy:  "untrusted",
-		SandboxMode:     "workspace-write",
-		WorkspacePath:   workspacePath,
-		DynamicTools:    []string{"metrics", "skills", "orchestrator_dispatch_tasks"},
-	}
+	return WorkspacePreset(workspacePath)
 }
 
 func WorkerPreset(workspacePath string, hostID string) Preset {

@@ -29,12 +29,12 @@ const normalizedPhase = computed(() => {
 
 const phaseLabel = computed(() => {
   const map = {
-    thinking: "正在思考",
+    thinking: "思考中",
     planning: "正在规划步骤",
-    waiting_approval: "正在等待审批",
-    waiting_confirmation: "正在等待确认",
-    waiting_input: "正在等待输入",
-    executing: "正在执行",
+    waiting_approval: "等待审批中",
+    waiting_confirmation: "等待确认中",
+    waiting_input: "等待输入中",
+    executing: "执行中",
     browsing: "正在浏览文件",
     searching: "正在搜索内容",
     editing: "正在修改代码",
@@ -63,8 +63,8 @@ const phaseDetail = computed(() => (props.card.hint || props.card.text || "").tr
 
 <style scoped>
 .thinking-wrapper {
-  padding: 4px 0;
-  margin-left: 48px;
+  padding: 2px 0;
+  margin-left: 36px;
   animation: fadeInUp 0.2s ease-out;
 }
 
@@ -72,16 +72,16 @@ const phaseDetail = computed(() => (props.card.hint || props.card.text || "").tr
   display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
-  padding: 9px 14px 10px;
-  border-radius: 14px;
+  gap: 4px;
+  padding: 7px 12px 8px;
+  border-radius: 10px;
   background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   border: 1px solid #e2e8f0;
   color: #475569;
-  font-size: 13px;
-  line-height: 1.45;
-  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.04);
-  max-width: min(680px, calc(100vw - 96px));
+  font-size: 12.5px;
+  line-height: 1.4;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
+  max-width: min(640px, calc(100vw - 80px));
 }
 
 .thinking-spinner {
@@ -98,18 +98,19 @@ const phaseDetail = computed(() => (props.card.hint || props.card.text || "").tr
 .thinking-text {
   font-weight: 500;
   color: #0f172a;
+  font-size: 13px;
 }
 
 .thinking-state {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
 }
 
 .thinking-detail {
   color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11.5px;
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
 }

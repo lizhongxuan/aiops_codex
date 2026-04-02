@@ -74,13 +74,13 @@ function getIconForStatus(status) {
 <style scoped>
 .plan-card {
   border: 1px solid var(--border-card, #e5e7eb);
-  border-radius: var(--radius-card, 16px);
+  border-radius: 12px;
   background: #ffffff;
   overflow: hidden;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.02);
-  margin-top: 4px;
-  margin-left: 48px;
-  max-width: 640px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.02);
+  margin-top: 2px;
+  margin-left: 36px;
+  max-width: 600px;
 }
 
 .plan-card.compact {
@@ -93,7 +93,7 @@ function getIconForStatus(status) {
 }
 
 .plan-header {
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -103,7 +103,7 @@ function getIconForStatus(status) {
 }
 
 .plan-card.compact .plan-header {
-  padding: 12px 16px;
+  padding: 10px 14px;
 }
 
 .plan-header:hover {
@@ -135,7 +135,7 @@ function getIconForStatus(status) {
 }
 
 .plan-summary {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: #374151;
 }
@@ -145,23 +145,23 @@ function getIconForStatus(status) {
 }
 
 .plan-body {
-  padding: 4px 14px 12px;
+  padding: 2px 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .plan-card.compact .plan-body {
-  padding: 6px 16px 14px;
+  padding: 4px 14px 12px;
 }
 
 .plan-item {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 0;
-  font-size: 14px;
-  line-height: 1.6;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .item-icon {
@@ -187,7 +187,7 @@ function getIconForStatus(status) {
 
 .item-text {
   color: #374151;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .plan-item.completed .item-text {

@@ -466,24 +466,24 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .code-card {
-  border-radius: 16px;
+  border-radius: 12px;
   background: #ffffff;
   border: 1px solid #e5e7eb;
   overflow: hidden;
-  margin-top: 4px;
-  margin-left: 48px;
-  max-width: 860px;
-  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+  margin-top: 2px;
+  margin-left: 36px;
+  max-width: 780px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.03);
   display: flex;
   flex-direction: column;
 }
 
 .code-header {
-  padding: 12px 16px;
+  padding: 10px 14px;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   background: #f8fafc;
   border-bottom: 1px solid #e5e7eb;
 }

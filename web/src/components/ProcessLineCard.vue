@@ -73,14 +73,14 @@ const detailTone = computed(() => {
 .process-line-card {
   display: inline-flex;
   align-items: flex-start;
-  gap: 10px;
-  margin-left: 48px;
-  padding: 4px 0;
+  gap: 8px;
+  margin-left: 36px;
+  padding: 2px 0;
   color: #475569;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11px;
+  line-height: 1.45;
   flex-wrap: wrap;
-  max-width: min(760px, calc(100vw - 96px));
+  max-width: min(720px, calc(100vw - 80px));
 }
 
 .process-line-card.running {

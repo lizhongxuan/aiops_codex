@@ -85,6 +85,8 @@ type App struct {
 	turnTraces       map[string]*turnTrace
 	orchestratorMu   sync.Mutex
 	orchestratorJobs map[string]string
+	broadcastThrotMu sync.Mutex
+	broadcastTimers  map[string]*time.Timer
 	threadStarts     []time.Time
 	turnStarts       []time.Time
 	httpServer       *http.Server
@@ -216,6 +218,7 @@ func New(cfg config.Config) *App {
 		oauthStates:      make(map[string]string),
 		turnTraces:       make(map[string]*turnTrace),
 		orchestratorJobs: make(map[string]string),
+		broadcastTimers:  make(map[string]*time.Timer),
 		commandRunner:    defaultCommandRunner,
 	}
 	app.codex = codex.New(cfg.CodexPath, app.handleCodexNotification, app.handleCodexServerRequest)
@@ -1217,13 +1220,16 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		return
 	}
 	requestStartedAt := time.Now()
-	switch a.sessionKind(sessionID) {
+	kind := a.sessionKind(sessionID)
+	switch kind {
 	case model.SessionKindWorkspace:
 		a.handleWorkspaceChatMessage(w, r, sessionID, req, requestStartedAt)
 		return
-	case model.SessionKindPlanner, model.SessionKindWorker:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "internal session 不支持前台直接发送消息"})
-		return
+	default:
+		if a.orchestrator != nil && a.isOrchestratorInternalSession(sessionID) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "internal session 不支持前台直接发送消息"})
+			return
+		}
 	}
 	host := a.findHost(req.HostID)
 	if host.Status != "online" {
@@ -1386,13 +1392,16 @@ func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID s
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	switch a.sessionKind(sessionID) {
+	kind := a.sessionKind(sessionID)
+	switch kind {
 	case model.SessionKindWorkspace:
 		a.handleWorkspaceStop(w, r, sessionID)
 		return
-	case model.SessionKindPlanner, model.SessionKindWorker:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "internal session 不支持前台直接 stop"})
-		return
+	default:
+		if a.orchestrator != nil && a.isOrchestratorInternalSession(sessionID) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "internal session 不支持前台直接 stop"})
+			return
+		}
 	}
 
 	session := a.store.Session(sessionID)
@@ -1627,6 +1636,9 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	approvalID = strings.TrimSuffix(approvalID, "/decision")
 	targetSessionID, approval, ok := a.resolveApprovalTargetSession(sessionID, approvalID)
 	if !ok {
+		// Clean up any stale pending approval cards that reference this approval
+		a.dismissStaleApprovalCards(sessionID, approvalID)
+		a.broadcastSnapshot(sessionID)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found"})
 		return
 	}
@@ -1994,6 +2006,9 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
+		if a.isWorkspaceRouteThread(sessionID) {
+			return
+		}
 		a.setRuntimeTurnPhase(sessionID, "planning")
 		cardID := "plan-" + getString(payload, "turnId")
 		planItems := toPlanItems(payload["plan"])
@@ -2048,6 +2063,10 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			card.Text += getString(payload, "delta")
 			card.UpdatedAt = model.NowString()
 		})
+		if a.isWorkspaceRouteThread(sessionID) {
+			a.throttledBroadcast(sessionID)
+			return
+		}
 		a.broadcastSnapshot(sessionID)
 	case "item/commandExecution/outputDelta":
 		sessionID := a.sessionIDFromPayload(payload)
@@ -2115,10 +2134,17 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			a.finishRuntimeTurn(sessionID, "failed")
 		}
 		a.recordOrchestratorTurnPhase(sessionID, normalizeCardStatus(turnStatus))
-		a.recordOrchestratorReply(sessionID)
 		a.finalizeOpenTurnCards(sessionID, normalizeCardStatus(turnStatus))
 		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
 		log.Printf("turn completed session=%s turn=%s status=%s", sessionID, getString(turn, "id"), turnStatus)
+		if a.isWorkspaceRouteThread(sessionID) {
+			a.flushThrottledBroadcast(sessionID)
+			a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
+			a.recordOrchestratorReply(sessionID)
+			a.broadcastSnapshot(sessionID)
+			return
+		}
+		a.recordOrchestratorReply(sessionID)
 		a.broadcastSnapshot(sessionID)
 		a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
 	case "turn/aborted":
@@ -2307,8 +2333,11 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		applyCardHost(&card, a.findHost(approval.HostID))
 		a.store.UpsertCard(sessionID, card)
 		a.recordOrchestratorApprovalRequested(sessionID, approval)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
 			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+			if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
+				a.activateQueuedMissionWorkers(workspaceSessionID)
+			}
 		}
 		a.broadcastSnapshot(sessionID)
 	case "item/fileChange/requestApproval":
@@ -2395,8 +2424,11 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		applyCardHost(&card, a.findHost(approval.HostID))
 		a.store.UpsertCard(sessionID, card)
 		a.recordOrchestratorApprovalRequested(sessionID, approval)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
 			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+			if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
+				a.activateQueuedMissionWorkers(workspaceSessionID)
+			}
 		}
 		a.broadcastSnapshot(sessionID)
 	case "item/tool/requestUserInput", "request_user_input":
@@ -2439,7 +2471,7 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		a.store.AddChoice(sessionID, choice)
 		a.store.UpsertCard(sessionID, card)
 		a.recordOrchestratorChoiceRequested(sessionID, choice)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
 			a.mirrorInternalChoiceToWorkspace(sessionID, choice, card)
 		}
 		a.audit("choice.requested", map[string]any{
@@ -2537,6 +2569,9 @@ func (a *App) handleItemStarted(payload map[string]any) {
 		a.scheduleFinalizingExecutionCleanup(sessionID, getStringAny(payload, "threadId", "thread_id"))
 		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
 	}
+	if itemType == "agentMessage" && a.isWorkspaceRouteThread(sessionID) {
+		return
+	}
 	a.broadcastSnapshot(sessionID)
 }
 
@@ -2624,6 +2659,11 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 	}
 	if itemType == "agentMessage" {
 		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
+		if a.isWorkspaceRouteThread(sessionID) {
+			a.flushThrottledBroadcast(sessionID)
+			a.broadcastSnapshot(sessionID)
+			return
+		}
 	}
 	a.broadcastSnapshot(sessionID)
 }
@@ -3128,6 +3168,31 @@ func (a *App) hasPendingApprovals(sessionID string) bool {
 	return false
 }
 
+// dismissStaleApprovalCards marks any pending approval cards that reference a
+// missing approval as "expired" so they no longer appear in the UI after refresh.
+func (a *App) dismissStaleApprovalCards(sessionID, approvalID string) {
+	now := model.NowString()
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return
+	}
+	for _, card := range session.Cards {
+		if card.Status != "pending" {
+			continue
+		}
+		if card.Type != "CommandApprovalCard" && card.Type != "FileChangeApprovalCard" {
+			continue
+		}
+		if card.Approval == nil || card.Approval.RequestID != approvalID {
+			continue
+		}
+		a.store.UpdateCard(sessionID, card.ID, func(c *model.Card) {
+			c.Status = "expired"
+			c.UpdatedAt = now
+		})
+	}
+}
+
 func (a *App) hasPendingChoices(sessionID string) bool {
 	session := a.store.Session(sessionID)
 	if session == nil {
@@ -3378,6 +3443,14 @@ func (a *App) shouldIgnoreTurnPayload(sessionID string, payload map[string]any) 
 	return threadID != "" && threadID == session.ThreadID
 }
 
+func (a *App) isWorkspaceRouteThread(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	return session.Meta.Kind == model.SessionKindWorkspace && strings.HasSuffix(strings.TrimSpace(session.ThreadConfigHash), ":workspace-route")
+}
+
 func (a *App) cardIsFinal(sessionID, cardID string) bool {
 	session := a.store.Session(sessionID)
 	if session == nil {
@@ -3538,9 +3611,15 @@ func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any,
 		durationMS = durationBetween(createdAt, now)
 	}
 
+	hostID := ""
+	if session := a.store.Session(sessionID); session != nil {
+		hostID = session.SelectedHostID
+	}
+
 	a.store.UpsertCard(sessionID, model.Card{
 		ID:         cardID,
 		Type:       "ProcessLineCard",
+		HostID:     hostID,
 		Text:       processLineText(kind, entry, currentLabel, completed),
 		Status:     status,
 		DurationMS: durationMS,
@@ -4730,6 +4809,37 @@ func (a *App) broadcastAllSnapshots() {
 	for _, sessionID := range a.store.SessionIDs() {
 		a.broadcastSnapshot(sessionID)
 	}
+}
+
+// throttledBroadcast coalesces rapid delta broadcasts for a session.
+// It waits 150ms after the last call before actually broadcasting,
+// so token-level deltas don't flood the WebSocket.
+func (a *App) throttledBroadcast(sessionID string) {
+	a.broadcastThrotMu.Lock()
+	defer a.broadcastThrotMu.Unlock()
+
+	if existing, ok := a.broadcastTimers[sessionID]; ok {
+		existing.Stop()
+	}
+	a.broadcastTimers[sessionID] = time.AfterFunc(150*time.Millisecond, func() {
+		a.broadcastSnapshot(sessionID)
+		a.broadcastThrotMu.Lock()
+		delete(a.broadcastTimers, sessionID)
+		a.broadcastThrotMu.Unlock()
+	})
+}
+
+// flushThrottledBroadcast fires any pending throttled broadcast immediately.
+func (a *App) flushThrottledBroadcast(sessionID string) {
+	a.broadcastThrotMu.Lock()
+	if t, ok := a.broadcastTimers[sessionID]; ok {
+		t.Stop()
+		delete(a.broadcastTimers, sessionID)
+		a.broadcastThrotMu.Unlock()
+		a.broadcastSnapshot(sessionID)
+		return
+	}
+	a.broadcastThrotMu.Unlock()
 }
 
 func (a *App) serveFrontend() http.Handler {

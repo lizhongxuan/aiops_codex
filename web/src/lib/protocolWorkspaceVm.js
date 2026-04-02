@@ -30,6 +30,35 @@ function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function normalizeWorkspaceCopy(value) {
+  return compactText(value)
+    .replace(/PlannerSession/gi, "主 Agent Session")
+    .replace(/Planner/gi, "主 Agent")
+    .replace(/planner/gi, "主 Agent");
+}
+
+function findLastIndex(list = [], predicate = () => false) {
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (predicate(list[index], index)) return index;
+  }
+  return -1;
+}
+
+function findLast(list = [], predicate = () => false) {
+  const index = findLastIndex(list, predicate);
+  return index >= 0 ? list[index] : null;
+}
+
+function isStoppedNoticeCard(card) {
+  const title = compactText(card?.title).toLowerCase();
+  const text = compactText(card?.text || card?.message).toLowerCase();
+  return card?.type === "NoticeCard" && (title === "mission stopped" || text.includes("mission 已停止"));
+}
+
+function isFailedResultSummaryCard(card) {
+  return card?.type === "ResultSummaryCard" && compactText(card?.status).toLowerCase() === "failed";
+}
+
 function normalizeEvidenceRows(value, { defaultLabel = "" } = {}) {
   if (!value) return [];
   if (Array.isArray(value)) {
@@ -197,22 +226,38 @@ export function normalizeProtocolMissionPhase(value) {
 
 export function resolveProtocolWorkspaceCards(cards = []) {
   const workspaceCards = asArray(cards);
-  const missionCard = workspaceCards.find((card) => isMissionNoticeCard(card)) || null;
-  const planCard = [...workspaceCards].reverse().find((card) => isPlanCard(card)) || null;
-  const dispatchSummaryCards = workspaceCards.filter((card) => isDispatchSummaryCard(card));
-  const workspaceResultCard = [...workspaceCards].reverse().find((card) => isWorkspaceResultCard(card)) || null;
+  const latestUserIndex = findLastIndex(workspaceCards, (card) => isUserMessageCard(card));
+  const currentMissionCards = latestUserIndex >= 0 ? workspaceCards.slice(latestUserIndex) : workspaceCards;
+  const missionScopeCards = currentMissionCards.length ? currentMissionCards : workspaceCards;
+  const missionCard = findLast(missionScopeCards, (card) => isMissionNoticeCard(card));
+  const planCard = findLast(missionScopeCards, (card) => isPlanCard(card));
+  const dispatchSummaryCards = missionScopeCards.filter((card) => isDispatchSummaryCard(card));
+  const workspaceResultCard = findLast(missionScopeCards, (card) => isWorkspaceResultCard(card));
+  const currentErrorCard = findLast(missionScopeCards, (card) => card?.type === "ErrorCard");
+  const currentFailureSummaryCard = findLast(missionScopeCards, (card) => isFailedResultSummaryCard(card));
+  const stopNoticeCard = findLast(missionScopeCards, (card) => isStoppedNoticeCard(card));
   const conversationCards = workspaceCards.filter(
-    (card) => isUserMessageCard(card) || isAssistantMessageCard(card) || isSystemNoticeCard(card) || card?.type === "ErrorCard",
+    (card) =>
+      isUserMessageCard(card) ||
+      isAssistantMessageCard(card) ||
+      isSystemNoticeCard(card) ||
+      card?.type === "ErrorCard" ||
+      isFailedResultSummaryCard(card),
   );
-  const approvalCards = workspaceCards.filter((card) => isApprovalCard(card) && card.status === "pending");
-  const choiceCards = workspaceCards.filter((card) => isChoiceCard(card) && card.status === "pending");
-  const processCards = workspaceCards.filter((card) => isProcessCard(card));
+  const approvalCards = missionScopeCards.filter((card) => isApprovalCard(card) && card.status === "pending");
+  const choiceCards = missionScopeCards.filter((card) => isChoiceCard(card) && card.status === "pending");
+  const processCards = missionScopeCards.filter((card) => isProcessCard(card));
   return {
     workspaceCards,
+    currentMissionCards,
+    latestUserIndex,
     missionCard,
     planCard,
     dispatchSummaryCards,
     workspaceResultCard,
+    currentErrorCard,
+    currentFailureSummaryCard,
+    stopNoticeCard,
     conversationCards,
     approvalCards,
     choiceCards,
@@ -223,28 +268,79 @@ export function resolveProtocolWorkspaceCards(cards = []) {
 export function buildProtocolConversationItems(cards = []) {
   return asArray(cards)
     .map((card) => {
-      const text = compactText(card?.text || card?.summary || card?.message || card?.title);
-      if (!text) return null;
       const role = isUserMessageCard(card) ? "user" : "assistant";
+      const title = normalizeWorkspaceCopy(card?.title);
+      const baseText = normalizeWorkspaceCopy(card?.text || card?.summary || card?.message || card?.title);
+      if (!baseText) return null;
+
+      // Filter out system routing / dispatch messages that are not meant for the user
+      if (role === "assistant" && isSystemRoutingMessage(baseText)) return null;
+
+      const shouldPrefixTitle = (card?.type === "ErrorCard" || isFailedResultSummaryCard(card)) && title && !baseText.startsWith(title);
+      const cleanedText = cleanAssistantMessageText(shouldPrefixTitle ? `${title}\n${baseText}` : baseText, role);
+      if (!cleanedText) return null;
+
       return {
-        id: card.id || `${role}-${text}`,
+        id: card.id || `${role}-${cleanedText}`,
         role,
         time: formatShortTime(card.updatedAt || card.createdAt),
-        title: role === "user" ? "用户" : "主 Agent",
-        text,
+        title: card?.type === "ErrorCard" ? "系统错误" : role === "user" ? "用户" : "主 Agent",
+        text: cleanedText,
       };
     })
     .filter(Boolean);
 }
 
+/**
+ * Detect system routing / dispatch messages that should be hidden from the user.
+ * These are internal Agent routing decisions, not actual replies.
+ */
+function isSystemRoutingMessage(text) {
+  const trimmed = (text || "").trim();
+  // Messages that are purely the Agent's internal routing decision
+  if (/^主\s*Agent\s*正在判断/.test(trimmed)) return true;
+  if (/^这是简单对话/.test(trimmed)) return true;
+  if (/^(这是|当前).*(简单|直接).*(对话|回答|回复)/.test(trimmed)) return true;
+  // Pure routing notice without any useful content
+  if (/^主\s*Agent\s*(会|将)直接回答/.test(trimmed)) return true;
+  if (/不会生成计划或派发\s*worker/.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Clean assistant message text by stripping embedded JSON routing blocks
+ * that are internal Agent metadata, not meant for user display.
+ */
+function cleanAssistantMessageText(text, role) {
+  if (role === "user" || !text) return text;
+  // Remove ```json ... ``` fenced blocks containing routing metadata
+  let cleaned = text.replace(/`{3}json[\s\S]*?`{3}/g, (match) => {
+    if (/"route"\s*:/.test(match)) return "";
+    return match;
+  }).trim();
+  // Fallback: remove unclosed ```json blocks with routing metadata
+  cleaned = cleaned.replace(/`{3}json\s*\{[^`]*"route"\s*:[^`]*/g, "").trim();
+  // Remove inline { "route": ... } JSON objects
+  cleaned = cleaned.replace(/\{[^{}]*"route"\s*:\s*"[^"]*"[^{}]*\}/g, "").trim();
+  // Collapse multiple newlines
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+  return cleaned;
+}
+
 export function buildProtocolBackgroundAgents(hostRows = []) {
+  const seen = new Set();
   return asArray(hostRows)
-    .filter((row) => ["running", "waiting_approval", "queued"].includes(row.statusKey))
+    .filter((row) => {
+      if (!row.hostId || row.hostId === "server-local") return false;
+      if (seen.has(row.hostId)) return false;
+      seen.add(row.hostId);
+      return ["running", "waiting_approval", "queued", "idle", "pending", "dispatched"].includes(row.statusKey) || row.worker;
+    })
     .map((row) => ({
       id: row.hostId,
       hostId: row.hostId,
-      name: row.displayName,
-      subtitle: compactText(row.taskTitle || row.summary || "等待执行"),
+      name: row.displayName || row.address || row.hostId || "agent",
+      subtitle: compactText(row.taskTitle || row.summary || row.statusLabel || "等待执行"),
       status: row.statusKey,
       statusLabel: row.statusLabel,
       tone: statusTone(row.statusKey),
@@ -263,8 +359,8 @@ export function buildProtocolApprovalItems(approvalCards = [], hostRows = []) {
       approvalId: compactText(card?.approval?.requestId || card?.approvalId || card?.requestId),
       hostId: compactText(card.hostId),
       hostName: host?.displayName || compactText(card.hostId) || "unknown-host",
-      command: compactText(card.command || dispatchRequest.summary || dispatchRequest.title || card.text || card.summary),
-      summary: compactText(card.text || card.summary || host?.taskTitle || host?.summary),
+      command: normalizeWorkspaceCopy(card.command || dispatchRequest.summary || dispatchRequest.title || card.text || card.summary),
+      summary: normalizeWorkspaceCopy(card.text || card.summary || host?.taskTitle || host?.summary),
       timeLabel: formatTime(card.updatedAt || card.createdAt),
       supportsAuthorize: decisions.includes("accept_session"),
       detailRows: normalizeEvidenceRows(
@@ -307,8 +403,8 @@ export function buildProtocolEventItems({
   }).map((item) => ({
     id: item.id,
     time: item.time || "",
-    title: compactText(item.title || item.source || "事件"),
-    detail: compactText(item.text || ""),
+    title: normalizeWorkspaceCopy(item.title || item.source || "事件"),
+    detail: normalizeWorkspaceCopy(item.text || ""),
     tone: item.tone || "neutral",
     targetType: item.targetType || "",
     targetId: item.targetId || "",
@@ -325,129 +421,85 @@ export function buildProtocolPlanCardModel({
   const planDetail = planDetailState.detail;
   const structuredProcess = planDetailState.structuredProcess;
   const taskHostBindings = asArray(pickField(planDetail, "taskHostBindings", "task_host_bindings"));
+  const fallbackStructuredProcess = asArray(planCard?.items)
+    .map((item, index) => {
+      const stepText = compactText(item?.step || item?.label || item?.title || item?.text);
+      const status = compactText(item?.status).toLowerCase() || "pending";
+      if (!stepText) return "";
+      const match = stepText.match(/^([A-Za-z0-9._:-]+)\s+\[([^\]]+)\]\s+(.+)$/);
+      if (match) {
+        const [, hostId, taskId, title] = match;
+        return `${taskId} [${status}] @${hostId} ${title}`.trim();
+      }
+      return `step-${index + 1} [${status}] ${stepText}`.trim();
+    })
+    .filter(Boolean);
   const stepItems = buildWorkspaceStepItems({
-    structuredProcess,
+    structuredProcess: structuredProcess.length ? structuredProcess : fallbackStructuredProcess,
     taskHostBindings,
     hostRows,
   });
 
-  const completed = stepItems.filter((item) => compactText(item.status).includes("complete")).length;
+  const completed =
+    stepItems.filter((item) => compactText(item.status).includes("complete")).length ||
+    asArray(planCard?.items).filter((item) => compactText(item?.status).includes("complete")).length;
   return {
-    title: compactText(planCard?.title || planDetail?.goal || "执行计划"),
-    summary: compactText(planCard?.text || planDetail?.goal || ""),
+    title: normalizeWorkspaceCopy(planCard?.title || planDetail?.goal || "主 Agent 计划摘要"),
+    summary: normalizeWorkspaceCopy(planCard?.text || planDetail?.goal || ""),
     version: compactText(planDetailState.version || "plan-v1"),
     generatedAt: compactText(planDetailState.generatedAt || planCard?.updatedAt || planCard?.createdAt),
-    plannerSessionLabel: compactText(planDetailState.plannerSessionLabel),
-    totalSteps: stepItems.length,
+    totalSteps: stepItems.length || asArray(planCard?.items).length,
     completedSteps: completed,
     stepItems,
     dispatchEvents: asArray(pickField(planDetail, "dispatchEvents", "dispatch_events")),
-    plannerConversation: asArray(pickField(planDetail, "plannerConversation", "planner_conversation")),
-    rawPlannerTraceRef: asObject(planDetailState.plannerTraceRef),
   };
 }
 
 export function buildProtocolEvidenceTabs({
   planCardModel = null,
   hostRow = null,
+  approvalItem = null,
   eventItems = [],
 } = {}) {
-  const plannerAi = [];
-  for (const item of asArray(planCardModel?.plannerConversation)) {
-    const text = compactText(item?.text || item?.summary);
-    if (!text) continue;
-    plannerAi.push({
-      id: item.id || text,
-      title: compactText(item.summary || item.type || item.role || "Planner -> AI"),
-      text,
-      time: formatShortTime(item.createdAt),
-    });
-  }
-
-  const matchedSteps = summarizeHostStepItems(planCardModel, hostRow);
   const dispatch = asObject(hostRow?.dispatch);
   const worker = asObject(hostRow?.worker);
   const taskBinding = asObject(pickField(dispatch, "task_binding", "taskBinding")) || null;
   const approvalAnchor = asObject(pickField(worker, "approval_anchor", "approvalAnchor"));
   const dispatchRequest = asObject(pickField(dispatch, "request"));
 
-  const plannerHost = [];
-  if (hostRow) {
-    plannerHost.push(
-      {
-        id: `host-${hostRow.hostId}`,
-        title: compactText(hostRow.displayName || hostRow.hostId || "Host"),
-        text: compactText(hostRow.summary || hostRow.taskTitle || "当前 host-agent 上下文"),
-        time: formatShortTime(hostRow.updatedAt),
-      },
-      ...matchedSteps.map((step, index) => ({
-        id: `step-${step.id}-${index}`,
-        title: `Step ${step.index || index + 1} · ${compactText(step.title)}`,
-        text: compactText(step.summary || step.raw || ""),
-        time: "",
-      })),
-    );
-  }
-
-  if (dispatchRequest.title || dispatchRequest.summary) {
-    plannerHost.push({
-      id: `dispatch-request-${hostRow?.hostId || "host"}`,
-      title: "Dispatch Request",
-      text: compactText(dispatchRequest.title || dispatchRequest.summary),
-      time: formatShortTime(dispatch.createdAt || hostRow?.updatedAt),
+  const mainAgentPlan = [];
+  if (compactText(planCardModel?.summary) || compactText(planCardModel?.title)) {
+    mainAgentPlan.push({
+      id: "plan-summary",
+      title: "计划摘要",
+      text: normalizeWorkspaceCopy(planCardModel?.summary || planCardModel?.title || "当前还没有可用的计划摘要。"),
+      time: formatShortTime(planCardModel?.generatedAt),
     });
   }
-
-  for (const row of buildTaskBindingRows(taskBinding || dispatch)) {
-    plannerHost.push({
-      id: `task-binding-${hostRow?.hostId || "host"}-${row.label}`,
-      title: row.label,
-      text: row.value,
+  for (const [index, step] of asArray(planCardModel?.stepItems).entries()) {
+    const hostLabels = asArray(step.hosts)
+      .map((host) => compactText(host.label || host.id))
+      .filter(Boolean)
+      .join("、");
+    const pieces = [step.statusLabel || step.status, hostLabels ? `Host: ${hostLabels}` : "", step.detail || step.note || ""]
+      .map((item) => compactText(item))
+      .filter(Boolean);
+    mainAgentPlan.push({
+      id: `plan-step-${step.id || index}`,
+      title: `Step ${step.index || index + 1} · ${normalizeWorkspaceCopy(step.title)}`,
+      text: normalizeWorkspaceCopy(pieces.join(" · ")),
       time: "",
     });
-  }
-
-  for (const row of buildDispatchTimelineRows(dispatch)) {
-    plannerHost.push({
-      id: `dispatch-timeline-${hostRow?.hostId || "host"}-${row.label}-${row.value}`,
-      title: row.label,
-      text: row.text ? `${row.value} ${row.text}`.trim() : row.value,
-      time: "",
-    });
-  }
-
-  for (const row of buildApprovalAnchorRows(approvalAnchor)) {
-    plannerHost.push({
-      id: `approval-anchor-${hostRow?.hostId || "host"}-${row.label}`,
-      title: `Approval Anchor · ${row.label}`,
-      text: row.value,
-      time: "",
-    });
-  }
-
-  if (!plannerHost.length && Array.isArray(eventItems)) {
-    plannerHost.push(
-      ...asArray(eventItems)
-        .filter((item) => item.targetType === "dispatch" || item.targetType === "host" || item.targetType === "approval")
-        .slice(0, 10)
-        .map((item) => ({
-          id: item.id,
-          title: item.title,
-          text: item.detail,
-          time: item.time,
-        })),
-    );
   }
 
   const hostConversation = [];
-  const workerConversation = asArray(worker.conversation || worker.conversation_excerpts);
-  for (const item of workerConversation) {
+  for (const item of asArray(worker.conversation || worker.conversation_excerpts)) {
     const text = compactText(item.text || item.summary);
     if (!text) continue;
     hostConversation.push({
       id: item.id || `${item.createdAt}-${text}`,
-      title: compactText(item.summary || item.type || item.role || "Host -> AI"),
-      text,
+      title: normalizeWorkspaceCopy(item.summary || item.type || item.role || "Host -> AI"),
+      text: normalizeWorkspaceCopy(text),
       time: formatShortTime(item.createdAt || hostRow?.updatedAt),
     });
   }
@@ -460,7 +512,7 @@ export function buildProtocolEvidenceTabs({
       hostConversation.push({
         id: `${hostRow?.hostId || "host"}-transcript-${index}`,
         title: `Transcript ${index + 1}`,
-        text,
+        text: normalizeWorkspaceCopy(text),
         time: formatShortTime(worker.updatedAt || hostRow?.updatedAt),
       });
     }
@@ -471,7 +523,7 @@ export function buildProtocolEvidenceTabs({
       hostConversation.push({
         id: `${hostRow?.hostId || "host"}-last-reply`,
         title: "Last Reply",
-        text: compactText(worker.lastReply),
+        text: normalizeWorkspaceCopy(worker.lastReply),
         time: formatShortTime(worker.updatedAt || hostRow?.updatedAt),
       });
     }
@@ -479,9 +531,66 @@ export function buildProtocolEvidenceTabs({
       hostConversation.push({
         id: `${hostRow?.hostId || "host"}-last-error`,
         title: "Last Error",
-        text: compactText(worker.lastError),
+        text: normalizeWorkspaceCopy(worker.lastError),
         time: formatShortTime(worker.updatedAt || hostRow?.updatedAt),
       });
+    }
+  }
+
+  const approvalContext = [];
+  const approvalSource = approvalItem || {
+    hostName: hostRow?.displayName,
+    hostId: hostRow?.hostId,
+    approvalId: compactText(pickField(worker, "approval", "approvalAnchor", "approval_anchor")?.requestId || ""),
+    command: compactText(dispatchRequest.title || dispatchRequest.summary),
+    summary: compactText(dispatchRequest.summary || dispatchRequest.title || hostRow?.summary || hostRow?.taskTitle),
+    detailRows: [...buildTaskBindingRows(taskBinding || dispatch), ...buildDispatchTimelineRows(dispatch), ...buildApprovalAnchorRows(approvalAnchor)],
+    approvalAnchor,
+    raw: { dispatch, worker },
+  };
+
+  if (approvalSource) {
+    if (approvalSource.hostName || approvalSource.hostId) {
+      approvalContext.push({
+        id: `approval-host-${approvalSource.hostId || "host"}`,
+        title: "主机",
+        text: compactText(approvalSource.hostName || approvalSource.hostId || "unknown-host"),
+        time: "",
+      });
+    }
+    if (approvalSource.approvalId) {
+      approvalContext.push({
+        id: `approval-id-${approvalSource.approvalId}`,
+        title: "审批ID",
+        text: compactText(approvalSource.approvalId),
+        time: "",
+      });
+    }
+    if (approvalSource.command || approvalSource.summary) {
+      approvalContext.push({
+        id: `approval-command-${approvalSource.hostId || "host"}`,
+        title: "命令",
+        text: normalizeWorkspaceCopy(approvalSource.command || approvalSource.summary),
+        time: "",
+      });
+    }
+    for (const row of asArray(approvalSource.detailRows)) {
+      approvalContext.push({
+        id: `approval-detail-${approvalSource.hostId || "host"}-${row.label}`,
+        title: compactText(row.label || "详情"),
+        text: normalizeWorkspaceCopy(row.value || row.text),
+        time: "",
+      });
+    }
+    if (approvalSource.approvalAnchor) {
+      for (const row of buildApprovalAnchorRows(approvalSource.approvalAnchor)) {
+        approvalContext.push({
+          id: `approval-anchor-${approvalSource.hostId || "host"}-${row.label}`,
+          title: `审批锚点 · ${row.label}`,
+          text: normalizeWorkspaceCopy(row.value),
+          time: "",
+        });
+      }
     }
   }
 
@@ -521,22 +630,35 @@ export function buildProtocolEvidenceTabs({
   })();
 
   return {
-    plannerAi,
-    plannerHost,
+    mainAgentPlan,
+    workerConversation: hostConversation,
     hostConversation,
     hostTerminalRows,
     hostTerminalOutput,
+    approvalContext,
   };
 }
 
 export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
   const cards = resolveProtocolWorkspaceCards(snapshot.cards || []);
   const hostRows = buildWorkspaceHostRows({
-    cards: cards.workspaceCards,
+    cards: cards.currentMissionCards,
     hosts: snapshot.hosts || [],
     approvalCards: cards.approvalCards,
   });
-  const missionPhase = normalizeProtocolMissionPhase(pickField(runtime?.turn || {}, "phase") || pickField(cards.missionCard?.detail || {}, "status"));
+  const runtimePhase = normalizeProtocolMissionPhase(pickField(runtime?.turn || {}, "phase") || pickField(cards.missionCard?.detail || {}, "status"));
+  const currentFailureCard =
+    cards.currentErrorCard ||
+    cards.currentFailureSummaryCard ||
+    (compactText(cards.workspaceResultCard?.status).toLowerCase() === "failed" ? cards.workspaceResultCard : null);
+  let missionPhase = runtimePhase;
+  if (cards.stopNoticeCard) {
+    missionPhase = "aborted";
+  } else if (currentFailureCard) {
+    missionPhase = "failed";
+  } else if (compactText(cards.workspaceResultCard?.status).toLowerCase() === "completed" && runtime?.turn?.active !== true) {
+    missionPhase = "completed";
+  }
   const planCardModel = buildProtocolPlanCardModel({
     planCard: cards.planCard,
     workspaceResultCard: cards.workspaceResultCard,
@@ -550,9 +672,37 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     choiceCards: cards.choiceCards,
     workspaceResultCard: cards.workspaceResultCard,
     hostRows,
-    systemNoticeCards: cards.workspaceCards.filter((card) => isSystemNoticeCard(card)),
+    systemNoticeCards: cards.currentMissionCards.filter((card) => isSystemNoticeCard(card)),
     dispatchEvents,
   });
+  const canStopCurrentMission =
+    Boolean(runtime?.turn?.active) &&
+    !["aborted", "failed", "completed"].includes(missionPhase) &&
+    !cards.stopNoticeCard &&
+    !currentFailureCard;
+  const nextSendStartsNewMission = !canStopCurrentMission && Boolean(cards.stopNoticeCard || currentFailureCard || missionPhase === "completed");
+  let statusBanner = null;
+  if (currentFailureCard) {
+    statusBanner = {
+      tone: "danger",
+      title: compactText(currentFailureCard.title || "当前 mission 执行失败"),
+      detail:
+        compactText(currentFailureCard.text || currentFailureCard.message || currentFailureCard.summary) ||
+        "查看左侧对话和右侧事件，确认失败原因后再发起下一轮。",
+      runtimeText: `失败 | ${compactText(currentFailureCard.title || currentFailureCard.summary || "当前 mission 执行失败")}`,
+    };
+  } else if (cards.stopNoticeCard) {
+    statusBanner = {
+      tone: "warning",
+      title: "当前 mission 已停止",
+      detail: "再次发送会在当前工作台里启动一轮新的 mission，不会续跑已停止的那一轮。",
+      runtimeText: "已停止 | 再次发送将启动新 mission",
+    };
+  } else if (missionPhase === "completed" && runtime?.turn?.active !== true) {
+    // Don't show the "上一轮任务已完成" banner — the placeholder text in the
+    // composer already tells the user that the next send starts a new mission.
+    statusBanner = null;
+  }
 
   return {
     missionPhase,
@@ -564,5 +714,9 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     planCardModel,
     eventItems,
     processCards: cards.processCards,
+    canStopCurrentMission,
+    nextSendStartsNewMission,
+    statusBanner,
+    currentFailureCard,
   };
 }

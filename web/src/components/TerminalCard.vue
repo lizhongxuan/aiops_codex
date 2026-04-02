@@ -453,10 +453,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 12px;
-  padding: 8px 0;
-  margin-left: 48px;
-  max-width: 800px;
+  gap: 10px;
+  padding: 4px 0;
+  margin-left: 36px;
+  max-width: 760px;
 }
 
 .timeline-summary.clickable {
@@ -475,9 +475,9 @@ onBeforeUnmount(() => {
 .timeline-left {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: 5px;
   color: var(--text-meta, #9ca3af);
-  font-size: var(--text-meta-size, 12px);
+  font-size: var(--text-meta-size, 11px);
   min-width: 0;
   white-space: normal;
   flex-wrap: wrap;
@@ -524,21 +524,21 @@ onBeforeUnmount(() => {
 }
 
 .timeline-duration {
-  font-size: var(--text-meta-size, 12px);
+  font-size: var(--text-meta-size, 11px);
   color: var(--text-meta, #9ca3af);
   white-space: nowrap;
 }
 
 /* ====== Full terminal card ====== */
 .terminal-card {
-  border-radius: var(--radius-card, 16px);
+  border-radius: 12px;
   background: #ffffff;
   border: 1px solid var(--border-card, #e5e7eb);
   overflow: hidden;
-  margin-top: 4px;
-  margin-left: 48px;
-  max-width: 800px;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+  margin-top: 2px;
+  margin-left: 36px;
+  max-width: 760px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.02);
   transition: all 0.2s;
 }
 
@@ -579,13 +579,13 @@ onBeforeUnmount(() => {
 }
 
 .term-command {
-  font-size: 13px;
+  font-size: 12.5px;
   color: #0f172a;
   white-space: normal;
   overflow: hidden;
   font-weight: 500;
   overflow-wrap: anywhere;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .terminal-card.minimal .term-command {

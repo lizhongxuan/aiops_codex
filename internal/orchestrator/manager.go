@@ -194,10 +194,9 @@ func (m *Manager) StartMission(ctx context.Context, req StartMissionRequest) (*M
 	if workspaceSessionID == "" {
 		workspaceSessionID = newSessionID("workspace")
 	}
+	// Legacy planner session IDs are caller-owned; the manager no longer allocates
+	// planner sessions or planner leases for new missions.
 	plannerSessionID := strings.TrimSpace(req.PlannerSessionID)
-	if plannerSessionID == "" {
-		plannerSessionID = newSessionID("planner")
-	}
 
 	mission := &Mission{
 		ID:                  missionID,
@@ -236,36 +235,6 @@ func (m *Manager) StartMission(ctx context.Context, req StartMissionRequest) (*M
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	})
-	m.store.UpsertSessionMeta(plannerSessionID, SessionMeta{
-		Kind:               SessionKindPlanner,
-		Visible:            false,
-		MissionID:          missionID,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      RuntimePresetPlannerInternal,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-	})
-
-	plannerLease := &WorkspaceLease{
-		ID:        newWorkspaceID("planner", missionID, ""),
-		MissionID: missionID,
-		SessionID: plannerSessionID,
-		Kind:      LeaseKindPlanner,
-		LocalPath: PlannerWorkspacePath(m.workspaceRoot, missionID),
-		Status:    "prepared",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := m.bootstrapWorkspace(ctx, plannerLease.LocalPath); err != nil {
-		return nil, err
-	}
-	if _, err := m.store.UpdateMission(missionID, func(mission *Mission) error {
-		mission.Workspaces[plannerLease.ID] = plannerLease
-		mission.UpdatedAt = now
-		return nil
-	}); err != nil {
-		return nil, err
-	}
 	if err := m.Save(); err != nil {
 		return nil, err
 	}
@@ -819,7 +788,7 @@ func (m *Manager) ReconcileAfterLoad(probe RuntimeRecoveryProbe) (*RuntimeRecove
 			continue
 		}
 		if mission.PlannerSessionID != "" && len(mission.Tasks) == 0 && !sessionHasThread(mission.PlannerSessionID) {
-			outcome, err := m.FailPlannerSession(mission.PlannerSessionID, "planner runtime lost after restart")
+			outcome, err := m.FailPlannerSession(mission.PlannerSessionID, "legacy planner mission unsupported after planner removal")
 			if err != nil {
 				return nil, err
 			}
@@ -1196,7 +1165,16 @@ func (m *Manager) failWorkerSession(sessionID, reason string) (*SessionFailureOu
 func (m *Manager) failPlannerSession(sessionID, reason string) (*SessionFailureOutcome, bool, error) {
 	missionID, ok := m.store.MissionIDByPlannerSession(sessionID)
 	if !ok {
-		return nil, false, fmt.Errorf("planner session %q is not linked to a mission", sessionID)
+		for _, mission := range m.store.Missions() {
+			if mission != nil && strings.TrimSpace(mission.PlannerSessionID) == strings.TrimSpace(sessionID) {
+				missionID = mission.ID
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, false, fmt.Errorf("planner session %q is not linked to a mission", sessionID)
+		}
 	}
 	outcome := &SessionFailureOutcome{
 		SessionID: sessionID,
@@ -1220,7 +1198,7 @@ func (m *Manager) failPlannerSession(sessionID, reason string) (*SessionFailureO
 			SessionID: sessionID,
 			Type:      EventTypeFailed,
 			Status:    string(MissionStatusFailed),
-			Summary:   firstNonEmpty(strings.TrimSpace(reason), "planner session failed before dispatch"),
+			Summary:   firstNonEmpty(strings.TrimSpace(reason), "legacy planner mission unsupported after planner removal"),
 			CreatedAt: now,
 		})
 		if len(mission.Events) > DefaultEventWindowSize {

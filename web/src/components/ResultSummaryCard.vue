@@ -409,21 +409,21 @@ function closePreview() {
 
 <style scoped>
 .result-card {
-  border-radius: 16px;
+  border-radius: 12px;
   background: #ffffff;
   border: 1px solid #e5e7eb;
   overflow: hidden;
-  margin-top: 4px;
-  margin-left: 48px;
-  max-width: 760px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+  margin-top: 2px;
+  margin-left: 36px;
+  max-width: 720px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
 }
 
 .result-header {
-  padding: 14px 20px;
+  padding: 10px 16px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: #f0fdf4;
   border-bottom: 1px solid #dcfce7;
 }
@@ -448,7 +448,7 @@ function closePreview() {
 }
 
 .result-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: #166534;
 }
@@ -494,7 +494,7 @@ function closePreview() {
 }
 
 .result-body {
-  padding: 16px 20px;
+  padding: 12px 16px;
 }
 
 .result-summary-panel {
@@ -506,8 +506,8 @@ function closePreview() {
 
 .result-summary {
   margin: 0;
-  font-size: 15px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.6;
   color: #1f2937;
   word-break: break-word;
 }
