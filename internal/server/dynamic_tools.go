@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -270,6 +271,14 @@ func (a *App) remoteDynamicTools() []map[string]any {
 			},
 		})
 	}
+	// Merge structured read tools (host.*) into the dynamic tool list.
+	if !capabilityDisabled(commandState) {
+		tools = append(tools, structuredReadToolDefinitions()...)
+	}
+	// Merge controlled mutation tools (service.*, config.*, package.*) into the dynamic tool list.
+	if !capabilityDisabled(commandState) || !capabilityDisabled(fileChangeState) {
+		tools = append(tools, controlledMutationToolDefinitions()...)
+	}
 	return tools
 }
 
@@ -476,17 +485,45 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 			return
 		}
 	}
+
+	// Route coroot.* tools — these don't require a remote host selection.
+	if isCorootTool(params.Tool) {
+		a.executeCorootTool(sessionID, rawID, params)
+		return
+	}
+
 	hostID := defaultHostID(session.SelectedHostID)
 	if !isRemoteHostID(hostID) {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse("The selected host is server-local. Use Codex built-in local tools instead of remote execute_* tools.", false))
 		return
 	}
-	if a.sessionKind(sessionID) == model.SessionKindWorkspace && !isWorkspaceReadonlyRemoteTool(params.Tool) {
+	if a.sessionKind(sessionID) == model.SessionKindWorkspace && !isWorkspaceReadonlyRemoteTool(params.Tool) && !isStructuredReadTool(params.Tool) {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse("Workspace 主 Agent 只允许直接调用只读远程工具；任何变更都必须通过 worker 派发。", false))
 		return
 	}
 	if err := validateSelectedRemoteToolHost(params.Arguments, hostID); err != nil {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+
+	// Route host.* structured read tools before the legacy switch.
+	if isStructuredReadTool(params.Tool) {
+		if err := a.ensureCapabilityAllowedForHost(hostID, "commandExecution"); err != nil {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+			return
+		}
+		a.executeStructuredReadTool(sessionID, hostID, rawID, params)
+		return
+	}
+
+	// Route controlled mutation tools (service.*, config.*, package.*) — always require approval.
+	if isControlledMutationTool(params.Tool) {
+		gw := a.evaluateCapabilityGateway(hostID, params.Tool)
+		if !gw.Allowed {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(gw.Reason, false))
+			return
+		}
+		a.executeControlledMutationTool(sessionID, hostID, rawID, params)
 		return
 	}
 
@@ -1130,6 +1167,9 @@ func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, para
 	if a.autoApproveRemoteOperationBySessionGrant(sessionID, approval) {
 		return
 	}
+	if a.autoApproveRemoteOperationByHostGrant(sessionID, approval) {
+		return
+	}
 	if readonly == false && decision.Mode == model.AgentPermissionModeAllow && !capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "commandExecution")) {
 		if a.autoApproveRemoteOperationByPolicy(sessionID, approval) {
 			return
@@ -1231,6 +1271,9 @@ func (a *App) requestRemoteFileChangeApproval(sessionID, hostID, rawID string, p
 	if a.autoApproveRemoteOperationBySessionGrant(sessionID, approval) {
 		return
 	}
+	if a.autoApproveRemoteOperationByHostGrant(sessionID, approval) {
+		return
+	}
 	if !capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "fileChange")) {
 		if a.autoApproveRemoteOperationByPolicy(sessionID, approval) {
 			return
@@ -1288,6 +1331,43 @@ func (a *App) autoApproveRemoteOperationBySessionGrant(sessionID string, approva
 		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
+	})
+	a.broadcastSnapshot(sessionID)
+
+	go a.executeApprovedRemoteOperation(sessionID, approval)
+	return true
+}
+
+func (a *App) autoApproveRemoteOperationByHostGrant(sessionID string, approval model.ApprovalRequest) bool {
+	if approval.Fingerprint == "" || approval.HostID == "" {
+		return false
+	}
+	if a.approvalGrantStore == nil {
+		return false
+	}
+	if _, ok := a.approvalGrantStore.MatchFingerprint(approval.HostID, approval.Fingerprint); !ok {
+		return false
+	}
+
+	now := model.NowString()
+	approval.Status = "accepted_for_host_auto"
+	approval.ResolvedAt = now
+	a.store.AddApproval(sessionID, approval)
+	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+	a.setRuntimeTurnPhase(sessionID, "executing")
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        "auto-approval-" + approval.ItemID,
+		Type:      "NoticeCard",
+		Title:     "Auto-approved by host grant",
+		Text:      hostGrantAutoApprovalNoticeText(approval),
+		Status:    "notice",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	log.Printf("approval auto accepted by host grant session=%s approval=%s type=%s host=%s", sessionID, approval.ID, approval.Type, approval.HostID)
+	a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, "auto_accept", approval.Status, approval.RequestedAt, now, map[string]any{
+		"fingerprint": approval.Fingerprint,
+		"grantMode":   "host",
 	})
 	a.broadcastSnapshot(sessionID)
 

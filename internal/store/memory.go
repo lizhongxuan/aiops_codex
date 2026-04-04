@@ -848,6 +848,14 @@ func (s *Store) UpsertHost(host model.Host) {
 	s.SaveStableState("")
 }
 
+// RemoveHost deletes a host entry from the in-memory store and persists.
+func (s *Store) RemoveHost(hostID string) {
+	s.mu.Lock()
+	delete(s.hosts, hostID)
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
 func (s *Store) MarkHostOffline(hostID string) {
 	s.mu.Lock()
 	host, ok := s.hosts[hostID]

@@ -39,6 +39,9 @@ type Config struct {
 	OAuthUserInfoURL         string
 	OAuthAccountID           string
 	OAuthPlanType            string
+	CorootBaseURL            string
+	CorootToken              string
+	CorootTimeout            time.Duration
 }
 
 func Load() Config {
@@ -83,6 +86,9 @@ func Load() Config {
 		OAuthUserInfoURL:         env("GPT_OAUTH_USERINFO_URL", ""),
 		OAuthAccountID:           env("GPT_OAUTH_ACCOUNT_ID", ""),
 		OAuthPlanType:            env("GPT_OAUTH_PLAN_TYPE", ""),
+		CorootBaseURL:            env("COROOT_BASE_URL", ""),
+		CorootToken:              env("COROOT_TOKEN", ""),
+		CorootTimeout:            envDuration("COROOT_TIMEOUT", 30*time.Second),
 	}
 }
 
@@ -125,6 +131,10 @@ func (c Config) OAuthScopeList() []string {
 		return []string{"openid", "profile", "email"}
 	}
 	return raw
+}
+
+func (c Config) CorootConfigured() bool {
+	return c.CorootBaseURL != ""
 }
 
 func env(key, fallback string) string {

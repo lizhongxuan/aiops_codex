@@ -56,8 +56,8 @@ func TestSessionMetaDefaultsAndPersistence(t *testing.T) {
 	if created.Meta.Kind != model.SessionKindPlanner || created.Meta.Visible {
 		t.Fatalf("expected hidden planner session, got %#v", created.Meta)
 	}
-	if created.Meta.RuntimePreset != model.SessionRuntimePresetPlanner {
-		t.Fatalf("expected planner runtime preset, got %#v", created.Meta)
+	if created.Meta.RuntimePreset != model.SessionRuntimePresetWorkspace {
+		t.Fatalf("expected workspace runtime preset for planner (legacy planner_internal no longer used), got %#v", created.Meta)
 	}
 
 	st.UpdateSessionMeta(sessionID, func(meta *model.SessionMeta) {
@@ -99,8 +99,8 @@ func TestSessionMetaDefaultsAndPersistence(t *testing.T) {
 	if planner.Kind != model.SessionKindPlanner || planner.Visible {
 		t.Fatalf("expected hidden planner meta to persist, got %#v", planner)
 	}
-	if planner.RuntimePreset != model.SessionRuntimePresetPlanner {
-		t.Fatalf("expected planner runtime preset to persist, got %#v", planner)
+	if planner.RuntimePreset != model.SessionRuntimePresetWorkspace {
+		t.Fatalf("expected workspace runtime preset for planner to persist, got %#v", planner)
 	}
 }
 

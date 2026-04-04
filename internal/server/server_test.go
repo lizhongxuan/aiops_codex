@@ -2018,3 +2018,147 @@ func TestShouldAutoResetThread(t *testing.T) {
 		}
 	})
 }
+
+func TestAutoApproveByHostGrantAcceptsMatchingFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	app := New(config.Config{})
+	app.approvalGrantStore = store.NewApprovalGrantStore(filepath.Join(dir, "grants.json"))
+
+	sessionID := "sess-host-grant"
+	hostID := "linux-01"
+	now := model.NowString()
+	fingerprint := "command|linux-01|/tmp|ls -la"
+
+	responded := make(chan any, 1)
+	app.codexRespondFunc = func(_ context.Context, rawID string, result any) error {
+		responded <- result
+		return nil
+	}
+
+	// Add a matching host-level grant
+	_ = app.approvalGrantStore.Add(model.ApprovalGrantRecord{
+		ID:          "grant-1",
+		HostID:      hostID,
+		HostScope:   "host",
+		GrantType:   "command",
+		Fingerprint: fingerprint,
+		Command:     "ls -la",
+		CreatedBy:   "test",
+		Status:      "active",
+	})
+
+	app.store.EnsureSession(sessionID)
+
+	approval := model.ApprovalRequest{
+		ID:           "approval-host-grant-1",
+		RequestIDRaw: "raw-host-grant-1",
+		HostID:       hostID,
+		Fingerprint:  fingerprint,
+		Type:         "command",
+		Status:       "pending",
+		ItemID:       "card-host-grant-1",
+		Command:      "ls -la",
+		Cwd:          "/tmp",
+		RequestedAt:  now,
+	}
+
+	result := app.autoApproveByHostGrant(sessionID, approval)
+	if !result {
+		t.Fatalf("expected autoApproveByHostGrant to return true")
+	}
+
+	select {
+	case resp := <-responded:
+		m, ok := resp.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map response, got %T", resp)
+		}
+		if m["decision"] != "accept" {
+			t.Fatalf("expected accept decision, got %v", m["decision"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected codex response")
+	}
+
+	resolved, ok := app.store.Approval(sessionID, "approval-host-grant-1")
+	if !ok {
+		t.Fatalf("expected approval to be stored")
+	}
+	if resolved.Status != "accepted_for_host_auto" {
+		t.Fatalf("expected status accepted_for_host_auto, got %q", resolved.Status)
+	}
+}
+
+func TestAutoApproveByHostGrantSkipsWhenNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	app := New(config.Config{})
+	app.approvalGrantStore = store.NewApprovalGrantStore(filepath.Join(dir, "grants.json"))
+
+	sessionID := "sess-host-grant-nomatch"
+	hostID := "linux-01"
+	now := model.NowString()
+
+	app.store.EnsureSession(sessionID)
+
+	approval := model.ApprovalRequest{
+		ID:           "approval-host-grant-2",
+		RequestIDRaw: "raw-host-grant-2",
+		HostID:       hostID,
+		Fingerprint:  "command|linux-01|/tmp|rm -rf /",
+		Type:         "command",
+		Status:       "pending",
+		ItemID:       "card-host-grant-2",
+		Command:      "rm -rf /",
+		Cwd:          "/tmp",
+		RequestedAt:  now,
+	}
+
+	result := app.autoApproveByHostGrant(sessionID, approval)
+	if result {
+		t.Fatalf("expected autoApproveByHostGrant to return false when no matching grant")
+	}
+}
+
+func TestAutoApproveByHostGrantSkipsExpiredGrant(t *testing.T) {
+	dir := t.TempDir()
+	app := New(config.Config{})
+	app.approvalGrantStore = store.NewApprovalGrantStore(filepath.Join(dir, "grants.json"))
+
+	sessionID := "sess-host-grant-expired"
+	hostID := "linux-01"
+	now := model.NowString()
+	fingerprint := "command|linux-01|/tmp|ls -la"
+
+	app.store.EnsureSession(sessionID)
+
+	// Add an expired grant
+	_ = app.approvalGrantStore.Add(model.ApprovalGrantRecord{
+		ID:          "grant-expired",
+		HostID:      hostID,
+		HostScope:   "host",
+		GrantType:   "command",
+		Fingerprint: fingerprint,
+		Command:     "ls -la",
+		CreatedBy:   "test",
+		ExpiresAt:   "2020-01-01T00:00:00Z",
+		Status:      "active",
+	})
+
+	approval := model.ApprovalRequest{
+		ID:           "approval-host-grant-3",
+		RequestIDRaw: "raw-host-grant-3",
+		HostID:       hostID,
+		Fingerprint:  fingerprint,
+		Type:         "command",
+		Status:       "pending",
+		ItemID:       "card-host-grant-3",
+		Command:      "ls -la",
+		Cwd:          "/tmp",
+		RequestedAt:  now,
+	}
+
+	result := app.autoApproveByHostGrant(sessionID, approval)
+	if result {
+		t.Fatalf("expected autoApproveByHostGrant to return false for expired grant")
+	}
+}
