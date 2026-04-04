@@ -30,7 +30,9 @@ func TestHandleAgentProfilesReturnsDefaults(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
 	var payload struct {
-		Items []model.AgentProfile `json:"items"`
+		Items        []model.AgentProfile `json:"items"`
+		SkillCatalog []model.AgentSkill   `json:"skillCatalog"`
+		MCPCatalog   []model.AgentMCP     `json:"mcpCatalog"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -40,6 +42,12 @@ func TestHandleAgentProfilesReturnsDefaults(t *testing.T) {
 	}
 	if payload.Items[0].Runtime.Model == "" {
 		t.Fatalf("expected runtime model to be set, got %#v", payload.Items[0])
+	}
+	if len(payload.SkillCatalog) == 0 {
+		t.Fatalf("expected skill catalog to be returned")
+	}
+	if len(payload.MCPCatalog) == 0 {
+		t.Fatalf("expected mcp catalog to be returned")
 	}
 }
 
@@ -156,6 +164,7 @@ func TestHandleAgentProfileRejectsInvalidCapabilityState(t *testing.T) {
 		"id":"main-agent",
 		"type":"main-agent",
 		"name":"Primary Agent",
+		"riskConfirmed":true,
 		"systemPrompt":{"content":"safe prompt"},
 		"commandPermissions":{
 			"enabled":true,
@@ -276,6 +285,241 @@ func TestHandleAgentProfileByIDSupportsGetPutAndReset(t *testing.T) {
 	if resetProfile.Description != model.DefaultAgentProfile(string(model.AgentProfileTypeHostAgentDefault)).Description {
 		t.Fatalf("expected reset description, got %#v", resetProfile.Description)
 	}
+}
+
+func TestHandleAgentSkillCatalogCRUD(t *testing.T) {
+	app := New(config.Config{
+		SessionCookieName: "agent-profile-test",
+		SessionSecret:     "agent-profile-secret",
+		SessionCookieTTL:  time.Hour,
+	})
+	createHandler := app.withSession(app.handleAgentSkills)
+	itemHandler := app.withSession(app.handleAgentSkillByID)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/agent-skills", strings.NewReader(`{
+		"id":"custom-skill",
+		"name":"Custom Skill",
+		"description":"custom skill",
+		"source":"local",
+		"defaultEnabled":false,
+		"defaultActivationMode":"explicit_only"
+	}`))
+	createRec := httptest.NewRecorder()
+	createHandler(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("expected create status 200, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var createPayload struct {
+		Items []model.AgentSkill `json:"items"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&createPayload); err != nil {
+		t.Fatalf("decode create payload: %v", err)
+	}
+	if !containsSkillCatalog(createPayload.Items, "custom-skill") {
+		t.Fatalf("expected custom skill in catalog, got %#v", createPayload.Items)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/agent-skills/custom-skill", nil)
+	for _, cookie := range createRec.Result().Cookies() {
+		deleteReq.AddCookie(cookie)
+	}
+	deleteRec := httptest.NewRecorder()
+	itemHandler(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("expected delete status 200, got %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	for _, item := range app.store.SkillCatalog() {
+		if item.ID == "custom-skill" {
+			t.Fatalf("expected custom skill to be deleted")
+		}
+	}
+}
+
+func TestHandleAgentSkillCatalogAcceptsEnabledAliasFields(t *testing.T) {
+	app := New(config.Config{
+		SessionCookieName: "agent-profile-test",
+		SessionSecret:     "agent-profile-secret",
+		SessionCookieTTL:  time.Hour,
+	})
+	handler := app.withSession(app.handleAgentSkills)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-skills", strings.NewReader(`{
+		"id":"alias-skill",
+		"name":"Alias Skill",
+		"description":"created from UI alias fields",
+		"source":"local",
+		"enabled":true,
+		"activationMode":"default_enabled"
+	}`))
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected create status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	item, ok := findSkillCatalogItem(app.store.SkillCatalog(), "alias-skill")
+	if !ok {
+		t.Fatalf("expected alias skill to persist")
+	}
+	if !item.DefaultEnabled {
+		t.Fatalf("expected alias skill defaultEnabled=true, got %#v", item)
+	}
+	if item.DefaultActivationMode != model.AgentSkillActivationDefault {
+		t.Fatalf("expected alias skill default activation mode to normalize, got %#v", item)
+	}
+}
+
+func TestHandleAgentMCPCatalogAcceptsEnabledAliasFields(t *testing.T) {
+	app := New(config.Config{
+		SessionCookieName: "agent-profile-test",
+		SessionSecret:     "agent-profile-secret",
+		SessionCookieTTL:  time.Hour,
+	})
+	handler := app.withSession(app.handleAgentMCPs)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-mcps", strings.NewReader(`{
+		"id":"alias-mcp",
+		"name":"Alias MCP",
+		"type":"http",
+		"source":"local",
+		"enabled":true,
+		"permission":"readwrite",
+		"requiresExplicitUserApproval":true
+	}`))
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected create status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	item, ok := findMcpCatalogItem(app.store.MCPCatalog(), "alias-mcp")
+	if !ok {
+		t.Fatalf("expected alias mcp to persist")
+	}
+	if !item.DefaultEnabled {
+		t.Fatalf("expected alias mcp defaultEnabled=true, got %#v", item)
+	}
+	if item.Permission != model.AgentMCPPermissionReadwrite {
+		t.Fatalf("expected alias mcp permission to normalize, got %#v", item)
+	}
+}
+
+func TestHandleAgentProfileAcceptsCatalogManagedSkillAndMCP(t *testing.T) {
+	app := New(config.Config{
+		SessionCookieName: "agent-profile-test",
+		SessionSecret:     "agent-profile-secret",
+		SessionCookieTTL:  time.Hour,
+		DefaultWorkspace:  "/workspace",
+	})
+	app.store.UpsertSkillCatalogItem(model.AgentSkill{
+		ID:                    "custom-skill",
+		Name:                  "Custom Skill",
+		Source:                "local",
+		DefaultEnabled:        false,
+		DefaultActivationMode: model.AgentSkillActivationExplicit,
+	})
+	app.store.UpsertMCPCatalogItem(model.AgentMCP{
+		ID:             "custom-mcp",
+		Name:           "Custom MCP",
+		Type:           "http",
+		Source:         "local",
+		DefaultEnabled: false,
+		Permission:     model.AgentMCPPermissionReadonly,
+	})
+	handler := app.withSession(app.handleAgentProfile)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/agent-profile", strings.NewReader(`{
+		"id":"main-agent",
+		"type":"main-agent",
+		"name":"Primary Agent",
+		"riskConfirmed":true,
+		"systemPrompt":{"content":"safe prompt"},
+		"commandPermissions":{
+			"enabled":true,
+			"defaultMode":"approval_required",
+			"allowShellWrapper":true,
+			"allowSudo":false,
+			"defaultTimeoutSeconds":60,
+			"categoryPolicies":{
+				"system_inspection":"allow",
+				"service_read":"allow",
+				"network_read":"allow",
+				"file_read":"allow",
+				"service_mutation":"approval_required",
+				"filesystem_mutation":"approval_required",
+				"package_mutation":"deny"
+			}
+		},
+		"capabilityPermissions":{
+			"commandExecution":"enabled",
+			"fileRead":"enabled",
+			"fileSearch":"enabled",
+			"fileChange":"approval_required",
+			"terminal":"enabled",
+			"webSearch":"enabled",
+			"webOpen":"approval_required",
+			"approval":"enabled",
+			"multiAgent":"enabled",
+			"plan":"enabled",
+			"summary":"enabled"
+		},
+		"skills":[
+			{"id":"custom-skill","name":"Custom Skill","enabled":true,"activationMode":"explicit_only"}
+		],
+		"mcps":[
+			{"id":"custom-mcp","name":"Custom MCP","enabled":true,"permission":"readonly"}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	profile, ok := app.store.AgentProfile(string(model.AgentProfileTypeMainAgent))
+	if !ok {
+		t.Fatalf("expected profile to exist")
+	}
+	if !containsSkillCatalog(profile.Skills, "custom-skill") {
+		t.Fatalf("expected custom skill binding to persist, got %#v", profile.Skills)
+	}
+	if !containsMcpCatalog(profile.MCPs, "custom-mcp") {
+		t.Fatalf("expected custom mcp binding to persist, got %#v", profile.MCPs)
+	}
+}
+
+func containsSkillCatalog(items []model.AgentSkill, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func findSkillCatalogItem(items []model.AgentSkill, id string) (model.AgentSkill, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return model.AgentSkill{}, false
+}
+
+func containsMcpCatalog(items []model.AgentMCP, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func findMcpCatalogItem(items []model.AgentMCP, id string) (model.AgentMCP, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return model.AgentMCP{}, false
 }
 
 func TestHandleAgentProfileRejectsUnknownSkillAndMCPIDs(t *testing.T) {

@@ -1,5 +1,240 @@
 import { defineStore } from "pinia";
 
+const MCP_DRAWER_STORAGE_KEY = "codex:mcp-drawer:v1";
+const MCP_DRAWER_PIN_LIMIT = 8;
+const MCP_DRAWER_RECENT_LIMIT = 6;
+
+function compactText(value) {
+  return typeof value === "string" ? value.trim() : String(value || "").trim();
+}
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function cloneMcpPayload(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneMcpPayload(item));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, cloneMcpPayload(item)]),
+  );
+}
+
+function coerceIsoStamp(value) {
+  const stamp = Date.parse(value || "");
+  return Number.isFinite(stamp) ? new Date(stamp).toISOString() : new Date().toISOString();
+}
+
+function inferMcpDrawerSurfaceKind(surface = {}) {
+  const source = asObject(surface);
+  if (compactText(source.kind).toLowerCase() === "bundle") return "bundle";
+  if (compactText(source.kind).toLowerCase() === "mcp_bundle") return "bundle";
+  if (source.bundle || source.model?.bundleKind || source.bundleKind || Array.isArray(source.sections)) return "bundle";
+  return "card";
+}
+
+function resolveMcpDrawerSurfaceModel(surface = {}) {
+  const source = asObject(surface);
+  const kind = inferMcpDrawerSurfaceKind(source);
+  if (kind === "bundle") {
+    return cloneMcpPayload(source.bundle || source.model || source);
+  }
+  return cloneMcpPayload(source.card || source.model || source);
+}
+
+function resolveMcpDrawerSurfaceTitle(kind, model = {}, surface = {}) {
+  const source = asObject(model);
+  const subject = asObject(source.subject);
+  const fallback = asObject(surface);
+  if (kind === "bundle") {
+    return (
+      compactText(source.summary || source.title || subject.name || fallback.title || "MCP 聚合面板") ||
+      "MCP 聚合面板"
+    );
+  }
+  return compactText(source.title || source.summary || subject.name || fallback.title || "MCP 卡片") || "MCP 卡片";
+}
+
+function resolveMcpDrawerSurfaceSubtitle(kind, model = {}, surface = {}) {
+  const source = asObject(model);
+  const scope = asObject(source.scope);
+  const subject = asObject(source.subject);
+  const fallback = asObject(surface);
+  if (compactText(fallback.subtitle)) {
+    return compactText(fallback.subtitle);
+  }
+  if (kind === "bundle") {
+    return compactText(subject.type || scope.service || scope.resourceType || "");
+  }
+  return compactText(scope.resourceType || scope.service || subject.type || "");
+}
+
+function buildMcpDrawerSurfaceIdentity(kind, source = {}, model = {}) {
+  const record = asObject(source);
+  const payload = asObject(model);
+  const candidate =
+    compactText(record.id || record.surfaceId || record.bundleId || payload.id || payload.bundleId || payload.cardId) ||
+    compactText(payload.title || payload.summary || payload.subject?.name || "");
+  if (candidate) {
+    return candidate.replace(/\s+/g, "-");
+  }
+  return `${kind}-mcp-surface`;
+}
+
+function normalizeMcpDrawerSurfacePayload(payload = {}) {
+  const wrapper = asObject(payload);
+  const source = asObject(wrapper.surface || wrapper);
+  const kind = inferMcpDrawerSurfaceKind(source);
+  const model = resolveMcpDrawerSurfaceModel(source);
+  if (!Object.keys(asObject(model)).length) {
+    return null;
+  }
+  const sourceTag = compactText(wrapper.source || source.source || model.source || "");
+  const surfaceId = buildMcpDrawerSurfaceIdentity(kind, source, model);
+  const touchedAt = coerceIsoStamp(wrapper.touchedAt || source.touchedAt || source.openedAt || model.touchedAt || model.openedAt);
+  const pinnedAt = compactText(wrapper.pinnedAt || source.pinnedAt || model.pinnedAt)
+    ? coerceIsoStamp(wrapper.pinnedAt || source.pinnedAt || model.pinnedAt)
+    : "";
+  return {
+    id: compactText(wrapper.id || source.id || `${kind}:${surfaceId}`) || `${kind}:${surfaceId}`,
+    surfaceId,
+    kind,
+    source: sourceTag,
+    title: resolveMcpDrawerSurfaceTitle(kind, model, source),
+    subtitle: resolveMcpDrawerSurfaceSubtitle(kind, model, source),
+    model,
+    touchedAt,
+    openedAt: touchedAt,
+    pinnedAt,
+    lastReason: compactText(wrapper.lastReason || source.lastReason || ""),
+  };
+}
+
+function upsertMcpDrawerSurfaceList(list, surface, { limit = MCP_DRAWER_RECENT_LIMIT, reason = "", pin = false } = {}) {
+  const normalizedSurface = normalizeMcpDrawerSurfacePayload(surface);
+  if (!normalizedSurface?.id) {
+    return Array.isArray(list) ? list.slice(0, limit) : [];
+  }
+  const previous = (list || []).find((item) => item.id === normalizedSurface.id) || null;
+  const touchedAt = coerceIsoStamp(normalizedSurface.touchedAt || previous?.touchedAt);
+  const nextSurface = {
+    ...(previous || {}),
+    ...normalizedSurface,
+    touchedAt,
+    openedAt: touchedAt,
+    lastReason: compactText(reason || normalizedSurface.lastReason || previous?.lastReason || ""),
+    pinnedAt: pin
+      ? coerceIsoStamp(normalizedSurface.pinnedAt || previous?.pinnedAt || touchedAt)
+      : compactText(normalizedSurface.pinnedAt || previous?.pinnedAt || ""),
+  };
+  return [nextSurface, ...(list || []).filter((item) => item.id !== nextSurface.id)].slice(0, limit);
+}
+
+function getMcpDrawerStorage() {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function readPersistedMcpDrawerState() {
+  const storage = getMcpDrawerStorage();
+  if (!storage) {
+    return {
+      activeSurface: null,
+      pinnedSurfaces: [],
+      recentSurfaces: [],
+    };
+  }
+  try {
+    const raw = storage.getItem(MCP_DRAWER_STORAGE_KEY);
+    if (!raw) {
+      return {
+        activeSurface: null,
+        pinnedSurfaces: [],
+        recentSurfaces: [],
+      };
+    }
+    const parsed = asObject(JSON.parse(raw));
+    return {
+      activeSurface: normalizeMcpDrawerSurfacePayload(parsed.activeSurface || null),
+      pinnedSurfaces: (Array.isArray(parsed.pinnedSurfaces) ? parsed.pinnedSurfaces : [])
+        .map((item) => normalizeMcpDrawerSurfacePayload(item))
+        .filter(Boolean)
+        .slice(0, MCP_DRAWER_PIN_LIMIT),
+      recentSurfaces: (Array.isArray(parsed.recentSurfaces) ? parsed.recentSurfaces : [])
+        .map((item) => normalizeMcpDrawerSurfacePayload(item))
+        .filter(Boolean)
+        .slice(0, MCP_DRAWER_RECENT_LIMIT),
+    };
+  } catch (error) {
+    console.error("Failed to read persisted MCP drawer state:", error);
+    return {
+      activeSurface: null,
+      pinnedSurfaces: [],
+      recentSurfaces: [],
+    };
+  }
+}
+
+function persistMcpDrawerState(state = {}) {
+  const storage = getMcpDrawerStorage();
+  if (!storage) return false;
+  try {
+    storage.setItem(
+      MCP_DRAWER_STORAGE_KEY,
+      JSON.stringify({
+        activeSurface: normalizeMcpDrawerSurfacePayload(state.activeSurface),
+        pinnedSurfaces: (state.pinnedSurfaces || []).map((item) => normalizeMcpDrawerSurfacePayload(item)).filter(Boolean),
+        recentSurfaces: (state.recentSurfaces || []).map((item) => normalizeMcpDrawerSurfacePayload(item)).filter(Boolean),
+      }),
+    );
+    return true;
+  } catch (error) {
+    console.error("Failed to persist MCP drawer state:", error);
+    return false;
+  }
+}
+
+function buildCatalogMcpDrawerSurface(entry = {}) {
+  const item = asObject(entry);
+  const name = compactText(item.name || item.id || "MCP");
+  const permission = compactText(item.permission || "readonly").toLowerCase() === "readwrite" ? "读写" : "只读";
+  return normalizeMcpDrawerSurfacePayload({
+    source: "mcp-catalog",
+    surface: {
+      kind: "card",
+      id: `catalog:${compactText(item.id || name)}`,
+      card: {
+        id: `catalog:${compactText(item.id || name)}`,
+        uiKind: "readonly_summary",
+        placement: "drawer",
+        title: name,
+        summary: `${name} 已启用，可在任一 chat 中直接复用对应的监控与操作入口。`,
+        freshness: {
+          label: permission,
+        },
+        scope: {
+          resourceType: "mcp",
+          resourceId: compactText(item.id || name),
+        },
+        source: compactText(item.source || "local"),
+      },
+      source: "mcp-catalog",
+      title: name,
+      subtitle: `${permission} · ${compactText(item.source || "local")}`,
+    },
+  });
+}
+
 function normalizeCardText(card) {
   const candidates = [card?.text, card?.message, card?.summary, card?.title];
   for (const candidate of candidates) {
@@ -267,12 +502,85 @@ function cloneCatalogEntries(entries) {
   return (entries || []).map((item) => ({ ...item }));
 }
 
-function createSkillCatalog() {
-  return cloneCatalogEntries(SKILL_CATALOG);
+function normalizeSkillCatalogEntry(rawItem, fallbackItem = {}) {
+  const base = rawItem || {};
+  const fallbackEnabled =
+    typeof base.defaultEnabled === "boolean"
+      ? base.defaultEnabled
+      : typeof fallbackItem.defaultEnabled === "boolean"
+        ? fallbackItem.defaultEnabled
+        : typeof base.enabled === "boolean"
+          ? base.enabled
+          : false;
+  const mode = normalizeSkillActivationMode(
+    base.defaultActivationMode ?? base.default_activation_mode ?? base.activationMode ?? fallbackItem.defaultActivationMode,
+    fallbackEnabled,
+  );
+  return {
+    id: String(base.id || fallbackItem.id || ""),
+    name: String(base.name || fallbackItem.name || base.id || fallbackItem.id || ""),
+    description: String(base.description || fallbackItem.description || ""),
+    source: String(base.source || fallbackItem.source || "local"),
+    defaultEnabled: fallbackEnabled,
+    defaultActivationMode: mode,
+    enabled: fallbackEnabled,
+    activationMode: mode,
+  };
 }
 
-function createMcpCatalog() {
-  return cloneCatalogEntries(MCP_CATALOG);
+function normalizeMcpCatalogEntry(rawItem, fallbackItem = {}) {
+  const base = rawItem || {};
+  return {
+    id: String(base.id || fallbackItem.id || ""),
+    name: String(base.name || fallbackItem.name || base.id || fallbackItem.id || ""),
+    type: String(base.type || fallbackItem.type || "stdio"),
+    source: String(base.source || fallbackItem.source || "local"),
+    defaultEnabled:
+      typeof base.defaultEnabled === "boolean"
+        ? base.defaultEnabled
+        : typeof fallbackItem.defaultEnabled === "boolean"
+          ? fallbackItem.defaultEnabled
+          : typeof base.enabled === "boolean"
+            ? base.enabled
+            : false,
+    enabled:
+      typeof base.defaultEnabled === "boolean"
+        ? base.defaultEnabled
+        : typeof fallbackItem.defaultEnabled === "boolean"
+          ? fallbackItem.defaultEnabled
+          : typeof base.enabled === "boolean"
+            ? base.enabled
+            : false,
+    permission: normalizeMcpPermission(base.permission, fallbackItem.permission),
+    requiresExplicitUserApproval:
+      typeof base.requiresExplicitUserApproval === "boolean"
+        ? base.requiresExplicitUserApproval
+        : base.requires_explicit_user_approval ?? fallbackItem.requiresExplicitUserApproval ?? false,
+  };
+}
+
+function createSkillCatalog(entries = SKILL_CATALOG) {
+  return normalizeSkillCatalogEntries(cloneCatalogEntries(entries), SKILL_CATALOG);
+}
+
+function createMcpCatalog(entries = MCP_CATALOG) {
+  return normalizeMcpCatalogEntries(cloneCatalogEntries(entries), MCP_CATALOG);
+}
+
+function normalizeSkillCatalogEntries(entries, fallbackEntries = SKILL_CATALOG) {
+  const fallbackMap = new Map((fallbackEntries || []).map((item) => [String(item?.id || ""), item]));
+  return (entries || [])
+    .map((item) => normalizeSkillCatalogEntry(item, fallbackMap.get(String(item?.id || "")) || {}))
+    .filter((item) => item.id)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function normalizeMcpCatalogEntries(entries, fallbackEntries = MCP_CATALOG) {
+  const fallbackMap = new Map((fallbackEntries || []).map((item) => [String(item?.id || ""), item]));
+  return (entries || [])
+    .map((item) => normalizeMcpCatalogEntry(item, fallbackMap.get(String(item?.id || "")) || {}))
+    .filter((item) => item.id)
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function normalizeSkillActivationMode(value, fallbackEnabled) {
@@ -308,94 +616,67 @@ function normalizeMcpEnabled(value, fallbackEnabled) {
 
 function normalizeSkillItems(rawSkills, fallbackSkills = [], catalog = SKILL_CATALOG) {
   const fallbackMap = new Map((fallbackSkills || []).map((item) => [String(item?.id || ""), item]));
-  const rawMap = new Map((rawSkills || []).map((item) => [String(item?.id || ""), item]));
-  const merged = [];
-  const seen = new Set();
-
-  for (const entry of catalog) {
-    const raw = rawMap.get(entry.id) || fallbackMap.get(entry.id) || null;
-    const mode = normalizeSkillActivationMode(raw?.activationMode ?? raw?.activation_mode ?? entry.defaultActivationMode, raw?.enabled ?? fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled);
-    merged.push({
-      id: entry.id,
-      name: String(raw?.name || entry.name || entry.id),
-      description: String(raw?.description || entry.description || ""),
-      source: String(raw?.source || entry.source || "local"),
-      enabled: normalizeSkillEnabled(raw?.enabled, mode, fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled),
-      activationMode: mode,
-    });
-    seen.add(entry.id);
-  }
-
-  for (const [id, raw] of rawMap.entries()) {
-    if (!id || seen.has(id)) continue;
-    const mode = normalizeSkillActivationMode(raw?.activationMode ?? raw?.activation_mode, raw?.enabled);
-    merged.push({
-      id,
-      name: String(raw?.name || id),
-      description: String(raw?.description || ""),
-      source: String(raw?.source || "local"),
-      enabled: normalizeSkillEnabled(raw?.enabled, mode),
-      activationMode: mode,
-    });
-  }
-
-  return merged;
+  const catalogMap = new Map(createSkillCatalog(catalog).map((item) => [String(item?.id || ""), item]));
+  return (rawSkills || [])
+    .map((item) => {
+      const id = String(item?.id || "").trim();
+      if (!id) return null;
+      const fallback = fallbackMap.get(id) || {};
+      const catalogItem = catalogMap.get(id) || {};
+      const mode = normalizeSkillActivationMode(
+        item?.activationMode ?? item?.activation_mode ?? fallback.activationMode ?? catalogItem.defaultActivationMode,
+        item?.enabled ?? fallback.enabled ?? catalogItem.defaultEnabled,
+      );
+      return {
+        id,
+        name: String(item?.name || fallback.name || catalogItem.name || id),
+        description: String(item?.description || fallback.description || catalogItem.description || ""),
+        source: String(item?.source || fallback.source || catalogItem.source || "local"),
+        enabled: normalizeSkillEnabled(item?.enabled, mode, fallback.enabled ?? catalogItem.defaultEnabled),
+        activationMode: mode,
+      };
+    })
+    .filter(Boolean);
 }
 
 function normalizeMcpItems(rawMcps, fallbackMcps = [], catalog = MCP_CATALOG) {
   const fallbackMap = new Map((fallbackMcps || []).map((item) => [String(item?.id || ""), item]));
-  const rawMap = new Map((rawMcps || []).map((item) => [String(item?.id || ""), item]));
-  const merged = [];
-  const seen = new Set();
-
-  for (const entry of catalog) {
-    const raw = rawMap.get(entry.id) || fallbackMap.get(entry.id) || null;
-    const permission = normalizeMcpPermission(raw?.permission, entry.permission);
-    merged.push({
-      id: entry.id,
-      name: String(raw?.name || entry.name || entry.id),
-      type: String(raw?.type || entry.type || "stdio"),
-      source: String(raw?.source || entry.source || "local"),
-      enabled: normalizeMcpEnabled(raw?.enabled, fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled),
-      permission,
-      requiresExplicitUserApproval:
-        typeof raw?.requiresExplicitUserApproval === "boolean"
-          ? raw.requiresExplicitUserApproval
-          : raw?.requires_explicit_user_approval ?? fallbackMap.get(entry.id)?.requiresExplicitUserApproval ?? entry.requiresExplicitUserApproval,
-    });
-    seen.add(entry.id);
-  }
-
-  for (const [id, raw] of rawMap.entries()) {
-    if (!id || seen.has(id)) continue;
-    merged.push({
-      id,
-      name: String(raw?.name || id),
-      type: String(raw?.type || "stdio"),
-      source: String(raw?.source || "local"),
-      enabled: normalizeMcpEnabled(raw?.enabled, false),
-      permission: normalizeMcpPermission(raw?.permission, "readonly"),
-      requiresExplicitUserApproval:
-        typeof raw?.requiresExplicitUserApproval === "boolean" ? raw.requiresExplicitUserApproval : raw?.requires_explicit_user_approval ?? false,
-    });
-  }
-
-  return merged;
+  const catalogMap = new Map(createMcpCatalog(catalog).map((item) => [String(item?.id || ""), item]));
+  return (rawMcps || [])
+    .map((item) => {
+      const id = String(item?.id || "").trim();
+      if (!id) return null;
+      const fallback = fallbackMap.get(id) || {};
+      const catalogItem = catalogMap.get(id) || {};
+      return {
+        id,
+        name: String(item?.name || fallback.name || catalogItem.name || id),
+        type: String(item?.type || fallback.type || catalogItem.type || "stdio"),
+        source: String(item?.source || fallback.source || catalogItem.source || "local"),
+        enabled: normalizeMcpEnabled(item?.enabled, fallback.enabled ?? catalogItem.defaultEnabled),
+        permission: normalizeMcpPermission(item?.permission, fallback.permission || catalogItem.permission),
+        requiresExplicitUserApproval:
+          typeof item?.requiresExplicitUserApproval === "boolean"
+            ? item.requiresExplicitUserApproval
+            : item?.requires_explicit_user_approval ?? fallback.requiresExplicitUserApproval ?? catalogItem.requiresExplicitUserApproval,
+      };
+    })
+    .filter(Boolean);
 }
 
-function alignAgentProfileCollections(profile) {
+function alignAgentProfileCollections(profile, skillCatalog = createSkillCatalog(), mcpCatalog = createMcpCatalog()) {
   if (!profile || typeof profile !== "object") {
     return profile;
   }
   return {
     ...profile,
-    skills: normalizeSkillItems(profile.skills || [], [], createSkillCatalog()),
-    mcps: normalizeMcpItems(profile.mcps || [], [], createMcpCatalog()),
+    skills: normalizeSkillItems(profile.skills || [], profile.skills || [], skillCatalog),
+    mcps: normalizeMcpItems(profile.mcps || [], profile.mcps || [], mcpCatalog),
   };
 }
 
-function serializeSkillItems(skills) {
-  return normalizeSkillItems(skills || [], [], createSkillCatalog()).map((item) => ({
+function serializeSkillItems(skills, catalog = createSkillCatalog()) {
+  return normalizeSkillItems(skills || [], [], catalog).map((item) => ({
     id: String(item.id || ""),
     name: String(item.name || ""),
     description: String(item.description || ""),
@@ -405,8 +686,8 @@ function serializeSkillItems(skills) {
   }));
 }
 
-function serializeMcpItems(mcps) {
-  return normalizeMcpItems(mcps || [], [], createMcpCatalog()).map((item) => ({
+function serializeMcpItems(mcps, catalog = createMcpCatalog()) {
+  return normalizeMcpItems(mcps || [], [], catalog).map((item) => ({
     id: String(item.id || ""),
     name: String(item.name || ""),
     type: String(item.type || ""),
@@ -632,6 +913,13 @@ function createDefaultAgentProfiles() {
   ];
 }
 
+function realignAgentProfiles(store) {
+  const skillCatalog = Array.isArray(store.skillCatalog) ? store.skillCatalog : createSkillCatalog();
+  const mcpCatalog = Array.isArray(store.mcpCatalog) ? store.mcpCatalog : createMcpCatalog();
+  store.agentProfiles = (store.agentProfiles || []).map((profile) => alignAgentProfileCollections(profile, skillCatalog, mcpCatalog));
+  store.agentProfileDefaults = (store.agentProfileDefaults || []).map((profile) => alignAgentProfileCollections(profile, skillCatalog, mcpCatalog));
+}
+
 function normalizeCategoryPolicies(rawPolicies, fallbackPolicies = []) {
   const fallbackMap = new Map((fallbackPolicies || []).map((item) => [item.id, item]));
   const policies = [];
@@ -688,15 +976,27 @@ function normalizeCapabilityPermissions(rawCapabilities, fallbackCapabilities = 
   });
 }
 
-function normalizeAgentProfile(rawProfile, fallbackProfile) {
+function resolveProfileCollection(rawProfile, keys, fallbackItems = []) {
+  const source = rawProfile && typeof rawProfile === "object" ? rawProfile : {};
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      return Array.isArray(source[key]) ? source[key] : [];
+    }
+  }
+  return Array.isArray(fallbackItems) ? fallbackItems : [];
+}
+
+function normalizeAgentProfile(rawProfile, fallbackProfile, catalogs = {}) {
   const fallback = fallbackProfile || {};
   const raw = rawProfile || {};
+  const skillCatalog = Array.isArray(catalogs.skillCatalog) ? catalogs.skillCatalog : createSkillCatalog();
+  const mcpCatalog = Array.isArray(catalogs.mcpCatalog) ? catalogs.mcpCatalog : createMcpCatalog();
   const runtime = raw.runtime || raw.runtime_settings || {};
   const systemPrompt = raw.systemPrompt || raw.system_prompt || {};
   const commandPermissions = raw.commandPermissions || raw.command_permissions || {};
   const capabilityPermissions = raw.capabilityPermissions || raw.capability_permissions || {};
-  const skills = raw.skills || [];
-  const mcps = raw.mcps || raw.mcpServers || [];
+  const skills = resolveProfileCollection(raw, ["skills"], fallback.skills || []);
+  const mcps = resolveProfileCollection(raw, ["mcps", "mcpServers"], fallback.mcps || []);
 
   const normalized = {
     id: String(raw.id || fallback.id || raw.type || fallback.type || ""),
@@ -738,15 +1038,17 @@ function normalizeAgentProfile(rawProfile, fallbackProfile) {
       ),
     },
     capabilityPermissions: normalizeCapabilityPermissions(capabilityPermissions, fallback.capabilityPermissions || []),
-    skills: normalizeSkillItems(skills, fallback.skills || [], createSkillCatalog()),
-    mcps: normalizeMcpItems(mcps, fallback.mcps || [], createMcpCatalog()),
+    skills: normalizeSkillItems(skills, fallback.skills || [], skillCatalog),
+    mcps: normalizeMcpItems(mcps, fallback.mcps || [], mcpCatalog),
   };
 
-  return alignAgentProfileCollections(normalized);
+  return alignAgentProfileCollections(normalized, skillCatalog, mcpCatalog);
 }
 
 function serializeAgentProfile(profile, options = {}) {
-  const normalized = normalizeAgentProfile(profile, null);
+  const skillCatalog = Array.isArray(options.skillCatalog) ? options.skillCatalog : createSkillCatalog();
+  const mcpCatalog = Array.isArray(options.mcpCatalog) ? options.mcpCatalog : createMcpCatalog();
+  const normalized = normalizeAgentProfile(profile, null, { skillCatalog, mcpCatalog });
   return {
     id: String(normalized?.id || ""),
     name: String(normalized?.name || ""),
@@ -780,8 +1082,8 @@ function serializeAgentProfile(profile, options = {}) {
     capabilityPermissions: Object.fromEntries(
       (normalized?.capabilityPermissions || []).map((item) => [String(item.id || ""), String(item.state || "enabled")]),
     ),
-    skills: serializeSkillItems(normalized?.skills || []),
-    mcps: serializeMcpItems(normalized?.mcps || []),
+    skills: serializeSkillItems(normalized?.skills || [], skillCatalog),
+    mcps: serializeMcpItems(normalized?.mcps || [], mcpCatalog),
     riskConfirmed: Boolean(options?.riskConfirmed),
   };
 }
@@ -822,12 +1124,12 @@ function applyAgentProfileErrorState(store, error, fieldErrors) {
   store.agentProfileFieldErrors = normalizeAgentProfileFieldErrors(fieldErrors);
 }
 
-function cloneAgentProfilesForExport(profiles) {
-  return (profiles || []).map((profile) => normalizeAgentProfile(profile, null));
+function cloneAgentProfilesForExport(profiles, catalogs = {}) {
+  return (profiles || []).map((profile) => normalizeAgentProfile(profile, null, catalogs));
 }
 
-function buildAgentProfilesExportPayload(profiles, overrides = {}) {
-  const items = cloneAgentProfilesForExport(profiles);
+function buildAgentProfilesExportPayload(profiles, overrides = {}, catalogs = {}) {
+  const items = cloneAgentProfilesForExport(profiles, catalogs);
   return {
     version: 1,
     configVersion: overrides.configVersion || 1,
@@ -850,8 +1152,10 @@ function parseAgentProfilesImportPayload(payload) {
   return [];
 }
 
-function normalizeImportedAgentProfiles(rawProfiles) {
+function normalizeImportedAgentProfiles(rawProfiles, catalogs = {}) {
   const defaults = createDefaultAgentProfiles();
+  const skillCatalog = Array.isArray(catalogs.skillCatalog) ? catalogs.skillCatalog : createSkillCatalog();
+  const mcpCatalog = Array.isArray(catalogs.mcpCatalog) ? catalogs.mcpCatalog : createMcpCatalog();
   const imported = Array.isArray(rawProfiles) ? rawProfiles.filter((item) => item && typeof item === "object") : [];
   const importedById = new Map();
   for (const profile of imported) {
@@ -865,14 +1169,14 @@ function normalizeImportedAgentProfiles(rawProfiles) {
       importedById.get(fallbackProfile.id) ||
       importedById.get(fallbackProfile.type) ||
       null;
-    return normalizeAgentProfile(incoming || fallbackProfile, fallbackProfile);
+    return normalizeAgentProfile(incoming || fallbackProfile, fallbackProfile, { skillCatalog, mcpCatalog });
   });
 
   for (const profile of imported) {
     const key = String(profile.id || profile.type || "").trim();
     if (!key) continue;
     if (merged.some((item) => item.id === key || item.type === key)) continue;
-    merged.push(normalizeAgentProfile(profile, null));
+    merged.push(normalizeAgentProfile(profile, null, { skillCatalog, mcpCatalog }));
   }
 
   return merged;
@@ -967,6 +1271,7 @@ export const useAppStore = defineStore("app", {
     agentProfilesError: "",
     agentProfileFieldErrors: {},
     activeAgentProfileId: "main-agent",
+    mcpDrawer: readPersistedMcpDrawerState(),
     agentProfilePreview: null,
     agentProfilePreviewLoading: false,
     agentProfileSaving: false,
@@ -1033,8 +1338,134 @@ export const useAppStore = defineStore("app", {
     activeAgentProfile: (state) => {
       return state.agentProfiles.find((profile) => profile.id === state.activeAgentProfileId) || state.agentProfiles[0] || null;
     },
+    enabledMcpEntries: (state) => {
+      const overrides = new Map((state.activeAgentProfile?.mcps || []).map((item) => [String(item?.id || ""), item]));
+      const catalogEntries = Array.isArray(state.mcpCatalog) ? state.mcpCatalog : [];
+      return catalogEntries
+        .map((entry) => {
+          const override = overrides.get(String(entry?.id || ""));
+          const enabled =
+            typeof override?.enabled === "boolean"
+              ? override.enabled
+              : typeof entry?.enabled === "boolean"
+                ? entry.enabled
+                : Boolean(entry?.defaultEnabled);
+          return {
+            ...entry,
+            ...(override || {}),
+            enabled,
+            permission: normalizeMcpPermission(override?.permission, entry?.permission),
+          };
+        })
+        .filter((entry) => entry.enabled);
+    },
   },
   actions: {
+    hydrateMcpDrawerState() {
+      this.mcpDrawer = readPersistedMcpDrawerState();
+      return this.mcpDrawer;
+    },
+    persistMcpDrawerState() {
+      return persistMcpDrawerState(this.mcpDrawer);
+    },
+    getEnabledMcpEntries() {
+      return this.enabledMcpEntries;
+    },
+    openMcpDrawerSurface(payload, options = {}) {
+      const surface = normalizeMcpDrawerSurfacePayload(payload);
+      if (!surface) return null;
+      const reason = compactText(options.reason || payload?.lastReason || "open");
+      this.mcpDrawer.activeSurface = {
+        ...(this.mcpDrawer.activeSurface?.id === surface.id ? this.mcpDrawer.activeSurface : {}),
+        ...surface,
+        lastReason: reason,
+        touchedAt: coerceIsoStamp(options.touchedAt || surface.touchedAt),
+        openedAt: coerceIsoStamp(options.touchedAt || surface.touchedAt),
+      };
+      this.mcpDrawer.recentSurfaces = upsertMcpDrawerSurfaceList(this.mcpDrawer.recentSurfaces, this.mcpDrawer.activeSurface, {
+        limit: MCP_DRAWER_RECENT_LIMIT,
+        reason,
+      });
+      if (options.pin) {
+        this.mcpDrawer.pinnedSurfaces = upsertMcpDrawerSurfaceList(this.mcpDrawer.pinnedSurfaces, this.mcpDrawer.activeSurface, {
+          limit: MCP_DRAWER_PIN_LIMIT,
+          reason: compactText(options.pinReason || reason || "pin"),
+          pin: true,
+        });
+      }
+      this.persistMcpDrawerState();
+      return this.mcpDrawer.activeSurface;
+    },
+    recordRecentMcpSurface(payload, options = {}) {
+      const surface = normalizeMcpDrawerSurfacePayload(payload);
+      if (!surface) return null;
+      this.mcpDrawer.recentSurfaces = upsertMcpDrawerSurfaceList(this.mcpDrawer.recentSurfaces, surface, {
+        limit: MCP_DRAWER_RECENT_LIMIT,
+        reason: compactText(options.reason || payload?.lastReason || "recent"),
+      });
+      if (options.activate) {
+        this.mcpDrawer.activeSurface = this.mcpDrawer.recentSurfaces[0] || null;
+      }
+      this.persistMcpDrawerState();
+      return this.mcpDrawer.recentSurfaces[0] || null;
+    },
+    pinMcpDrawerSurface(payload) {
+      const baseSurface = normalizeMcpDrawerSurfacePayload(payload || this.mcpDrawer.activeSurface);
+      if (!baseSurface) return null;
+      const activeSurface = this.openMcpDrawerSurface(baseSurface, { reason: "pin", pin: true, pinReason: "pin" });
+      this.mcpDrawer.pinnedSurfaces = upsertMcpDrawerSurfaceList(this.mcpDrawer.pinnedSurfaces, activeSurface, {
+        limit: MCP_DRAWER_PIN_LIMIT,
+        reason: "pin",
+        pin: true,
+      });
+      this.persistMcpDrawerState();
+      return this.mcpDrawer.pinnedSurfaces[0] || activeSurface;
+    },
+    removePinnedMcpDrawerSurface(surfaceId = "") {
+      const normalizedId = compactText(surfaceId);
+      if (!normalizedId) return false;
+      this.mcpDrawer.pinnedSurfaces = (this.mcpDrawer.pinnedSurfaces || []).filter((item) => item.id !== normalizedId);
+      if (this.mcpDrawer.activeSurface?.id === normalizedId) {
+        this.mcpDrawer.activeSurface = this.mcpDrawer.pinnedSurfaces[0] || this.mcpDrawer.recentSurfaces[0] || null;
+      }
+      this.persistMcpDrawerState();
+      return true;
+    },
+    selectMcpDrawerSurface(target) {
+      const normalizedTarget = compactText(typeof target === "string" ? target : target?.id);
+      const directSurface = typeof target === "string" ? null : normalizeMcpDrawerSurfacePayload(target);
+      const surface =
+        directSurface ||
+        this.mcpDrawer.pinnedSurfaces.find((item) => item.id === normalizedTarget) ||
+        this.mcpDrawer.recentSurfaces.find((item) => item.id === normalizedTarget) ||
+        null;
+      if (!surface) return null;
+      this.mcpDrawer.activeSurface = normalizeMcpDrawerSurfacePayload(surface);
+      this.recordRecentMcpSurface(this.mcpDrawer.activeSurface, { reason: "select" });
+      this.persistMcpDrawerState();
+      return this.mcpDrawer.activeSurface;
+    },
+    touchActiveMcpDrawerSurface(reason = "view") {
+      if (!this.mcpDrawer.activeSurface) return null;
+      const surface = this.recordRecentMcpSurface(
+        {
+          ...this.mcpDrawer.activeSurface,
+          lastReason: compactText(reason || "view"),
+        },
+        { reason: compactText(reason || "view"), activate: true },
+      );
+      this.persistMcpDrawerState();
+      return surface;
+    },
+    openEnabledMcpEntry(entry, options = {}) {
+      const surface = buildCatalogMcpDrawerSurface(entry);
+      if (!surface) return null;
+      return this.openMcpDrawerSurface(surface, {
+        reason: compactText(options.reason || "catalog"),
+        pin: Boolean(options.pin),
+        pinReason: "catalog",
+      });
+    },
     applySnapshot(data) {
       this.snapshot.sessionId = data.sessionId || this.snapshot.sessionId;
       this.snapshot.kind = data.kind || this.snapshot.kind || "single_host";
@@ -1210,6 +1641,110 @@ export const useAppStore = defineStore("app", {
         this.settings = { ...this.settings, ...newSettings }; // Mock fallback
       }
     },
+    async fetchSkillCatalog() {
+      try {
+        const response = await fetch("/api/v1/agent-skills", { credentials: "include" });
+        if (!response.ok) {
+          throw new Error("加载 Skills catalog 失败");
+        }
+        const data = await response.json();
+        this.skillCatalog = normalizeSkillCatalogEntries(data?.items || data?.skills || []);
+        realignAgentProfiles(this);
+        return this.skillCatalog;
+      } catch (e) {
+        console.error("Failed to fetch skill catalog:", e);
+        this.skillCatalog = createSkillCatalog();
+        realignAgentProfiles(this);
+        return this.skillCatalog;
+      }
+    },
+    async saveSkillCatalogItem(item) {
+      const normalized = normalizeSkillCatalogEntry(item || {});
+      const targetId = String(normalized.id || "");
+      if (!targetId) {
+        throw new Error("skill id is required");
+      }
+      const response = await fetch(`/api/v1/agent-skills/${encodeURIComponent(targetId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(normalized),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "保存 Skill 失败");
+      }
+      this.skillCatalog = normalizeSkillCatalogEntries(data?.items || []);
+      await this.fetchAgentProfiles();
+      return data?.item || normalized;
+    },
+    async deleteSkillCatalogItem(skillId) {
+      const targetId = String(skillId || "").trim();
+      if (!targetId) return false;
+      const response = await fetch(`/api/v1/agent-skills/${encodeURIComponent(targetId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "删除 Skill 失败");
+      }
+      this.skillCatalog = normalizeSkillCatalogEntries(data?.items || []);
+      await this.fetchAgentProfiles();
+      return true;
+    },
+    async fetchMcpCatalog() {
+      try {
+        const response = await fetch("/api/v1/agent-mcps", { credentials: "include" });
+        if (!response.ok) {
+          throw new Error("加载 MCP catalog 失败");
+        }
+        const data = await response.json();
+        this.mcpCatalog = normalizeMcpCatalogEntries(data?.items || data?.mcps || []);
+        realignAgentProfiles(this);
+        return this.mcpCatalog;
+      } catch (e) {
+        console.error("Failed to fetch mcp catalog:", e);
+        this.mcpCatalog = createMcpCatalog();
+        realignAgentProfiles(this);
+        return this.mcpCatalog;
+      }
+    },
+    async saveMcpCatalogItem(item) {
+      const normalized = normalizeMcpCatalogEntry(item || {});
+      const targetId = String(normalized.id || "");
+      if (!targetId) {
+        throw new Error("mcp id is required");
+      }
+      const response = await fetch(`/api/v1/agent-mcps/${encodeURIComponent(targetId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(normalized),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "保存 MCP 失败");
+      }
+      this.mcpCatalog = normalizeMcpCatalogEntries(data?.items || []);
+      await this.fetchAgentProfiles();
+      return data?.item || normalized;
+    },
+    async deleteMcpCatalogItem(mcpId) {
+      const targetId = String(mcpId || "").trim();
+      if (!targetId) return false;
+      const response = await fetch(`/api/v1/agent-mcps/${encodeURIComponent(targetId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "删除 MCP 失败");
+      }
+      this.mcpCatalog = normalizeMcpCatalogEntries(data?.items || []);
+      await this.fetchAgentProfiles();
+      return true;
+    },
     async fetchAgentProfiles() {
       this.agentProfilesLoading = true;
       clearAgentProfileErrorState(this);
@@ -1231,6 +1766,18 @@ export const useAppStore = defineStore("app", {
 
         const listPayload = await tryLoad("/api/v1/agent-profiles");
         const singlePayload = listPayload ? null : await tryLoad("/api/v1/agent-profile");
+        const remoteSkillCatalog = Array.isArray(listPayload?.skillCatalog) ? normalizeSkillCatalogEntries(listPayload.skillCatalog) : null;
+        const remoteMcpCatalog = Array.isArray(listPayload?.mcpCatalog) ? normalizeMcpCatalogEntries(listPayload.mcpCatalog) : null;
+        if (remoteSkillCatalog) {
+          this.skillCatalog = remoteSkillCatalog;
+        }
+        if (remoteMcpCatalog) {
+          this.mcpCatalog = remoteMcpCatalog;
+        }
+        const catalogs = {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        };
 
         const ingestPayload = (payload) => {
           if (!payload) return;
@@ -1266,18 +1813,20 @@ export const useAppStore = defineStore("app", {
             return normalizeAgentProfile(
               overrides.get(fallbackProfile.id) || overrides.get(fallbackProfile.type) || null,
               fallbackProfile,
+              catalogs,
             );
           });
           for (const profile of remoteProfiles) {
             const key = String(profile?.id || profile?.type || "");
             if (!key) continue;
             if (mergedProfiles.some((item) => item.id === key || item.type === profile?.type)) continue;
-            mergedProfiles.push(normalizeAgentProfile(profile, null));
+            mergedProfiles.push(normalizeAgentProfile(profile, null, catalogs));
           }
           this.agentProfiles = mergedProfiles;
         } else {
-          this.agentProfiles = defaults.map((profile) => alignAgentProfileCollections(profile));
+          this.agentProfiles = defaults.map((profile) => alignAgentProfileCollections(profile, catalogs.skillCatalog, catalogs.mcpCatalog));
         }
+        realignAgentProfiles(this);
 
         if (!this.agentProfiles.some((profile) => profile.id === this.activeAgentProfileId)) {
           this.activeAgentProfileId = this.agentProfiles[0]?.id || "main-agent";
@@ -1299,7 +1848,7 @@ export const useAppStore = defineStore("app", {
       return true;
     },
     resetAgentProfiles() {
-      this.agentProfiles = createDefaultAgentProfiles().map((profile) => alignAgentProfileCollections(profile));
+      this.agentProfiles = createDefaultAgentProfiles().map((profile) => alignAgentProfileCollections(profile, this.skillCatalog, this.mcpCatalog));
       this.activeAgentProfileId = "main-agent";
       clearAgentProfileErrorState(this);
       this.agentProfilePreview = null;
@@ -1316,15 +1865,24 @@ export const useAppStore = defineStore("app", {
         if (!response.ok) {
           throw new Error(data?.error || "导出 Agent Profiles 失败");
         }
-        const exportedProfiles = normalizeImportedAgentProfiles(parseAgentProfilesImportPayload(data));
+        const exportedProfiles = normalizeImportedAgentProfiles(parseAgentProfilesImportPayload(data), {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
         payload = buildAgentProfilesExportPayload(exportedProfiles, {
           configVersion: Number(data?.configVersion || data?.version || 1),
           exportedAt: data?.exportedAt,
           exportedBy: data?.exportedBy,
+        }, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
         });
       } catch (e) {
         console.error("Failed to export agent profiles from server, using local snapshot:", e);
-        payload = buildAgentProfilesExportPayload(this.agentProfiles);
+        payload = buildAgentProfilesExportPayload(this.agentProfiles, {}, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
       }
       return {
         filename: `agent-profiles-${payload.exportedAt.replace(/[:.]/g, "-")}.json`,
@@ -1353,7 +1911,10 @@ export const useAppStore = defineStore("app", {
           };
         }
         const importedProfiles = parseAgentProfilesImportPayload(data);
-        const mergedProfiles = normalizeImportedAgentProfiles(importedProfiles);
+        const mergedProfiles = normalizeImportedAgentProfiles(importedProfiles, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
         if (!mergedProfiles.length) {
           throw new Error("服务端未返回可导入的 profiles");
         }
@@ -1387,7 +1948,11 @@ export const useAppStore = defineStore("app", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify(serializeAgentProfile(profile, options)),
+          body: JSON.stringify(serializeAgentProfile(profile, {
+            ...options,
+            skillCatalog: this.skillCatalog,
+            mcpCatalog: this.mcpCatalog,
+          })),
         });
         const data = await response.json();
         if (!response.ok) {
@@ -1395,7 +1960,10 @@ export const useAppStore = defineStore("app", {
           return false;
         }
         const fallback = createDefaultAgentProfiles().find((item) => item.id === data.id) || null;
-        const normalized = normalizeAgentProfile(data, fallback);
+        const normalized = normalizeAgentProfile(data, fallback, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
         const index = this.agentProfiles.findIndex((item) => item.id === normalized.id);
         if (index >= 0) {
           this.agentProfiles[index] = normalized;
@@ -1431,7 +1999,10 @@ export const useAppStore = defineStore("app", {
           return false;
         }
         const fallback = createDefaultAgentProfiles().find((item) => item.id === nextId) || null;
-        const normalized = normalizeAgentProfile(data, fallback);
+        const normalized = normalizeAgentProfile(data, fallback, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
         const index = this.agentProfiles.findIndex((item) => item.id === normalized.id);
         if (index >= 0) {
           this.agentProfiles[index] = normalized;

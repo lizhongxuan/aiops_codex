@@ -2,14 +2,24 @@
 import { computed, defineAsyncComponent, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
+import { formatMainChatTurns, isChatConversationCard } from "../lib/chatTurnFormatter";
+import { useChatHistoryPager } from "../composables/useChatHistoryPager";
+import { useChatScrollState } from "../composables/useChatScrollState";
+import { useAwaySummary } from "../composables/useAwaySummary";
+import { useVirtualTurnList } from "../composables/useVirtualTurnList";
+import { buildMcpDecisionNotice, buildSyntheticMcpApproval, formatMcpActionLabel, formatMcpActionTarget, isMcpMutationAction } from "../lib/mcpActionRuntime";
 import CardItem from "../components/CardItem.vue";
-import Omnibar from "../components/Omnibar.vue";
+import ChatTurnGroup from "../components/chat/ChatTurnGroup.vue";
+import ChatComposerDock from "../components/chat/ChatComposerDock.vue";
+import McpBundleHost from "../components/mcp/McpBundleHost.vue";
+import McpUiCardHost from "../components/mcp/McpUiCardHost.vue";
 import ThinkingCard from "../components/ThinkingCard.vue";
-import PlanCard from "../components/PlanCard.vue";
 import { BotIcon, WifiOffIcon, RefreshCwIcon, TerminalIcon } from "lucide-vue-next";
 
 const store = useAppStore();
 const WorkspaceHostTerminal = defineAsyncComponent(() => import("../components/workspace/WorkspaceHostTerminal.vue"));
+const OPEN_SESSION_HISTORY_EVENT = "codex:open-session-history";
+const OPEN_MCP_DRAWER_EVENT = "codex:open-mcp-drawer";
 
 const composerMessage = ref("");
 const scrollContainer = ref(null);
@@ -18,15 +28,18 @@ const showFileDetails = ref(false);
 const showSearchDetails = ref(false);
 const authCardCollapsed = ref(false);
 const approvalFollowupMode = ref(false);
-const autoFollowTail = ref(true);
+const localMcpApprovals = ref([]);
+const activeMcpSurface = ref(null);
+const mcpPinnedSurfaces = ref([]);
+const isMcpDrawerOpen = ref(false);
 const terminalDockVisible = ref(false);
 const terminalDockHeight = ref(320);
 const terminalDockSessionLive = ref(false);
 const terminalDockRef = ref(null);
 const terminalDockDragging = ref(false);
-let contentResizeObserver = null;
 let terminalDockDragState = null;
 let terminalDockMaxHeight = 560;
+const historyAutoLoadArmed = ref(false);
 
 /* ---- ThinkingCard local state ---- */
 const showThinking = ref(false);
@@ -50,6 +63,121 @@ function clearThinkingPrelude() {
   }
   thinkingHint.value = "";
   preferredThinkingPhase.value = "";
+}
+
+function compactText(value) {
+  return typeof value === "string" ? value.trim() : String(value || "").trim();
+}
+
+function isMcpBundlePayload(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const bundleKind = compactText(source.bundleKind || source.bundle_kind).toLowerCase();
+  return Boolean(
+    bundleKind ||
+      source.bundleId ||
+      source.bundle_id ||
+      Array.isArray(source.sections) ||
+      Array.isArray(source.sectionConfig),
+  );
+}
+
+function normalizeMcpSurfacePayload(payload = {}) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const kind = isMcpBundlePayload(source)
+    ? "bundle"
+    : compactText(source.kind || source.uiKind || source.ui_kind).toLowerCase() === "bundle"
+      ? "bundle"
+      : "card";
+  const bundleId = compactText(source.bundleId || source.bundle_id || source.id || source.key || "");
+  const cardId = compactText(source.cardId || source.card_id || source.id || source.key || "");
+  const surfaceId = kind === "bundle" ? bundleId || cardId : cardId || bundleId;
+  const title =
+    compactText(source.title || source.summary || source.label || source.name || source.rootCause || source.root_cause) ||
+    (kind === "bundle" ? "MCP 聚合面板" : "MCP 卡片");
+  const subtitle = compactText(
+    source.subject?.name ||
+      source.subject?.service ||
+      source.subject?.type ||
+      source.scope?.service ||
+      source.scope?.hostId ||
+      source.scope?.resourceId ||
+      source.mcpServer ||
+      source.source ||
+      "",
+  );
+  const sourceTag = compactText(source.source || source.mcpServer || source.sourceCardId || source.source_card_id || "");
+
+  return {
+    kind,
+    id: surfaceId || `${kind}-${title}`,
+    title,
+    subtitle,
+    source: sourceTag,
+    bundle: kind === "bundle" ? source : null,
+    card: kind === "card" ? source : null,
+    raw: source,
+  };
+}
+
+function mcpSurfaceKey(surface) {
+  const record = surface || {};
+  return `${record.kind || "card"}:${record.id || record.title || record.subtitle || "surface"}`;
+}
+
+function dispatchOpenMcpDrawer(surface, pin = false) {
+  if (typeof window === "undefined" || !surface) return;
+  window.dispatchEvent(
+    new CustomEvent(OPEN_MCP_DRAWER_EVENT, {
+      detail: {
+        source: "chat-mcp-surface",
+        pin,
+        surface: {
+          kind: surface.kind || "card",
+          bundle: surface.kind === "bundle" ? surface.bundle : undefined,
+          card: surface.kind === "card" ? surface.card : undefined,
+          source: surface.source || "",
+          title: surface.title || "",
+          subtitle: surface.subtitle || "",
+          id: surface.id || "",
+        },
+      },
+    }),
+  );
+}
+
+function openMcpSurfaceDrawer(payload, { pin = false, silent = false } = {}) {
+  const surface = normalizeMcpSurfacePayload(payload);
+  activeMcpSurface.value = surface;
+  isMcpDrawerOpen.value = true;
+  if (pin) {
+    const key = mcpSurfaceKey(surface);
+    mcpPinnedSurfaces.value = [
+      ...mcpPinnedSurfaces.value.filter((item) => mcpSurfaceKey(item) !== key),
+      surface,
+    ];
+  }
+  if (!silent) {
+    store.noticeMessage = `${surface.title} 已打开完整面板。`;
+  }
+  dispatchOpenMcpDrawer(surface, pin);
+  return surface;
+}
+
+async function refreshMcpSurface(payload) {
+  const surface = openMcpSurfaceDrawer(payload, { silent: true });
+  await store.fetchState();
+  store.noticeMessage = `${surface.title} 已刷新。`;
+  return surface;
+}
+
+function pinMcpSurface(payload) {
+  const surface = openMcpSurfaceDrawer(payload, { pin: true });
+  store.noticeMessage = `${surface.title} 已固定到 MCP 面板。`;
+  return surface;
+}
+
+function closeMcpSurfaceDrawer() {
+  isMcpDrawerOpen.value = false;
 }
 
 function inferThinkingPrelude(message) {
@@ -286,7 +414,9 @@ const activeApprovalQueueNote = computed(() => {
   return remaining > 0 ? `后面还有 ${remaining} 项排队` : "";
 });
 
-const allowFollowUpComposer = computed(() => approvalFollowupMode.value && !activeApprovalCard.value);
+const activeMcpApproval = computed(() => localMcpApprovals.value[0] || null);
+const hasActiveApprovalOverlay = computed(() => Boolean(activeApprovalCard.value || activeMcpApproval.value));
+const allowFollowUpComposer = computed(() => approvalFollowupMode.value && !hasActiveApprovalOverlay.value);
 const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
 const workspaceSessionLabel = computed(() => (isWorkspaceSession.value ? "工作台会话" : ""));
 const workspaceDetailLinkLabel = computed(() => (isWorkspaceSession.value ? "查看只读详情" : ""));
@@ -330,9 +460,78 @@ const terminalDockToolbarLabel = computed(() => {
 });
 const chatContainerStyle = computed(() => ({
   paddingBottom: terminalDockVisible.value
-    ? `${terminalDockHeight.value + (activePlanCard.value || activeApprovalCard.value ? 260 : 220)}px`
-    : "240px",
+    ? `${terminalDockHeight.value + (activePlanCard.value || hasActiveApprovalOverlay.value ? 260 : 180)}px`
+    : "180px",
 }));
+
+function queueLocalMcpApproval(action) {
+  const approval = buildSyntheticMcpApproval(action, {
+    scope: action?.scope || {},
+    summary: action?.confirmText || "等待你确认后继续执行该 MCP 变更操作。",
+  });
+  localMcpApprovals.value = [
+    ...localMcpApprovals.value.filter((item) => item.id !== approval.id),
+    approval,
+  ];
+  store.noticeMessage = `${formatMcpActionLabel(action)} 已进入审批工作台。`;
+  authCardCollapsed.value = false;
+  approvalFollowupMode.value = false;
+}
+
+function completeLocalMcpApproval(approval, decision) {
+  localMcpApprovals.value = localMcpApprovals.value.filter((item) => item.id !== approval.id && item.approvalId !== approval.approvalId);
+  store.noticeMessage = buildMcpDecisionNotice(approval.action || {}, decision);
+  approvalFollowupMode.value = decision === "decline" || decision === "reject";
+  nextTick(() => jumpToLatest());
+}
+
+function handleTurnMcpAction(action) {
+  if (!action || typeof action !== "object") return;
+  if (action.bundleKind === "monitor_bundle") {
+    void refreshMcpSurface(action);
+    return;
+  }
+  if (action.bundleKind === "remediation_bundle") {
+    openMcpSurfaceDrawer(action);
+    return;
+  }
+  const intent = compactText(action.intent || action.key || action.action || "").toLowerCase();
+  if (intent === "refresh" || intent === "reload" || intent === "open_detail" || intent === "open-detail") {
+    void refreshMcpSurface(action);
+    return;
+  }
+  if (action.uiKind || action.ui_kind || action.bundleId || action.bundle_id) {
+    openMcpSurfaceDrawer(action);
+    return;
+  }
+  if (isMcpMutationAction(action)) {
+    queueLocalMcpApproval(action);
+    return;
+  }
+  store.noticeMessage = `${formatMcpActionLabel(action)} 已作为只读操作加入当前会话。`;
+  approvalFollowupMode.value = false;
+  nextTick(() => jumpToLatest());
+}
+
+function handleMcpSurfaceDetail(payload) {
+  openMcpSurfaceDrawer(payload);
+}
+
+function handleMcpSurfacePin(payload) {
+  pinMcpSurface(payload);
+}
+
+function handleMcpSurfaceRefresh(payload) {
+  void refreshMcpSurface(payload);
+}
+
+function isApprovalCard(card) {
+  return card?.type === "CommandApprovalCard" || card?.type === "FileChangeApprovalCard";
+}
+
+function isTerminalOutputCard(card) {
+  return card?.type === "CommandCard" || (card?.type === "StepCard" && !!card?.command);
+}
 
 const visibleCards = computed(() => {
   return store.snapshot.cards.filter((card) => {
@@ -341,7 +540,7 @@ const visibleCards = computed(() => {
       return false;
     }
     // Hide all pending approval cards from the chat stream (rendered in overlay)
-    if (card.status === "pending" && (card.type === "CommandApprovalCard" || card.type === "FileChangeApprovalCard")) {
+    if (card.status === "pending" && isApprovalCard(card)) {
       return false;
     }
     if (card.id === "__codex_reconnect__") {
@@ -354,6 +553,289 @@ const visibleCards = computed(() => {
     return true;
   });
 });
+
+const streamCards = computed(() =>
+  visibleCards.value.filter((card) => {
+    if (isApprovalCard(card)) {
+      return false;
+    }
+    if (isTerminalOutputCard(card)) {
+      return false;
+    }
+    return true;
+  }),
+);
+
+const mainChatActiveProcess = computed(() => {
+  if (!showThinkingCard.value && !hasTopFeedback.value) return null;
+  const items = [
+    ...viewedFileDetails.value.map((entry, index) => ({
+      id: `viewed-file-${index}`,
+      kind: "file",
+      text: entry.label || entry.path || "",
+    })),
+    ...searchedQueryDetails.value.map((entry, index) => ({
+      id: `searched-query-${index}`,
+      kind: "search",
+      text: entry.label || entry.query || "",
+    })),
+  ].filter((item) => item.text);
+
+  return {
+    phase: thinkingPhase.value,
+    liveHint: activeActivityLine.value || thinkingCard.value.hint || "",
+    summary: summaryLine.value || (!activeActivityLine.value ? activitySummary.value : ""),
+    items,
+  };
+});
+
+const mainChatTurns = computed(() =>
+  formatMainChatTurns({
+    conversationCards: streamCards.value.filter((card) => isChatConversationCard(card)),
+    turnActive: showThinkingCard.value || store.runtime.turn.active,
+    activeProcess: mainChatActiveProcess.value,
+  }),
+);
+
+const mainChatTurnByAnchorId = computed(() =>
+  new Map(mainChatTurns.value.map((turn) => [turn.anchorMessageId, turn])),
+);
+
+const baseStreamEntries = computed(() => {
+  const entries = [];
+  const renderedTurnIds = new Set();
+
+  for (const card of streamCards.value) {
+    if (isChatConversationCard(card)) {
+      const turn = mainChatTurnByAnchorId.value.get(card.id);
+      if (turn && !renderedTurnIds.has(turn.id)) {
+        entries.push({
+          id: turn.id,
+          kind: "turn",
+          turn,
+        });
+        renderedTurnIds.add(turn.id);
+      }
+      continue;
+    }
+
+    entries.push({
+      id: `card-${card.id}`,
+      kind: "card",
+      card,
+    });
+  }
+
+  if (!mainChatTurns.value.length && showThinking.value && hasTopFeedback.value) {
+    entries.push({ id: "__activity__", kind: "activity" });
+  }
+  if (!mainChatTurns.value.length && showThinkingCard.value) {
+    entries.push({ id: "__thinking__", kind: "thinking" });
+  }
+
+  return entries;
+});
+
+const historySessionKey = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+
+const historyPager = useChatHistoryPager({
+  items: baseStreamEntries,
+  scrollContainer,
+  resetKey: historySessionKey,
+  pageSize: 10,
+  initialCount: 10,
+  topThreshold: 72,
+});
+
+const pagedStreamEntries = computed(() => historyPager.visibleItems.value);
+
+function entrySignature(entry) {
+  if (!entry) return "";
+  if (entry.kind === "turn") {
+    return [
+      entry.id,
+      entry.turn.processItems?.length || 0,
+      entry.turn.finalMessage?.id || "",
+      entry.turn.finalMessage?.card?.text?.length || 0,
+      entry.turn.liveHint || "",
+      entry.turn.summary || "",
+    ].join(":");
+  }
+  if (entry.kind === "card") {
+    const card = entry.card || {};
+    return [
+      entry.id,
+      card.updatedAt || "",
+      (card.text || card.message || "").length,
+      (card.output || "").length,
+      card.status || "",
+    ].join(":");
+  }
+  if (entry.kind === "activity") {
+    return [
+      entry.id,
+      activeActivityLine.value,
+      summaryLine.value,
+      viewedFileDetails.value.length,
+      searchedQueryDetails.value.length,
+    ].join(":");
+  }
+  return [entry.id, thinkingPhase.value, thinkingHint.value].join(":");
+}
+
+const historyStreamSignature = computed(() => {
+  const list = pagedStreamEntries.value;
+  const tail = list.slice(-3);
+  return [
+    tail.map((entry) => entrySignature(entry)).join("|"),
+    activeActivityLine.value,
+    summaryLine.value,
+    showThinkingCard.value ? thinkingPhase.value : "",
+    showThinkingCard.value ? thinkingHint.value : "",
+  ].join("::");
+});
+
+const composerStatusHint = computed(() => {
+  if (latestTerminalCard.value && !terminalDockVisible.value) {
+    return "最近命令输出已收进终端面板，可随时展开查看。";
+  }
+  if (allowFollowUpComposer.value) {
+    return "当前可以直接继续输入 follow-up。";
+  }
+  return "";
+});
+
+function previewForStreamEntry(entry) {
+  if (!entry) return "";
+  if (entry.kind === "turn") {
+    return entry.turn?.finalMessage?.card?.text || entry.turn?.summary || entry.turn?.liveHint || "";
+  }
+  if (entry.kind === "card") {
+    return entry.card?.summary || entry.card?.text || entry.card?.message || entry.card?.title || "";
+  }
+  if (entry.kind === "activity") {
+    return activeActivityLine.value || summaryLine.value || "";
+  }
+  return thinkingCard.value.hint || "";
+}
+
+const { awaySummary } = useAwaySummary({
+  items: baseStreamEntries,
+  getItemId: (item) => String(item?.id || ""),
+  getPreview: previewForStreamEntry,
+});
+
+const {
+  isPinnedToBottom,
+  unreadCount,
+  unreadAnchorId,
+  showUnreadPill,
+  handleScroll,
+  jumpToLatest,
+} = useChatScrollState({
+  scrollContainer,
+  scrollContent,
+  items: pagedStreamEntries,
+  signature: historyStreamSignature,
+  getItemId: (item) => String(item?.id || ""),
+  threshold: 80,
+});
+
+const renderedStreamEntries = computed(() => {
+  const entries = [];
+  let awayInserted = false;
+  for (const entry of pagedStreamEntries.value) {
+    if (awaySummary.value?.anchorId && entry.id === awaySummary.value.anchorId) {
+      entries.push({
+        id: awaySummary.value.id,
+        kind: "away-summary",
+        summary: awaySummary.value,
+      });
+      awayInserted = true;
+    }
+    if (unreadAnchorId.value && entry.id === unreadAnchorId.value) {
+      entries.push({
+        id: `unread-divider-${entry.id}`,
+        kind: "divider",
+      });
+    }
+    entries.push(entry);
+  }
+  if (awaySummary.value && !awayInserted) {
+    entries.push({
+      id: awaySummary.value.id,
+      kind: "away-summary",
+      summary: awaySummary.value,
+    });
+  }
+  return entries;
+});
+
+const virtualStream = useVirtualTurnList({
+  items: renderedStreamEntries,
+  scrollContainer,
+  estimateSize(entry) {
+    if (entry?.kind === "turn") return 172;
+    if (entry?.kind === "divider") return 72;
+    if (entry?.kind === "away-summary") return 110;
+    if (entry?.kind === "activity") return 96;
+    if (entry?.kind === "thinking") return 96;
+    return 120;
+  },
+  overscan: 4,
+  minItemCount: 18,
+  getItemKey: (entry, index) => entry?.id || index,
+});
+
+const virtualizedStreamEntries = computed(() =>
+  virtualStream.virtualItems.value.map((entry) => entry.item),
+);
+const showVirtualTopSpacer = computed(
+  () => virtualStream.enabled.value && virtualStream.topSpacerHeight.value > 0,
+);
+const showVirtualBottomSpacer = computed(
+  () => virtualStream.enabled.value && virtualStream.bottomSpacerHeight.value > 0,
+);
+const virtualTopSpacerHeight = computed(() => virtualStream.topSpacerHeight.value);
+const virtualBottomSpacerHeight = computed(() => virtualStream.bottomSpacerHeight.value);
+
+const historyTopSentinel = computed(() => historyPager.topSentinel.value);
+const showHistoryBoundary = computed(() => !!historyTopSentinel.value);
+const showSessionHistoryHint = computed(() => {
+  return !historyTopSentinel.value && !store.loading && baseStreamEntries.value.length > 0 && (store.sessionList?.length > 1 || mainChatTurns.value.length >= 8);
+});
+
+function openHistoryFromSentinel() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(OPEN_SESSION_HISTORY_EVENT, {
+      detail: { source: "chat-history-sentinel" },
+    }),
+  );
+}
+
+async function loadOlderMessages() {
+  await historyPager.loadOlder();
+  await nextTick();
+  virtualStream.syncViewport();
+}
+
+function handleChatScroll(event) {
+  handleScroll(event);
+  virtualStream.handleScroll(event);
+  if (!historyAutoLoadArmed.value) {
+    historyAutoLoadArmed.value = true;
+    return;
+  }
+  historyPager.handleScroll(event);
+}
+
+function jumpToLatestAndSync() {
+  jumpToLatest();
+  nextTick(() => {
+    virtualStream.syncViewport();
+  });
+}
 
 watch(
   [activeActivityLine, summaryLine, () => store.runtime.turn.phase],
@@ -443,21 +925,6 @@ function getRowClass(card) {
   return "row-assistant";
 }
 
-function bottomDistance(el) {
-  if (!el) return 0;
-  return Math.max(el.scrollHeight - el.scrollTop - el.clientHeight, 0);
-}
-
-function isNearBottom(el, threshold = 80) {
-  return bottomDistance(el) <= threshold;
-}
-
-function scrollToBottom(force = false) {
-  const el = scrollContainer.value;
-  if (!el || (!force && !autoFollowTail.value)) return;
-  el.scrollTop = el.scrollHeight;
-}
-
 async function sendMessage() {
   if (!store.canSend || !composerMessage.value.trim()) return;
   if (store.runtime.turn.active && !allowFollowUpComposer.value) return;
@@ -489,8 +956,7 @@ async function sendMessage() {
     } else {
       composerMessage.value = "";
       approvalFollowupMode.value = false;
-      autoFollowTail.value = true;
-      nextTick(() => scrollToBottom(true));
+      nextTick(() => jumpToLatest());
     }
   } catch (e) {
     store.errorMessage = "Network error";
@@ -526,6 +992,11 @@ async function stopMessage() {
 }
 
 async function decideApproval({ approvalId, decision }) {
+  const localApproval = localMcpApprovals.value.find((item) => item.id === approvalId || item.approvalId === approvalId);
+  if (localApproval) {
+    completeLocalMcpApproval(localApproval, decision);
+    return;
+  }
   try {
     store.setTurnPhase("executing");
     const response = await fetch(`/api/v1/approvals/${approvalId}/decision`, {
@@ -543,8 +1014,7 @@ async function decideApproval({ approvalId, decision }) {
       } else {
         approvalFollowupMode.value = false;
       }
-      autoFollowTail.value = true;
-      nextTick(() => scrollToBottom(true));
+      nextTick(() => jumpToLatest());
     }
   } catch (e) {
     console.error(e);
@@ -567,8 +1037,7 @@ async function handleChoice({ requestId, answers }) {
       return;
     }
     store.errorMessage = "";
-    autoFollowTail.value = true;
-    nextTick(() => scrollToBottom(true));
+    nextTick(() => jumpToLatest());
   } catch (e) {
     console.error(e);
     store.errorMessage = "choice submit failed";
@@ -685,28 +1154,6 @@ function openWorkspaceProtocol() {
   window.location.href = "/protocol";
 }
 
-function handleScroll(e) {
-  const el = e.target;
-  autoFollowTail.value = isNearBottom(el);
-}
-
-watch(
-  () => ({
-    cardCount: visibleCards.value.length,
-    lastCardId: visibleCards.value[visibleCards.value.length - 1]?.id || "",
-    lastCardUpdatedAt: visibleCards.value[visibleCards.value.length - 1]?.updatedAt || "",
-    lastCardTextLength: (visibleCards.value[visibleCards.value.length - 1]?.text || "").length,
-    lastCardOutputLength: (visibleCards.value[visibleCards.value.length - 1]?.output || "").length,
-    thinking: showThinkingCard.value,
-    feedback: hasTopFeedback.value,
-  }),
-  async () => {
-    await nextTick();
-    scrollToBottom();
-  },
-  { deep: true }
-);
-
 watch(
   () => activity.value.viewedFiles,
   () => {
@@ -751,10 +1198,6 @@ watch(
 
 onBeforeUnmount(() => {
   clearThinkingPrelude();
-  if (contentResizeObserver) {
-    contentResizeObserver.disconnect();
-    contentResizeObserver = null;
-  }
   window.removeEventListener("keydown", handleTerminalDockToggleKeydown);
   if (terminalDockDragState?.handleMove) {
     window.removeEventListener("mousemove", terminalDockDragState.handleMove);
@@ -766,14 +1209,6 @@ onBeforeUnmount(() => {
 });
 
 onMounted(() => {
-  nextTick(() => scrollToBottom(true));
-  if (typeof ResizeObserver === "undefined" || !scrollContent.value) {
-    return;
-  }
-  contentResizeObserver = new ResizeObserver(() => {
-    scrollToBottom();
-  });
-  contentResizeObserver.observe(scrollContent.value);
   window.addEventListener("keydown", handleTerminalDockToggleKeydown);
   terminalDockMaxHeight = Math.max(260, Math.floor(window.innerHeight * 0.72));
 });
@@ -828,7 +1263,7 @@ watch(
     <span>{{ codexReconnectLabel }}</span>
   </div>
 
-  <div class="chat-container" ref="scrollContainer" :style="chatContainerStyle" @scroll="handleScroll">
+  <div class="chat-container" ref="scrollContainer" :style="chatContainerStyle" @scroll="handleChatScroll">
     <div class="chat-stream-inner" ref="scrollContent">
       <div v-if="store.loading" class="chat-banner loading-banner">
         <span class="spinner"></span> 正在初始化...
@@ -842,7 +1277,7 @@ watch(
         <button class="workspace-banner-btn" @click="openWorkspaceProtocol">{{ workspaceDetailLinkLabel }}</button>
       </div>
 
-      <div v-if="!visibleCards.length && !store.loading && !showThinking" class="empty-state-canvas">
+      <div v-if="!streamCards.length && !store.loading && !showThinking" class="empty-state-canvas">
         <BotIcon size="48" class="empty-icon" />
         <h2>What can I help you build?</h2>
         <p>I can help you write code, manage servers, execute commands, and orchestrate complex tasks.</p>
@@ -855,65 +1290,173 @@ watch(
       <p v-if="store.errorMessage" class="chat-banner error">{{ store.errorMessage }}</p>
 
       <div class="chat-stream">
+        <div v-if="showHistoryBoundary && historyTopSentinel" class="chat-history-sentinel" :class="`kind-${historyTopSentinel.kind}`" data-testid="chat-history-sentinel">
+          <div class="chat-history-sentinel-copy">
+            <span class="chat-history-sentinel-title">{{ historyTopSentinel.text }}</span>
+            <span v-if="historyTopSentinel.detail" class="chat-history-sentinel-detail">{{ historyTopSentinel.detail }}</span>
+          </div>
+          <div class="chat-history-sentinel-actions">
+            <button
+              v-if="historyTopSentinel.kind === 'compact' || historyTopSentinel.kind === 'error'"
+              type="button"
+              class="chat-history-sentinel-btn primary"
+              :data-testid="historyTopSentinel.kind === 'error' ? 'chat-history-sentinel-retry' : 'chat-history-sentinel-load-older'"
+              @click="loadOlderMessages"
+            >
+              {{ historyTopSentinel.kind === 'error' ? '重试' : '加载更早消息' }}
+            </button>
+            <button
+              v-if="historyTopSentinel.kind === 'compact' || historyTopSentinel.kind === 'error' || historyTopSentinel.kind === 'start'"
+              type="button"
+              class="chat-history-sentinel-btn"
+              data-testid="chat-history-sentinel-open"
+              @click="openHistoryFromSentinel"
+            >
+              查看完整历史
+            </button>
+          </div>
+        </div>
+
+        <div v-else-if="showSessionHistoryHint" class="chat-history-sentinel kind-hint" data-testid="chat-history-sentinel">
+          <div class="chat-history-sentinel-copy">
+            <span class="chat-history-sentinel-title">更早上下文可能已在历史中，完整会话可从历史列表查看。</span>
+          </div>
+          <div class="chat-history-sentinel-actions">
+            <button
+              type="button"
+              class="chat-history-sentinel-btn"
+              data-testid="chat-history-sentinel-open"
+              @click="openHistoryFromSentinel"
+            >
+              打开历史
+            </button>
+          </div>
+        </div>
+
         <div
-          v-for="card in visibleCards"
-          :key="card.id"
-          class="stream-row"
-          :class="getRowClass(card)"
-        >
-          <CardItem
-            :card="card"
-            :session-kind="store.snapshot.kind"
-            @approval="decideApproval"
-            @choice="handleChoice"
-            @retry="handleRetry"
-            @refresh="handleRefresh"
+          v-if="showVirtualTopSpacer"
+          class="chat-virtual-spacer"
+          data-testid="chat-virtual-top-spacer"
+          :style="{ height: `${virtualTopSpacerHeight}px` }"
+          aria-hidden="true"
+        />
+
+        <template v-for="entry in virtualizedStreamEntries" :key="entry.id">
+          <div v-if="entry.kind === 'divider'" class="chat-unread-divider" data-testid="chat-unread-divider">
+            <span class="chat-unread-divider-line" />
+            <span class="chat-unread-divider-label">未读更新</span>
+            <span class="chat-unread-divider-count">{{ unreadCount }} 条新结果</span>
+            <span class="chat-unread-divider-line" />
+          </div>
+
+          <ChatTurnGroup
+            v-else-if="entry.kind === 'turn'"
+            :turn="entry.turn"
+            @action="handleTurnMcpAction"
+            @detail="handleMcpSurfaceDetail"
+            @pin="handleMcpSurfacePin"
+            @refresh="handleMcpSurfaceRefresh"
           />
-        </div>
 
-        <div v-if="showThinking && hasTopFeedback" class="activity-summary">
-          <button
-            v-if="activeActivityLine"
-            type="button"
-            class="activity-line plain"
-            :disabled="!activeLineExpandable"
-            @click="toggleActiveLineDetails"
-          >
-            {{ activeActivityLine }}
-          </button>
-
-          <button
-            v-else-if="summaryLine"
-            type="button"
-            class="activity-line"
-            :disabled="!summaryExpandable"
-            @click="toggleSummaryDetails"
-          >
-            {{ summaryLine }}
-          </button>
-
-          <div v-if="showFileDetails && viewedFileDetails.length" class="activity-details">
-            <div v-for="entry in viewedFileDetails" :key="entry.label || entry.path" class="activity-detail-item">
-              {{ entry.label || entry.path }}
+          <div v-else-if="entry.kind === 'away-summary'" class="chat-away-summary" data-testid="chat-away-summary">
+            <div class="chat-away-summary-kicker">你离开期间有新进展</div>
+            <div class="chat-away-summary-body">
+              离开 {{ entry.summary.durationLabel }}，期间新增 {{ entry.summary.newTurnCount || entry.summary.newEntryCount }} 条更新。
+            </div>
+            <div v-if="entry.summary.latestPreview" class="chat-away-summary-preview">
+              最新结果：{{ entry.summary.latestPreview }}
             </div>
           </div>
 
-          <div v-if="showSearchDetails && searchedQueryDetails.length" class="activity-details">
-            <div v-for="entry in searchedQueryDetails" :key="entry.label || entry.query" class="activity-detail-item">
-              {{ entry.label || entry.query }}
+          <div
+            v-else-if="entry.kind === 'card'"
+            class="stream-row"
+            :class="getRowClass(entry.card)"
+          >
+            <CardItem
+              :card="entry.card"
+              :session-kind="store.snapshot.kind"
+              @approval="decideApproval"
+              @choice="handleChoice"
+              @retry="handleRetry"
+              @refresh="handleRefresh"
+            />
+          </div>
+
+          <div v-else-if="entry.kind === 'activity'" class="activity-summary">
+            <button
+              v-if="activeActivityLine"
+              type="button"
+              class="activity-line plain"
+              :disabled="!activeLineExpandable"
+              @click="toggleActiveLineDetails"
+            >
+              {{ activeActivityLine }}
+            </button>
+
+            <button
+              v-else-if="summaryLine"
+              type="button"
+              class="activity-line"
+              :disabled="!summaryExpandable"
+              @click="toggleSummaryDetails"
+            >
+              {{ summaryLine }}
+            </button>
+
+            <div v-if="showFileDetails && viewedFileDetails.length" class="activity-details">
+              <div v-for="entryItem in viewedFileDetails" :key="entryItem.label || entryItem.path" class="activity-detail-item">
+                {{ entryItem.label || entryItem.path }}
+              </div>
+            </div>
+
+            <div v-if="showSearchDetails && searchedQueryDetails.length" class="activity-details">
+              <div v-for="entryItem in searchedQueryDetails" :key="entryItem.label || entryItem.query" class="activity-detail-item">
+                {{ entryItem.label || entryItem.query }}
+              </div>
             </div>
           </div>
-        </div>
 
-        <div v-if="showThinkingCard" class="stream-row row-assistant">
-          <ThinkingCard :card="thinkingCard" />
-        </div>
+          <div v-else-if="entry.kind === 'thinking'" class="stream-row row-assistant">
+            <ThinkingCard :card="thinkingCard" />
+          </div>
+        </template>
+
+        <div
+          v-if="showVirtualBottomSpacer"
+          class="chat-virtual-spacer"
+          data-testid="chat-virtual-bottom-spacer"
+          :style="{ height: `${virtualBottomSpacerHeight}px` }"
+          aria-hidden="true"
+        />
       </div>
     </div>
   </div>
 
-  <footer class="omnibar-dock">
-    <div class="omnibar-stack">
+  <button
+    v-if="showUnreadPill"
+    type="button"
+    class="chat-unread-pill"
+    data-testid="chat-unread-pill"
+    @click="jumpToLatestAndSync"
+  >
+    {{ unreadCount }} 条新结果
+  </button>
+
+  <ChatComposerDock
+    v-model="composerMessage"
+    :placeholder="composerPlaceholder"
+    :allow-follow-up="allowFollowUpComposer"
+    :disabled="isStopped"
+    :plan-card="activePlanCard"
+    :session-kind="store.snapshot.kind"
+    :status-hint="composerStatusHint"
+    :show-composer="!hasActiveApprovalOverlay || authCardCollapsed"
+    :is-docked-bottom="!!activePlanCard || hasActiveApprovalOverlay"
+    @send="sendMessage"
+    @stop="stopMessage"
+  >
+    <template #terminal>
       <div class="chat-terminal-dock-wrap">
         <div class="chat-terminal-toolbar">
           <button
@@ -964,43 +1507,156 @@ watch(
           </div>
         </div>
       </div>
+    </template>
 
-      <div v-if="activePlanCard" class="runtime-plan-dock">
-        <PlanCard :card="activePlanCard" :session-kind="store.snapshot.kind" compact />
-      </div>
-
-      <!-- Auth Overlay -->
-      <div v-if="activeApprovalCard" class="auth-overlay-dock">
+    <template #approval>
+      <div v-if="activeApprovalCard || activeMcpApproval" class="auth-overlay-dock">
         <div v-if="!authCardCollapsed" class="auth-overlay-container">
           <div class="auth-overlay-header">
-             <div class="auth-overlay-title-group">
-               <span class="auth-overlay-title">需要您的确认</span>
-               <span v-if="activeApprovalQueueLabel" class="auth-overlay-queue-label">{{ activeApprovalQueueLabel }}</span>
-             </div>
-             <button class="icon-btn auth-collapse-btn" @click="authCardCollapsed = true">折叠审批工作台</button>
+            <div class="auth-overlay-title-group">
+              <span class="auth-overlay-title">需要您的确认</span>
+              <span v-if="activeApprovalCard && activeApprovalQueueLabel" class="auth-overlay-queue-label">{{ activeApprovalQueueLabel }}</span>
+              <span v-else-if="activeMcpApproval" class="auth-overlay-queue-label">MCP 变更待确认</span>
+            </div>
+            <button class="icon-btn auth-collapse-btn" @click="authCardCollapsed = true">折叠审批工作台</button>
           </div>
-          <div v-if="activeApprovalQueueNote" class="auth-overlay-queue-note">{{ activeApprovalQueueNote }}</div>
-          <CardItem :card="activeApprovalCard" :session-kind="store.snapshot.kind" :is-overlay="true" @approval="decideApproval" />
+          <div v-if="activeApprovalCard && activeApprovalQueueNote" class="auth-overlay-queue-note">{{ activeApprovalQueueNote }}</div>
+          <CardItem
+            v-if="activeApprovalCard"
+            :card="activeApprovalCard"
+            :session-kind="store.snapshot.kind"
+            :is-overlay="true"
+            @approval="decideApproval"
+          />
+          <div
+            v-else-if="activeMcpApproval"
+            class="chat-mcp-approval"
+            data-testid="chat-mcp-approval-overlay"
+          >
+            <div class="chat-mcp-approval-copy">
+              <strong>{{ activeMcpApproval.title }}</strong>
+              <p>{{ activeMcpApproval.summary }}</p>
+            </div>
+            <dl class="chat-mcp-approval-meta">
+              <div class="chat-mcp-approval-row">
+                <dt>目标</dt>
+                <dd>{{ formatMcpActionTarget(activeMcpApproval.action || {}, activeMcpApproval.action?.scope || {}) }}</dd>
+              </div>
+              <div class="chat-mcp-approval-row">
+                <dt>权限</dt>
+                <dd>{{ activeMcpApproval.action?.permissionPath || "未声明" }}</dd>
+              </div>
+            </dl>
+            <div class="chat-mcp-approval-actions">
+              <button
+                type="button"
+                class="option-row secondary"
+                data-testid="chat-mcp-approval-reject"
+                @click="decideApproval({ approvalId: activeMcpApproval.approvalId, decision: 'reject' })"
+              >
+                拒绝
+              </button>
+              <button
+                type="button"
+                class="option-row primary"
+                data-testid="chat-mcp-approval-accept"
+                @click="decideApproval({ approvalId: activeMcpApproval.approvalId, decision: 'accept' })"
+              >
+                同意执行
+              </button>
+            </div>
+          </div>
         </div>
-        
+
         <button v-else class="auth-restore-btn" @click="authCardCollapsed = false">
            <span>当前审批工作台已折叠</span>
            <span v-if="activeApprovalQueueLabel" class="auth-restore-queue">{{ activeApprovalQueueLabel }}</span>
         </button>
       </div>
+    </template>
+  </ChatComposerDock>
 
-      <Omnibar
-        v-if="!activeApprovalCard || authCardCollapsed"
-        v-model="composerMessage"
-        :placeholder="composerPlaceholder"
-        :allow-follow-up="allowFollowUpComposer"
-        @send="sendMessage"
-        @stop="stopMessage"
-        :disabled="isStopped"
-        :is-docked-bottom="!!activePlanCard || !!activeApprovalCard"
-      />
+  <transition name="chat-mcp-drawer-fade">
+    <div
+      v-if="isMcpDrawerOpen && activeMcpSurface"
+      class="chat-mcp-surface-drawer"
+      data-testid="chat-mcp-surface-drawer"
+      @click.self="closeMcpSurfaceDrawer"
+    >
+      <aside class="chat-mcp-surface-panel" :data-surface-kind="activeMcpSurface.kind">
+        <header class="chat-mcp-surface-head">
+          <div class="chat-mcp-surface-copy">
+            <span class="chat-mcp-surface-kicker">MCP SURFACE</span>
+            <h3>{{ activeMcpSurface.title }}</h3>
+            <p v-if="activeMcpSurface.subtitle">{{ activeMcpSurface.subtitle }}</p>
+          </div>
+          <button type="button" class="chat-mcp-surface-close" data-testid="chat-mcp-surface-close" @click="closeMcpSurfaceDrawer">
+            关闭
+          </button>
+        </header>
+
+        <div class="chat-mcp-surface-toolbar">
+          <button
+            type="button"
+            class="chat-mcp-surface-toolbar-btn"
+            data-testid="chat-mcp-surface-pin"
+            @click="pinMcpSurface(activeMcpSurface.raw)"
+          >
+            固定到 MCP 面板
+          </button>
+          <button
+            type="button"
+            class="chat-mcp-surface-toolbar-btn"
+            data-testid="chat-mcp-surface-refresh"
+            @click="handleMcpSurfaceRefresh(activeMcpSurface.raw)"
+          >
+            刷新
+          </button>
+          <button
+            type="button"
+            class="chat-mcp-surface-toolbar-btn"
+            data-testid="chat-mcp-surface-open-global"
+            @click="dispatchOpenMcpDrawer(activeMcpSurface, true)"
+          >
+            同步到全局 drawer
+          </button>
+        </div>
+
+        <div v-if="mcpPinnedSurfaces.length" class="chat-mcp-surface-pins">
+          <span class="chat-mcp-surface-pins-label">已固定</span>
+          <div class="chat-mcp-surface-pin-list">
+            <button
+              v-for="surface in mcpPinnedSurfaces"
+              :key="mcpSurfaceKey(surface)"
+              type="button"
+              class="chat-mcp-surface-pin-chip"
+              :data-testid="`chat-mcp-surface-pin-${mcpSurfaceKey(surface)}`"
+              @click="openMcpSurfaceDrawer(surface.raw || surface, { pin: true })"
+            >
+              {{ surface.title }}
+            </button>
+          </div>
+        </div>
+
+        <div class="chat-mcp-surface-body">
+          <McpBundleHost
+            v-if="activeMcpSurface.kind === 'bundle'"
+            :bundle="activeMcpSurface.raw"
+            @action="handleTurnMcpAction"
+            @open-detail="handleMcpSurfaceDetail"
+            @pin="handleMcpSurfacePin"
+          />
+          <McpUiCardHost
+            v-else
+            :card="activeMcpSurface.raw"
+            @action="handleTurnMcpAction"
+            @detail="handleMcpSurfaceDetail"
+            @refresh="handleMcpSurfaceRefresh"
+          />
+        </div>
+      </aside>
     </div>
-  </footer>
+  </transition>
 </template>
 
 <style scoped>
@@ -1088,6 +1744,150 @@ watch(
 
 .workspace-banner-btn:hover {
   background: #eff6ff;
+}
+
+.chat-unread-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 6px;
+}
+
+.chat-unread-divider-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.chat-unread-divider-label {
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.chat-unread-divider-count {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.chat-virtual-spacer {
+  width: 100%;
+  flex: none;
+  pointer-events: none;
+}
+
+.chat-unread-pill {
+  position: fixed;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  z-index: 18;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+  color: #1d4ed8;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.chat-history-sentinel {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 10px 36px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-history-sentinel-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-history-sentinel-title {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.chat-history-sentinel-detail {
+  color: #64748b;
+}
+
+.chat-history-sentinel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chat-history-sentinel-btn {
+  border: none;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.chat-history-sentinel-btn.primary {
+  background: #0f172a;
+  color: white;
+}
+
+.chat-history-sentinel-btn:hover {
+  background: rgba(15, 23, 42, 0.12);
+}
+
+.chat-history-sentinel-btn.primary:hover {
+  background: #1e293b;
+}
+
+.chat-away-summary {
+  margin: 0 0 10px 36px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(239, 246, 255, 0.92);
+  border: 1px solid rgba(147, 197, 253, 0.35);
+  color: #0f172a;
+}
+
+.chat-away-summary-kicker {
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chat-away-summary-body {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.chat-away-summary-preview {
+  margin-top: 6px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .activity-summary {
@@ -1288,6 +2088,181 @@ watch(
   padding: 6px 12px 0;
   font-size: 10px;
   color: #94a3b8;
+}
+
+.chat-mcp-surface-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 28;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(15, 23, 42, 0.26);
+  backdrop-filter: blur(8px);
+}
+
+.chat-mcp-surface-panel {
+  width: min(760px, calc(100vw - 32px));
+  height: calc(100vh - 28px);
+  margin: 14px 14px 14px 0;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 24px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.99));
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+  overflow: auto;
+}
+
+.chat-mcp-surface-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.chat-mcp-surface-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.chat-mcp-surface-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #0ea5e9;
+}
+
+.chat-mcp-surface-copy h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #0f172a;
+}
+
+.chat-mcp-surface-copy p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.chat-mcp-surface-close,
+.chat-mcp-surface-toolbar-btn,
+.chat-mcp-surface-pin-chip {
+  border: none;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.9);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat-mcp-surface-close {
+  padding: 8px 12px;
+}
+
+.chat-mcp-surface-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-mcp-surface-toolbar-btn {
+  padding: 8px 12px;
+}
+
+.chat-mcp-surface-pins {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.chat-mcp-surface-pins-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.chat-mcp-surface-pin-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-mcp-surface-pin-chip {
+  padding: 7px 12px;
+}
+
+.chat-mcp-surface-body {
+  display: grid;
+  gap: 12px;
+}
+
+.chat-mcp-drawer-fade-enter-active,
+.chat-mcp-drawer-fade-leave-active {
+  transition: opacity 0.18s ease;
+}
+
+.chat-mcp-drawer-fade-enter-from,
+.chat-mcp-drawer-fade-leave-to {
+  opacity: 0;
+}
+
+.chat-mcp-approval {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.chat-mcp-approval-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.chat-mcp-approval-copy strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.chat-mcp-approval-copy p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.chat-mcp-approval-meta {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.chat-mcp-approval-row {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.chat-mcp-approval-row dt {
+  color: #64748b;
+}
+
+.chat-mcp-approval-row dd {
+  margin: 0;
+  color: #0f172a;
+}
+
+.chat-mcp-approval-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .auth-collapse-btn {

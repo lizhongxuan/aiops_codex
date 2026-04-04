@@ -287,7 +287,6 @@ onBeforeUnmount(() => {
     <section v-else class="approval-empty">
       <span class="section-label">状态</span>
       <strong>{{ emptyLabel }}</strong>
-      <p>等待主页面传入当前审批上下文后，这里会固定显示 host、命令、倒计时和决策按钮。</p>
     </section>
   </aside>
 </template>
@@ -298,8 +297,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: 50%;
+  height: 100%;
+  flex: 1 1 0;
   overflow: hidden;
+  background: #f8fafc;
 }
 
 .approval-list {
@@ -520,8 +521,9 @@ onBeforeUnmount(() => {
 .action-btn.primary:hover { background: #16a34a; }
 
 .approval-empty {
-  padding: 16px;
+  padding: 10px 14px;
 }
+
 
 .approval-timer {
   font-size: 11px;

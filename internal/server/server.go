@@ -141,6 +141,7 @@ type choiceAnswerInput struct {
 	Value   string `json:"value"`
 	Label   string `json:"label,omitempty"`
 	IsOther bool   `json:"isOther,omitempty"`
+	Note    string `json:"note,omitempty"`
 }
 
 type choiceAnswerRequest struct {
@@ -291,6 +292,10 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/agent-profiles/", a.withSession(a.handleAgentProfileByID))
 	httpMux.HandleFunc("/api/v1/agent-profiles/export", a.withSession(a.handleAgentProfilesExport))
 	httpMux.HandleFunc("/api/v1/agent-profiles/import", a.withSession(a.handleAgentProfilesImport))
+	httpMux.HandleFunc("/api/v1/agent-skills", a.withSession(a.handleAgentSkills))
+	httpMux.HandleFunc("/api/v1/agent-skills/", a.withSession(a.handleAgentSkillByID))
+	httpMux.HandleFunc("/api/v1/agent-mcps", a.withSession(a.handleAgentMCPs))
+	httpMux.HandleFunc("/api/v1/agent-mcps/", a.withSession(a.handleAgentMCPByID))
 	httpMux.HandleFunc("/api/v1/agent-profile", a.withSession(a.handleAgentProfile))
 	httpMux.HandleFunc("/api/v1/agent-profile/reset", a.withSession(a.handleAgentProfileReset))
 	httpMux.HandleFunc("/api/v1/agent-profile/preview", a.withSession(a.handleAgentProfilePreview))
@@ -766,6 +771,8 @@ func (a *App) handleAgentProfiles(w http.ResponseWriter, r *http.Request, sessio
 	a.store.TouchSession(sessionID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":         a.store.AgentProfiles(),
+		"skillCatalog":  a.skillCatalog(),
+		"mcpCatalog":    a.mcpCatalog(),
 		"configVersion": model.AgentProfileConfigVersion,
 	})
 }
@@ -2006,7 +2013,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
-		if a.isWorkspaceRouteThread(sessionID) {
+		if a.isWorkspaceDirectThread(sessionID) {
 			return
 		}
 		a.setRuntimeTurnPhase(sessionID, "planning")
@@ -3451,6 +3458,18 @@ func (a *App) isWorkspaceRouteThread(sessionID string) bool {
 	return session.Meta.Kind == model.SessionKindWorkspace && strings.HasSuffix(strings.TrimSpace(session.ThreadConfigHash), ":workspace-route")
 }
 
+func (a *App) isWorkspaceReadonlyThread(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	return session.Meta.Kind == model.SessionKindWorkspace && strings.HasSuffix(strings.TrimSpace(session.ThreadConfigHash), ":workspace-readonly")
+}
+
+func (a *App) isWorkspaceDirectThread(sessionID string) bool {
+	return a.isWorkspaceRouteThread(sessionID) || a.isWorkspaceReadonlyThread(sessionID)
+}
+
 func (a *App) cardIsFinal(sessionID, cardID string) bool {
 	session := a.store.Session(sessionID)
 	if session == nil {
@@ -4315,140 +4334,13 @@ func (a *App) mergeAndValidateAgentProfile(sessionID, requestedProfileID string,
 	merged = model.CompleteAgentProfile(merged)
 	merged.UpdatedAt = model.NowString()
 	merged.UpdatedBy = a.auditOperator(sessionID)
-	if err := validateAgentProfile(merged); err != nil {
+	if err := a.validateAgentProfile(merged); err != nil {
 		return model.AgentProfile{}, model.AgentProfile{}, err
 	}
 	if err := validateAgentProfileRiskChange(current, merged, riskConfirmed); err != nil {
 		return model.AgentProfile{}, model.AgentProfile{}, err
 	}
 	return merged, current, nil
-}
-
-func validateAgentProfile(profile model.AgentProfile) error {
-	fieldErrors := make(map[string]string)
-	addFieldError := func(field, message string) {
-		if strings.TrimSpace(field) == "" || strings.TrimSpace(message) == "" {
-			return
-		}
-		if _, exists := fieldErrors[field]; exists {
-			return
-		}
-		fieldErrors[field] = message
-	}
-	profileID := strings.TrimSpace(profile.ID)
-	switch profileID {
-	case string(model.AgentProfileTypeMainAgent), string(model.AgentProfileTypeHostAgentDefault):
-	default:
-		addFieldError("id", fmt.Sprintf("unsupported profile id %q", profileID))
-	}
-	switch strings.TrimSpace(profile.Type) {
-	case string(model.AgentProfileTypeMainAgent), string(model.AgentProfileTypeHostAgentDefault):
-	default:
-		addFieldError("type", fmt.Sprintf("unsupported profile type %q", profile.Type))
-	}
-	if strings.TrimSpace(profile.Name) == "" {
-		addFieldError("name", "profile name is required")
-	}
-	if prompt := strings.TrimSpace(profile.SystemPrompt.Content); prompt == "" {
-		addFieldError("systemPrompt.content", "system prompt is required")
-	} else if len([]rune(prompt)) > 12000 {
-		addFieldError("systemPrompt.content", "system prompt is too long")
-	}
-	if timeout := profile.CommandPermissions.DefaultTimeoutSeconds; timeout <= 0 || timeout > 3600 {
-		addFieldError("commandPermissions.defaultTimeoutSeconds", "default timeout must be between 1 and 3600 seconds")
-	}
-	validCommandModes := map[string]struct{}{
-		model.AgentPermissionModeAllow:            {},
-		model.AgentPermissionModeApprovalRequired: {},
-		model.AgentPermissionModeReadonlyOnly:     {},
-		model.AgentPermissionModeDeny:             {},
-	}
-	validCommandCategories := map[string]struct{}{
-		"system_inspection":   {},
-		"service_read":        {},
-		"network_read":        {},
-		"file_read":           {},
-		"service_mutation":    {},
-		"filesystem_mutation": {},
-		"package_mutation":    {},
-	}
-	if _, ok := validCommandModes[profile.CommandPermissions.DefaultMode]; !ok {
-		addFieldError("commandPermissions.defaultMode", fmt.Sprintf("unsupported command default mode %q", profile.CommandPermissions.DefaultMode))
-	}
-	for category, mode := range profile.CommandPermissions.CategoryPolicies {
-		if _, ok := validCommandCategories[category]; !ok {
-			addFieldError("commandPermissions.categoryPolicies."+category, fmt.Sprintf("unsupported command category %q", category))
-			continue
-		}
-		if _, ok := validCommandModes[mode]; !ok {
-			addFieldError("commandPermissions.categoryPolicies."+category, fmt.Sprintf("unsupported command mode %q for %s", mode, category))
-		}
-	}
-	for index, root := range profile.CommandPermissions.AllowedWritableRoots {
-		if strings.TrimSpace(root) == "" {
-			addFieldError(fmt.Sprintf("commandPermissions.allowedWritableRoots.%d", index), "writable roots must not contain empty paths")
-		}
-	}
-	validCapabilityStates := map[string]struct{}{
-		model.AgentCapabilityEnabled:          {},
-		model.AgentCapabilityApprovalRequired: {},
-		model.AgentCapabilityDisabled:         {},
-	}
-	capabilityFields := map[string]string{
-		"capabilityPermissions.commandExecution": profile.CapabilityPermissions.CommandExecution,
-		"capabilityPermissions.fileRead":         profile.CapabilityPermissions.FileRead,
-		"capabilityPermissions.fileSearch":       profile.CapabilityPermissions.FileSearch,
-		"capabilityPermissions.fileChange":       profile.CapabilityPermissions.FileChange,
-		"capabilityPermissions.terminal":         profile.CapabilityPermissions.Terminal,
-		"capabilityPermissions.webSearch":        profile.CapabilityPermissions.WebSearch,
-		"capabilityPermissions.webOpen":          profile.CapabilityPermissions.WebOpen,
-		"capabilityPermissions.approval":         profile.CapabilityPermissions.Approval,
-		"capabilityPermissions.multiAgent":       profile.CapabilityPermissions.MultiAgent,
-		"capabilityPermissions.plan":             profile.CapabilityPermissions.Plan,
-		"capabilityPermissions.summary":          profile.CapabilityPermissions.Summary,
-	}
-	for field, state := range capabilityFields {
-		if _, ok := validCapabilityStates[state]; !ok {
-			addFieldError(field, fmt.Sprintf("unsupported capability state %q", state))
-		}
-	}
-	supportedSkillIDs := make(map[string]struct{}, len(model.SupportedAgentSkills()))
-	for _, item := range model.SupportedAgentSkills() {
-		supportedSkillIDs[item.ID] = struct{}{}
-	}
-	validActivationModes := map[string]struct{}{
-		model.AgentSkillActivationDefault:  {},
-		model.AgentSkillActivationExplicit: {},
-		model.AgentSkillActivationDisabled: {},
-	}
-	for index, skill := range profile.Skills {
-		if _, ok := supportedSkillIDs[strings.TrimSpace(skill.ID)]; !ok {
-			addFieldError(fmt.Sprintf("skills.%d.id", index), fmt.Sprintf("unsupported skill id %q", skill.ID))
-		}
-		if _, ok := validActivationModes[model.NormalizeAgentSkillActivationMode(skill.ActivationMode)]; !ok {
-			addFieldError(fmt.Sprintf("skills.%d.activationMode", index), fmt.Sprintf("unsupported activation mode %q", skill.ActivationMode))
-		}
-	}
-	supportedMCPIDs := make(map[string]struct{}, len(model.SupportedAgentMCPs()))
-	for _, item := range model.SupportedAgentMCPs() {
-		supportedMCPIDs[item.ID] = struct{}{}
-	}
-	validMCPPermissions := map[string]struct{}{
-		model.AgentMCPPermissionReadonly:  {},
-		model.AgentMCPPermissionReadwrite: {},
-	}
-	for index, item := range profile.MCPs {
-		if _, ok := supportedMCPIDs[strings.TrimSpace(item.ID)]; !ok {
-			addFieldError(fmt.Sprintf("mcps.%d.id", index), fmt.Sprintf("unsupported MCP id %q", item.ID))
-		}
-		if _, ok := validMCPPermissions[model.NormalizeAgentMCPPermission(item.Permission)]; !ok {
-			addFieldError(fmt.Sprintf("mcps.%d.permission", index), fmt.Sprintf("unsupported MCP permission %q", item.Permission))
-		}
-	}
-	if len(fieldErrors) > 0 {
-		return newAgentProfileValidationError(fieldErrors)
-	}
-	return nil
 }
 
 func newAgentProfileValidationError(fieldErrors map[string]string) error {
@@ -5570,6 +5462,10 @@ func choiceAnswerSummary(questions []model.ChoiceQuestion, answers []choiceAnswe
 		}
 		if label == "" {
 			continue
+		}
+		note := strings.TrimSpace(answer.Note)
+		if note != "" {
+			label = label + "（补充：" + note + "）"
 		}
 		if index < len(questions) && questions[index].Header != "" {
 			summary = append(summary, questions[index].Header+": "+label)

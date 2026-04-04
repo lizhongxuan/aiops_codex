@@ -521,6 +521,27 @@ func (a *App) startWorkspacePlanningTurn(ctx context.Context, mission *orchestra
 	return nil
 }
 
+func (a *App) startWorkspaceReadonlyTurn(ctx context.Context, sessionID, hostID, message string) error {
+	session := a.store.EnsureSession(sessionID)
+	expectedHash := a.workspaceReadonlyThreadConfigHash(defaultHostID(hostID))
+	if session.ThreadID != "" && strings.TrimSpace(session.ThreadConfigHash) != strings.TrimSpace(expectedHash) {
+		a.clearSessionThreadBinding(sessionID)
+		session.ThreadID = ""
+	}
+
+	a.startRuntimeTurn(sessionID, hostID)
+	threadID, err := a.ensureThreadWithSpec(ctx, sessionID, a.buildWorkspaceReadonlyThreadStartSpec(ctx, sessionID, hostID))
+	if err != nil {
+		a.finishRuntimeTurn(sessionID, "failed")
+		return err
+	}
+	if err := a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildWorkspaceReadonlyTurnStartSpec(ctx, hostID, message)); err != nil {
+		a.finishRuntimeTurn(sessionID, "failed")
+		return err
+	}
+	return nil
+}
+
 func (a *App) ensureInternalSessionFromWorkspace(targetSessionID, workspaceSessionID string, meta model.SessionMeta, hostID string) {
 	a.store.EnsureSessionWithMeta(targetSessionID, meta)
 	a.store.SetSelectedHost(targetSessionID, hostID)
@@ -1109,9 +1130,37 @@ func (a *App) handleMissionTurnCompleted(sessionID, phase string) {
 				a.broadcastSnapshot(sessionID)
 				return
 			case "host_readonly":
+				targetHostID := model.ServerLocalHostID
+				if session := a.store.Session(sessionID); session != nil {
+					targetHostID = defaultHostID(session.SelectedHostID)
+				}
 				if decision.TargetHost != "" {
+					targetHostID = decision.TargetHost
 					a.store.SetSelectedHost(sessionID, decision.TargetHost)
 				}
+				userMessage := a.latestCompletedUserText(sessionID)
+				if userMessage == "" {
+					userMessage = visibleReply
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+				defer cancel()
+				if err := a.startWorkspaceReadonlyTurn(ctx, sessionID, targetHostID, userMessage); err != nil {
+					a.finishRuntimeTurn(sessionID, "failed")
+					a.store.UpsertCard(sessionID, model.Card{
+						ID:        model.NewID("error"),
+						Type:      "ErrorCard",
+						Title:     "Workspace readonly failed",
+						Message:   err.Error(),
+						Text:      err.Error(),
+						Status:    "failed",
+						CreatedAt: model.NowString(),
+						UpdatedAt: model.NowString(),
+					})
+					a.broadcastSnapshot(sessionID)
+					return
+				}
+				a.broadcastSnapshot(sessionID)
+				return
 			}
 			a.finishRuntimeTurn(sessionID, phase)
 			a.broadcastSnapshot(sessionID)

@@ -2,14 +2,19 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { AlertTriangleIcon, Loader2Icon, PanelsTopLeftIcon, RefreshCwIcon } from "lucide-vue-next";
 import ProtocolApprovalRail from "../components/protocol-workspace/ProtocolApprovalRail.vue";
+import ProtocolAgentDetailModal from "../components/protocol-workspace/ProtocolAgentDetailModal.vue";
 import ProtocolConversationPane from "../components/protocol-workspace/ProtocolConversationPane.vue";
 import ProtocolEventTimeline from "../components/protocol-workspace/ProtocolEventTimeline.vue";
 import ProtocolEvidenceModal from "../components/protocol-workspace/ProtocolEvidenceModal.vue";
-import { buildProtocolEvidenceTabs, buildProtocolWorkspaceModel } from "../lib/protocolWorkspaceVm";
+import { buildMcpDecisionNotice, buildSyntheticMcpApproval, buildSyntheticMcpEvent, formatMcpActionLabel, formatMcpActionTarget, isMcpMutationAction } from "../lib/mcpActionRuntime";
+import { buildProtocolAgentDetailModel, buildProtocolEvidenceTabs, buildProtocolWorkspaceModel } from "../lib/protocolWorkspaceVm";
 import { compactText } from "../lib/workspaceViewModel";
 import { useAppStore } from "../store";
 
 const store = useAppStore();
+const OPEN_SESSION_HISTORY_EVENT = "codex:open-session-history";
+const OPEN_MCP_DRAWER_EVENT = "codex:open-mcp-drawer";
+const MCP_SURFACE_TAB = "mcp-surface";
 
 const refreshBusy = ref(false);
 const decisionBusy = ref(false);
@@ -23,12 +28,21 @@ const selectedHostId = ref("");
 const selectedStepId = ref("");
 const selectedApprovalId = ref("");
 const selectedMessageId = ref("");
+const selectedMcpSurface = ref(null);
+const selectedAgentId = ref("");
+const agentDetailOpen = ref(false);
 const evidenceSource = ref("mission");
 const workspaceBootstrapBusy = ref(false);
 const workspaceBootstrapAttempted = ref(false);
+const localMcpApprovals = ref([]);
+const localMcpEvents = ref([]);
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 function normalizePhaseLabel(value) {
@@ -83,6 +97,202 @@ function pushActionNotice(message, tone = "info") {
   actionTone.value = tone;
 }
 
+function pushMcpEvent(action, options = {}) {
+  localMcpEvents.value = [
+    ...localMcpEvents.value,
+    buildSyntheticMcpEvent(action, options),
+  ];
+}
+
+function buildMcpDrawerSurface(surface) {
+  const normalized = normalizeMcpSurface(surface);
+  const base = {
+    kind: normalized.kind,
+    source: normalized.source,
+  };
+  if (normalized.kind === "bundle") {
+    return {
+      ...base,
+      bundle: normalized.bundle || normalized,
+    };
+  }
+  return {
+    ...base,
+    card: normalized.card || normalized,
+  };
+}
+
+function dispatchMcpDrawer(surface, pin = false) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(OPEN_MCP_DRAWER_EVENT, {
+      detail: {
+        source: "protocol-mcp-surface",
+        pin: Boolean(pin),
+        surface: buildMcpDrawerSurface(surface),
+      },
+    }),
+  );
+}
+
+function normalizeMcpSurface(surface) {
+  const source = asObject(surface);
+  const bundle = asObject(source.bundle || source);
+  const card = asObject(source.card || source);
+  const kind = compactText(source.kind || source.surfaceKind || (bundle.bundleKind ? "bundle" : card.uiKind ? "card" : "card")).toLowerCase();
+  return {
+    ...source,
+    kind: kind === "bundle" ? "bundle" : "card",
+    bundle: Object.keys(bundle).length ? bundle : null,
+    card: Object.keys(card).length ? card : null,
+    source: compactText(source.source || bundle.source || card.source || "protocol-workspace"),
+  };
+}
+
+function mcpSurfaceTitle(surface) {
+  const normalized = normalizeMcpSurface(surface);
+  if (normalized.kind === "bundle") {
+    const bundle = normalized.bundle || {};
+    const subject = bundle.subject || {};
+    return [subject.type || "service", subject.name || subject.service || bundle.title || "MCP 聚合面板", subject.env || ""]
+      .filter(Boolean)
+      .join(" / ");
+  }
+  const card = normalized.card || {};
+  const action = card.action || card.actions?.[0] || {};
+  return formatMcpActionLabel(action) || card.title || "MCP 操作面板";
+}
+
+function mcpSurfaceSummary(surface) {
+  const normalized = normalizeMcpSurface(surface);
+  if (normalized.kind === "bundle") {
+    const bundle = normalized.bundle || {};
+    return compactText(bundle.summary || bundle.rootCause || bundle.root_cause || "MCP 聚合面板详情");
+  }
+  const card = normalized.card || {};
+  const action = card.action || card.actions?.[0] || {};
+  return compactText(card.summary || action.confirmText || action.description || "MCP 操作详情");
+}
+
+function mcpSurfaceItems(surface) {
+  const normalized = normalizeMcpSurface(surface);
+  if (normalized.kind === "bundle") {
+    const bundle = normalized.bundle || {};
+    const sections = asArray(bundle.sections);
+    const subject = bundle.subject || {};
+    const headRows = [
+      { label: "类型", value: bundle.bundleKind || "mcp_bundle" },
+      { label: "主题", value: [subject.type || "", subject.name || subject.service || ""].filter(Boolean).join(" / ") || "未指定" },
+      { label: "范围", value: [bundle.scope?.service, bundle.scope?.hostId, bundle.scope?.env, bundle.scope?.cluster].filter(Boolean).join(" / ") || "未指定" },
+      { label: "时效", value: bundle.freshness?.label || bundle.freshness?.capturedAt || "未声明" },
+      { label: "分区", value: sections.length ? `${sections.length} 个分区` : "无分区" },
+    ];
+    const sectionRows = sections.map((section, index) => ({
+      label: `${section?.title || section?.kind || `Section ${index + 1}`}`,
+      value: [section?.summary || "", `${asArray(section?.cards).length || 0} 个卡片`].filter(Boolean).join(" · ") || "已聚合",
+    }));
+    return [...headRows, ...sectionRows];
+  }
+
+  const card = normalized.card || {};
+  const action = card.action || card.actions?.[0] || {};
+  const scope = asObject(card.scope || action.scope);
+  return [
+    { label: "类型", value: card.uiKind || "action_panel" },
+    { label: "操作", value: formatMcpActionLabel(action) || card.title || "未命名操作" },
+    { label: "目标", value: formatMcpActionTarget(action, scope) },
+    { label: "权限路径", value: action.permissionPath || action.permission_path || "未声明" },
+    { label: "作用范围", value: [scope.service, scope.hostId, scope.env, scope.cluster].filter(Boolean).join(" / ") || "未指定" },
+    { label: "时效", value: card.freshness?.label || card.freshness?.capturedAt || "未声明" },
+  ];
+}
+
+function openMcpSurfaceEvidence(surface) {
+  const normalized = normalizeMcpSurface(surface);
+  selectedMcpSurface.value = normalized;
+  const hostId = normalized.kind === "bundle"
+    ? compactText(normalized.bundle?.scope?.hostId || normalized.bundle?.hostId || "")
+    : compactText(normalized.card?.scope?.hostId || normalized.card?.hostId || "");
+  if (hostId) {
+    selectedHostId.value = hostId;
+  }
+  evidenceSource.value = "mcp-surface";
+  evidenceTab.value = MCP_SURFACE_TAB;
+  evidenceOpen.value = true;
+}
+
+function handleMcpSurfaceDetail(surface) {
+  openMcpSurfaceEvidence(surface);
+  pushActionNotice(`${mcpSurfaceTitle(surface)} 已打开详情。`, "info");
+}
+
+function handleMcpSurfacePin(surface) {
+  dispatchMcpDrawer(surface, true);
+  pushActionNotice(`${mcpSurfaceTitle(surface)} 已固定到全局 MCP 抽屉。`, "info");
+}
+
+async function handleMcpSurfaceRefresh(surface) {
+  pushActionNotice(`${mcpSurfaceTitle(surface)} 已请求刷新。`, "info");
+  await refreshProtocolState();
+}
+
+function queueLocalMcpApproval(action) {
+  const approval = buildSyntheticMcpApproval(action, {
+    scope: action?.scope || {},
+    summary: action?.confirmText || "等待你确认后继续执行该 MCP 变更操作。",
+  });
+  localMcpApprovals.value = [
+    ...localMcpApprovals.value.filter((item) => item.id !== approval.id),
+    approval,
+  ];
+  selectedApprovalId.value = approval.id;
+  pushMcpEvent(action, {
+    approvalId: approval.approvalId,
+    hostId: approval.hostId,
+    text: `${formatMcpActionLabel(action)} 已进入审批队列`,
+    tone: "warning",
+  });
+  pushActionNotice(`${formatMcpActionLabel(action)} 已进入右侧审批栏。`, "warning");
+}
+
+function settleLocalMcpApproval(approval, decision) {
+  localMcpApprovals.value = localMcpApprovals.value.filter((item) => item.id !== approval.id && item.approvalId !== approval.approvalId);
+  const message = buildMcpDecisionNotice(approval.action || {}, decision);
+  pushMcpEvent(approval.action || {}, {
+    approvalId: approval.approvalId,
+    hostId: approval.hostId,
+    text: message,
+    tone: decision === "decline" || decision === "reject" ? "warning" : "success",
+  });
+  pushActionNotice(message, decision === "decline" || decision === "reject" ? "warning" : "success");
+  if (selectedApprovalId.value === approval.id) {
+    selectedApprovalId.value = localMcpApprovals.value[0]?.id || "";
+  }
+}
+
+function handleMcpAction(action) {
+  if (!action || typeof action !== "object") return;
+  if (isMcpMutationAction(action)) {
+    queueLocalMcpApproval(action);
+    return;
+  }
+  const message = `${formatMcpActionLabel(action)} 已作为只读操作加入当前工作台。`;
+  pushMcpEvent(action, {
+    text: message,
+    tone: "info",
+  });
+  pushActionNotice(message, "info");
+}
+
+function openConversationHistory() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(OPEN_SESSION_HISTORY_EVENT, {
+      detail: { source: "protocol-history-sentinel" },
+    }),
+  );
+}
+
 const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
 const recentWorkspaceSession = computed(
   () => store.sessionList.find((session) => session.kind === "workspace" && session.id !== store.activeSessionId) || null,
@@ -90,11 +300,36 @@ const recentWorkspaceSession = computed(
 const workspaceModel = computed(() => buildProtocolWorkspaceModel(store.snapshot, store.runtime));
 const hostRows = computed(() => workspaceModel.value.hostRows || []);
 const planCardModel = computed(() => workspaceModel.value.planCardModel || { stepItems: [] });
-const conversationItems = computed(() => workspaceModel.value.conversationItems || []);
-const approvalItems = computed(() => workspaceModel.value.approvalItems || []);
-const eventItems = computed(() => workspaceModel.value.eventItems || []);
+const choiceCards = computed(() => workspaceModel.value.choiceCards || []);
+const workspaceApprovalItems = computed(() => workspaceModel.value.approvalItems || []);
+const workspaceEventItems = computed(() => workspaceModel.value.eventItems || []);
+const approvalItems = computed(() => [...workspaceApprovalItems.value, ...localMcpApprovals.value]);
+const eventItems = computed(() => [...workspaceEventItems.value, ...localMcpEvents.value]);
 const timelineItems = computed(() => [...eventItems.value].reverse());
 const backgroundAgents = computed(() => workspaceModel.value.backgroundAgents || []);
+const selectedAgentBackground = computed(() => {
+  if (selectedAgentId.value) {
+    return backgroundAgents.value.find((agent) => agent.id === selectedAgentId.value) || null;
+  }
+  return backgroundAgents.value[0] || null;
+});
+const selectedAgentHostRow = computed(() => {
+  const agentId = compactText(selectedAgentBackground.value?.hostId || selectedAgentBackground.value?.id || selectedAgentId.value);
+  if (!agentId) {
+    return null;
+  }
+  return hostRows.value.find((row) => row.hostId === agentId) || null;
+});
+const selectedAgentDetail = computed(() =>
+  buildProtocolAgentDetailModel({
+    backgroundAgent: selectedAgentBackground.value,
+    hostRow: selectedAgentHostRow.value,
+    planCardModel: planCardModel.value,
+    approvalItems: approvalItems.value,
+    eventItems: eventItems.value,
+    formattedTurns: formattedTurns.value,
+  }),
+);
 const canRestartMission = computed(() => workspaceModel.value.nextSendStartsNewMission);
 const statusBanner = computed(() => {
   const banner = workspaceModel.value.statusBanner;
@@ -231,87 +466,18 @@ const planCards = computed(() => {
       },
       status: workspaceModel.value.missionPhase || "planning",
       statusLabel: normalizePhaseLabel(workspaceModel.value.missionPhase),
-      hostAgent: asArray(backgroundAgents.value).map((agent) => ({
-        id: compactText(agent.hostId || agent.id),
-        label: compactText(agent.name || agent.hostId || agent.id),
-        status: compactText(agent.status || ""),
-      })),
+      hostAgent: [],
       detail: compactText(planCardModel.value.summary || "已收到计划投影，正在同步具体步骤。"),
-      note:
-        approvalItems.value.length > 0
-          ? `当前有 ${approvalItems.value.length} 条审批待处理，具体 step -> host-agent 映射同步后会显示在这里。`
-          : "当前还在整理 step -> host-agent 映射，稍后会直接显示在这里。",
-      tags: [
-        { id: "plan-projection-tag", label: "已收到计划投影" },
-        ...(approvalItems.value.length ? [{ id: "plan-projection-approval", label: `待审批 ${approvalItems.value.length}` }] : []),
-      ],
+      note: "当前还在整理 step -> host-agent 映射，稍后会直接显示在这里。",
+      tags: [{ id: "plan-projection-tag", label: "已收到计划投影" }],
       actions: [{ id: "plan-projection-evidence", key: "evidence", label: "查看证据" }],
       index: 1,
     },
   ];
 });
 
-const conversationStatusCard = computed(() => {
-  const phase = workspaceModel.value.missionPhase;
-  const turnActive = store.runtime.turn.active;
-
-  // Show status card for all active phases, including finalizing
-  if (!turnActive && !["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"].includes(phase)) {
-    return null;
-  }
-  // If turn is active but phase looks terminal, still show a status indicator
-  if (turnActive && ["completed", "failed", "aborted", "idle"].includes(phase)) {
-    return {
-      id: "__workspace_status__",
-      type: "ThinkingCard",
-      phase: "executing",
-      hint: "",
-    };
-  }
-  if (!turnActive && !["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"].includes(phase)) {
-    return null;
-  }
-
-  const hasPlanProjection = Boolean(
-    workspaceModel.value.cards?.planCard ||
-      compactText(planCardModel.value.summary) ||
-      compactText(planCardModel.value.generatedAt),
-  );
-
-  let hint = "";
-  if (phase === "planning") {
-    hint =
-      compactText(planCardModel.value.summary) ||
-      (hasPlanProjection ? "已收到计划投影，正在同步 step 和 host-agent 映射。" : "主 Agent 正在理解你的问题并生成 plan。");
-  } else if (phase === "thinking") {
-    // Don't set a hint — the phaseLabel "正在思考" is sufficient
-    hint = "";
-  } else if (phase === "waiting_approval") {
-    const approval = selectedApprovalItem.value || approvalItems.value[0] || null;
-    hint = approval
-      ? `${approval.hostName || approval.hostId || "server-local"} 正在等待审批：${approval.command || approval.summary || "待确认操作"}`
-      : "主 Agent 已生成计划，当前正在等待审批继续推进。";
-  } else if (phase === "waiting_input") {
-    hint = "主 Agent 正在等待补充输入或确认后继续推进。";
-  } else if (phase === "executing") {
-    const agents = asArray(backgroundAgents.value)
-      .slice(0, 2)
-      .map((agent) => compactText(agent.name || agent.hostId || agent.id))
-      .filter(Boolean);
-    hint = agents.length
-      ? `${agents.join("、")} 正在执行`
-      : "";
-  } else if (phase === "finalizing") {
-    hint = "";
-  }
-
-  return {
-    id: "__workspace_status__",
-    type: "ThinkingCard",
-    phase,
-    hint,
-  };
-});
+const conversationStatusCard = computed(() => workspaceModel.value.conversationStatusCard || null);
+const formattedTurns = computed(() => workspaceModel.value.formattedTurns || []);
 
 const filteredEventItems = computed(() => {
   const selectedHost = selectedHostRow.value?.hostId;
@@ -429,10 +595,37 @@ const approvalContextPanel = computed(() => {
   };
 });
 
+const mcpSurfacePanel = computed(() => {
+  if (!selectedMcpSurface.value) {
+    return {
+      title: "MCP 面板",
+      summary: "当前没有选中的 MCP 面板。",
+      items: [{ label: "状态", value: "尚未选择任何 MCP surface。" }],
+      raw: "",
+      sections: [],
+    };
+  }
+
+  const surface = selectedMcpSurface.value;
+  return {
+    title: mcpSurfaceTitle(surface),
+    summary: mcpSurfaceSummary(surface),
+    items: mcpSurfaceItems(surface),
+    raw: surface,
+    sections: surface.kind === "bundle"
+      ? asArray(surface.bundle?.sections).map((section) => ({
+          ...section,
+          cards: asArray(section?.cards),
+        }))
+      : [],
+  };
+});
+
 const evidencePanels = computed(() => ({
   "main-agent-plan": mainAgentPlanPanel.value,
   "worker-conversation": workerConversationPanel.value,
   "host-terminal": hostTerminalPanel.value,
+  [MCP_SURFACE_TAB]: mcpSurfacePanel.value,
   "approval-context": approvalContextPanel.value,
 }));
 
@@ -440,6 +633,7 @@ const evidenceTabs = computed(() => [
   { value: "main-agent-plan", label: "主 Agent 计划摘要", badge: mainAgentPlanPanel.value.items?.length || 0 },
   { value: "worker-conversation", label: "Worker 对话", badge: workerConversationPanel.value.items?.length || 0 },
   { value: "host-terminal", label: "Host Terminal", badge: hostTerminalPanel.value.items?.length || 0 },
+  { value: MCP_SURFACE_TAB, label: "MCP 面板", badge: mcpSurfacePanel.value.items?.length || 0 },
   { value: "approval-context", label: "审批上下文", badge: approvalContextPanel.value.items?.length || 0 },
 ]);
 
@@ -457,6 +651,9 @@ const evidenceTitle = computed(() => {
     }
     return `执行详情 · ${hostLabel}`;
   }
+  if (evidenceSource.value === "mcp-surface" && selectedMcpSurface.value) {
+    return `MCP 面板 · ${mcpSurfaceTitle(selectedMcpSurface.value)}`;
+  }
   if (evidenceSource.value === "message" || evidenceSource.value === "dispatch" || evidenceSource.value === "event") {
     return "主 Agent 计划摘要";
   }
@@ -469,6 +666,9 @@ const evidenceSubtitle = computed(() => {
   }
   if (evidenceSource.value === "host") {
     return "这里汇总当前 worker 对话和 Host Terminal 上下文。";
+  }
+  if (evidenceSource.value === "mcp-surface") {
+    return "这里展示当前 MCP 面板的完整详情，不会把长图表和长表格重新灌回正文。";
   }
   if (evidenceSource.value === "step" || evidenceSource.value === "message" || evidenceSource.value === "dispatch" || evidenceSource.value === "event") {
     return "这里汇总主 Agent 计划摘要、Worker 对话、Host Terminal 与审批上下文。";
@@ -588,6 +788,7 @@ onMounted(() => {
 });
 
 function openEvidence({ source = "mission", hostId = "", stepId = "", approvalId = "", tab = "main-agent-plan" } = {}) {
+  agentDetailOpen.value = false;
   if (hostId) selectedHostId.value = hostId;
   if (stepId) selectedStepId.value = stepId;
   if (approvalId) selectedApprovalId.value = approvalId;
@@ -736,6 +937,31 @@ async function stopWorkspaceMessage() {
   }
 }
 
+async function handleChoice({ requestId, answers }) {
+  if (!requestId || !Array.isArray(answers) || !answers.length) return;
+  try {
+    store.errorMessage = "";
+    store.setTurnPhase("thinking");
+    const response = await fetch(`/api/v1/choices/${requestId}/answer`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answers }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      store.errorMessage = data.error || "choice submit failed";
+      store.setTurnPhase("failed");
+      return;
+    }
+    pushActionNotice("已提交补充输入，主 Agent 会基于你的选择继续推进。", "info");
+    await Promise.all([store.fetchState(), store.fetchSessions()]);
+  } catch (_error) {
+    store.errorMessage = "choice submit failed";
+    store.setTurnPhase("failed");
+  }
+}
+
 async function postApprovalDecision(approvalId, decision) {
   const response = await fetch(`/api/v1/approvals/${approvalId}/decision`, {
     method: "POST",
@@ -750,6 +976,10 @@ async function postApprovalDecision(approvalId, decision) {
 }
 
 async function submitApprovalDecision(approval, decision) {
+  if (approval?.mcpSynthetic) {
+    settleLocalMcpApproval(approval, decision);
+    return;
+  }
   const approvalId = compactText(approval?.approvalId || approval?.requestId || approval?.raw?.approval?.requestId);
   if (!approvalId || decisionBusy.value) return;
 
@@ -823,21 +1053,58 @@ function handlePlanAction(payload) {
 }
 
 function handleAgentSelect(agent) {
-  openEvidence({
-    source: "host",
-    hostId: compactText(agent?.hostId || agent?.id),
-    tab: "worker-conversation",
-  });
+  const nextAgentId = compactText(agent?.hostId || agent?.id || agent?.name);
+  if (!nextAgentId) return;
+  selectedAgentId.value = nextAgentId;
+  evidenceOpen.value = false;
+  agentDetailOpen.value = true;
 }
 
 function handleMessageSelect(message) {
+  // Don't open evidence modal when clicking messages — it's confusing
   selectedMessageId.value = compactText(message?.id);
-  if (message?.role === "user") return;
+}
+
+function handleProcessItemSelect(payload) {
+  const item = payload?.item || {};
+  const hostId = compactText(item.hostId);
+  if (item.kind === "assistant_message") {
+    openEvidence({ source: "message", tab: "main-agent-plan" });
+    return;
+  }
+  if (hostId) {
+    const approval = approvalItems.value.find((entry) => compactText(entry.hostId) === hostId) || null;
+    const looksLikeApprovalBlock = /审批|批准|授权|approval/i.test(`${item.text || ""} ${item.detail || ""} ${item.status || ""}`);
+    if (approval && looksLikeApprovalBlock) {
+      openEvidence({
+        source: "approval",
+        approvalId: compactText(approval.id),
+        hostId,
+        tab: "approval-context",
+      });
+      return;
+    }
+    openEvidence({
+      source: "host",
+      hostId,
+      tab: "worker-conversation",
+    });
+    return;
+  }
   openEvidence({ source: "message", tab: "main-agent-plan" });
 }
 
 function handleEventSelect(item) {
   const targetType = compactText(item?.targetType).toLowerCase();
+  if (targetType === "mcp_approval") {
+    selectedApprovalId.value = compactText(item?.targetId);
+    pushActionNotice("已定位到 MCP 审批上下文。", "info");
+    return;
+  }
+  if (targetType === "mcp_action") {
+    pushActionNotice(compactText(item?.text || "已定位到 MCP 动作事件。"), "info");
+    return;
+  }
   if (targetType === "approval") {
     openEvidence({ source: "approval", approvalId: compactText(item?.targetId), hostId: compactText(item?.hostId), tab: "approval-context" });
     return;
@@ -860,6 +1127,11 @@ function handleEventSelect(item) {
 }
 
 function handleApprovalDetail(approval) {
+  if (approval?.mcpSynthetic) {
+    selectedApprovalId.value = compactText(approval?.id);
+    pushActionNotice(`${approval.title || "MCP 操作"} 已定位到右侧审批栏。`, "info");
+    return;
+  }
   selectedApprovalId.value = compactText(approval?.id);
   openEvidence({
     source: "approval",
@@ -882,6 +1154,18 @@ function handleApprovalReject(approval) {
 function handleApprovalAccept(approval) {
   selectedApprovalId.value = compactText(approval?.id);
   void submitApprovalDecision(approval, "accept");
+}
+
+function handleMcpSurfaceEventDetail(surface) {
+  handleMcpSurfaceDetail(surface);
+}
+
+function handleMcpSurfaceEventPin(surface) {
+  handleMcpSurfacePin(surface);
+}
+
+function handleMcpSurfaceEventRefresh(surface) {
+  void handleMcpSurfaceRefresh(surface);
 }
 </script>
 
@@ -942,11 +1226,13 @@ function handleApprovalAccept(approval) {
             v-if="!store.loading"
             title="Main Agent"
             :subtitle="conversationSubtitle"
-            :messages="conversationItems"
+            :formatted-turns="formattedTurns"
+            :history-reset-key="store.activeSessionId || store.snapshot.sessionId || ''"
             :status-card="conversationStatusCard"
             :plan-cards="planCards"
             :plan-summary-label="planSummaryLabel"
             :background-agents="backgroundAgents"
+            :choice-cards="choiceCards"
             :starter-card="starterCard"
             :draft="composerDraft"
             :draft-placeholder="composerPlaceholder"
@@ -957,42 +1243,58 @@ function handleApprovalAccept(approval) {
             @update:draft="composerDraft = $event"
             @send="sendWorkspaceMessage"
             @stop="stopWorkspaceMessage"
+            @choice="handleChoice"
             @select-message="handleMessageSelect"
+            @process-item-select="handleProcessItemSelect"
             @plan-action="handlePlanAction"
             @agent-select="handleAgentSelect"
+            @action="handleMcpAction"
+            @detail="handleMcpSurfaceEventDetail"
+            @pin="handleMcpSurfaceEventPin"
+            @refresh="handleMcpSurfaceEventRefresh"
+            @open-history="openConversationHistory"
           />
         </section>
 
         <aside class="workspace-side-rail">
-          <ProtocolApprovalRail
-            title="待审批决策"
-            subtitle="右侧固定审批区，直接快速完成授权、拒绝或同意执行。"
-            :queue-items="approvalItems"
-            :active-approval-id="selectedApprovalId"
-            :busy="decisionBusy"
-            empty-label="当前没有待处理的审批。"
-            @detail="handleApprovalDetail"
-            @authorize="handleApprovalAuthorize"
-            @reject="handleApprovalReject"
-            @accept="handleApprovalAccept"
-          />
+          <section class="workspace-side-panel approval-panel" data-testid="protocol-side-panel-approval">
+            <ProtocolApprovalRail
+              title="待审批决策"
+              subtitle="右侧固定审批区，直接快速完成授权、拒绝或同意执行。"
+              :queue-items="approvalItems"
+              :active-approval-id="selectedApprovalId"
+              :busy="decisionBusy"
+              empty-label="当前没有待处理的审批。"
+              @detail="handleApprovalDetail"
+              @authorize="handleApprovalAuthorize"
+              @reject="handleApprovalReject"
+              @accept="handleApprovalAccept"
+            />
+          </section>
 
-          <ProtocolEventTimeline
-            title="实时事件"
-            subtitle="轻量时间线只保留关键变化，帮助你快速判断当前执行推进到哪里。"
-            :items="timelineItems"
-            empty-label="当前还没有可展示的实时事件。"
-            :max-items="8"
-            @select="handleEventSelect"
-          />
+          <section class="workspace-side-panel timeline-panel" data-testid="protocol-side-panel-timeline">
+            <ProtocolEventTimeline
+              title="实时事件"
+              subtitle="轻量时间线只保留关键变化，帮助你快速判断当前执行推进到哪里。"
+              :items="timelineItems"
+              empty-label="当前还没有可展示的实时事件。"
+              :max-items="8"
+              @select="handleEventSelect"
+            />
+          </section>
 
-          <div class="runtime-pill">
+          <div class="runtime-pill" data-testid="protocol-runtime-pill">
             <span class="runtime-dot"></span>
             <span>{{ runtimeStatus }}</span>
           </div>
         </aside>
       </div>
     </template>
+
+    <ProtocolAgentDetailModal
+      v-model:open="agentDetailOpen"
+      :agent="selectedAgentDetail"
+    />
 
     <ProtocolEvidenceModal
       v-model:open="evidenceOpen"
@@ -1002,6 +1304,47 @@ function handleApprovalAccept(approval) {
       :tabs="evidenceTabs"
       :panels="evidencePanels"
     >
+      <template #mcp-surface="{ panel }">
+        <section class="mcp-evidence-panel">
+          <div class="mcp-evidence-hero">
+            <div>
+              <h4>{{ panel.title || "MCP 面板" }}</h4>
+              <p>{{ panel.summary || "当前没有额外说明。" }}</p>
+            </div>
+            <button
+              type="button"
+              class="mcp-evidence-pin"
+              @click="dispatchMcpDrawer(panel.raw || selectedMcpSurface, true)"
+            >
+              固定到 MCP 抽屉
+            </button>
+          </div>
+
+          <div v-if="panel.items?.length" class="mcp-evidence-grid">
+            <article v-for="(item, index) in panel.items" :key="`${item.label || 'mcp'}-${index}`" class="mcp-evidence-card">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </article>
+          </div>
+
+          <div v-if="panel.sections?.length" class="mcp-evidence-sections">
+            <article v-for="section in panel.sections" :key="section.id || section.kind" class="mcp-evidence-section">
+              <header>
+                <strong>{{ section.title || section.kind }}</strong>
+                <span>{{ section.summary || `${section.cards?.length || 0} 个卡片` }}</span>
+              </header>
+              <div v-if="section.cards?.length" class="mcp-evidence-cards">
+                <div v-for="card in section.cards" :key="card.id" class="mcp-evidence-card-row">
+                  <strong>{{ card.title || card.uiKind || card.id }}</strong>
+                  <span>{{ card.summary || card.detail || card.text || "" }}</span>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <pre class="mcp-evidence-raw">{{ stringifyRaw(panel.raw) || "暂无 MCP 面板详情" }}</pre>
+        </section>
+      </template>
       <template #host-terminal="{ panel }">
         <section class="terminal-evidence-panel">
           <div class="terminal-summary">
@@ -1148,13 +1491,30 @@ function handleApprovalAccept(approval) {
 }
 
 .workspace-side-rail {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(320px, 340px) minmax(0, 1fr) auto;
   gap: 0;
   min-height: 0;
+  height: 100%;
   overflow: hidden;
   border-left: 1px solid #e8ecf1;
   background: #f8fafc;
+}
+
+.workspace-side-panel {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.approval-panel {
+  background: #f8fafc;
+  border-bottom: 1px solid #e8ecf1;
+}
+
+.timeline-panel {
+  background: #fff;
 }
 
 .runtime-pill {
@@ -1237,6 +1597,132 @@ function handleApprovalAccept(approval) {
   gap: 16px;
 }
 
+.mcp-evidence-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mcp-evidence-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.95), rgba(255, 255, 255, 0.98));
+  border: 1px solid rgba(191, 219, 254, 0.95);
+}
+
+.mcp-evidence-hero h4 {
+  margin: 0 0 6px;
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.mcp-evidence-hero p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.6;
+}
+
+.mcp-evidence-pin {
+  flex-shrink: 0;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mcp-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.mcp-evidence-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(248, 250, 252, 0.94);
+}
+
+.mcp-evidence-card span,
+.mcp-evidence-section span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mcp-evidence-card strong,
+.mcp-evidence-card-row strong {
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.mcp-evidence-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.mcp-evidence-section {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(255, 255, 255, 0.98);
+}
+
+.mcp-evidence-section header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.mcp-evidence-section strong {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.mcp-evidence-cards {
+  display: grid;
+  gap: 8px;
+}
+
+.mcp-evidence-card-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.94);
+  border: 1px solid rgba(226, 232, 240, 0.85);
+}
+
+.mcp-evidence-raw {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .terminal-summary h4 {
   margin: 0 0 6px;
   color: #0f172a;
@@ -1310,6 +1796,19 @@ function handleApprovalAccept(approval) {
   .workspace-stage-card {
     min-height: 0;
   }
+
+  .workspace-side-rail {
+    grid-template-rows: auto auto auto;
+    overflow: visible;
+  }
+
+  .approval-panel {
+    min-height: 320px;
+  }
+
+  .timeline-panel {
+    min-height: 360px;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1325,6 +1824,10 @@ function handleApprovalAccept(approval) {
   .workspace-stage-card {
     padding: 18px 16px;
     border-radius: 24px;
+  }
+
+  .workspace-side-panel {
+    min-height: 280px;
   }
 
   .runtime-pill {

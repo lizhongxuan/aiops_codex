@@ -1,6 +1,7 @@
 <script setup>
-import { ref, nextTick, computed, watch } from "vue";
+import { ref, nextTick, computed, watch, toRef } from "vue";
 import { useAppStore } from "../store";
+import { usePasteAssist } from "../composables/usePasteAssist";
 
 const props = defineProps({
   modelValue: {
@@ -69,6 +70,9 @@ const activeMentions = computed(() => {
   }
   return mentions;
 });
+const pasteAssist = usePasteAssist(toRef(props, "modelValue"));
+const artifactPills = computed(() => pasteAssist.artifactPills.value);
+const showToolTags = computed(() => activeMentions.value.length || artifactPills.value.length);
 
 const canStop = computed(() => {
   if (props.primaryActionOverride === "send") return false;
@@ -102,13 +106,33 @@ const canSendMessage = computed(() => (props.forceEnabled ? true : !!store.canSe
 const inputDisabled = computed(
   () => props.disabled || props.busy || !canSendMessage.value || store.sending || (stableCanStop.value && !followUpMode.value ? true : false),
 );
-const sendDisabled = computed(() => props.disabled || props.busy || !canSendMessage.value || store.sending || !props.modelValue.trim());
+const sendDisabled = computed(
+  () =>
+    props.disabled ||
+    props.busy ||
+    !canSendMessage.value ||
+    store.sending ||
+    pasteAssist.sendBlocked.value ||
+    !props.modelValue.trim(),
+);
 const showSecondaryStop = computed(() => followUpMode.value);
+const hintTestId = computed(() => {
+  if (!pasteAssist.indicator.value) return "omnibar-hint";
+  if (pasteAssist.indicator.value.kind === "focus") return "omnibar-focus-hint";
+  if (pasteAssist.indicator.value.kind === "artifact") return "omnibar-attachment-indicator";
+  return "omnibar-paste-indicator";
+});
 const hintText = computed(() => {
+  if (pasteAssist.indicator.value) return pasteAssist.indicator.value.text;
   if (primaryAction.value === "stop") return "停止当前任务";
   if (followUpMode.value) return "⌘ ↵ 发送 follow-up";
   return "⌘ ↵ 发送";
 });
+
+function emitSend() {
+  pasteAssist.resetPasteState();
+  emit("send");
+}
 
 function onInput(e) {
   const text = e.target.value;
@@ -133,6 +157,52 @@ function onInput(e) {
   } else {
     mentionPopover.value.visible = false;
   }
+}
+
+function insertTextAtSelection(text) {
+  const textarea = textareaRef.value;
+  const currentValue = props.modelValue ?? "";
+  if (!textarea) {
+    emit("update:modelValue", `${currentValue}${text}`);
+    return;
+  }
+
+  const hasFocus = typeof document !== "undefined" ? document.activeElement === textarea : false;
+  const start = hasFocus && Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : currentValue.length;
+  const end = hasFocus && Number.isInteger(textarea.selectionEnd) ? textarea.selectionEnd : start;
+  const nextValue = `${currentValue.slice(0, start)}${text}${currentValue.slice(end)}`;
+  const nextCursor = start + text.length;
+
+  textarea.value = nextValue;
+  emit("update:modelValue", nextValue);
+
+  nextTick(() => {
+    if (!textareaRef.value) return;
+    textareaRef.value.setSelectionRange(nextCursor, nextCursor);
+  });
+}
+
+function onPaste(event) {
+  pasteAssist.handlePaste(event);
+  if (event?.defaultPrevented) return;
+
+  const text = event?.clipboardData?.getData?.("text/plain") ?? "";
+  if (!text) return;
+
+  event.preventDefault();
+  insertTextAtSelection(text);
+}
+
+function onDrop(event) {
+  pasteAssist.handleDrop(event);
+}
+
+function onFocus() {
+  pasteAssist.handleFocus();
+}
+
+function onBlur() {
+  pasteAssist.handleBlur();
 }
 
 function onKeydown(e) {
@@ -168,7 +238,7 @@ function onKeydown(e) {
     if (primaryAction.value === "stop") {
       emit("stop");
     } else if (!sendDisabled.value) {
-      emit("send");
+      emitSend();
     }
   }
 }
@@ -224,25 +294,55 @@ function getCaretCoordinates(element, position) {
       ref="textareaRef"
       :value="modelValue"
       @input="onInput"
+      @paste="onPaste"
+      @drop.prevent="onDrop"
+      @dragover.prevent
       @keydown="onKeydown"
+      @focus="onFocus"
+      @blur="onBlur"
       rows="3"
       class="omnibar-input"
       :placeholder="placeholder"
       :disabled="inputDisabled"
+      data-testid="omnibar-input"
     ></textarea>
     
     <div class="omnibar-tools">
-      <div class="tools-left" v-if="activeMentions.length">
+      <div class="tools-left" v-if="showToolTags">
          <span v-for="mention in activeMentions" :key="mention" class="pill-tag"><span class="pill-icon">@</span> {{ mention }}</span>
+         <span
+           v-for="artifact in artifactPills"
+           :key="artifact.id"
+           class="pill-tag artifact-pill"
+           data-testid="omnibar-artifact-pill"
+         >{{ artifact.label }}</span>
       </div>
       <div class="tools-right">
-         <span class="hint-text">{{ hintText }}</span>
+         <span
+           class="hint-text"
+           :class="{
+             'is-paste-indicator': pasteAssist.indicator.value?.kind === 'buffering' || pasteAssist.indicator.value?.kind === 'ready',
+             'is-artifact-indicator': pasteAssist.indicator.value?.kind === 'artifact',
+             'is-focus-indicator': pasteAssist.indicator.value?.kind === 'focus',
+           }"
+           :data-testid="hintTestId"
+         >{{ hintText }}</span>
+         <button
+           v-if="pasteAssist.hasPendingArtifact.value"
+           type="button"
+           class="hint-clear-btn"
+           data-testid="omnibar-clear-pending"
+           @click="pasteAssist.clearPendingArtifact()"
+         >
+           清除
+         </button>
          <div class="action-group">
            <button
              class="send-btn"
              :class="{ 'stop-btn': primaryAction === 'stop' }"
              :disabled="primaryAction === 'stop' ? busy : sendDisabled"
-             @click="primaryAction === 'stop' ? emit('stop') : emit('send')"
+             data-testid="omnibar-primary-action"
+             @click="primaryAction === 'stop' ? emit('stop') : emitSend()"
            >
              <span v-if="primaryAction === 'stop' && busy" class="spinner-small"></span>
              <span v-else-if="primaryAction === 'stop'">■</span>
@@ -263,12 +363,12 @@ function getCaretCoordinates(element, position) {
   margin: 0 auto;
   background: var(--omnibar-bg);
   border: 1px solid var(--border-color);
-  border-radius: 16px;
-  padding: 10px 12px 9px;
-  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
+  border-radius: 20px;
+  padding: 12px 14px 12px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   transition: box-shadow 0.2s, border-color 0.2s;
   position: relative;
 }
@@ -281,7 +381,7 @@ function getCaretCoordinates(element, position) {
 
 .omnibar-wrapper:focus-within {
   border-color: #cbd5e1;
-  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
   background: #ffffff;
 }
 
@@ -291,10 +391,10 @@ function getCaretCoordinates(element, position) {
   background: transparent;
   resize: none;
   outline: none;
-  min-height: 60px;
+  min-height: 64px;
   font-size: 14px;
-  line-height: 1.5;
-  padding: 2px 4px 0;
+  line-height: 1.6;
+  padding: 4px 6px 0;
   color: var(--text-main);
   font-family: inherit;
 }
@@ -309,14 +409,14 @@ function getCaretCoordinates(element, position) {
 
 .omnibar-tools {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
 }
 
 .tools-left {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -324,10 +424,10 @@ function getCaretCoordinates(element, position) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 11.5px;
   background: rgba(15, 23, 42, 0.06);
   color: var(--text-main);
-  padding: 4px 10px;
+  padding: 5px 10px;
   border-radius: 9999px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -335,23 +435,55 @@ function getCaretCoordinates(element, position) {
 .tools-right {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .action-group {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .hint-text {
-  font-size: 11px;
+  font-size: 11.5px;
   color: #94a3b8;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.hint-text.is-paste-indicator {
+  color: #0f766e;
+}
+
+.hint-text.is-artifact-indicator {
+  color: #1d4ed8;
+}
+
+.hint-text.is-focus-indicator {
+  color: #7c3aed;
+}
+
+.artifact-pill {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.hint-clear-btn {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.hint-clear-btn:hover {
+  color: #0f172a;
 }
 
 .send-btn {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 999px;
   border: none;
   background: #0f172a;
@@ -382,8 +514,8 @@ function getCaretCoordinates(element, position) {
   background: #fff;
   color: #b91c1c;
   border-radius: 999px;
-  padding: 7px 10px;
-  font-size: 11px;
+  padding: 8px 12px;
+  font-size: 11.5px;
   font-weight: 600;
   cursor: pointer;
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,6 +55,8 @@ type Store struct {
 	sessions        map[string]*SessionState
 	authSessions    map[string]*AuthSessionState
 	agentProfiles   map[string]model.AgentProfile
+	skillCatalog    []model.AgentSkill
+	mcpCatalog      []model.AgentMCP
 	threadToSession map[string]string
 	turnToSession   map[string]string
 	loginToSession  map[string]string
@@ -106,6 +109,8 @@ type persistentState struct {
 	AuthSessions        map[string]*persistentAuthSessionState    `json:"authSessions"`
 	AgentProfiles       map[string]model.AgentProfile             `json:"agentProfiles"`
 	AgentProfileVersion int                                       `json:"agentProfileVersion,omitempty"`
+	SkillCatalog        []model.AgentSkill                        `json:"skillCatalog,omitempty"`
+	MCPCatalog          []model.AgentMCP                          `json:"mcpCatalog,omitempty"`
 	ThreadToSession     map[string]string                         `json:"threadToSession"`
 	LoginToSession      map[string]string                         `json:"loginToSession"`
 	LastAuthSession     string                                    `json:"lastAuthSession,omitempty"`
@@ -118,6 +123,8 @@ func New() *Store {
 		sessions:        make(map[string]*SessionState),
 		authSessions:    make(map[string]*AuthSessionState),
 		agentProfiles:   defaultAgentProfileMap(),
+		skillCatalog:    cloneSkillCatalog(model.SupportedAgentSkills()),
+		mcpCatalog:      cloneMCPCatalog(model.SupportedAgentMCPs()),
 		threadToSession: make(map[string]string),
 		turnToSession:   make(map[string]string),
 		loginToSession:  make(map[string]string),
@@ -491,6 +498,18 @@ func (s *Store) AgentProfiles() []model.AgentProfile {
 	return profiles
 }
 
+func (s *Store) SkillCatalog() []model.AgentSkill {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneSkillCatalog(s.skillCatalog)
+}
+
+func (s *Store) MCPCatalog() []model.AgentMCP {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneMCPCatalog(s.mcpCatalog)
+}
+
 func (s *Store) AgentProfile(profileID string) (model.AgentProfile, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -512,14 +531,113 @@ func (s *Store) UpsertAgentProfile(profile model.AgentProfile) {
 	s.SaveStableState("")
 }
 
+func (s *Store) UpsertSkillCatalogItem(item model.AgentSkill) {
+	s.mu.Lock()
+	s.ensureDefaultAgentCatalogsLocked()
+	normalized := item
+	found := false
+	for index := range s.skillCatalog {
+		if s.skillCatalog[index].ID != normalized.ID {
+			continue
+		}
+		s.skillCatalog[index] = normalized
+		found = true
+		break
+	}
+	if !found {
+		s.skillCatalog = append(s.skillCatalog, normalized)
+	}
+	slices.SortFunc(s.skillCatalog, func(left, right model.AgentSkill) int {
+		return strings.Compare(left.ID, right.ID)
+	})
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
+func (s *Store) DeleteSkillCatalogItem(skillID string) {
+	s.mu.Lock()
+	s.ensureDefaultAgentCatalogsLocked()
+	filtered := s.skillCatalog[:0]
+	for _, item := range s.skillCatalog {
+		if item.ID == skillID {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	s.skillCatalog = filtered
+	for profileID, profile := range s.agentProfiles {
+		nextSkills := make([]model.AgentSkill, 0, len(profile.Skills))
+		for _, skill := range profile.Skills {
+			if skill.ID == skillID {
+				continue
+			}
+			nextSkills = append(nextSkills, skill)
+		}
+		profile.Skills = nextSkills
+		s.agentProfiles[profileID] = profile
+	}
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
+func (s *Store) UpsertMCPCatalogItem(item model.AgentMCP) {
+	s.mu.Lock()
+	s.ensureDefaultAgentCatalogsLocked()
+	normalized := item
+	found := false
+	for index := range s.mcpCatalog {
+		if s.mcpCatalog[index].ID != normalized.ID {
+			continue
+		}
+		s.mcpCatalog[index] = normalized
+		found = true
+		break
+	}
+	if !found {
+		s.mcpCatalog = append(s.mcpCatalog, normalized)
+	}
+	slices.SortFunc(s.mcpCatalog, func(left, right model.AgentMCP) int {
+		return strings.Compare(left.ID, right.ID)
+	})
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
+func (s *Store) DeleteMCPCatalogItem(mcpID string) {
+	s.mu.Lock()
+	s.ensureDefaultAgentCatalogsLocked()
+	filtered := s.mcpCatalog[:0]
+	for _, item := range s.mcpCatalog {
+		if item.ID == mcpID {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	s.mcpCatalog = filtered
+	for profileID, profile := range s.agentProfiles {
+		nextMCPs := make([]model.AgentMCP, 0, len(profile.MCPs))
+		for _, item := range profile.MCPs {
+			if item.ID == mcpID {
+				continue
+			}
+			nextMCPs = append(nextMCPs, item)
+		}
+		profile.MCPs = nextMCPs
+		s.agentProfiles[profileID] = profile
+	}
+	s.mu.Unlock()
+	s.SaveStableState("")
+}
+
 func (s *Store) ResetAgentProfile(profileID string) {
 	s.mu.Lock()
 	if s.agentProfiles == nil {
 		s.agentProfiles = defaultAgentProfileMap()
 	}
+	s.ensureDefaultAgentCatalogsLocked()
 	switch profileID {
 	case string(model.AgentProfileTypeMainAgent), string(model.AgentProfileTypeHostAgentDefault), string(model.AgentProfileTypeHostAgentOverride):
-		s.agentProfiles[profileID] = model.DefaultAgentProfile(profileID)
+		s.agentProfiles[profileID] = filteredDefaultAgentProfile(profileID, s.skillCatalog, s.mcpCatalog)
 	default:
 		delete(s.agentProfiles, profileID)
 	}
@@ -530,7 +648,8 @@ func (s *Store) ResetAgentProfile(profileID string) {
 
 func (s *Store) ResetAgentProfiles() {
 	s.mu.Lock()
-	s.agentProfiles = defaultAgentProfileMap()
+	s.ensureDefaultAgentCatalogsLocked()
+	s.agentProfiles = defaultAgentProfileMapForCatalogs(s.skillCatalog, s.mcpCatalog)
 	s.mu.Unlock()
 	s.SaveStableState("")
 }
@@ -1000,6 +1119,9 @@ func (s *Store) LoadStableState(path string) error {
 	}
 	s.hosts[model.ServerLocalHostID] = serverLocalHost()
 	s.agentProfiles = cloneAgentProfileMap(state.AgentProfiles)
+	s.skillCatalog = cloneSkillCatalog(state.SkillCatalog)
+	s.mcpCatalog = cloneMCPCatalog(state.MCPCatalog)
+	s.ensureDefaultAgentCatalogsLocked()
 	s.ensureDefaultAgentProfilesLocked()
 
 	return nil
@@ -1022,6 +1144,8 @@ func (s *Store) SaveStableState(path string) error {
 		AuthSessions:        make(map[string]*persistentAuthSessionState, len(s.authSessions)),
 		AgentProfiles:       cloneAgentProfileMap(s.agentProfiles),
 		AgentProfileVersion: model.AgentProfileConfigVersion,
+		SkillCatalog:        cloneSkillCatalog(s.skillCatalog),
+		MCPCatalog:          cloneMCPCatalog(s.mcpCatalog),
 		ThreadToSession:     make(map[string]string),
 		LoginToSession:      cloneStringMap(s.loginToSession),
 		LastAuthSession:     s.lastAuthSession,
@@ -1222,9 +1346,31 @@ func cloneAgentProfile(profile model.AgentProfile) model.AgentProfile {
 	return out
 }
 
+func cloneSkillCatalog(in []model.AgentSkill) []model.AgentSkill {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]model.AgentSkill, 0, len(in))
+	for _, item := range in {
+		out = append(out, item)
+	}
+	return out
+}
+
+func cloneMCPCatalog(in []model.AgentMCP) []model.AgentMCP {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]model.AgentMCP, 0, len(in))
+	for _, item := range in {
+		out = append(out, item)
+	}
+	return out
+}
+
 func cloneAgentProfileMap(in map[string]model.AgentProfile) map[string]model.AgentProfile {
 	if len(in) == 0 {
-		return defaultAgentProfileMap()
+		return make(map[string]model.AgentProfile)
 	}
 	out := make(map[string]model.AgentProfile, len(in))
 	for k, v := range in {
@@ -1242,6 +1388,51 @@ func defaultAgentProfileMap() map[string]model.AgentProfile {
 	return out
 }
 
+func filteredDefaultAgentProfile(profileID string, skillCatalog []model.AgentSkill, mcpCatalog []model.AgentMCP) model.AgentProfile {
+	profile := model.DefaultAgentProfile(profileID)
+	allowedSkills := make(map[string]struct{}, len(skillCatalog))
+	for _, item := range skillCatalog {
+		if item.ID == "" {
+			continue
+		}
+		allowedSkills[item.ID] = struct{}{}
+	}
+	filteredSkills := make([]model.AgentSkill, 0, len(profile.Skills))
+	for _, item := range profile.Skills {
+		if _, ok := allowedSkills[item.ID]; !ok {
+			continue
+		}
+		filteredSkills = append(filteredSkills, item)
+	}
+	profile.Skills = filteredSkills
+
+	allowedMCPs := make(map[string]struct{}, len(mcpCatalog))
+	for _, item := range mcpCatalog {
+		if item.ID == "" {
+			continue
+		}
+		allowedMCPs[item.ID] = struct{}{}
+	}
+	filteredMCPs := make([]model.AgentMCP, 0, len(profile.MCPs))
+	for _, item := range profile.MCPs {
+		if _, ok := allowedMCPs[item.ID]; !ok {
+			continue
+		}
+		filteredMCPs = append(filteredMCPs, item)
+	}
+	profile.MCPs = filteredMCPs
+	return profile
+}
+
+func defaultAgentProfileMapForCatalogs(skillCatalog []model.AgentSkill, mcpCatalog []model.AgentMCP) map[string]model.AgentProfile {
+	out := make(map[string]model.AgentProfile, len(model.DefaultAgentProfiles()))
+	for _, profileID := range model.DefaultAgentProfileIDs() {
+		profile := filteredDefaultAgentProfile(profileID, skillCatalog, mcpCatalog)
+		out[profile.ID] = cloneAgentProfile(profile)
+	}
+	return out
+}
+
 func cloneBoolPtr(in *bool) *bool {
 	if in == nil {
 		return nil
@@ -1252,15 +1443,25 @@ func cloneBoolPtr(in *bool) *bool {
 
 func (s *Store) ensureDefaultAgentProfilesLocked() {
 	if s.agentProfiles == nil {
-		s.agentProfiles = defaultAgentProfileMap()
+		s.agentProfiles = defaultAgentProfileMapForCatalogs(s.skillCatalog, s.mcpCatalog)
 		return
 	}
-	for _, profile := range model.DefaultAgentProfiles() {
+	for _, profileID := range model.DefaultAgentProfileIDs() {
+		profile := filteredDefaultAgentProfile(profileID, s.skillCatalog, s.mcpCatalog)
 		if _, ok := s.agentProfiles[profile.ID]; !ok {
 			s.agentProfiles[profile.ID] = cloneAgentProfile(profile)
 			continue
 		}
 		s.agentProfiles[profile.ID] = model.CompleteAgentProfile(s.agentProfiles[profile.ID])
+	}
+}
+
+func (s *Store) ensureDefaultAgentCatalogsLocked() {
+	if len(s.skillCatalog) == 0 {
+		s.skillCatalog = cloneSkillCatalog(model.SupportedAgentSkills())
+	}
+	if len(s.mcpCatalog) == 0 {
+		s.mcpCatalog = cloneMCPCatalog(model.SupportedAgentMCPs())
 	}
 }
 

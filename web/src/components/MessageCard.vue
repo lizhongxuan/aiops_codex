@@ -314,12 +314,12 @@ function closePreview() {
 
 <template>
   <div class="message-wrapper" :class="{ 'is-user': isUser }">
-    <div class="avatar" v-if="!isUser">
+    <div class="avatar assistant-avatar" v-if="!isUser">
       <BotIcon size="16" />
     </div>
     
     <div class="message-content">
-      <div class="content-block relative-block" v-if="!isUser">
+      <div class="content-block relative-block assistant-thread-block" v-if="!isUser">
         <pre v-if="renderAsCode" class="message-code">{{ messageText }}</pre>
         <div v-else-if="renderAsMarkdown" class="message-text markdown-body" v-html="renderedMarkdown"></div>
         <div v-else class="message-text rich-message">
@@ -363,7 +363,7 @@ function closePreview() {
       </div>
       <template v-else>
         <pre v-if="renderAsCode" class="message-code">{{ messageText }}</pre>
-        <div v-else class="message-text">
+        <div v-else class="message-text user-message-bubble">
           <template v-for="(chunk, idx) in parsedMessageChunks" :key="idx">
             <span v-if="chunk.type === 'text'">{{ chunk.content }}</span>
             <button
@@ -404,7 +404,7 @@ function closePreview() {
 <style scoped>
 .message-wrapper {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   max-width: 100%;
   width: 100%;
 }
@@ -414,87 +414,98 @@ function closePreview() {
 }
 
 .avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  background: white;
-  border: 1px solid #e2e8f0;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.98);
+  border: 1px solid rgba(226, 232, 240, 0.9);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: #94a3b8;
   flex-shrink: 0;
   margin-top: 2px;
 }
 
+.assistant-avatar {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
 .user-avatar {
-  background: #f8fafc;
+  background: #eef2f7;
+  color: #475569;
 }
 
 .message-content {
   flex: 1;
-  max-width: calc(100% - 36px);
+  max-width: calc(100% - 34px);
 }
 
 .is-user .message-content {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  max-width: min(520px, 68%);
 }
 
 .message-text {
-  font-size: var(--text-body, 14px);
-  line-height: var(--line-height-body, 1.6);
+  font-size: var(--text-body, 13.5px);
+  line-height: var(--line-height-body, 1.58);
   color: #0f172a;
   white-space: pre-wrap;
+  letter-spacing: 0;
 }
 
 .rich-message {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .message-line {
   white-space: pre-wrap;
+  line-height: 1.58;
 }
 
 .message-spacer {
-  height: 6px;
+  height: 5px;
 }
 
 .file-list-block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 2px;
+  gap: 4px;
+  margin-top: 1px;
 }
 
 .file-list-item {
-  line-height: 1.65;
+  line-height: 1.55;
 }
 
 .message-code {
   margin: 0;
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid #dbe3ee;
-  background: #f8fafc;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: rgba(248, 250, 252, 0.96);
   color: #0f172a;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.52;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-.is-user .message-text {
+.user-message-bubble {
   background: #f3f4f6;
-  padding: 10px 16px;
-  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  padding: 9px 14px;
+  border-radius: 16px;
   color: #0f172a;
   display: inline-block;
-  font-size: 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.02);
 }
 
 .is-user .message-code {
@@ -506,7 +517,7 @@ function closePreview() {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 6px;
+  margin-top: 4px;
   color: #94a3b8;
 }
 
@@ -532,18 +543,19 @@ function closePreview() {
 
 .relative-block {
   position: relative;
-  display: inline-block;
+  display: block;
+  width: min(720px, 100%);
   max-width: 100%;
 }
 
 .copy-btn {
   position: absolute;
-  bottom: 8px;
-  right: 8px;
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 6px;
+  bottom: 4px;
+  right: 0;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 999px;
+  padding: 5px;
   color: #6b7280;
   cursor: pointer;
   opacity: 0;
@@ -551,10 +563,11 @@ function closePreview() {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
 }
 
-.relative-block:hover .copy-btn {
+.relative-block:hover .copy-btn,
+.relative-block:focus-within .copy-btn {
   opacity: 1;
 }
 
@@ -676,8 +689,8 @@ function closePreview() {
 
 /* Markdown rendered content */
 .markdown-body {
-  font-size: var(--text-body, 14px);
-  line-height: 1.65;
+  font-size: var(--text-body, 13.5px);
+  line-height: 1.58;
   color: #0f172a;
   word-break: break-word;
 }
@@ -688,19 +701,19 @@ function closePreview() {
 .markdown-body :deep(h4),
 .markdown-body :deep(h5),
 .markdown-body :deep(h6) {
-  margin: 8px 0 4px;
+  margin: 6px 0 3px;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.28;
   color: #0f172a;
 }
 
-.markdown-body :deep(h1) { font-size: 1.3em; }
-.markdown-body :deep(h2) { font-size: 1.15em; }
-.markdown-body :deep(h3) { font-size: 1.05em; }
+.markdown-body :deep(h1) { font-size: 1.22em; }
+.markdown-body :deep(h2) { font-size: 1.1em; }
+.markdown-body :deep(h3) { font-size: 1.02em; }
 
 .markdown-body :deep(p) {
-  margin: 0 0 4px;
-  line-height: 1.65;
+  margin: 0 0 2px;
+  line-height: 1.58;
 }
 
 .markdown-body :deep(p:last-child) {
@@ -709,13 +722,13 @@ function closePreview() {
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 2px 0 4px;
-  padding-left: 20px;
+  margin: 1px 0 3px;
+  padding-left: 18px;
 }
 
 .markdown-body :deep(li) {
-  margin: 1px 0;
-  line-height: 1.6;
+  margin: 0;
+  line-height: 1.56;
 }
 
 .markdown-body :deep(li p) {
@@ -726,15 +739,15 @@ function closePreview() {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.88em;
   background: #f1f5f9;
-  padding: 1px 5px;
+  padding: 1px 4px;
   border-radius: 4px;
   color: #334155;
 }
 
 .markdown-body :deep(pre) {
-  margin: 8px 0;
-  padding: 10px 14px;
-  border-radius: 8px;
+  margin: 6px 0;
+  padding: 9px 12px;
+  border-radius: 10px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   overflow-x: auto;
@@ -743,13 +756,13 @@ function closePreview() {
 .markdown-body :deep(pre code) {
   background: transparent;
   padding: 0;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.48;
 }
 
 .markdown-body :deep(blockquote) {
-  margin: 8px 0;
-  padding: 4px 12px;
+  margin: 6px 0;
+  padding: 3px 10px;
   border-left: 3px solid #cbd5e1;
   color: #475569;
 }
@@ -760,14 +773,14 @@ function closePreview() {
 
 .markdown-body :deep(table) {
   border-collapse: collapse;
-  margin: 8px 0;
-  font-size: 13px;
+  margin: 6px 0;
+  font-size: 12.5px;
 }
 
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
   border: 1px solid #e2e8f0;
-  padding: 6px 10px;
+  padding: 5px 8px;
   text-align: left;
 }
 
@@ -779,7 +792,7 @@ function closePreview() {
 .markdown-body :deep(hr) {
   border: none;
   border-top: 1px solid #e2e8f0;
-  margin: 12px 0;
+  margin: 8px 0;
 }
 
 .markdown-body :deep(a) {

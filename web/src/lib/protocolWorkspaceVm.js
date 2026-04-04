@@ -2,6 +2,7 @@ import {
   buildWorkspaceHostRows,
   buildWorkspaceLiveTimeline,
   buildWorkspaceStepItems,
+  cleanAssistantDisplayText,
   compactText,
   formatShortTime,
   formatTime,
@@ -10,17 +11,21 @@ import {
   isAssistantMessageCard,
   isChoiceCard,
   isDispatchSummaryCard,
+  isInternalRoutingMessageText,
   isMissionNoticeCard,
   isPlanCard,
   isProcessCard,
   isSystemNoticeCard,
   isUserMessageCard,
   isWorkspaceResultCard,
-  objectRows,
+  orderedObjectRows,
   parseTimestamp,
   pickField,
+  sortApprovalDisplayItems,
+  sortBackgroundAgentItems,
   statusTone,
 } from "./workspaceViewModel";
+import { formatProtocolChatTurns } from "./chatTurnFormatter";
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -88,7 +93,7 @@ function normalizeEvidenceRows(value, { defaultLabel = "" } = {}) {
       .filter((row) => row.label || row.value || row.text);
   }
   if (typeof value === "object") {
-    return objectRows(value).map((row) => ({
+    return orderedObjectRows(value).map((row) => ({
       label: row.key,
       value: row.value,
       text: "",
@@ -250,7 +255,6 @@ export function resolveProtocolWorkspaceCards(cards = []) {
   return {
     workspaceCards,
     currentMissionCards,
-    latestUserIndex,
     missionCard,
     planCard,
     dispatchSummaryCards,
@@ -270,18 +274,20 @@ export function buildProtocolConversationItems(cards = []) {
     .map((card) => {
       const role = isUserMessageCard(card) ? "user" : "assistant";
       const title = normalizeWorkspaceCopy(card?.title);
-      const baseText = normalizeWorkspaceCopy(card?.text || card?.summary || card?.message || card?.title);
-      if (!baseText) return null;
+      // Preserve original text with newlines intact — don't use compactText/normalizeWorkspaceCopy
+      // which would collapse \n into spaces and destroy Markdown formatting
+      const rawText = String(card?.text || card?.summary || card?.message || card?.title || "").trim();
+      if (!rawText) return null;
 
       // Filter out system routing / dispatch messages that are not meant for the user
-      if (role === "assistant" && isSystemRoutingMessage(baseText)) return null;
+      if (role === "assistant" && isInternalRoutingMessageText(rawText)) return null;
 
-      const shouldPrefixTitle = (card?.type === "ErrorCard" || isFailedResultSummaryCard(card)) && title && !baseText.startsWith(title);
-      const cleanedText = cleanAssistantMessageText(shouldPrefixTitle ? `${title}\n${baseText}` : baseText, role);
+      const shouldPrefixTitle = (card?.type === "ErrorCard" || isFailedResultSummaryCard(card)) && title && !rawText.startsWith(title);
+      const cleanedText = cleanAssistantDisplayText(shouldPrefixTitle ? `${title}\n${rawText}` : rawText, role);
       if (!cleanedText) return null;
 
       return {
-        id: card.id || `${role}-${cleanedText}`,
+        id: card.id || `${role}-${cleanedText.slice(0, 40)}`,
         role,
         time: formatShortTime(card.updatedAt || card.createdAt),
         title: card?.type === "ErrorCard" ? "系统错误" : role === "user" ? "用户" : "主 Agent",
@@ -291,45 +297,10 @@ export function buildProtocolConversationItems(cards = []) {
     .filter(Boolean);
 }
 
-/**
- * Detect system routing / dispatch messages that should be hidden from the user.
- * These are internal Agent routing decisions, not actual replies.
- */
-function isSystemRoutingMessage(text) {
-  const trimmed = (text || "").trim();
-  // Messages that are purely the Agent's internal routing decision
-  if (/^主\s*Agent\s*正在判断/.test(trimmed)) return true;
-  if (/^这是简单对话/.test(trimmed)) return true;
-  if (/^(这是|当前).*(简单|直接).*(对话|回答|回复)/.test(trimmed)) return true;
-  // Pure routing notice without any useful content
-  if (/^主\s*Agent\s*(会|将)直接回答/.test(trimmed)) return true;
-  if (/不会生成计划或派发\s*worker/.test(trimmed)) return true;
-  return false;
-}
-
-/**
- * Clean assistant message text by stripping embedded JSON routing blocks
- * that are internal Agent metadata, not meant for user display.
- */
-function cleanAssistantMessageText(text, role) {
-  if (role === "user" || !text) return text;
-  // Remove ```json ... ``` fenced blocks containing routing metadata
-  let cleaned = text.replace(/`{3}json[\s\S]*?`{3}/g, (match) => {
-    if (/"route"\s*:/.test(match)) return "";
-    return match;
-  }).trim();
-  // Fallback: remove unclosed ```json blocks with routing metadata
-  cleaned = cleaned.replace(/`{3}json\s*\{[^`]*"route"\s*:[^`]*/g, "").trim();
-  // Remove inline { "route": ... } JSON objects
-  cleaned = cleaned.replace(/\{[^{}]*"route"\s*:\s*"[^"]*"[^{}]*\}/g, "").trim();
-  // Collapse multiple newlines
-  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
-  return cleaned;
-}
-
 export function buildProtocolBackgroundAgents(hostRows = []) {
   const seen = new Set();
-  return asArray(hostRows)
+  return sortBackgroundAgentItems(
+    asArray(hostRows)
     .filter((row) => {
       if (!row.hostId || row.hostId === "server-local") return false;
       if (seen.has(row.hostId)) return false;
@@ -344,12 +315,71 @@ export function buildProtocolBackgroundAgents(hostRows = []) {
       status: row.statusKey,
       statusLabel: row.statusLabel,
       tone: statusTone(row.statusKey),
-    }));
+      sortTimestamp: row.updatedAt,
+    })),
+  );
+}
+
+function buildProtocolConversationStatusCard({
+  missionPhase = "idle",
+  turnActive = false,
+  approvalItems = [],
+  backgroundAgents = [],
+  planCardModel = null,
+  cards = {},
+} = {}) {
+  const phase = normalizeProtocolMissionPhase(missionPhase);
+
+  if (turnActive && ["completed", "failed", "aborted", "idle"].includes(phase)) {
+    return {
+      id: "__workspace_status__",
+      type: "ThinkingCard",
+      phase: "executing",
+      hint: "",
+    };
+  }
+
+  if (!turnActive && !["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"].includes(phase)) {
+    return null;
+  }
+
+  const hasPlanProjection = Boolean(
+    cards?.planCard ||
+      compactText(planCardModel?.summary) ||
+      compactText(planCardModel?.generatedAt),
+  );
+
+  let hint = "";
+  if (phase === "planning") {
+    hint =
+      compactText(planCardModel?.summary) ||
+      (hasPlanProjection ? "已收到计划投影，正在同步 step 和 host-agent 映射。" : "主 Agent 正在理解你的问题并生成 plan。");
+  } else if (phase === "waiting_approval") {
+    const approval = approvalItems[0] || null;
+    hint = approval
+      ? `${approval.hostName || approval.hostId || "server-local"} 正在等待审批：${approval.command || approval.summary || "待确认操作"}`
+      : "主 Agent 已生成计划，当前正在等待审批继续推进。";
+  } else if (phase === "waiting_input") {
+    hint = "主 Agent 正在等待补充输入或确认后继续推进。";
+  } else if (phase === "executing") {
+    const agents = asArray(backgroundAgents)
+      .slice(0, 2)
+      .map((agent) => compactText(agent.name || agent.hostId || agent.id))
+      .filter(Boolean);
+    hint = agents.length ? `${agents.join("、")} 正在执行` : "";
+  }
+
+  return {
+    id: "__workspace_status__",
+    type: "ThinkingCard",
+    phase,
+    hint,
+  };
 }
 
 export function buildProtocolApprovalItems(approvalCards = [], hostRows = []) {
   const hostById = new Map(asArray(hostRows).map((row) => [row.hostId, row]));
-  return asArray(approvalCards).map((card) => {
+  return sortApprovalDisplayItems(asArray(approvalCards).map((card) => {
     const host = hostById.get(card.hostId) || null;
     const decisions = asArray(card?.approval?.decisions);
     const dispatchRequest = asObject(host?.dispatch?.request);
@@ -376,9 +406,10 @@ export function buildProtocolApprovalItems(approvalCards = [], hostRows = []) {
       dispatchRequest,
       approvalAnchor,
       taskBinding: host?.dispatch?.taskBinding || host?.dispatch?.task_binding || null,
+      sortTimestamp: card.updatedAt || card.createdAt,
       raw: card,
     };
-  });
+  }));
 }
 
 export function buildProtocolEventItems({
@@ -596,7 +627,7 @@ export function buildProtocolEvidenceTabs({
 
   const hostTerminal = asObject(worker.terminal);
   const hostTerminalRows = [];
-  const terminalRows = objectRows(hostTerminal);
+  const terminalRows = orderedObjectRows(hostTerminal);
   const terminalOutput = pickField(hostTerminal, "output", "stdout", "text", "summary");
   const terminalSummary = [
     hostRow?.displayName ? { label: "Host", value: compactText(hostRow.displayName) } : null,
@@ -618,8 +649,8 @@ export function buildProtocolEvidenceTabs({
   const hostTerminalOutput = (() => {
     if (Array.isArray(terminalOutput)) return terminalOutput.map((item) => String(item ?? ""));
     if (terminalOutput && typeof terminalOutput === "object") {
-      const rows = objectRows(terminalOutput);
-      if (rows.length) return rows.map((row) => `${row.key}: ${row.value}`);
+      const orderedRows = orderedObjectRows(terminalOutput);
+      if (orderedRows.length) return orderedRows.map((row) => `${row.key}: ${row.value}`);
       try {
         return JSON.stringify(terminalOutput, null, 2);
       } catch {
@@ -636,6 +667,225 @@ export function buildProtocolEvidenceTabs({
     hostTerminalRows,
     hostTerminalOutput,
     approvalContext,
+  };
+}
+
+export function buildProtocolAgentDetailModel({
+  backgroundAgent = null,
+  hostRow = null,
+  planCardModel = null,
+  approvalItems = [],
+  eventItems = [],
+  formattedTurns = [],
+} = {}) {
+  const agent = asObject(backgroundAgent);
+  const row = asObject(hostRow);
+  const hostId = compactText(row.hostId || agent.hostId || agent.id);
+  const displayName = compactText(row.displayName || agent.name || agent.title || hostId || "agent");
+  const statusKey = compactText(row.statusKey || agent.status || "idle") || "idle";
+  const statusLabel = compactText(row.statusLabel || agent.statusLabel || agent.subtitle || statusKey || "idle");
+  const tone = statusTone(statusKey);
+  const selectedApproval =
+    asArray(approvalItems).find((item) => compactText(item?.hostId) === hostId) ||
+    row.approvalCard ||
+    null;
+  const evidenceTabs = buildProtocolEvidenceTabs({
+    planCardModel,
+    hostRow: row,
+    approvalItem: selectedApproval,
+    eventItems,
+  });
+  const stepItems = summarizeHostStepItems(planCardModel, row);
+  const matchingTurns = asArray(formattedTurns).filter((turn) => {
+    const turnHostIds = [
+      compactText(turn?.hostId),
+      compactText(turn?.userMessage?.sourceCard?.hostId),
+      compactText(turn?.finalMessage?.sourceCard?.hostId),
+      ...asArray(turn?.processItems).map((item) => compactText(item?.hostId)),
+    ].filter(Boolean);
+    if (!turnHostIds.length) return false;
+    return turnHostIds.some((value) => value === hostId);
+  });
+
+  const taskItems = [];
+  if (compactText(row.taskTitle)) {
+    taskItems.push({ label: "任务标题", value: compactText(row.taskTitle) });
+  }
+  if (compactText(row.summary)) {
+    taskItems.push({ label: "任务摘要", value: compactText(row.summary) });
+  }
+  if (compactText(row.rawStatusLabel)) {
+    taskItems.push({ label: "当前状态", value: compactText(row.rawStatusLabel) });
+  }
+  if (compactText(row.workerSession)) {
+    taskItems.push({ label: "Worker Session", value: compactText(row.workerSession) });
+  }
+  if (compactText(row.worker?.threadId || row.worker?.thread_id)) {
+    taskItems.push({ label: "Worker Thread", value: compactText(row.worker?.threadId || row.worker?.thread_id) });
+  }
+  if (compactText(row.queueCount)) {
+    taskItems.push({ label: "排队任务", value: compactText(row.queueCount) });
+  }
+  if (row.dispatch?.request) {
+    taskItems.push(...buildTaskBindingRows(asObject(row.dispatch.request)));
+  }
+  if (row.dispatch?.taskBinding || row.dispatch?.task_binding) {
+    taskItems.push(...buildTaskBindingRows(asObject(row.dispatch?.taskBinding || row.dispatch?.task_binding)));
+  }
+  if (!row.dispatch?.request && !row.dispatch?.taskBinding && !row.dispatch?.task_binding && row.dispatch && typeof row.dispatch === "object") {
+    taskItems.push(...buildTaskBindingRows(asObject(row.dispatch)));
+  }
+  if (stepItems.length) {
+    taskItems.push({
+      label: "匹配计划步骤",
+      value: `${stepItems.length} 个步骤与当前 agent 关联`,
+    });
+    taskItems.push(
+      ...stepItems.slice(0, 5).map((step, index) => ({
+        label: `Step ${step.index || index + 1}`,
+        value: [step.statusLabel || step.status, step.title, asArray(step.hosts).map((host) => compactText(host.label || host.id)).filter(Boolean).join("、")].filter(Boolean).join(" · "),
+      })),
+    );
+  }
+
+  const conversationItems = [];
+  if (evidenceTabs.workerConversation.length) {
+    conversationItems.push(
+      ...evidenceTabs.workerConversation.slice(0, 8).map((item, index) => ({
+        label: item.time || item.title || `消息 ${index + 1}`,
+        value: compactText(item.text || item.value || item.summary),
+      })),
+    );
+  }
+  if (!conversationItems.length && asArray(row.worker?.transcript).length) {
+    conversationItems.push(
+      ...asArray(row.worker.transcript).slice(-8).map((item, index) => ({
+        label: `Transcript ${index + 1}`,
+        value: compactText(item),
+      })),
+    );
+  }
+  if (matchingTurns.length) {
+    conversationItems.push({
+      label: "相关 Turn",
+      value: `${matchingTurns.length} 个 process turn 与当前 agent 相关`,
+    });
+  }
+
+  const approvalItemsRows = [];
+  if (selectedApproval) {
+    approvalItemsRows.push(
+      ...asArray(selectedApproval.detailRows).map((item) => ({
+        label: compactText(item.label || "详情"),
+        value: compactText(item.value || item.text),
+      })),
+    );
+  } else if (evidenceTabs.approvalContext.length) {
+    approvalItemsRows.push(
+      ...evidenceTabs.approvalContext.map((item) => ({
+        label: compactText(item.title || item.label || "审批信息"),
+        value: compactText(item.text || item.value),
+      })),
+    );
+  }
+  if (row.worker?.approvalAnchor || row.worker?.approval_anchor) {
+    approvalItemsRows.push(
+      ...buildApprovalAnchorRows(asObject(row.worker?.approvalAnchor || row.worker?.approval_anchor)).map((item) => ({
+        label: `锚点 · ${item.label}`,
+        value: item.value,
+      })),
+    );
+  }
+
+  const activityItems = [];
+  const filteredEvents = asArray(eventItems).filter((item) => compactText(item?.hostId) === hostId || compactText(item?.targetId) === hostId);
+  if (filteredEvents.length) {
+    activityItems.push(
+      ...filteredEvents.slice(0, 6).map((item, index) => ({
+        label: item.time || item.source || `事件 ${index + 1}`,
+        value: compactText(item.text || item.title || item.detail),
+      })),
+    );
+  }
+  if (asArray(row.highlights).length) {
+    activityItems.push(
+      ...asArray(row.highlights)
+        .slice(-5)
+        .map((item, index) => ({
+          label: `高亮 ${index + 1}`,
+          value: compactText(item),
+        })),
+    );
+  }
+  if (!activityItems.length && evidenceTabs.hostTerminalRows.length) {
+    activityItems.push(
+      ...evidenceTabs.hostTerminalRows.slice(0, 6).map((item, index) => ({
+        label: item.label || `状态 ${index + 1}`,
+        value: compactText(item.value || item.text),
+      })),
+    );
+  }
+
+  const overviewItems = [
+    { label: "主机", value: displayName },
+    { label: "状态", value: statusLabel },
+    { label: "队列", value: compactText(row.queueCount || 0) },
+    { label: "任务", value: compactText(row.taskTitle || agent.subtitle || "等待执行") },
+  ];
+
+  return {
+    id: hostId || compactText(agent.id) || displayName,
+    hostId,
+    title: displayName,
+    subtitle: compactText(agent.subtitle || row.summary || row.taskTitle || "等待执行"),
+    statusKey,
+    statusLabel,
+    tone,
+    overviewItems,
+    sections: [
+      {
+        key: "task",
+        title: "分配任务信息",
+        summary: compactText(row.taskTitle || row.summary || "当前 agent 的任务分配和计划绑定。"),
+        items: taskItems,
+        raw: {
+          dispatch: row.dispatch || null,
+          planSteps: stepItems,
+        },
+      },
+      {
+        key: "conversation",
+        title: "与 AI 的对话信息",
+        summary: compactText(evidenceTabs.workerConversation.summary || "当前 agent 和 AI 的交互记录。"),
+        items: conversationItems,
+        raw: evidenceTabs.workerConversation.raw || row.worker || null,
+      },
+      {
+        key: "approval",
+        title: "审核信息",
+        summary: compactText(selectedApproval ? "当前 agent 已关联待审核任务。" : "当前 agent 的审核锚点和审批上下文。"),
+        items: approvalItemsRows,
+        raw: selectedApproval?.raw || row.worker?.approval || row.worker?.approvalAnchor || row.worker?.approval_anchor || null,
+      },
+      {
+        key: "activity",
+        title: "当前状态 / 最近活动",
+        summary: compactText(row.statusLabel || row.summary || "当前 agent 的状态和最近变化。"),
+        items: activityItems,
+        raw: {
+          highlights: row.highlights || [],
+          events: filteredEvents,
+          hostTerminalRows: evidenceTabs.hostTerminalRows,
+        },
+      },
+    ],
+    raw: {
+      hostRow: row,
+      backgroundAgent: agent,
+      planCardModel,
+      evidenceTabs,
+      matchingTurns,
+    },
   };
 }
 
@@ -675,6 +925,26 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     systemNoticeCards: cards.currentMissionCards.filter((card) => isSystemNoticeCard(card)),
     dispatchEvents,
   });
+  const approvalItems = buildProtocolApprovalItems(cards.approvalCards, hostRows);
+  const backgroundAgents = buildProtocolBackgroundAgents(hostRows);
+  const conversationStatusCard = buildProtocolConversationStatusCard({
+    missionPhase,
+    turnActive: runtime?.turn?.active === true,
+    approvalItems,
+    backgroundAgents,
+    choiceCards: cards.choiceCards,
+    planCardModel,
+    cards,
+  });
+  const formattedTurns = formatProtocolChatTurns({
+    conversationCards: cards.conversationCards,
+    processCards: cards.processCards,
+    missionPhase,
+    turnActive: runtime?.turn?.active === true,
+    statusCard: conversationStatusCard,
+    approvalItems,
+  });
+  const activeProcessTurnId = formattedTurns.find((turn) => turn.active)?.id || "";
   const canStopCurrentMission =
     Boolean(runtime?.turn?.active) &&
     !["aborted", "failed", "completed"].includes(missionPhase) &&
@@ -708,12 +978,14 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     missionPhase,
     cards,
     hostRows,
-    conversationItems: buildProtocolConversationItems(cards.conversationCards),
-    approvalItems: buildProtocolApprovalItems(cards.approvalCards, hostRows),
-    backgroundAgents: buildProtocolBackgroundAgents(hostRows),
+    approvalItems,
+    backgroundAgents,
+    choiceCards: cards.choiceCards,
     planCardModel,
     eventItems,
-    processCards: cards.processCards,
+    conversationStatusCard,
+    formattedTurns,
+    activeProcessTurnId,
     canStopCurrentMission,
     nextSendStartsNewMission,
     statusBanner,

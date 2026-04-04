@@ -1,471 +1,535 @@
 // @ts-check
 import { test, expect } from "@playwright/test";
-
-/**
- * 工作台对话框 UI 视觉回归测试
- *
- * 流程：新建会话 → 发送复杂消息触发 plan → 截图各阶段 UI
- * 重点验证：字体大小、输入框比例、卡片间距、头像尺寸等是否接近 Codex 原生风格
- */
+import {
+  createChatFixtureSessions,
+  createChatFixtureState,
+  openFixturePage,
+} from "./helpers/uiFixtureHarness";
 
 const SCREENSHOT_DIR = "tests/screenshots";
 
-/** 等待页面稳定（无 loading spinner、网络空闲） */
-async function waitForStable(page, timeout = 8000) {
-  await page.waitForLoadState("networkidle", { timeout }).catch(() => {});
-  await page.waitForTimeout(600);
+async function openVisualFixture(page, fixture) {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await openFixturePage(page, "/", fixture);
 }
 
-/** 通过 API 新建一个 single_host 会话并导航到首页 */
-async function createFreshSession(page) {
-  // 先访问首页拿到 cookie
-  await page.goto("/");
-  await waitForStable(page);
-
-  // 通过 API 新建会话
-  const resp = await page.request.post("/api/v1/sessions", {
-    data: { kind: "single_host" },
-  });
-  expect(resp.ok()).toBeTruthy();
-  const body = await resp.json();
-  const sessionId = body.activeSessionId || body.snapshot?.sessionId;
-  expect(sessionId).toBeTruthy();
-
-  // 刷新页面加载新会话
-  await page.goto("/");
-  await waitForStable(page);
-  return sessionId;
+async function pasteText(locator, text) {
+  await locator.evaluate((element, payload) => {
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      configurable: true,
+      value: {
+        getData: () => payload,
+      },
+    });
+    element.dispatchEvent(pasteEvent);
+    element.value = payload;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  }, text);
 }
 
-/** 发送一条消息并等待 UI 响应 */
-async function sendMessage(page, message) {
-  const textarea = page.locator("textarea").first();
-  await expect(textarea).toBeVisible({ timeout: 5000 });
-  await textarea.fill(message);
-  await page.waitForTimeout(200);
+const PATH_LIST = [
+  "/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/Omnibar.vue",
+  "/Users/lizhongxuan/Desktop/aiops-codex/web/src/composables/usePasteAssist.js",
+  "/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ChatPage.vue",
+  "/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolConversationPane.vue",
+].join("\n");
 
-  // 用 Cmd+Enter 发送
-  await textarea.press("Meta+Enter");
-  await page.waitForTimeout(500);
-}
+test.describe("Chat UI visual fixtures", () => {
+  test("active turn screenshot keeps process and dock structure stable", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState(),
+      sessions: createChatFixtureSessions(),
+    });
 
-/** 等待 agent 回复出现（assistant 消息卡片） */
-async function waitForAssistantReply(page, timeout = 60000) {
-  // 等待至少一个非用户消息卡片出现
-  const assistantCard = page.locator(".stream-row.row-assistant .message-wrapper:not(.is-user)");
-  await assistantCard.first().waitFor({ state: "visible", timeout }).catch(() => {});
-}
+    const turn = page.getByTestId("chat-turn-turn-user-main-1");
+    const processFold = page.getByTestId("chat-process-fold-turn-user-main-1");
 
-/** 等待 turn 结束（thinking card 消失） */
-async function waitForTurnComplete(page, timeout = 120000) {
-  // 等待 thinking card 消失，表示 turn 结束
-  const thinkingCard = page.locator(".thinking-wrapper");
-  try {
-    await thinkingCard.waitFor({ state: "hidden", timeout });
-  } catch {
-    // 超时也继续，可能 turn 还在进行
-  }
-  await page.waitForTimeout(500);
-}
+    await expect(turn).toBeVisible();
+    await expect(turn.locator(".message-wrapper.is-user")).toBeVisible();
+    await expect(processFold).toBeVisible();
+    await expect(processFold).toContainText("正在思考");
+    await expect(page.locator(".chat-process-body")).toHaveCount(1);
+    await expect(page.locator(".chat-composer-dock")).toBeVisible();
+    await expect(page.locator(".omnibar-wrapper")).toBeVisible();
+    await expect(page.locator(".chat-composer-plan")).toContainText("共 2 个任务");
 
-// ─── 测试用例 ───
-
-test.describe("工作台对话框 UI 视觉测试", () => {
-  test.setTimeout(180000); // 3 分钟超时，因为涉及真实 AI 交互
-
-  test("1. 空状态页面截图", async ({ page }) => {
-    await createFreshSession(page);
-
-    // 验证空状态元素
-    const emptyState = page.locator(".empty-state-canvas");
-    const emptyVisible = await emptyState.isVisible({ timeout: 3000 }).catch(() => false);
-
-    // 截图
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/chat-empty-state.png`,
+      path: `${SCREENSHOT_DIR}/chat-visual-active-turn.png`,
       fullPage: false,
     });
-
-    // 验证输入框可见且在底部
-    const textarea = page.locator("textarea").first();
-    await expect(textarea).toBeVisible({ timeout: 5000 });
-    const box = await textarea.boundingBox();
-    const vh = page.viewportSize()?.height || 900;
-    expect(box.y).toBeGreaterThan(vh * 0.5);
   });
 
-  test("2. 输入框样式验证", async ({ page }) => {
-    await createFreshSession(page);
-
-    const textarea = page.locator("textarea").first();
-    await expect(textarea).toBeVisible({ timeout: 5000 });
-
-    // 验证输入框字体大小 = 14px
-    const fontSize = await textarea.evaluate((el) => {
-      return window.getComputedStyle(el).fontSize;
+  test("running process fold screenshot keeps the thinking state compact", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState(),
+      sessions: createChatFixtureSessions(),
     });
-    expect(fontSize).toBe("14px");
 
-    // 验证输入框行高
-    const lineHeight = await textarea.evaluate((el) => {
-      return window.getComputedStyle(el).lineHeight;
+    const processFold = page.getByTestId("chat-process-fold-turn-user-main-1");
+
+    await expect(processFold).toBeVisible();
+    await expect(processFold).toContainText("正在思考");
+    await expect(page.locator(".chat-process-body")).toHaveCount(1);
+
+    await page.screenshot({
+      path: `${SCREENSHOT_DIR}/chat-visual-running-process-fold.png`,
+      fullPage: false,
     });
-    // lineHeight 应该是 1.5 * 14 = 21px
-    const lhNum = parseFloat(lineHeight);
-    expect(lhNum).toBeGreaterThanOrEqual(20);
-    expect(lhNum).toBeLessThanOrEqual(22);
+  });
 
-    // 验证 omnibar 容器圆角 = 16px
-    const omnibar = page.locator(".omnibar-wrapper").first();
-    const borderRadius = await omnibar.evaluate((el) => {
-      return window.getComputedStyle(el).borderRadius;
-    });
-    expect(borderRadius).toBe("16px");
-
-    // 截图输入框区域
-    const omnibarBox = await omnibar.boundingBox();
-    if (omnibarBox) {
-      await page.screenshot({
-        path: `${SCREENSHOT_DIR}/chat-omnibar-detail.png`,
-        clip: {
-          x: Math.max(0, omnibarBox.x - 20),
-          y: Math.max(0, omnibarBox.y - 20),
-          width: omnibarBox.width + 40,
-          height: omnibarBox.height + 40,
+  test("completed turn screenshot keeps the final answer prominent", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState({
+        cards: [
+          {
+            id: "user-main-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "帮我看下 nginx 中间件的状态，并给我一个处理建议。",
+            createdAt: "2026-04-03T10:00:00Z",
+            updatedAt: "2026-04-03T10:00:00Z",
+          },
+          {
+            id: "assistant-main-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "我先对比日志、upstream 指标和最近一次 reload 记录。",
+            createdAt: "2026-04-03T10:00:05Z",
+            updatedAt: "2026-04-03T10:00:05Z",
+          },
+          {
+            id: "assistant-main-2",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "已经确认 nginx 本体正常，异常集中在 service-a upstream timeout。",
+            createdAt: "2026-04-03T10:00:20Z",
+            updatedAt: "2026-04-03T10:00:20Z",
+          },
+        ],
+        runtime: {
+          turn: { active: false, phase: "completed", hostId: "web-01" },
+          codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+          activity: {
+            viewedFiles: [],
+            searchedWebQueries: [],
+            searchedContentQueries: [],
+          },
         },
-      });
-    }
-  });
+      }),
+      sessions: createChatFixtureSessions(),
+    });
 
-  test("3. 发送简单消息后的对话样式", async ({ page }) => {
-    await createFreshSession(page);
+    const turn = page.getByTestId("chat-turn-turn-user-main-1");
+    const processFold = page.getByTestId("chat-process-fold-turn-user-main-1");
+    const finalTurn = page.locator(".chat-turn-final");
 
-    // 发送简单消息
-    await sendMessage(page, "你好，有什么需要我处理的？");
+    await expect(turn).toBeVisible();
+    await expect(turn.locator(".message-wrapper.is-user")).toBeVisible();
+    await expect(processFold).toBeVisible();
+    await expect(processFold).toContainText("已处理");
+    await expect(page.locator(".chat-process-body")).toHaveCount(0);
+    await expect(finalTurn).toBeVisible();
+    await expect(finalTurn.locator(".message-wrapper")).toBeVisible();
+    await expect(finalTurn).toContainText(
+      "已经确认 nginx 本体正常，异常集中在 service-a upstream timeout。",
+    );
 
-    // 等待用户消息气泡出现
-    const userBubble = page.locator(".stream-row.row-user");
-    await userBubble.first().waitFor({ state: "visible", timeout: 5000 });
-
-    // 验证用户消息气泡样式
-    const userText = page.locator(".is-user .message-text").first();
-    const userVisible = await userText.isVisible({ timeout: 3000 }).catch(() => false);
-    if (userVisible) {
-      const userFontSize = await userText.evaluate((el) => {
-        return window.getComputedStyle(el).fontSize;
-      });
-      expect(userFontSize).toBe("14px");
-
-      const userBorderRadius = await userText.evaluate((el) => {
-        return window.getComputedStyle(el).borderRadius;
-      });
-      expect(userBorderRadius).toBe("14px");
-    }
-
-    // 等待 assistant 回复
-    await waitForAssistantReply(page, 60000);
-
-    // 验证 assistant 消息字体
-    const assistantText = page.locator(".message-wrapper:not(.is-user) .message-text").first();
-    const assistantVisible = await assistantText.isVisible({ timeout: 5000 }).catch(() => false);
-    if (assistantVisible) {
-      const assistantFontSize = await assistantText.evaluate((el) => {
-        return window.getComputedStyle(el).fontSize;
-      });
-      expect(assistantFontSize).toBe("14px");
-    }
-
-    // 验证 avatar 尺寸 = 26px
-    const avatar = page.locator(".message-wrapper:not(.is-user) .avatar").first();
-    const avatarVisible = await avatar.isVisible({ timeout: 3000 }).catch(() => false);
-    if (avatarVisible) {
-      const avatarSize = await avatar.evaluate((el) => {
-        const style = window.getComputedStyle(el);
-        return { width: style.width, height: style.height };
-      });
-      expect(avatarSize.width).toBe("26px");
-      expect(avatarSize.height).toBe("26px");
-    }
-
-    // 截图对话区域
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/chat-simple-conversation.png`,
+      path: `${SCREENSHOT_DIR}/chat-visual-completed-turn.png`,
       fullPage: false,
     });
   });
 
-  test("4. 发送复杂任务触发 plan 并截图全流程", async ({ page }) => {
-    await createFreshSession(page);
-
-    // 发送一个会触发 plan 的复杂任务
-    const complexMessage = [
-      "请帮我做以下事情：",
-      "1. 检查当前系统的 CPU 和内存使用情况",
-      "2. 列出 /tmp 目录下最近修改的文件",
-      "3. 查看当前运行的进程中占用内存最多的前 5 个",
-      "4. 把以上结果整理成一份简洁的系统健康报告",
-    ].join("\n");
-
-    await sendMessage(page, complexMessage);
-
-    // 等待用户消息出现
-    const userRow = page.locator(".stream-row.row-user");
-    await userRow.first().waitFor({ state: "visible", timeout: 5000 });
-
-    // 截图：用户消息发送后
-    await page.waitForTimeout(1000);
-    await page.screenshot({
-      path: `${SCREENSHOT_DIR}/chat-complex-task-sent.png`,
-      fullPage: false,
+  test("approval overlay screenshot keeps the thread lightweight", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState({
+        cards: [
+          {
+            id: "user-main-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "请帮我 reload nginx 并确认结果。",
+            createdAt: "2026-04-03T10:00:00Z",
+            updatedAt: "2026-04-03T10:00:00Z",
+          },
+          {
+            id: "approval-card-1",
+            type: "CommandApprovalCard",
+            status: "pending",
+            hostId: "web-01",
+            text: "需要批准 reload nginx",
+            command: "systemctl reload nginx",
+            approval: {
+              requestId: "approval-1",
+              decisions: ["accept", "accept_session", "decline"],
+            },
+            createdAt: "2026-04-03T10:00:10Z",
+            updatedAt: "2026-04-03T10:00:10Z",
+          },
+        ],
+        approvals: [{ id: "approval-1", status: "pending", itemId: "approval-card-1" }],
+        runtime: {
+          turn: { active: true, phase: "waiting_approval", hostId: "web-01" },
+          codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+          activity: {
+            viewedFiles: [],
+            searchedWebQueries: [],
+            searchedContentQueries: [],
+          },
+        },
+      }),
+      sessions: createChatFixtureSessions(),
     });
 
-    // 等待 thinking 状态出现
-    const thinkingCard = page.locator(".thinking-wrapper");
-    const thinkingVisible = await thinkingCard.isVisible({ timeout: 5000 }).catch(() => false);
-    if (thinkingVisible) {
-      // 截图：thinking 状态
-      await page.screenshot({
-        path: `${SCREENSHOT_DIR}/chat-thinking-state.png`,
-        fullPage: false,
-      });
+    await expect(page.getByTestId("chat-turn-turn-user-main-1")).toBeVisible();
+    await expect(page.locator(".chat-stream")).not.toContainText("systemctl reload nginx");
+    await expect(page.locator(".auth-overlay-dock")).toBeVisible();
+    await expect(page.locator(".auth-overlay-dock .option-row").first()).toBeVisible();
 
-      // 验证 thinking card 的 margin-left = 36px
-      const thinkingMargin = await thinkingCard.evaluate((el) => {
-        return window.getComputedStyle(el).marginLeft;
-      });
-      expect(thinkingMargin).toBe("36px");
-    }
-
-    // 等待 plan card 或 activity summary 出现
-    const planCard = page.locator(".plan-card");
-    const activitySummary = page.locator(".activity-summary");
-    try {
-      await Promise.race([
-        planCard.first().waitFor({ state: "visible", timeout: 30000 }),
-        activitySummary.first().waitFor({ state: "visible", timeout: 30000 }),
-      ]);
-    } catch {
-      // 可能没有 plan，继续
-    }
-
-    // 截图：plan 或 activity 阶段
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/chat-plan-or-activity.png`,
-      fullPage: false,
-    });
-
-    // 如果有 plan card，验证其样式
-    const planVisible = await planCard.first().isVisible({ timeout: 2000 }).catch(() => false);
-    if (planVisible) {
-      const planMargin = await planCard.first().evaluate((el) => {
-        return window.getComputedStyle(el).marginLeft;
-      });
-      expect(planMargin).toBe("36px");
-
-      const planBorderRadius = await planCard.first().evaluate((el) => {
-        return window.getComputedStyle(el).borderRadius;
-      });
-      expect(planBorderRadius).toBe("12px");
-    }
-
-    // 等待审批卡片出现（如果有命令执行）
-    const authOverlay = page.locator(".auth-overlay-dock");
-    const authVisible = await authOverlay.isVisible({ timeout: 15000 }).catch(() => false);
-    if (authVisible) {
-      // 截图：审批状态
-      await page.screenshot({
-        path: `${SCREENSHOT_DIR}/chat-approval-state.png`,
-        fullPage: false,
-      });
-
-      // 点击同意
-      const acceptBtn = page.locator(".option-row").first();
-      const acceptVisible = await acceptBtn.isVisible({ timeout: 3000 }).catch(() => false);
-      if (acceptVisible) {
-        await acceptBtn.click();
-        await page.waitForTimeout(2000);
-
-        // 截图：审批后
-        await page.screenshot({
-          path: `${SCREENSHOT_DIR}/chat-after-approval.png`,
-          fullPage: false,
-        });
-      }
-    }
-
-    // 等待 turn 完成或超时
-    await waitForTurnComplete(page, 90000);
-
-    // 最终截图
-    await page.screenshot({
-      path: `${SCREENSHOT_DIR}/chat-complex-task-complete.png`,
+      path: `${SCREENSHOT_DIR}/chat-visual-approval-overlay.png`,
       fullPage: false,
     });
   });
 
-  test("5. 全局 CSS 变量验证", async ({ page }) => {
-    await createFreshSession(page);
-
-    const cssVars = await page.evaluate(() => {
-      const root = document.documentElement;
-      const style = getComputedStyle(root);
-      return {
-        textBody: style.getPropertyValue("--text-body").trim(),
-        lineHeightBody: style.getPropertyValue("--line-height-body").trim(),
-        textMetaSize: style.getPropertyValue("--text-meta-size").trim(),
-        radiusCard: style.getPropertyValue("--radius-card").trim(),
-      };
+  test("MCP drawer screenshot keeps the bundle panel readable without leaving chat", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState({
+        cards: [
+          {
+            id: "user-main-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "我想看一下 nginx 的完整监控面板。",
+            createdAt: "2026-04-03T10:00:00Z",
+            updatedAt: "2026-04-03T10:00:00Z",
+          },
+          {
+            id: "assistant-main-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "我把完整 bundle 挂出来。",
+            createdAt: "2026-04-03T10:00:05Z",
+            updatedAt: "2026-04-03T10:00:05Z",
+            payload: {
+              resultBundles: [
+                {
+                  id: "bundle-1",
+                  bundleKind: "monitor_bundle",
+                  summary: "nginx 监控聚合面板",
+                  subject: {
+                    type: "service",
+                    name: "nginx",
+                    env: "prod",
+                  },
+                  freshness: {
+                    label: "刚拉取",
+                    capturedAt: "2026-04-03T10:00:05Z",
+                  },
+                  sections: [
+                    {
+                      kind: "overview",
+                      title: "概览",
+                      cards: [
+                        {
+                          id: "overview-card-1",
+                          uiKind: "readonly_summary",
+                          title: "当前状态",
+                          summary: "平稳",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        runtime: {
+          turn: { active: false, phase: "completed", hostId: "web-01" },
+          codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+          activity: {
+            viewedFiles: [],
+            searchedWebQueries: [],
+            searchedContentQueries: [],
+          },
+        },
+      }),
+      sessions: createChatFixtureSessions(),
     });
 
-    expect(cssVars.textBody).toBe("14px");
-    expect(cssVars.lineHeightBody).toBe("1.6");
-    expect(cssVars.textMetaSize).toBe("11px");
-    expect(cssVars.radiusCard).toBe("12px");
-  });
+    await page.getByTestId("mcp-bundle-open-detail").click();
+    const drawer = page.getByTestId("chat-mcp-surface-drawer");
 
-  test("6. 对话流宽度和间距验证", async ({ page }) => {
-    await createFreshSession(page);
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText("nginx 监控聚合面板");
+    await expect(drawer).toContainText("概览");
+    await expect(drawer).toContainText("平稳");
 
-    // 验证 chat-stream-inner max-width = 820px
-    const streamInner = page.locator(".chat-stream-inner").first();
-    const streamVisible = await streamInner.isVisible({ timeout: 3000 }).catch(() => false);
-    if (streamVisible) {
-      const maxWidth = await streamInner.evaluate((el) => {
-        return window.getComputedStyle(el).maxWidth;
-      });
-      expect(maxWidth).toBe("820px");
-    }
-
-    // 验证 stream-row margin-bottom = 6px
-    await sendMessage(page, "测试间距");
-    await page.waitForTimeout(2000);
-
-    const streamRow = page.locator(".stream-row").first();
-    const rowVisible = await streamRow.isVisible({ timeout: 5000 }).catch(() => false);
-    if (rowVisible) {
-      const marginBottom = await streamRow.evaluate((el) => {
-        return window.getComputedStyle(el).marginBottom;
-      });
-      expect(marginBottom).toBe("6px");
-    }
-  });
-
-  test("7. 终端卡片样式验证", async ({ page }) => {
-    await createFreshSession(page);
-
-    // 发送一个会触发命令执行的消息
-    await sendMessage(page, "请执行 echo hello world");
-
-    // 等待可能出现的审批或终端卡片
-    const terminalCard = page.locator(".terminal-card");
-    const timelineSummary = page.locator(".timeline-summary");
-
-    try {
-      await Promise.race([
-        terminalCard.first().waitFor({ state: "visible", timeout: 45000 }),
-        timelineSummary.first().waitFor({ state: "visible", timeout: 45000 }),
-      ]);
-    } catch {
-      // 可能需要先审批
-      const authOverlay = page.locator(".auth-overlay-dock");
-      if (await authOverlay.isVisible({ timeout: 3000 }).catch(() => false)) {
-        const acceptBtn = page.locator(".option-row").first();
-        if (await acceptBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await acceptBtn.click();
-          await page.waitForTimeout(3000);
-        }
-      }
-    }
-
-    await waitForTurnComplete(page, 60000);
-
-    // 截图终端卡片
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/chat-terminal-card.png`,
+      path: `${SCREENSHOT_DIR}/chat-visual-mcp-drawer.png`,
       fullPage: false,
     });
-
-    // 验证终端卡片或 timeline 的 margin-left
-    const termVisible = await terminalCard.first().isVisible({ timeout: 2000 }).catch(() => false);
-    const timelineVisible = await timelineSummary.first().isVisible({ timeout: 2000 }).catch(() => false);
-
-    if (termVisible) {
-      const margin = await terminalCard.first().evaluate((el) => {
-        return window.getComputedStyle(el).marginLeft;
-      });
-      expect(margin).toBe("36px");
-    } else if (timelineVisible) {
-      const margin = await timelineSummary.first().evaluate((el) => {
-        return window.getComputedStyle(el).marginLeft;
-      });
-      expect(margin).toBe("36px");
-    }
   });
 
-  test("8. 页面无溢出滚动条", async ({ page }) => {
-    await createFreshSession(page);
-    await page.waitForTimeout(500);
-
-    const hasOverflow = await page.evaluate(() => {
-      return document.documentElement.scrollHeight > document.documentElement.clientHeight + 5;
+  test("bundle drawer screenshot keeps long tables and forms inside the drawer", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState({
+        cards: [
+          {
+            id: "user-main-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "给我看一个包含表格和表单的完整 bundle。",
+            createdAt: "2026-04-03T10:20:00Z",
+            updatedAt: "2026-04-03T10:20:00Z",
+          },
+          {
+            id: "assistant-main-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "我把长表格和表单都收进 drawer。",
+            createdAt: "2026-04-03T10:20:05Z",
+            updatedAt: "2026-04-03T10:20:05Z",
+            payload: {
+              resultBundles: [
+                {
+                  id: "bundle-heavy-1",
+                  bundleKind: "monitor_bundle",
+                  summary: "nginx 监控聚合面板",
+                  subject: {
+                    type: "service",
+                    name: "nginx",
+                    env: "prod",
+                  },
+                  sections: [
+                    {
+                      kind: "overview",
+                      title: "概览",
+                      cards: [
+                        {
+                          id: "overview-card-1",
+                          uiKind: "readonly_summary",
+                          title: "当前状态",
+                          summary: "平稳",
+                        },
+                      ],
+                    },
+                    {
+                      kind: "trends",
+                      title: "趋势",
+                      cards: [
+                        {
+                          id: "trend-card-1",
+                          uiKind: "readonly_chart",
+                          title: "请求趋势",
+                          visual: { kind: "timeseries" },
+                        },
+                      ],
+                    },
+                    {
+                      kind: "alerts",
+                      title: "告警",
+                      cards: [
+                        {
+                          id: "alerts-card-1",
+                          uiKind: "readonly_chart",
+                          title: "当前告警表",
+                          visual: {
+                            kind: "table",
+                            columns: ["时间", "级别", "对象"],
+                            rows: [
+                              ["10:20", "warning", "nginx"],
+                              ["10:21", "info", "upstream"],
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                    {
+                      kind: "changes",
+                      title: "变更",
+                      cards: [
+                        {
+                          id: "change-card-1",
+                          uiKind: "form_panel",
+                          title: "结构化表单",
+                          summary: "表单会进入 drawer，而不是撑开正文。",
+                          actions: [
+                            {
+                              id: "confirm-nginx",
+                              label: "确认 nginx",
+                              intent: "refresh",
+                              mutation: false,
+                              permissionPath: "mcp.ops.service.confirm",
+                            },
+                          ],
+                          form: {
+                            confirmDescription: "这里放一个表单摘要。",
+                            fields: [
+                              {
+                                id: "field-service",
+                                name: "service",
+                                label: "服务名",
+                                type: "text",
+                                defaultValue: "nginx",
+                              },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                    {
+                      kind: "dependencies",
+                      title: "依赖",
+                      cards: [
+                        {
+                          id: "dependency-card-1",
+                          uiKind: "readonly_summary",
+                          title: "下游依赖",
+                          summary: "这里应该保持在 drawer 中。",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        runtime: {
+          turn: { active: false, phase: "completed", hostId: "web-01" },
+          codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+          activity: {
+            viewedFiles: [],
+            searchedWebQueries: [],
+            searchedContentQueries: [],
+          },
+        },
+      }),
+      sessions: createChatFixtureSessions(),
     });
-    expect(hasOverflow).toBe(false);
-  });
 
-  test("9. 发送按钮样式验证", async ({ page }) => {
-    await createFreshSession(page);
+    await expect(page.getByTestId("mcp-bundle-expand-more")).toContainText("展开剩余 3 个分区");
+    await page.getByTestId("mcp-bundle-open-detail").click();
+    const drawer = page.getByTestId("chat-mcp-surface-drawer");
 
-    const sendBtn = page.locator(".send-btn").first();
-    await expect(sendBtn).toBeVisible({ timeout: 5000 });
+    await expect(drawer).toBeVisible();
+    await page.locator('[data-testid="chat-mcp-surface-drawer"] [data-testid="mcp-bundle-expand-more"]').click();
+    await expect(page.locator('[data-testid="chat-mcp-surface-drawer"] [data-testid="mcp-status-table-head"]')).toBeVisible();
+    await expect(page.locator('[data-testid="chat-mcp-surface-drawer"] [data-testid="mcp-action-form-card"]')).toBeVisible();
+    await expect(page.locator(".chat-stream")).not.toContainText("当前告警表");
 
-    const btnStyle = await sendBtn.evaluate((el) => {
-      const style = window.getComputedStyle(el);
-      return {
-        width: style.width,
-        height: style.height,
-        borderRadius: style.borderRadius,
-      };
-    });
-
-    expect(btnStyle.width).toBe("32px");
-    expect(btnStyle.height).toBe("32px");
-    // borderRadius 应该是 50% 或 9999px 或 999px
-    expect(parseFloat(btnStyle.borderRadius)).toBeGreaterThanOrEqual(16);
-  });
-
-  test("10. 多轮对话后整体截图", async ({ page }) => {
-    await createFreshSession(page);
-
-    // 第一轮
-    await sendMessage(page, "你好");
-    await waitForAssistantReply(page, 30000);
-    await waitForTurnComplete(page, 60000);
-
-    // 第二轮
-    await sendMessage(page, "请帮我查看当前目录下有哪些文件");
-
-    // 等待可能的审批
-    await page.waitForTimeout(3000);
-    const authOverlay = page.locator(".auth-overlay-dock");
-    if (await authOverlay.isVisible({ timeout: 5000 }).catch(() => false)) {
-      const acceptBtn = page.locator(".option-row").first();
-      if (await acceptBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await acceptBtn.click();
-        await page.waitForTimeout(2000);
-      }
-    }
-
-    await waitForTurnComplete(page, 60000);
-
-    // 最终多轮对话截图
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/chat-multi-turn-conversation.png`,
+      path: `${SCREENSHOT_DIR}/chat-visual-bundle-drawer-heavy.png`,
       fullPage: false,
     });
+  });
 
-    // 验证多个 stream-row 存在
-    const rows = page.locator(".stream-row");
-    const count = await rows.count();
-    expect(count).toBeGreaterThanOrEqual(2);
+  test("global MCP drawer scaffold exposes enabled MCP and recent operation sections", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState({
+        cards: [
+          {
+            id: "user-main-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "请帮我固定 nginx 面板到全局 drawer。",
+            createdAt: "2026-04-03T10:00:00Z",
+            updatedAt: "2026-04-03T10:00:00Z",
+          },
+        ],
+        runtime: {
+          turn: { active: false, phase: "completed", hostId: "web-01" },
+          codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+          activity: {
+            viewedFiles: [],
+            searchedWebQueries: [],
+            searchedContentQueries: [],
+          },
+        },
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    await page.locator('.header-icon-btn[title="Skills & MCP"]').click();
+    await expect(page.locator(".app-mcp-drawer.is-open")).toBeVisible();
+    await expect(page.getByTestId("app-mcp-enabled-list")).toBeVisible();
+    await expect(page.getByTestId("app-mcp-recent-list")).toBeVisible();
+    await expect(page.getByTestId("app-mcp-enabled-list")).toContainText("启用中的 MCP");
+    await expect(page.getByTestId("app-mcp-recent-list")).toContainText("最近操作");
+  });
+
+  test("history boundary screenshot keeps the compact sentinel visible", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState({
+        cards: [
+          ...Array.from({ length: 11 }, (_value, index) => ({
+            id: `user-old-${index}`,
+            type: "UserMessageCard",
+            role: "user",
+            text: index === 0 ? "最早的一条聊天记录" : `历史消息 ${index}`,
+            createdAt: `2026-04-03T09:${String(index).padStart(2, "0")}:00Z`,
+            updatedAt: `2026-04-03T09:${String(index).padStart(2, "0")}:00Z`,
+          })),
+        ],
+        runtime: {
+          turn: { active: false, phase: "completed", hostId: "web-01" },
+          codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+          activity: {
+            viewedFiles: [],
+            searchedWebQueries: [],
+            searchedContentQueries: [],
+          },
+        },
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    await page.locator(".chat-container").evaluate((el) => {
+      el.scrollTop = 0;
+    });
+
+    const sentinel = page.getByTestId("chat-history-sentinel");
+    await expect(sentinel).toBeVisible();
+    await expect(sentinel).toContainText(/更早上下文已折叠|已到会话开头/);
+    await expect(sentinel.locator(".chat-history-sentinel-actions")).toBeVisible();
+    await expect(sentinel.locator(".chat-history-sentinel-btn")).toHaveCount(1);
+
+    await page.screenshot({
+      path: `${SCREENSHOT_DIR}/chat-visual-history-boundary.png`,
+      fullPage: false,
+    });
+  });
+
+  test("omnibar screenshot keeps the path artifact hint and focus recovery visible", async ({ page }) => {
+    await openVisualFixture(page, {
+      state: createChatFixtureState({
+        runtime: {
+          turn: { active: false, phase: "completed", hostId: "web-01" },
+          codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+          activity: {},
+        },
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    const input = page.getByTestId("omnibar-input");
+
+    await pasteText(input, PATH_LIST);
+    await expect(page.getByTestId("omnibar-attachment-indicator")).toContainText("4 个路径");
+    await expect(page.getByTestId("omnibar-artifact-pill")).toContainText("路径 4");
+
+    await input.blur();
+    await input.focus();
+
+    await expect(page.getByTestId("omnibar-focus-hint")).toContainText("已恢复输入焦点");
+    await expect(page.getByTestId("omnibar-focus-hint")).toContainText("路径仍待处理");
+
+    await page.screenshot({
+      path: `${SCREENSHOT_DIR}/chat-visual-omnibar-path-hint.png`,
+      fullPage: false,
+    });
   });
 });

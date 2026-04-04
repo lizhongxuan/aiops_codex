@@ -12,8 +12,10 @@ const baseline = ref("");
 const promptExpanded = ref(true);
 const skillSearch = ref("");
 const skillStatusFilter = ref("all");
+const selectedSkillCatalogId = ref("");
 const mcpSearch = ref("");
 const mcpStatusFilter = ref("all");
+const selectedMcpCatalogId = ref("");
 const importInputRef = ref(null);
 
 function deepClone(value) {
@@ -105,6 +107,56 @@ function mcpPermissionDescription(permission) {
     default:
       return "";
   }
+}
+
+function normalizeCatalogSkill(item) {
+  const enabled = item?.defaultEnabled === true || item?.enabled === true;
+  return {
+    id: String(item?.id || ""),
+    name: String(item?.name || item?.id || ""),
+    description: String(item?.description || ""),
+    source: String(item?.source || "local"),
+    defaultEnabled: enabled,
+    defaultActivationMode: normalizeSkillActivationMode(item?.defaultActivationMode ?? item?.activationMode, enabled),
+  };
+}
+
+function normalizeCatalogMcp(item) {
+  const enabled = item?.defaultEnabled === true || item?.enabled === true;
+  return {
+    id: String(item?.id || ""),
+    name: String(item?.name || item?.id || ""),
+    type: String(item?.type || "stdio"),
+    source: String(item?.source || "local"),
+    defaultEnabled: enabled,
+    permission: normalizeMcpPermission(item?.permission),
+    requiresExplicitUserApproval: Boolean(item?.requiresExplicitUserApproval),
+  };
+}
+
+function buildSkillBindingFromCatalog(item) {
+  const normalized = normalizeCatalogSkill(item);
+  return {
+    id: normalized.id,
+    name: normalized.name,
+    description: normalized.description,
+    source: normalized.source,
+    enabled: normalized.defaultEnabled,
+    activationMode: normalized.defaultActivationMode,
+  };
+}
+
+function buildMcpBindingFromCatalog(item) {
+  const normalized = normalizeCatalogMcp(item);
+  return {
+    id: normalized.id,
+    name: normalized.name,
+    type: normalized.type,
+    source: normalized.source,
+    enabled: normalized.defaultEnabled,
+    permission: normalized.permission,
+    requiresExplicitUserApproval: normalized.requiresExplicitUserApproval,
+  };
 }
 
 function skillRowMatches(item) {
@@ -436,6 +488,53 @@ const localPreview = computed(() => {
 const preview = computed(() => (isDirty.value ? localPreview.value : store.agentProfilePreview || localPreview.value));
 const filteredSkills = computed(() => (draft.skills || []).filter(skillRowMatches));
 const filteredMcps = computed(() => (draft.mcps || []).filter(mcpRowMatches));
+const availableSkillCatalog = computed(() => {
+  const boundIds = new Set((draft.skills || []).map((item) => String(item?.id || "").trim()).filter(Boolean));
+  return (Array.isArray(store.skillCatalog) ? store.skillCatalog : [])
+    .map(normalizeCatalogSkill)
+    .filter((item) => item.id && !boundIds.has(item.id));
+});
+const availableMcpCatalog = computed(() => {
+  const boundIds = new Set((draft.mcps || []).map((item) => String(item?.id || "").trim()).filter(Boolean));
+  return (Array.isArray(store.mcpCatalog) ? store.mcpCatalog : [])
+    .map(normalizeCatalogMcp)
+    .filter((item) => item.id && !boundIds.has(item.id));
+});
+
+function syncSelectedBindingId(targetRef, items) {
+  const nextItems = Array.isArray(items) ? items : [];
+  if (!nextItems.length) {
+    targetRef.value = "";
+    return;
+  }
+  if (!nextItems.some((item) => item.id === targetRef.value)) {
+    targetRef.value = nextItems[0].id;
+  }
+}
+
+function addSkillBinding() {
+  const selected = availableSkillCatalog.value.find((item) => item.id === selectedSkillCatalogId.value) || availableSkillCatalog.value[0];
+  if (!selected) return;
+  draft.skills = [...(draft.skills || []), buildSkillBindingFromCatalog(selected)];
+}
+
+function removeSkillBinding(skillId) {
+  const targetId = String(skillId || "").trim();
+  if (!targetId) return;
+  draft.skills = (draft.skills || []).filter((item) => String(item?.id || "").trim() !== targetId);
+}
+
+function addMcpBinding() {
+  const selected = availableMcpCatalog.value.find((item) => item.id === selectedMcpCatalogId.value) || availableMcpCatalog.value[0];
+  if (!selected) return;
+  draft.mcps = [...(draft.mcps || []), buildMcpBindingFromCatalog(selected)];
+}
+
+function removeMcpBinding(mcpId) {
+  const targetId = String(mcpId || "").trim();
+  if (!targetId) return;
+  draft.mcps = (draft.mcps || []).filter((item) => String(item?.id || "").trim() !== targetId);
+}
 
 function fillPromptTemplate() {
   const template = promptTemplateContent();
@@ -555,6 +654,22 @@ watch(
   },
 );
 
+watch(
+  () => availableSkillCatalog.value,
+  (items) => {
+    syncSelectedBindingId(selectedSkillCatalogId, items);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => availableMcpCatalog.value,
+  (items) => {
+    syncSelectedBindingId(selectedMcpCatalogId, items);
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   loadProfiles();
   window.addEventListener("beforeunload", handleBeforeUnload);
@@ -575,7 +690,7 @@ onBeforeUnmount(() => {
 
       <div class="sidebar-card">
         <div class="sidebar-title">Agent Profiles</div>
-        <div class="sidebar-subtitle">统一管理主 agent 与 host-agent 的静态配置。</div>
+        <div class="sidebar-subtitle">统一管理主 agent 与 host-agent 的能力配置、skills 与 MCP 绑定。</div>
         <div class="profile-list">
           <button
             v-for="profile in store.agentProfiles"
@@ -839,8 +954,30 @@ onBeforeUnmount(() => {
                   <option value="explicit_only">explicit_only</option>
                 </select>
               </div>
+              <div class="section-toolbar-row section-toolbar-row-attach">
+                <select
+                  v-model="selectedSkillCatalogId"
+                  class="text-input"
+                  :disabled="!availableSkillCatalog.length"
+                  data-testid="skill-binding-select"
+                >
+                  <option v-if="!availableSkillCatalog.length" value="">没有可添加的 Skill</option>
+                  <option v-for="item in availableSkillCatalog" :key="item.id" :value="item.id">
+                    {{ item.name || item.id }} · {{ item.id }}
+                  </option>
+                </select>
+                <button
+                  class="header-btn secondary toolbar-btn"
+                  type="button"
+                  :disabled="!availableSkillCatalog.length"
+                  @click="addSkillBinding"
+                  data-testid="add-skill-binding-btn"
+                >
+                  添加绑定
+                </button>
+              </div>
             </div>
-            <div v-if="!(draft.skills || []).length" class="empty-state">当前没有静态 skills 清单，后续阶段会接入可发现 catalog。</div>
+            <div v-if="!(draft.skills || []).length" class="empty-state">当前 profile 还没有挂载任何 skills 条目，可从上方 catalog 添加。</div>
             <div v-else-if="!(filteredSkills || []).length" class="empty-state">当前筛选条件下没有匹配的 skills。</div>
             <table v-else class="config-table">
               <thead>
@@ -849,6 +986,7 @@ onBeforeUnmount(() => {
                   <th>Source</th>
                   <th>Status</th>
                   <th>Activation</th>
+                  <th>Binding</th>
                 </tr>
               </thead>
               <tbody>
@@ -876,6 +1014,16 @@ onBeforeUnmount(() => {
                     </label>
                     <div class="row-subtitle">{{ skillModeDescription(item.activationMode) }}</div>
                   </td>
+                  <td>
+                    <button
+                      class="header-btn secondary table-action-btn"
+                      type="button"
+                      @click="removeSkillBinding(item.id)"
+                      :data-testid="`remove-skill-binding-${item.id}`"
+                    >
+                      移除
+                    </button>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -897,8 +1045,30 @@ onBeforeUnmount(() => {
                   <option value="readwrite">readwrite</option>
                 </select>
               </div>
+              <div class="section-toolbar-row section-toolbar-row-attach">
+                <select
+                  v-model="selectedMcpCatalogId"
+                  class="text-input"
+                  :disabled="!availableMcpCatalog.length"
+                  data-testid="mcp-binding-select"
+                >
+                  <option v-if="!availableMcpCatalog.length" value="">没有可添加的 MCP</option>
+                  <option v-for="item in availableMcpCatalog" :key="item.id" :value="item.id">
+                    {{ item.name || item.id }} · {{ item.id }}
+                  </option>
+                </select>
+                <button
+                  class="header-btn secondary toolbar-btn"
+                  type="button"
+                  :disabled="!availableMcpCatalog.length"
+                  @click="addMcpBinding"
+                  data-testid="add-mcp-binding-btn"
+                >
+                  添加绑定
+                </button>
+              </div>
             </div>
-            <div v-if="!(draft.mcps || []).length" class="empty-state">当前没有静态 MCP 清单，后续阶段会补 catalog 和来源配置。</div>
+            <div v-if="!(draft.mcps || []).length" class="empty-state">当前 profile 还没有挂载任何 MCP 条目，可从上方 catalog 添加。</div>
             <div v-else-if="!(filteredMcps || []).length" class="empty-state">当前筛选条件下没有匹配的 MCP。</div>
             <table v-else class="config-table">
               <thead>
@@ -908,6 +1078,7 @@ onBeforeUnmount(() => {
                   <th>Status</th>
                   <th>Permission</th>
                   <th>Explicit Approval</th>
+                  <th>Binding</th>
                 </tr>
               </thead>
               <tbody>
@@ -941,6 +1112,16 @@ onBeforeUnmount(() => {
                         <span>显式确认</span>
                       </label>
                     </div>
+                  </td>
+                  <td>
+                    <button
+                      class="header-btn secondary table-action-btn"
+                      type="button"
+                      @click="removeMcpBinding(item.id)"
+                      :data-testid="`remove-mcp-binding-${item.id}`"
+                    >
+                      移除
+                    </button>
                   </td>
                 </tr>
               </tbody>
@@ -1338,6 +1519,11 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
+.toolbar-btn,
+.table-action-btn {
+  justify-content: center;
+}
+
 .page-alert {
   margin-bottom: 16px;
   border-radius: 14px;
@@ -1384,6 +1570,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 220px;
   gap: 10px;
+}
+
+.section-toolbar-row-attach {
+  grid-template-columns: minmax(0, 1fr) 132px;
 }
 
 .form-grid {

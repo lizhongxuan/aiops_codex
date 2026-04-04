@@ -83,6 +83,124 @@ export function objectRows(source) {
     .filter(Boolean);
 }
 
+const ORDERED_ROW_KEYS = ["task", "host", "status", "approval", "thread", "session"];
+
+function normalizeOrderedKey(value) {
+  return compactText(value).toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function orderedKeyPriority(value, keyOrder = ORDERED_ROW_KEYS) {
+  const normalized = normalizeOrderedKey(value);
+  const explicitIndex = keyOrder.findIndex((item) => normalized === normalizeOrderedKey(item) || normalized.startsWith(normalizeOrderedKey(item)));
+  return explicitIndex >= 0 ? explicitIndex : keyOrder.length + 1;
+}
+
+export function orderedObjectRows(source, { keyOrder = ORDERED_ROW_KEYS } = {}) {
+  if (!source || typeof source !== "object") return [];
+  return Object.entries(source)
+    .map(([key, value]) => {
+      const text = formatScalar(value);
+      if (!text) return null;
+      return {
+        rawKey: key,
+        key: labelizeKey(key),
+        value: text,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const priorityDiff = orderedKeyPriority(left.rawKey, keyOrder) - orderedKeyPriority(right.rawKey, keyOrder);
+      if (priorityDiff !== 0) return priorityDiff;
+      return left.key.localeCompare(right.key, "zh-CN");
+    })
+    .map(({ key, value }) => ({ key, value }));
+}
+
+function displayStatusPriority(status) {
+  const normalized = compactText(status).toLowerCase();
+  if (!normalized) return 5;
+  if (normalized.includes("wait") || normalized.includes("approval") || normalized.includes("blocking")) return 0;
+  if (normalized.includes("fail") || normalized.includes("error")) return 1;
+  if (normalized.includes("run") || normalized.includes("progress") || normalized.includes("execut")) return 2;
+  if (normalized.includes("queue") || normalized.includes("pending") || normalized.includes("dispatch")) return 3;
+  if (normalized.includes("complete") || normalized.includes("done") || normalized.includes("success")) return 4;
+  return 5;
+}
+
+export function sortProcessDisplayItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item, index) => ({
+      ...item,
+      __sortIndex: index,
+      __sortStamp: parseTimestamp(item?.sortTimestamp || item?.updatedAt || item?.createdAt || ""),
+      __sortStatus: displayStatusPriority(item?.status || item?.tone || item?.kind),
+    }))
+    .sort((left, right) => {
+      const statusDiff = left.__sortStatus - right.__sortStatus;
+      if (statusDiff !== 0) return statusDiff;
+      const stampDiff = right.__sortStamp - left.__sortStamp;
+      if (stampDiff !== 0) return stampDiff;
+      return left.__sortIndex - right.__sortIndex;
+    })
+    .map(({ __sortIndex, __sortStamp, __sortStatus, ...item }) => item);
+}
+
+export function sortApprovalDisplayItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item, index) => ({
+      ...item,
+      __sortIndex: index,
+      __sortStamp: parseTimestamp(item?.sortTimestamp || item?.raw?.updatedAt || item?.raw?.createdAt || ""),
+    }))
+    .sort((left, right) => {
+      const stampDiff = right.__sortStamp - left.__sortStamp;
+      if (stampDiff !== 0) return stampDiff;
+      return compactText(left.hostName || left.hostId).localeCompare(compactText(right.hostName || right.hostId), "zh-CN");
+    })
+    .map(({ __sortIndex, __sortStamp, ...item }) => item);
+}
+
+export function sortBackgroundAgentItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item, index) => ({
+      ...item,
+      __sortIndex: index,
+      __sortStamp: parseTimestamp(item?.sortTimestamp || ""),
+      __sortStatus: displayStatusPriority(item?.status || item?.statusLabel),
+    }))
+    .sort((left, right) => {
+      const statusDiff = left.__sortStatus - right.__sortStatus;
+      if (statusDiff !== 0) return statusDiff;
+      const stampDiff = right.__sortStamp - left.__sortStamp;
+      if (stampDiff !== 0) return stampDiff;
+      return compactText(left.name || left.hostId).localeCompare(compactText(right.name || right.hostId), "zh-CN");
+    })
+    .map(({ __sortIndex, __sortStamp, __sortStatus, ...item }) => item);
+}
+
+export function isInternalRoutingMessageText(text = "") {
+  const trimmed = compactText(text);
+  if (!trimmed) return false;
+  if (/^主\s*Agent\s*正在判断/.test(trimmed)) return true;
+  if (/^这是简单对话/.test(trimmed)) return true;
+  if (/^(这是|当前).*(简单|直接).*(对话|回答|回复)/.test(trimmed)) return true;
+  if (/^主\s*Agent\s*(会|将)直接回答/.test(trimmed)) return true;
+  if (/不会生成计划或派发\s*worker/.test(trimmed)) return true;
+  return false;
+}
+
+export function cleanAssistantDisplayText(text, role = "assistant") {
+  const normalizedRole = compactText(role).toLowerCase();
+  if (normalizedRole === "user") return compactText(text);
+  let cleaned = String(text || "");
+  cleaned = cleaned.replace(/`{3}json[\s\S]*?`{3}/g, (match) => (/"route"\s*:/.test(match) ? "" : match)).trim();
+  cleaned = cleaned.replace(/`{3}json\s*\{[^`]*"route"\s*:[^`]*/g, "").trim();
+  cleaned = cleaned.replace(/\{[^{}]*"route"\s*:\s*"[^"]*"[^{}]*\}/g, "").trim();
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+  if (isInternalRoutingMessageText(cleaned)) return "";
+  return cleaned;
+}
+
 export function pickField(source, ...keys) {
   if (!source || typeof source !== "object") return undefined;
   for (const key of keys) {

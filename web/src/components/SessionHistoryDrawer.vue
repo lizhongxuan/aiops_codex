@@ -7,6 +7,18 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  title: {
+    type: String,
+    default: "历史会话",
+  },
+  scopeLabel: {
+    type: String,
+    default: "",
+  },
+  sessionKind: {
+    type: String,
+    default: "",
+  },
   activeSessionId: {
     type: String,
     default: "",
@@ -23,7 +35,8 @@ const props = defineProps({
 
 const emit = defineEmits(["close", "create", "create-workspace", "select"]);
 
-const hasSessions = computed(() => props.sessions.length > 0);
+const visibleSessions = computed(() => (Array.isArray(props.sessions) ? props.sessions : []));
+const hasSessions = computed(() => visibleSessions.value.length > 0);
 
 function formatTime(value) {
   if (!value) return "刚刚";
@@ -55,15 +68,26 @@ function statusLabel(status) {
 function handleSelect(sessionId) {
   emit("select", sessionId);
 }
+
+function sessionTargetLabel(session) {
+  const kind = String(session?.kind || "").trim().toLowerCase();
+  if (kind === "workspace") {
+    return "主 Agent / 多主机协作";
+  }
+  return String(session?.selectedHostId || "server-local");
+}
 </script>
 
 <template>
   <div class="session-history-overlay" @click="emit('close')">
     <aside class="session-history-drawer" @click.stop>
       <div class="session-history-header">
-        <div class="session-history-title">
-          <HistoryIcon size="18" />
-          <span>历史会话</span>
+        <div class="session-history-title-block">
+          <div class="session-history-title">
+            <HistoryIcon size="18" />
+            <span>{{ title }}</span>
+          </div>
+          <p v-if="scopeLabel" class="session-history-scope">{{ scopeLabel }}</p>
         </div>
         <button class="history-icon-btn" @click="emit('close')">
           <XIcon size="18" />
@@ -92,12 +116,12 @@ function handleSelect(sessionId) {
         </div>
 
         <div v-else-if="!hasSessions" class="history-empty">
-          <span>还没有历史会话，先开始第一段对话。</span>
+          <span>还没有{{ title }}，先开始第一段{{ sessionKind === 'workspace' ? '工作台' : '对话' }}。</span>
         </div>
 
         <div v-else>
           <button
-            v-for="session in sessions"
+            v-for="session in visibleSessions"
             :key="session.id"
             class="history-session-item"
             :class="{ active: session.id === activeSessionId }"
@@ -111,7 +135,7 @@ function handleSelect(sessionId) {
             <p class="history-session-preview">{{ session.preview }}</p>
             <div class="history-session-meta">
               <span class="history-status" :class="session.status">{{ statusLabel(session.status) }}</span>
-              <span class="history-host">{{ session.selectedHostId || "server-local" }}</span>
+              <span class="history-host">{{ sessionTargetLabel(session) }}</span>
               <span class="history-count">{{ session.messageCount || 0 }} 条消息</span>
             </div>
           </button>
@@ -149,6 +173,12 @@ function handleSelect(sessionId) {
   padding: 18px 18px 10px;
 }
 
+.session-history-title-block {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 .session-history-title {
   display: inline-flex;
   align-items: center;
@@ -156,6 +186,13 @@ function handleSelect(sessionId) {
   font-size: 15px;
   font-weight: 700;
   color: #0f172a;
+}
+
+.session-history-scope {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .history-icon-btn {
