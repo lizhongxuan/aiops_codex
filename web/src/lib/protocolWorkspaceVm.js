@@ -2,6 +2,7 @@ import {
   buildWorkspaceHostRows,
   buildWorkspaceLiveTimeline,
   buildWorkspaceStepItems,
+  cleanAssistantDisplayText,
   compactText,
   formatShortTime,
   formatTime,
@@ -10,17 +11,21 @@ import {
   isAssistantMessageCard,
   isChoiceCard,
   isDispatchSummaryCard,
+  isInternalRoutingMessageText,
   isMissionNoticeCard,
   isPlanCard,
   isProcessCard,
   isSystemNoticeCard,
   isUserMessageCard,
   isWorkspaceResultCard,
-  objectRows,
+  orderedObjectRows,
   parseTimestamp,
   pickField,
+  sortApprovalDisplayItems,
+  sortBackgroundAgentItems,
   statusTone,
 } from "./workspaceViewModel";
+import { formatProtocolChatTurns } from "./chatTurnFormatter";
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -88,7 +93,7 @@ function normalizeEvidenceRows(value, { defaultLabel = "" } = {}) {
       .filter((row) => row.label || row.value || row.text);
   }
   if (typeof value === "object") {
-    return objectRows(value).map((row) => ({
+    return orderedObjectRows(value).map((row) => ({
       label: row.key,
       value: row.value,
       text: "",
@@ -250,7 +255,6 @@ export function resolveProtocolWorkspaceCards(cards = []) {
   return {
     workspaceCards,
     currentMissionCards,
-    latestUserIndex,
     missionCard,
     planCard,
     dispatchSummaryCards,
@@ -270,18 +274,20 @@ export function buildProtocolConversationItems(cards = []) {
     .map((card) => {
       const role = isUserMessageCard(card) ? "user" : "assistant";
       const title = normalizeWorkspaceCopy(card?.title);
-      const baseText = normalizeWorkspaceCopy(card?.text || card?.summary || card?.message || card?.title);
-      if (!baseText) return null;
+      // Preserve original text with newlines intact — don't use compactText/normalizeWorkspaceCopy
+      // which would collapse \n into spaces and destroy Markdown formatting
+      const rawText = String(card?.text || card?.summary || card?.message || card?.title || "").trim();
+      if (!rawText) return null;
 
       // Filter out system routing / dispatch messages that are not meant for the user
-      if (role === "assistant" && isSystemRoutingMessage(baseText)) return null;
+      if (role === "assistant" && isInternalRoutingMessageText(rawText)) return null;
 
-      const shouldPrefixTitle = (card?.type === "ErrorCard" || isFailedResultSummaryCard(card)) && title && !baseText.startsWith(title);
-      const cleanedText = cleanAssistantMessageText(shouldPrefixTitle ? `${title}\n${baseText}` : baseText, role);
+      const shouldPrefixTitle = (card?.type === "ErrorCard" || isFailedResultSummaryCard(card)) && title && !rawText.startsWith(title);
+      const cleanedText = cleanAssistantDisplayText(shouldPrefixTitle ? `${title}\n${rawText}` : rawText, role);
       if (!cleanedText) return null;
 
       return {
-        id: card.id || `${role}-${cleanedText}`,
+        id: card.id || `${role}-${cleanedText.slice(0, 40)}`,
         role,
         time: formatShortTime(card.updatedAt || card.createdAt),
         title: card?.type === "ErrorCard" ? "系统错误" : role === "user" ? "用户" : "主 Agent",
@@ -291,45 +297,10 @@ export function buildProtocolConversationItems(cards = []) {
     .filter(Boolean);
 }
 
-/**
- * Detect system routing / dispatch messages that should be hidden from the user.
- * These are internal Agent routing decisions, not actual replies.
- */
-function isSystemRoutingMessage(text) {
-  const trimmed = (text || "").trim();
-  // Messages that are purely the Agent's internal routing decision
-  if (/^主\s*Agent\s*正在判断/.test(trimmed)) return true;
-  if (/^这是简单对话/.test(trimmed)) return true;
-  if (/^(这是|当前).*(简单|直接).*(对话|回答|回复)/.test(trimmed)) return true;
-  // Pure routing notice without any useful content
-  if (/^主\s*Agent\s*(会|将)直接回答/.test(trimmed)) return true;
-  if (/不会生成计划或派发\s*worker/.test(trimmed)) return true;
-  return false;
-}
-
-/**
- * Clean assistant message text by stripping embedded JSON routing blocks
- * that are internal Agent metadata, not meant for user display.
- */
-function cleanAssistantMessageText(text, role) {
-  if (role === "user" || !text) return text;
-  // Remove ```json ... ``` fenced blocks containing routing metadata
-  let cleaned = text.replace(/`{3}json[\s\S]*?`{3}/g, (match) => {
-    if (/"route"\s*:/.test(match)) return "";
-    return match;
-  }).trim();
-  // Fallback: remove unclosed ```json blocks with routing metadata
-  cleaned = cleaned.replace(/`{3}json\s*\{[^`]*"route"\s*:[^`]*/g, "").trim();
-  // Remove inline { "route": ... } JSON objects
-  cleaned = cleaned.replace(/\{[^{}]*"route"\s*:\s*"[^"]*"[^{}]*\}/g, "").trim();
-  // Collapse multiple newlines
-  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
-  return cleaned;
-}
-
 export function buildProtocolBackgroundAgents(hostRows = []) {
   const seen = new Set();
-  return asArray(hostRows)
+  return sortBackgroundAgentItems(
+    asArray(hostRows)
     .filter((row) => {
       if (!row.hostId || row.hostId === "server-local") return false;
       if (seen.has(row.hostId)) return false;
@@ -344,12 +315,71 @@ export function buildProtocolBackgroundAgents(hostRows = []) {
       status: row.statusKey,
       statusLabel: row.statusLabel,
       tone: statusTone(row.statusKey),
-    }));
+      sortTimestamp: row.updatedAt,
+    })),
+  );
+}
+
+function buildProtocolConversationStatusCard({
+  missionPhase = "idle",
+  turnActive = false,
+  approvalItems = [],
+  backgroundAgents = [],
+  planCardModel = null,
+  cards = {},
+} = {}) {
+  const phase = normalizeProtocolMissionPhase(missionPhase);
+
+  if (turnActive && ["completed", "failed", "aborted", "idle"].includes(phase)) {
+    return {
+      id: "__workspace_status__",
+      type: "ThinkingCard",
+      phase: "executing",
+      hint: "",
+    };
+  }
+
+  if (!turnActive && !["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"].includes(phase)) {
+    return null;
+  }
+
+  const hasPlanProjection = Boolean(
+    cards?.planCard ||
+      compactText(planCardModel?.summary) ||
+      compactText(planCardModel?.generatedAt),
+  );
+
+  let hint = "";
+  if (phase === "planning") {
+    hint =
+      compactText(planCardModel?.summary) ||
+      (hasPlanProjection ? "已收到计划投影，正在同步 step 和 host-agent 映射。" : "主 Agent 正在理解你的问题并生成 plan。");
+  } else if (phase === "waiting_approval") {
+    const approval = approvalItems[0] || null;
+    hint = approval
+      ? `${approval.hostName || approval.hostId || "server-local"} 正在等待审批：${approval.command || approval.summary || "待确认操作"}`
+      : "主 Agent 已生成计划，当前正在等待审批继续推进。";
+  } else if (phase === "waiting_input") {
+    hint = "主 Agent 正在等待补充输入或确认后继续推进。";
+  } else if (phase === "executing") {
+    const agents = asArray(backgroundAgents)
+      .slice(0, 2)
+      .map((agent) => compactText(agent.name || agent.hostId || agent.id))
+      .filter(Boolean);
+    hint = agents.length ? `${agents.join("、")} 正在执行` : "";
+  }
+
+  return {
+    id: "__workspace_status__",
+    type: "ThinkingCard",
+    phase,
+    hint,
+  };
 }
 
 export function buildProtocolApprovalItems(approvalCards = [], hostRows = []) {
   const hostById = new Map(asArray(hostRows).map((row) => [row.hostId, row]));
-  return asArray(approvalCards).map((card) => {
+  return sortApprovalDisplayItems(asArray(approvalCards).map((card) => {
     const host = hostById.get(card.hostId) || null;
     const decisions = asArray(card?.approval?.decisions);
     const dispatchRequest = asObject(host?.dispatch?.request);
@@ -376,9 +406,10 @@ export function buildProtocolApprovalItems(approvalCards = [], hostRows = []) {
       dispatchRequest,
       approvalAnchor,
       taskBinding: host?.dispatch?.taskBinding || host?.dispatch?.task_binding || null,
+      sortTimestamp: card.updatedAt || card.createdAt,
       raw: card,
     };
-  });
+  }));
 }
 
 export function buildProtocolEventItems({
@@ -596,7 +627,7 @@ export function buildProtocolEvidenceTabs({
 
   const hostTerminal = asObject(worker.terminal);
   const hostTerminalRows = [];
-  const terminalRows = objectRows(hostTerminal);
+  const terminalRows = orderedObjectRows(hostTerminal);
   const terminalOutput = pickField(hostTerminal, "output", "stdout", "text", "summary");
   const terminalSummary = [
     hostRow?.displayName ? { label: "Host", value: compactText(hostRow.displayName) } : null,
@@ -618,8 +649,8 @@ export function buildProtocolEvidenceTabs({
   const hostTerminalOutput = (() => {
     if (Array.isArray(terminalOutput)) return terminalOutput.map((item) => String(item ?? ""));
     if (terminalOutput && typeof terminalOutput === "object") {
-      const rows = objectRows(terminalOutput);
-      if (rows.length) return rows.map((row) => `${row.key}: ${row.value}`);
+      const orderedRows = orderedObjectRows(terminalOutput);
+      if (orderedRows.length) return orderedRows.map((row) => `${row.key}: ${row.value}`);
       try {
         return JSON.stringify(terminalOutput, null, 2);
       } catch {
@@ -675,6 +706,26 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     systemNoticeCards: cards.currentMissionCards.filter((card) => isSystemNoticeCard(card)),
     dispatchEvents,
   });
+  const approvalItems = buildProtocolApprovalItems(cards.approvalCards, hostRows);
+  const backgroundAgents = buildProtocolBackgroundAgents(hostRows);
+  const conversationStatusCard = buildProtocolConversationStatusCard({
+    missionPhase,
+    turnActive: runtime?.turn?.active === true,
+    approvalItems,
+    backgroundAgents,
+    choiceCards: cards.choiceCards,
+    planCardModel,
+    cards,
+  });
+  const formattedTurns = formatProtocolChatTurns({
+    conversationCards: cards.conversationCards,
+    processCards: cards.processCards,
+    missionPhase,
+    turnActive: runtime?.turn?.active === true,
+    statusCard: conversationStatusCard,
+    approvalItems,
+  });
+  const activeProcessTurnId = formattedTurns.find((turn) => turn.active)?.id || "";
   const canStopCurrentMission =
     Boolean(runtime?.turn?.active) &&
     !["aborted", "failed", "completed"].includes(missionPhase) &&
@@ -708,12 +759,14 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     missionPhase,
     cards,
     hostRows,
-    conversationItems: buildProtocolConversationItems(cards.conversationCards),
-    approvalItems: buildProtocolApprovalItems(cards.approvalCards, hostRows),
-    backgroundAgents: buildProtocolBackgroundAgents(hostRows),
+    approvalItems,
+    backgroundAgents,
+    choiceCards: cards.choiceCards,
     planCardModel,
     eventItems,
-    processCards: cards.processCards,
+    conversationStatusCard,
+    formattedTurns,
+    activeProcessTurnId,
     canStopCurrentMission,
     nextSendStartsNewMission,
     statusBanner,

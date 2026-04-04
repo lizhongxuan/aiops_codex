@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { ListIcon } from "lucide-vue-next";
 
 const OTHER_OPTION_VALUE = "__other__";
+const DEFAULT_OPTION_DESCRIPTION = "选择后会按该方案继续推进。";
 
 const props = defineProps({
   card: {
@@ -19,20 +20,79 @@ const emit = defineEmits(["choice"]);
 
 const selectedValues = ref([]);
 const otherValues = ref([]);
+const noteValues = ref([]);
+const noteExpanded = ref([]);
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function getOptionValue(option, index) {
+  return option?.value || option?.label || `option-${index}`;
+}
+
+function getOptionLabel(option) {
+  return option?.label || option?.value || "未命名选项";
+}
+
+function isRecommendedOption(option) {
+  if (option?.recommended === true) return true;
+  return /^推荐[:：]/.test(getOptionLabel(option));
+}
+
+function normalizeOption(option, index) {
+  return {
+    ...option,
+    _value: getOptionValue(option, index),
+    _label: getOptionLabel(option),
+    _description: String(option?.description || "").trim() || DEFAULT_OPTION_DESCRIPTION,
+    _recommended: isRecommendedOption(option),
+    _originalIndex: index,
+  };
+}
+
+function normalizeQuestion(question, index, fallbackTitle) {
+  const normalizedOptions = asArray(question?.options)
+    .map((option, optionIndex) => normalizeOption(option, optionIndex))
+    .sort((left, right) => {
+      if (left._recommended !== right._recommended) {
+        return left._recommended ? -1 : 1;
+      }
+      return left._originalIndex - right._originalIndex;
+    });
+
+  return {
+    header: question?.header || (index === 0 ? fallbackTitle : ""),
+    question: question?.question || "",
+    isOther: Boolean(question?.isOther),
+    isSecret: Boolean(question?.isSecret),
+    options: normalizedOptions,
+    allowSupplementNote: question?.allowSupplementNote !== false,
+    notePlaceholder: String(question?.notePlaceholder || "").trim() || "补充偏好、风险边界，或你已经确认过的信息（选填）",
+  };
+}
 
 const choiceQuestions = computed(() => {
   if (props.card.questions?.length) {
-    return props.card.questions;
+    return props.card.questions.map((question, index) =>
+      normalizeQuestion(question, index, props.card.title || ""),
+    );
   }
   if (props.card.question || props.card.options?.length) {
     return [
-      {
-        header: props.card.title || "",
-        question: props.card.question || "",
-        options: props.card.options || [],
-        isOther: false,
-        isSecret: false,
-      },
+      normalizeQuestion(
+        {
+          header: props.card.title || "",
+          question: props.card.question || "",
+          options: props.card.options || [],
+          isOther: false,
+          isSecret: false,
+          allowSupplementNote: true,
+          notePlaceholder: props.card.notePlaceholder || "",
+        },
+        0,
+        props.card.title || "",
+      ),
     ];
   }
   return [];
@@ -46,13 +106,15 @@ watch(
   (questions) => {
     selectedValues.value = questions.map((question) => {
       if (question.options?.length) {
-        return getOptionValue(question.options[0], 0);
+        return question.options[0]._value;
       }
       return OTHER_OPTION_VALUE;
     });
     otherValues.value = questions.map(() => "");
+    noteValues.value = questions.map(() => "");
+    noteExpanded.value = questions.map(() => false);
   },
-  { immediate: true, deep: true }
+  { immediate: true, deep: true },
 );
 
 const canSubmit = computed(() => {
@@ -60,19 +122,11 @@ const canSubmit = computed(() => {
   return choiceQuestions.value.every((question, index) => {
     const selectedValue = selectedValues.value[index];
     if (question.options?.length && selectedValue !== OTHER_OPTION_VALUE) {
-      return !!selectedValue;
+      return Boolean(selectedValue);
     }
-    return !!otherValues.value[index]?.trim();
+    return Boolean(otherValues.value[index]?.trim());
   });
 });
-
-function getOptionValue(option, index) {
-  return option?.value || option?.label || `option-${index}`;
-}
-
-function getOptionLabel(option) {
-  return option?.label || option?.value || "未命名选项";
-}
 
 function getQuestionHeader(question, index) {
   if (question.header) return question.header;
@@ -85,28 +139,37 @@ function showInlineInput(question, index) {
   return question.isOther && selectedValues.value[index] === OTHER_OPTION_VALUE;
 }
 
+function showSupplementNote(question) {
+  return question.allowSupplementNote !== false;
+}
+
+function toggleSupplementNote(index) {
+  noteExpanded.value[index] = !noteExpanded.value[index];
+}
+
 function onSubmit() {
   if (!canSubmit.value) return;
   emit("choice", {
     requestId: props.card.requestId,
     answers: choiceQuestions.value.map((question, index) => {
       const selectedValue = selectedValues.value[index];
+      const note = noteValues.value[index]?.trim() || "";
       if (!question.options?.length || selectedValue === OTHER_OPTION_VALUE) {
         const value = otherValues.value[index].trim();
         return {
           value,
           label: value,
           isOther: true,
+          note,
         };
       }
 
-      const selectedOption = question.options.find((option, optionIndex) => {
-        return getOptionValue(option, optionIndex) === selectedValue;
-      });
+      const selectedOption = question.options.find((option) => option._value === selectedValue);
       return {
-        value: selectedOption ? getOptionValue(selectedOption, 0) : selectedValue,
-        label: selectedOption ? getOptionLabel(selectedOption) : selectedValue,
+        value: selectedOption ? selectedOption._value : selectedValue,
+        label: selectedOption ? selectedOption._label : selectedValue,
         isOther: false,
+        note,
       };
     }),
   });
@@ -142,18 +205,21 @@ function onSubmit() {
             v-for="(option, optionIndex) in question.options"
             :key="`${card.id}-${index}-${optionIndex}`"
             class="choice-option"
-            :class="{ selected: selectedValues[index] === getOptionValue(option, optionIndex) }"
-            @click="selectedValues[index] = getOptionValue(option, optionIndex)"
+            :class="{ selected: selectedValues[index] === option._value }"
+            @click="selectedValues[index] = option._value"
           >
             <span class="option-radio">
               <span
-                v-if="selectedValues[index] === getOptionValue(option, optionIndex)"
+                v-if="selectedValues[index] === option._value"
                 class="radio-dot"
               ></span>
             </span>
             <span class="option-copy">
-              <span class="option-label">{{ getOptionLabel(option) }}</span>
-              <span v-if="option.description" class="option-description">{{ option.description }}</span>
+              <span class="option-label-row">
+                <span class="option-label">{{ option._label }}</span>
+                <span v-if="option._recommended" class="option-badge">推荐</span>
+              </span>
+              <span class="option-description">{{ option._description }}</span>
             </span>
           </label>
 
@@ -167,7 +233,10 @@ function onSubmit() {
               <span v-if="selectedValues[index] === OTHER_OPTION_VALUE" class="radio-dot"></span>
             </span>
             <span class="option-copy">
-              <span class="option-label">其他</span>
+              <span class="option-label-row">
+                <span class="option-label">其他</span>
+              </span>
+              <span class="option-description">自己补充当前更合适的处理方向。</span>
             </span>
           </label>
         </div>
@@ -180,9 +249,27 @@ function onSubmit() {
             :placeholder="question.isSecret ? '请输入保密内容' : '请输入内容'"
           />
         </div>
+
+        <div v-if="card.status === 'pending' && showSupplementNote(question)" class="choice-note-block">
+          <button
+            type="button"
+            class="choice-note-toggle"
+            data-testid="choice-note-toggle"
+            @click="toggleSupplementNote(index)"
+          >
+            {{ noteExpanded[index] ? "收起补充说明" : "补充说明（选填）" }}
+          </button>
+          <textarea
+            v-if="noteExpanded[index]"
+            v-model="noteValues[index]"
+            class="choice-note-input"
+            data-testid="choice-note-input"
+            :placeholder="question.notePlaceholder"
+          ></textarea>
+        </div>
       </div>
 
-      <div class="choice-footer" v-if="card.status === 'pending'">
+      <div v-if="card.status === 'pending'" class="choice-footer">
         <button class="submit-btn" :disabled="!canSubmit" @click="onSubmit">
           提交 ↵
         </button>
@@ -326,10 +413,31 @@ function onSubmit() {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+}
+
+.option-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .option-label {
   line-height: 1.5;
+  font-weight: 600;
+}
+
+.option-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .option-description {
@@ -342,7 +450,8 @@ function onSubmit() {
   margin-top: 12px;
 }
 
-.choice-input {
+.choice-input,
+.choice-note-input {
   width: 100%;
   border-radius: 10px;
   border: 1px solid #d1d5db;
@@ -353,9 +462,35 @@ function onSubmit() {
   outline: none;
 }
 
-.choice-input:focus {
+.choice-note-input {
+  min-height: 92px;
+  resize: vertical;
+  margin-top: 8px;
+  font-family: inherit;
+}
+
+.choice-input:focus,
+.choice-note-input:focus {
   border-color: #0f172a;
   box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+}
+
+.choice-note-block {
+  margin-top: 12px;
+}
+
+.choice-note-toggle {
+  border: none;
+  background: transparent;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+}
+
+.choice-note-toggle:hover {
+  color: #0f172a;
 }
 
 .choice-footer {

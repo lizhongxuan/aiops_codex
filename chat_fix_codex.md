@@ -1136,7 +1136,23 @@ Claude Code 对后台 agent 的处理很克制：
 
 ---
 
-## 14. 最终结论
+## 14. 基线冻结与统一验收矩阵
+
+当前实现已经补齐一份独立基线文档：
+
+- [docs/chat-fix-acceptance-baseline.md](/Users/lizhongxuan/Desktop/aiops-codex/docs/chat-fix-acceptance-baseline.md)
+
+这份基线文档解决了 3 件事：
+
+- 盘点了主聊天和协议工作台当前真正依赖的状态来源
+- 冻结了 6 组核心验收样本，并把 MCP bundle / action surface 作为扩展基线单列
+- 把“结构 / 折叠 / 阻塞 / 滚动 / 输入器 / 性能 / MCP / 视觉”收敛成统一验收矩阵
+
+后续如果继续改 turn formatter、approval 边界、history、virtualization 或 MCP surface，优先以这份基线文档为准，不再重新口头定义“这次算不算达标”。
+
+---
+
+## 15. 最终结论
 
 这次整理后，文档已经没有实质性的范围冲突，结论也收敛成一句话：
 

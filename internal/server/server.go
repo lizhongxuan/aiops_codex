@@ -141,6 +141,7 @@ type choiceAnswerInput struct {
 	Value   string `json:"value"`
 	Label   string `json:"label,omitempty"`
 	IsOther bool   `json:"isOther,omitempty"`
+	Note    string `json:"note,omitempty"`
 }
 
 type choiceAnswerRequest struct {
@@ -5570,6 +5571,10 @@ func choiceAnswerSummary(questions []model.ChoiceQuestion, answers []choiceAnswe
 		}
 		if label == "" {
 			continue
+		}
+		note := strings.TrimSpace(answer.Note)
+		if note != "" {
+			label = label + "（补充：" + note + "）"
 		}
 		if index < len(questions) && questions[index].Header != "" {
 			summary = append(summary, questions[index].Header+": "+label)

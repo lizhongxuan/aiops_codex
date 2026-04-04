@@ -87,13 +87,13 @@ const (
 	SessionKindWorkspace            = "workspace"
 	// Legacy-only: kept so planner-backed persisted sessions can still load and
 	// be explicitly failed during reconcile after planner removal.
-	SessionKindPlanner              = "planner"
-	SessionKindWorker               = "worker"
-	SessionRuntimePresetSingleHost  = "single_host_default"
-	SessionRuntimePresetWorkspace   = "workspace_front"
+	SessionKindPlanner             = "planner"
+	SessionKindWorker              = "worker"
+	SessionRuntimePresetSingleHost = "single_host_default"
+	SessionRuntimePresetWorkspace  = "workspace_front"
 	// Legacy-only: new missions no longer create planner runtimes.
-	SessionRuntimePresetPlanner     = "planner_internal"
-	SessionRuntimePresetWorker      = "worker_internal"
+	SessionRuntimePresetPlanner = "planner_internal"
+	SessionRuntimePresetWorker  = "worker_internal"
 )
 
 type AgentProfile struct {
@@ -221,6 +221,7 @@ type ChoiceAnswer struct {
 	Value   string `json:"value,omitempty"`
 	Label   string `json:"label,omitempty"`
 	IsOther bool   `json:"isOther,omitempty"`
+	Note    string `json:"note,omitempty"`
 }
 
 type KeyValueRow struct {
@@ -395,8 +396,8 @@ type SessionSummary struct {
 }
 
 type MissionHistorySummary struct {
-	ID                       string `json:"id"`
-	WorkspaceSessionID       string `json:"workspaceSessionId,omitempty"`
+	ID                 string `json:"id"`
+	WorkspaceSessionID string `json:"workspaceSessionId,omitempty"`
 	// Legacy-only: hidden from public JSON, preserved so old history fixtures can
 	// still be loaded during the compatibility window.
 	PlannerSessionID         string `json:"-"`

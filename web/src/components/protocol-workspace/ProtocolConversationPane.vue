@@ -1,11 +1,16 @@
 <script setup>
-import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { computed, ref } from "vue";
 import { BotIcon } from "lucide-vue-next";
 import MessageCard from "../MessageCard.vue";
 import Omnibar from "../Omnibar.vue";
 import ThinkingCard from "../ThinkingCard.vue";
+import ChoiceCard from "../ChoiceCard.vue";
 import ProtocolInlinePlanWidget from "./ProtocolInlinePlanWidget.vue";
 import ProtocolBackgroundAgentsCard from "./ProtocolBackgroundAgentsCard.vue";
+import ProtocolTurnGroup from "./ProtocolTurnGroup.vue";
+import { useChatScrollState } from "../../composables/useChatScrollState";
+import { useChatHistoryPager } from "../../composables/useChatHistoryPager";
+import { useVirtualTurnList } from "../../composables/useVirtualTurnList";
 
 defineOptions({
   inheritAttrs: false,
@@ -24,6 +29,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  formattedTurns: {
+    type: Array,
+    default: () => [],
+  },
   conversationCards: {
     type: Array,
     default: () => [],
@@ -37,6 +46,10 @@ const props = defineProps({
     default: () => [],
   },
   backgroundAgents: {
+    type: Array,
+    default: () => [],
+  },
+  choiceCards: {
     type: Array,
     default: () => [],
   },
@@ -92,9 +105,13 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  historyResetKey: {
+    type: String,
+    default: "",
+  },
 });
 
-const emit = defineEmits(["update:draft", "send", "stop", "select-message", "plan-action", "agent-select"]);
+const emit = defineEmits(["update:draft", "send", "stop", "choice", "select-message", "process-item-select", "plan-action", "agent-select", "open-history", "action", "detail", "pin", "refresh"]);
 
 const draftModel = computed({
   get: () => props.draft,
@@ -176,6 +193,22 @@ const normalizedBackgroundAgents = computed(() =>
       : []),
 );
 
+const normalizedChoiceCards = computed(() =>
+  (Array.isArray(props.choiceCards) ? props.choiceCards : []).filter((card) => card?.status === "pending"),
+);
+
+const normalizedTurns = computed(() =>
+  Array.isArray(props.formattedTurns) && props.formattedTurns.length ? props.formattedTurns : [],
+);
+
+const historyPager = useChatHistoryPager({
+  items: computed(() => (normalizedTurns.value.length ? normalizedTurns.value : normalizedMessages.value)),
+  resetKey: computed(() => props.historyResetKey),
+  pageSize: 6,
+  initialCount: 4,
+  topThreshold: 64,
+});
+
 function rowClass(message) {
   return message.isUser ? "row-user" : "row-assistant";
 }
@@ -188,9 +221,33 @@ function stopDraft() {
   emit("stop");
 }
 
+function submitChoice(payload) {
+  emit("choice", payload);
+}
+
 function selectMessage(message, event) {
   if (event?.target?.closest("button")) return;
   emit("select-message", message);
+}
+
+function selectProcessItem(payload) {
+  emit("process-item-select", payload);
+}
+
+function forwardAction(payload) {
+  emit("action", payload);
+}
+
+function forwardDetail(payload) {
+  emit("detail", payload);
+}
+
+function forwardPin(payload) {
+  emit("pin", payload);
+}
+
+function forwardRefresh(payload) {
+  emit("refresh", payload);
 }
 
 function planAction(payload, plan) {
@@ -209,63 +266,184 @@ function selectAgent(agent) {
   emit("agent-select", agent);
 }
 
-/* ---- Auto-scroll ---- */
+const visibleStreamItems = computed(() => historyPager.visibleItems.value);
+
+const streamSignature = computed(() => {
+  if (visibleStreamItems.value.length) {
+    return visibleStreamItems.value
+      .map((turn) => [
+        turn.id,
+        turn.processItems?.length || 0,
+        turn.finalMessage?.id || "",
+        turn.finalMessage?.card?.text?.length || 0,
+        turn.liveHint || "",
+      ].join(":"))
+      .join("|");
+  }
+  return [
+    visibleStreamItems.value.length,
+    visibleStreamItems.value[visibleStreamItems.value.length - 1]?.id || "",
+    visibleStreamItems.value[visibleStreamItems.value.length - 1]?.card?.text?.length || 0,
+    props.statusCard?.phase || "",
+    props.statusCard?.hint || "",
+    historyPager.topSentinel.value?.kind || "",
+  ].join("|");
+});
+
+/* ---- Scroll / unread ---- */
 const scrollContainer = ref(null);
 const scrollContent = ref(null);
-const autoFollowTail = ref(true);
-let contentResizeObserver = null;
+const {
+  unreadCount,
+  unreadAnchorId,
+  showUnreadPill,
+  handleScroll,
+  jumpToLatest,
+  markRead,
+} = useChatScrollState({
+  scrollContainer,
+  scrollContent,
+  items: visibleStreamItems,
+  signature: streamSignature,
+  getItemId: (item) => String(item?.id || ""),
+});
 
-function isNearBottom(el, threshold = 100) {
-  if (!el) return true;
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
-}
-
-function scrollToBottom(force = false) {
-  const el = scrollContainer.value;
-  if (!el || (!force && !autoFollowTail.value)) return;
-  el.scrollTop = el.scrollHeight;
-}
-
-function handleScroll(e) {
-  autoFollowTail.value = isNearBottom(e.target);
-}
-
-watch(
-  () => ({
-    msgCount: normalizedMessages.value.length,
-    lastText: normalizedMessages.value[normalizedMessages.value.length - 1]?.card?.text?.length || 0,
-    hasStatus: !!props.statusCard,
-  }),
-  async () => {
-    await nextTick();
-    scrollToBottom();
+const virtualTurns = useVirtualTurnList({
+  items: visibleStreamItems,
+  scrollContainer,
+  estimateSize(turn) {
+    if (turn?.active) return 220;
+    return turn?.collapsedByDefault ? 180 : 212;
   },
-  { deep: true },
-);
-
-onMounted(() => {
-  nextTick(() => scrollToBottom(true));
-  if (typeof ResizeObserver !== "undefined" && scrollContent.value) {
-    contentResizeObserver = new ResizeObserver(() => scrollToBottom());
-    contentResizeObserver.observe(scrollContent.value);
-  }
+  overscan: 4,
+  minItemCount: 18,
+  getItemKey: (turn, index) => turn?.id || index,
 });
 
-onBeforeUnmount(() => {
-  if (contentResizeObserver) {
-    contentResizeObserver.disconnect();
-    contentResizeObserver = null;
+const renderedTurns = computed(() => {
+  if (!visibleStreamItems.value.length) return [];
+  const rows = [];
+  if (virtualTurns.enabled.value && virtualTurns.topSpacerHeight.value > 0) {
+    rows.push({
+      id: `turn-spacer-top-${virtualTurns.startIndex.value}`,
+      kind: "spacer",
+      spacer: "top",
+      height: virtualTurns.topSpacerHeight.value,
+    });
   }
+  for (const entry of virtualTurns.virtualItems.value) {
+    const turn = entry.item;
+    if (unreadAnchorId.value && turn.id === unreadAnchorId.value) {
+      rows.push({
+        id: `unread-divider-${turn.id}`,
+        kind: "divider",
+      });
+    }
+    rows.push({
+      id: turn.id,
+      kind: "turn",
+      turn,
+    });
+  }
+  if (virtualTurns.enabled.value && virtualTurns.bottomSpacerHeight.value > 0) {
+    rows.push({
+      id: `turn-spacer-bottom-${virtualTurns.endIndex.value}`,
+      kind: "spacer",
+      spacer: "bottom",
+      height: virtualTurns.bottomSpacerHeight.value,
+    });
+  }
+  return rows;
 });
+
+const showLegacyMessageStream = computed(() => {
+  if (visibleStreamItems.value.length && normalizedTurns.value.length) return false;
+  if (!visibleStreamItems.value.length && !props.statusCard) return false;
+  if (normalizedPlanCards.value.length || normalizedBackgroundAgents.value.length) {
+    return false;
+  }
+  return true;
+});
+
+function openHistory() {
+  emit("open-history");
+}
+
+async function loadOlderHistory() {
+  const loaded = await historyPager.loadOlder();
+  if (loaded) {
+    markRead();
+  }
+}
+
+function handlePaneScroll(event) {
+  handleScroll(event);
+  virtualTurns.handleScroll(event);
+}
 </script>
 
 <template>
   <section class="protocol-conversation-pane">
-    <div class="chat-container protocol-chat-container" ref="scrollContainer" @scroll="handleScroll">
+    <div class="chat-container protocol-chat-container" ref="scrollContainer" @scroll="handlePaneScroll">
       <div class="chat-stream-inner protocol-chat-inner" ref="scrollContent">
-        <div v-if="normalizedMessages.length || statusCard" class="chat-stream protocol-chat-stream">
+        <div v-if="historyPager.topSentinel.value" class="protocol-history-sentinel" :class="`is-${historyPager.topSentinel.value.kind}`" data-testid="protocol-history-sentinel">
+          <span class="protocol-history-sentinel-text">{{ historyPager.topSentinel.value.text }}</span>
+          <span v-if="historyPager.topSentinel.value.detail" class="protocol-history-sentinel-detail">{{ historyPager.topSentinel.value.detail }}</span>
+          <div class="protocol-history-sentinel-actions">
+            <button
+              v-if="historyPager.topSentinel.value.actionLabel === '加载更早消息' || historyPager.topSentinel.value.actionLabel === '重试'"
+              type="button"
+              class="protocol-history-sentinel-btn primary"
+              data-testid="protocol-history-load-older"
+              @click="loadOlderHistory"
+            >
+              {{ historyPager.topSentinel.value.actionLabel }}
+            </button>
+            <button
+              v-if="historyPager.topSentinel.value.kind !== 'loading'"
+              type="button"
+              class="protocol-history-sentinel-btn secondary"
+              data-testid="protocol-history-open"
+              @click="openHistory"
+            >
+              查看完整历史
+            </button>
+          </div>
+        </div>
+
+        <div v-if="visibleStreamItems.length && normalizedTurns.length" class="chat-stream protocol-chat-stream protocol-turn-stream">
+          <template v-for="entry in renderedTurns" :key="entry.id">
+            <div
+              v-if="entry.kind === 'spacer'"
+              class="protocol-turn-spacer"
+              :class="`is-${entry.spacer}`"
+              :style="{ height: `${entry.height}px` }"
+              aria-hidden="true"
+            />
+
+            <div v-else-if="entry.kind === 'divider'" class="protocol-unread-divider" data-testid="protocol-unread-divider">
+              <span class="protocol-unread-divider-line" />
+              <span class="protocol-unread-divider-label">未读更新</span>
+              <span class="protocol-unread-divider-count">{{ unreadCount }} 条新结果</span>
+              <span class="protocol-unread-divider-line" />
+            </div>
+
+            <ProtocolTurnGroup
+              v-else
+              :turn="entry.turn"
+              @select-message="selectMessage"
+              @select-process-item="selectProcessItem"
+              @action="forwardAction"
+              @detail="forwardDetail"
+              @pin="forwardPin"
+              @refresh="forwardRefresh"
+            />
+          </template>
+        </div>
+
+        <div v-else-if="showLegacyMessageStream" class="chat-stream protocol-chat-stream">
           <div
-            v-for="message in normalizedMessages"
+            v-for="message in visibleStreamItems"
             :key="message.id"
             class="stream-row protocol-stream-row"
             :class="rowClass(message)"
@@ -293,8 +471,31 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <button
+      v-if="showUnreadPill"
+      type="button"
+      class="protocol-unread-pill"
+      data-testid="protocol-unread-pill"
+      @click="jumpToLatest"
+    >
+      {{ unreadCount }} 条新结果
+    </button>
+
     <footer v-if="showComposer" class="omnibar-dock protocol-omnibar-dock">
-      <div v-if="normalizedPlanCards.length || normalizedBackgroundAgents.length" class="protocol-composer-widgets">
+      <div
+        v-if="normalizedChoiceCards.length || normalizedPlanCards.length || normalizedBackgroundAgents.length"
+        class="protocol-composer-widgets"
+      >
+        <div v-if="normalizedChoiceCards.length" class="protocol-composer-choice-stack" data-testid="protocol-choice-stack">
+          <ChoiceCard
+            v-for="choiceCard in normalizedChoiceCards"
+            :key="choiceCard.id"
+            :card="choiceCard"
+            session-kind="workspace"
+            @choice="submitChoice"
+          />
+        </div>
+
         <ProtocolInlinePlanWidget
           v-if="normalizedPlanCards.length"
           docked
@@ -339,9 +540,73 @@ onBeforeUnmount(() => {
 
 .protocol-chat-container {
   padding-top: 20px;
-  padding-bottom: 380px;
+  padding-bottom: 220px;
   padding-left: 28px;
   padding-right: 28px;
+}
+
+.protocol-history-sentinel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 820px;
+  width: 100%;
+  margin: 0 auto 10px;
+  padding: 12px 14px;
+  border: 1px solid #dbe3ee;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.94);
+  color: #334155;
+}
+
+.protocol-history-sentinel.is-loading {
+  background: rgba(239, 246, 255, 0.98);
+  border-color: rgba(147, 197, 253, 0.55);
+}
+
+.protocol-history-sentinel.is-error {
+  background: rgba(255, 247, 237, 0.96);
+  border-color: rgba(251, 146, 60, 0.35);
+}
+
+.protocol-history-sentinel-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.protocol-history-sentinel-detail {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.protocol-history-sentinel-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.protocol-history-sentinel-btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: white;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.protocol-history-sentinel-btn.primary {
+  background: #eff6ff;
+  border-color: rgba(59, 130, 246, 0.22);
+  color: #1d4ed8;
+}
+
+.protocol-history-sentinel-btn.secondary {
+  background: white;
 }
 
 .protocol-chat-inner {
@@ -359,8 +624,44 @@ onBeforeUnmount(() => {
   gap: 4px;
 }
 
+.protocol-turn-stream {
+  gap: 16px;
+}
+
+.protocol-turn-spacer {
+  width: 100%;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.protocol-unread-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0;
+}
+
+.protocol-unread-divider-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.protocol-unread-divider-label {
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.protocol-unread-divider-count {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .protocol-stream-row {
-  cursor: pointer;
+  cursor: default;
   margin-bottom: 0;
 }
 
@@ -378,10 +679,42 @@ onBeforeUnmount(() => {
   margin: 0 auto 8px;
 }
 
+.protocol-composer-choice-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.protocol-composer-choice-stack :deep(.choice-card) {
+  margin-left: 0;
+  max-width: 100%;
+}
+
 .protocol-omnibar-dock {
   padding-bottom: 20px;
   padding-left: 28px;
   padding-right: 28px;
+}
+
+.protocol-unread-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 138px;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+  color: #1d4ed8;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .protocol-conversation-pane :deep(.message-wrapper) {

@@ -1,161 +1,175 @@
 // @ts-check
 import { test, expect } from "@playwright/test";
+import {
+  createProtocolFixtureSessions,
+  createProtocolFixtureState,
+  openFixturePage,
+} from "./helpers/uiFixtureHarness";
 
-/**
- * Protocol 工作台 UX 修复验证
- * 1. 过期审批点击后显示友好提示，不显示 "approval not found"
- * 2. 系统路由消息（如"主 Agent 正在判断..."）不显示
- * 3. 原始 JSON routing 块被清理，不直接展示给用户
- */
+function createUxFixtureState({ includeApproval = false } = {}) {
+  const cards = [
+    {
+      id: "user-ux-1",
+      type: "UserMessageCard",
+      role: "user",
+      text: "今天这个路由和审批结果，能给我一个稳定的工作台视图吗？",
+      createdAt: "2026-04-03T13:00:00Z",
+      updatedAt: "2026-04-03T13:00:00Z",
+    },
+    {
+      id: "assistant-ux-routing-1",
+      type: "AssistantMessageCard",
+      role: "assistant",
+      text: "主 Agent 正在判断最优路径，不会生成计划或派发 worker。",
+      createdAt: "2026-04-03T13:00:05Z",
+      updatedAt: "2026-04-03T13:00:05Z",
+    },
+    {
+      id: "assistant-ux-routing-2",
+      type: "AssistantMessageCard",
+      role: "assistant",
+      text: "这是正常回答。\n```json\n{\"route\":\"direct_answer\",\"needsPlan\":false}\n```",
+      createdAt: "2026-04-03T13:00:10Z",
+      updatedAt: "2026-04-03T13:00:10Z",
+    },
+    {
+      id: "assistant-ux-routing-3",
+      type: "AssistantMessageCard",
+      role: "assistant",
+      text: "下面是路由说明 {\"route\":\"direct_answer\",\"needsPlan\":false}",
+      createdAt: "2026-04-03T13:00:15Z",
+      updatedAt: "2026-04-03T13:00:15Z",
+    },
+  ];
 
-const SCREENSHOT_DIR = "tests/screenshots";
-
-async function waitForStable(page, timeout = 8000) {
-  await page.waitForLoadState("networkidle", { timeout }).catch(() => {});
-  await page.waitForTimeout(600);
-}
-
-async function ensureWorkspaceSession(page) {
-  await page.goto("/protocol");
-  await waitForStable(page);
-  const createBtn = page.locator("button", { hasText: /新建工作台/ });
-  if (await createBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await createBtn.click();
-    await page.waitForTimeout(2000);
+  if (includeApproval) {
+    cards.push({
+      id: "approval-expired-card",
+      type: "CommandApprovalCard",
+      status: "pending",
+      hostId: "web-02",
+      text: "需要批准 web-02 reload nginx",
+      command: "systemctl reload nginx",
+      approval: {
+        requestId: "approval-expired-1",
+        decisions: ["accept", "decline"],
+      },
+      createdAt: "2026-04-03T13:00:20Z",
+      updatedAt: "2026-04-03T13:00:20Z",
+    });
   }
-  await waitForStable(page);
+
+  return createProtocolFixtureState({
+    approvals: includeApproval ? [{ id: "approval-expired-1", status: "pending", itemId: "approval-expired-card" }] : [],
+    cards,
+    runtime: {
+      turn: {
+        active: !includeApproval,
+        phase: includeApproval ? "waiting_approval" : "completed",
+        hostId: "server-local",
+      },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: {},
+    },
+    lastActivityAt: "2026-04-03T13:00:20Z",
+  });
 }
 
-test.describe("Protocol 工作台 UX 修复", () => {
-  test.setTimeout(180000);
+async function openProtocolUxFixture(page, { includeApproval = false } = {}) {
+  await openFixturePage(page, "/protocol", {
+    state: createUxFixtureState({ includeApproval }),
+    sessions: createProtocolFixtureSessions({
+      sessions: [
+        {
+          id: "workspace-1",
+          kind: "workspace",
+          title: "Protocol workspace",
+          status: includeApproval ? "running" : "completed",
+          messageCount: 4,
+          preview: "协议工作台 smoke fixture",
+          selectedHostId: "server-local",
+          lastActivityAt: "2026-04-03T13:00:20Z",
+        },
+      ],
+    }),
+  });
+}
 
-  test("1. 过期审批操作后显示友好提示", async ({ page }) => {
-    await ensureWorkspaceSession(page);
+if (process.env.VITEST) {
+  const { describe: vitestDescribe, it: vitestIt } = await import("vitest");
+  vitestDescribe("Protocol UX fixes", () => {
+    vitestIt("is covered by Playwright smoke tests", () => {});
+  });
+} else {
+  test.describe("Protocol UX fixes", () => {
+    test.setTimeout(30000);
 
-    // 尝试对一个不存在的 approval 发起请求
-    const resp = await page.request.post("/api/v1/approvals/fake-expired-id-12345/decision", {
-      data: { decision: "accept" },
+    test("expired approval shows a friendly toolbar message instead of raw backend text", async ({ page }) => {
+      await openProtocolUxFixture(page, { includeApproval: true });
+      await page.route("**/api/v1/approvals/approval-expired-1/decision", (route) =>
+        route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "approval not found" }),
+        }),
+      );
+
+      const approvalCard = page.getByTestId("protocol-approval-approval-expired-card");
+      await expect(approvalCard).toBeVisible();
+      await approvalCard.getByRole("button", { name: "同意执行" }).click();
+
+      const toolbar = page.locator(".toolbar-notice");
+      await expect(toolbar).toBeVisible();
+      await expect(toolbar).toContainText("已过期");
+      await expect(toolbar).not.toContainText("approval not found");
+      await expect(approvalCard).toHaveCount(0);
+
+      await page.screenshot({
+        path: "tests/screenshots/protocol-stale-approval-friendly.png",
+        fullPage: false,
+      });
     });
 
-    // 应该返回错误
-    expect(resp.ok()).toBeFalsy();
-    const body = await resp.json().catch(() => ({}));
-    const errorMsg = body.error || "";
+    test("system routing messages stay out of the visible protocol正文", async ({ page }) => {
+      await openProtocolUxFixture(page);
 
-    // 验证错误消息包含 "not found" 类似内容
-    expect(errorMsg.toLowerCase()).toContain("not found");
+      const stream = page.locator(".protocol-turn-stream");
+      const bodies = page.locator(".protocol-turn-stream .row-assistant .message-text");
 
-    // 现在验证前端 toolbarMessage 会把它转成友好提示
-    // 模拟：在页面上设置 errorMessage 然后检查 toolbar 显示
-    await page.evaluate((msg) => {
-      // 直接设置 store 的 errorMessage
-      const app = document.querySelector("#app")?.__vue_app__;
-      if (app) {
-        const pinia = app.config.globalProperties.$pinia;
-        if (pinia) {
-          const stores = pinia._s;
-          for (const [, store] of stores) {
-            if (store.errorMessage !== undefined) {
-              store.errorMessage = msg;
-              break;
-            }
-          }
-        }
+      await expect(stream).toBeVisible();
+      await expect(stream).not.toContainText("主 Agent 正在判断最优路径");
+      await expect(stream).not.toContainText("不会生成计划或派发 worker");
+
+      const texts = await bodies.allTextContents();
+      expect(texts.join("\n")).toContain("下面是路由说明");
+      for (const text of texts) {
+        expect(text).not.toContain("主 Agent 正在判断最优路径");
+        expect(text).not.toContain("不会生成计划或派发 worker");
       }
-    }, "approval not found");
 
-    await page.waitForTimeout(500);
+      await page.screenshot({
+        path: "tests/screenshots/protocol-clean-messages.png",
+        fullPage: false,
+      });
+    });
 
-    // 检查 toolbar 不显示原始 "approval not found"
-    const toolbar = page.locator(".toolbar-notice");
-    const toolbarVisible = await toolbar.isVisible({ timeout: 3000 }).catch(() => false);
-    if (toolbarVisible) {
-      const text = await toolbar.textContent();
-      expect(text).not.toContain("approval not found");
-      expect(text).toContain("已过期");
-    }
+    test("raw JSON routing blocks are stripped before rendering", async ({ page }) => {
+      await openProtocolUxFixture(page);
 
-    await page.screenshot({
-      path: `${SCREENSHOT_DIR}/protocol-stale-approval-friendly.png`,
-      fullPage: false,
+      const bodies = page.locator(".protocol-turn-stream .row-assistant .message-text");
+
+      const texts = await bodies.allTextContents();
+      expect(texts.join("\n")).toContain("下面是路由说明");
+      for (const text of texts) {
+        expect(text).not.toContain("\"route\"");
+        expect(text).not.toContain("needsPlan");
+        expect(text).not.toContain("```json");
+      }
+
+      await page.screenshot({
+        path: "tests/screenshots/protocol-no-raw-json.png",
+        fullPage: false,
+      });
     });
   });
-
-  test("2. 系统路由消息不显示在对话流中", async ({ page }) => {
-    await ensureWorkspaceSession(page);
-
-    // 发送一个简单问题
-    const textarea = page.locator("textarea").first();
-    const visible = await textarea.isVisible({ timeout: 5000 }).catch(() => false);
-    if (!visible) {
-      test.skip();
-      return;
-    }
-
-    await textarea.fill("今天几号？");
-    await textarea.press("Meta+Enter");
-
-    // 等待回复
-    await page.waitForTimeout(3000);
-    const assistantMsg = page.locator(".stream-row.row-assistant .message-text");
-    await assistantMsg.first().waitFor({ state: "visible", timeout: 60000 }).catch(() => {});
-
-    // 检查对话流中不包含系统路由消息
-    const allMessages = await page.locator(".stream-row.row-assistant .message-text").allTextContents();
-    for (const msg of allMessages) {
-      expect(msg).not.toMatch(/^主\s*Agent\s*正在判断/);
-      expect(msg).not.toMatch(/^这是简单对话/);
-      expect(msg).not.toContain("不会生成计划或派发 worker");
-    }
-
-    // 等待完成
-    const thinking = page.locator(".thinking-wrapper");
-    await thinking.waitFor({ state: "hidden", timeout: 90000 }).catch(() => {});
-    await page.waitForTimeout(500);
-
-    // 再次检查最终状态
-    const finalMessages = await page.locator(".stream-row.row-assistant .message-text").allTextContents();
-    for (const msg of finalMessages) {
-      // 不应该包含原始 JSON routing 块
-      expect(msg).not.toMatch(/"route"\s*:\s*"direct_answer"/);
-      expect(msg).not.toMatch(/"needsPlan"\s*:\s*false/);
-    }
-
-    await page.screenshot({
-      path: `${SCREENSHOT_DIR}/protocol-clean-messages.png`,
-      fullPage: false,
-    });
-  });
-
-  test("3. JSON routing 块被清理", async ({ page }) => {
-    await ensureWorkspaceSession(page);
-
-    const textarea = page.locator("textarea").first();
-    const visible = await textarea.isVisible({ timeout: 5000 }).catch(() => false);
-    if (!visible) {
-      test.skip();
-      return;
-    }
-
-    await textarea.fill("你好");
-    await textarea.press("Meta+Enter");
-
-    // 等待回复完成
-    const thinking = page.locator(".thinking-wrapper");
-    await page.waitForTimeout(2000);
-    await thinking.waitFor({ state: "hidden", timeout: 90000 }).catch(() => {});
-    await page.waitForTimeout(500);
-
-    // 检查所有 assistant 消息不包含 raw JSON routing
-    const allMessages = await page.locator(".stream-row.row-assistant .message-text").allTextContents();
-    for (const msg of allMessages) {
-      expect(msg).not.toMatch(/```json\s*\{[^}]*"route"/);
-      expect(msg).not.toMatch(/\{"route"\s*:\s*"/);
-    }
-
-    await page.screenshot({
-      path: `${SCREENSHOT_DIR}/protocol-no-raw-json.png`,
-      fullPage: false,
-    });
-  });
-});
+}

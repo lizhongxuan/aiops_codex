@@ -31,9 +31,9 @@ test.describe("协作工作台页面", () => {
     await expect(workspace).toBeVisible({ timeout: 5000 });
   });
 
-  test("左侧对话区可见（MAIN AGENT 标题）", async ({ page }) => {
-    const kicker = page.locator("text=MAIN AGENT").or(page.locator("text=Main Agent"));
-    const visible = await kicker.first().isVisible({ timeout: 3000 }).catch(() => false);
+  test("左侧对话区可见（主 Agent 对话区）", async ({ page }) => {
+    const conversationPane = page.locator(".protocol-conversation-pane");
+    const visible = await conversationPane.isVisible({ timeout: 3000 }).catch(() => false);
     // 如果是空状态也算通过
     if (!visible) {
       const emptyState = page.locator("text=当前不是协作工作台会话");

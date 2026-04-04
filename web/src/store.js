@@ -1,5 +1,240 @@
 import { defineStore } from "pinia";
 
+const MCP_DRAWER_STORAGE_KEY = "codex:mcp-drawer:v1";
+const MCP_DRAWER_PIN_LIMIT = 8;
+const MCP_DRAWER_RECENT_LIMIT = 6;
+
+function compactText(value) {
+  return typeof value === "string" ? value.trim() : String(value || "").trim();
+}
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function cloneMcpPayload(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneMcpPayload(item));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, cloneMcpPayload(item)]),
+  );
+}
+
+function coerceIsoStamp(value) {
+  const stamp = Date.parse(value || "");
+  return Number.isFinite(stamp) ? new Date(stamp).toISOString() : new Date().toISOString();
+}
+
+function inferMcpDrawerSurfaceKind(surface = {}) {
+  const source = asObject(surface);
+  if (compactText(source.kind).toLowerCase() === "bundle") return "bundle";
+  if (compactText(source.kind).toLowerCase() === "mcp_bundle") return "bundle";
+  if (source.bundle || source.model?.bundleKind || source.bundleKind || Array.isArray(source.sections)) return "bundle";
+  return "card";
+}
+
+function resolveMcpDrawerSurfaceModel(surface = {}) {
+  const source = asObject(surface);
+  const kind = inferMcpDrawerSurfaceKind(source);
+  if (kind === "bundle") {
+    return cloneMcpPayload(source.bundle || source.model || source);
+  }
+  return cloneMcpPayload(source.card || source.model || source);
+}
+
+function resolveMcpDrawerSurfaceTitle(kind, model = {}, surface = {}) {
+  const source = asObject(model);
+  const subject = asObject(source.subject);
+  const fallback = asObject(surface);
+  if (kind === "bundle") {
+    return (
+      compactText(source.summary || source.title || subject.name || fallback.title || "MCP 聚合面板") ||
+      "MCP 聚合面板"
+    );
+  }
+  return compactText(source.title || source.summary || subject.name || fallback.title || "MCP 卡片") || "MCP 卡片";
+}
+
+function resolveMcpDrawerSurfaceSubtitle(kind, model = {}, surface = {}) {
+  const source = asObject(model);
+  const scope = asObject(source.scope);
+  const subject = asObject(source.subject);
+  const fallback = asObject(surface);
+  if (compactText(fallback.subtitle)) {
+    return compactText(fallback.subtitle);
+  }
+  if (kind === "bundle") {
+    return compactText(subject.type || scope.service || scope.resourceType || "");
+  }
+  return compactText(scope.resourceType || scope.service || subject.type || "");
+}
+
+function buildMcpDrawerSurfaceIdentity(kind, source = {}, model = {}) {
+  const record = asObject(source);
+  const payload = asObject(model);
+  const candidate =
+    compactText(record.id || record.surfaceId || record.bundleId || payload.id || payload.bundleId || payload.cardId) ||
+    compactText(payload.title || payload.summary || payload.subject?.name || "");
+  if (candidate) {
+    return candidate.replace(/\s+/g, "-");
+  }
+  return `${kind}-mcp-surface`;
+}
+
+function normalizeMcpDrawerSurfacePayload(payload = {}) {
+  const wrapper = asObject(payload);
+  const source = asObject(wrapper.surface || wrapper);
+  const kind = inferMcpDrawerSurfaceKind(source);
+  const model = resolveMcpDrawerSurfaceModel(source);
+  if (!Object.keys(asObject(model)).length) {
+    return null;
+  }
+  const sourceTag = compactText(wrapper.source || source.source || model.source || "");
+  const surfaceId = buildMcpDrawerSurfaceIdentity(kind, source, model);
+  const touchedAt = coerceIsoStamp(wrapper.touchedAt || source.touchedAt || source.openedAt || model.touchedAt || model.openedAt);
+  const pinnedAt = compactText(wrapper.pinnedAt || source.pinnedAt || model.pinnedAt)
+    ? coerceIsoStamp(wrapper.pinnedAt || source.pinnedAt || model.pinnedAt)
+    : "";
+  return {
+    id: compactText(wrapper.id || source.id || `${kind}:${surfaceId}`) || `${kind}:${surfaceId}`,
+    surfaceId,
+    kind,
+    source: sourceTag,
+    title: resolveMcpDrawerSurfaceTitle(kind, model, source),
+    subtitle: resolveMcpDrawerSurfaceSubtitle(kind, model, source),
+    model,
+    touchedAt,
+    openedAt: touchedAt,
+    pinnedAt,
+    lastReason: compactText(wrapper.lastReason || source.lastReason || ""),
+  };
+}
+
+function upsertMcpDrawerSurfaceList(list, surface, { limit = MCP_DRAWER_RECENT_LIMIT, reason = "", pin = false } = {}) {
+  const normalizedSurface = normalizeMcpDrawerSurfacePayload(surface);
+  if (!normalizedSurface?.id) {
+    return Array.isArray(list) ? list.slice(0, limit) : [];
+  }
+  const previous = (list || []).find((item) => item.id === normalizedSurface.id) || null;
+  const touchedAt = coerceIsoStamp(normalizedSurface.touchedAt || previous?.touchedAt);
+  const nextSurface = {
+    ...(previous || {}),
+    ...normalizedSurface,
+    touchedAt,
+    openedAt: touchedAt,
+    lastReason: compactText(reason || normalizedSurface.lastReason || previous?.lastReason || ""),
+    pinnedAt: pin
+      ? coerceIsoStamp(normalizedSurface.pinnedAt || previous?.pinnedAt || touchedAt)
+      : compactText(normalizedSurface.pinnedAt || previous?.pinnedAt || ""),
+  };
+  return [nextSurface, ...(list || []).filter((item) => item.id !== nextSurface.id)].slice(0, limit);
+}
+
+function getMcpDrawerStorage() {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function readPersistedMcpDrawerState() {
+  const storage = getMcpDrawerStorage();
+  if (!storage) {
+    return {
+      activeSurface: null,
+      pinnedSurfaces: [],
+      recentSurfaces: [],
+    };
+  }
+  try {
+    const raw = storage.getItem(MCP_DRAWER_STORAGE_KEY);
+    if (!raw) {
+      return {
+        activeSurface: null,
+        pinnedSurfaces: [],
+        recentSurfaces: [],
+      };
+    }
+    const parsed = asObject(JSON.parse(raw));
+    return {
+      activeSurface: normalizeMcpDrawerSurfacePayload(parsed.activeSurface || null),
+      pinnedSurfaces: (Array.isArray(parsed.pinnedSurfaces) ? parsed.pinnedSurfaces : [])
+        .map((item) => normalizeMcpDrawerSurfacePayload(item))
+        .filter(Boolean)
+        .slice(0, MCP_DRAWER_PIN_LIMIT),
+      recentSurfaces: (Array.isArray(parsed.recentSurfaces) ? parsed.recentSurfaces : [])
+        .map((item) => normalizeMcpDrawerSurfacePayload(item))
+        .filter(Boolean)
+        .slice(0, MCP_DRAWER_RECENT_LIMIT),
+    };
+  } catch (error) {
+    console.error("Failed to read persisted MCP drawer state:", error);
+    return {
+      activeSurface: null,
+      pinnedSurfaces: [],
+      recentSurfaces: [],
+    };
+  }
+}
+
+function persistMcpDrawerState(state = {}) {
+  const storage = getMcpDrawerStorage();
+  if (!storage) return false;
+  try {
+    storage.setItem(
+      MCP_DRAWER_STORAGE_KEY,
+      JSON.stringify({
+        activeSurface: normalizeMcpDrawerSurfacePayload(state.activeSurface),
+        pinnedSurfaces: (state.pinnedSurfaces || []).map((item) => normalizeMcpDrawerSurfacePayload(item)).filter(Boolean),
+        recentSurfaces: (state.recentSurfaces || []).map((item) => normalizeMcpDrawerSurfacePayload(item)).filter(Boolean),
+      }),
+    );
+    return true;
+  } catch (error) {
+    console.error("Failed to persist MCP drawer state:", error);
+    return false;
+  }
+}
+
+function buildCatalogMcpDrawerSurface(entry = {}) {
+  const item = asObject(entry);
+  const name = compactText(item.name || item.id || "MCP");
+  const permission = compactText(item.permission || "readonly").toLowerCase() === "readwrite" ? "读写" : "只读";
+  return normalizeMcpDrawerSurfacePayload({
+    source: "mcp-catalog",
+    surface: {
+      kind: "card",
+      id: `catalog:${compactText(item.id || name)}`,
+      card: {
+        id: `catalog:${compactText(item.id || name)}`,
+        uiKind: "readonly_summary",
+        placement: "drawer",
+        title: name,
+        summary: `${name} 已启用，可在任一 chat 中直接复用对应的监控与操作入口。`,
+        freshness: {
+          label: permission,
+        },
+        scope: {
+          resourceType: "mcp",
+          resourceId: compactText(item.id || name),
+        },
+        source: compactText(item.source || "local"),
+      },
+      source: "mcp-catalog",
+      title: name,
+      subtitle: `${permission} · ${compactText(item.source || "local")}`,
+    },
+  });
+}
+
 function normalizeCardText(card) {
   const candidates = [card?.text, card?.message, card?.summary, card?.title];
   for (const candidate of candidates) {
@@ -967,6 +1202,7 @@ export const useAppStore = defineStore("app", {
     agentProfilesError: "",
     agentProfileFieldErrors: {},
     activeAgentProfileId: "main-agent",
+    mcpDrawer: readPersistedMcpDrawerState(),
     agentProfilePreview: null,
     agentProfilePreviewLoading: false,
     agentProfileSaving: false,
@@ -1033,8 +1269,134 @@ export const useAppStore = defineStore("app", {
     activeAgentProfile: (state) => {
       return state.agentProfiles.find((profile) => profile.id === state.activeAgentProfileId) || state.agentProfiles[0] || null;
     },
+    enabledMcpEntries: (state) => {
+      const overrides = new Map((state.activeAgentProfile?.mcps || []).map((item) => [String(item?.id || ""), item]));
+      const catalogEntries = Array.isArray(state.mcpCatalog) ? state.mcpCatalog : [];
+      return catalogEntries
+        .map((entry) => {
+          const override = overrides.get(String(entry?.id || ""));
+          const enabled =
+            typeof override?.enabled === "boolean"
+              ? override.enabled
+              : typeof entry?.enabled === "boolean"
+                ? entry.enabled
+                : Boolean(entry?.defaultEnabled);
+          return {
+            ...entry,
+            ...(override || {}),
+            enabled,
+            permission: normalizeMcpPermission(override?.permission, entry?.permission),
+          };
+        })
+        .filter((entry) => entry.enabled);
+    },
   },
   actions: {
+    hydrateMcpDrawerState() {
+      this.mcpDrawer = readPersistedMcpDrawerState();
+      return this.mcpDrawer;
+    },
+    persistMcpDrawerState() {
+      return persistMcpDrawerState(this.mcpDrawer);
+    },
+    getEnabledMcpEntries() {
+      return this.enabledMcpEntries;
+    },
+    openMcpDrawerSurface(payload, options = {}) {
+      const surface = normalizeMcpDrawerSurfacePayload(payload);
+      if (!surface) return null;
+      const reason = compactText(options.reason || payload?.lastReason || "open");
+      this.mcpDrawer.activeSurface = {
+        ...(this.mcpDrawer.activeSurface?.id === surface.id ? this.mcpDrawer.activeSurface : {}),
+        ...surface,
+        lastReason: reason,
+        touchedAt: coerceIsoStamp(options.touchedAt || surface.touchedAt),
+        openedAt: coerceIsoStamp(options.touchedAt || surface.touchedAt),
+      };
+      this.mcpDrawer.recentSurfaces = upsertMcpDrawerSurfaceList(this.mcpDrawer.recentSurfaces, this.mcpDrawer.activeSurface, {
+        limit: MCP_DRAWER_RECENT_LIMIT,
+        reason,
+      });
+      if (options.pin) {
+        this.mcpDrawer.pinnedSurfaces = upsertMcpDrawerSurfaceList(this.mcpDrawer.pinnedSurfaces, this.mcpDrawer.activeSurface, {
+          limit: MCP_DRAWER_PIN_LIMIT,
+          reason: compactText(options.pinReason || reason || "pin"),
+          pin: true,
+        });
+      }
+      this.persistMcpDrawerState();
+      return this.mcpDrawer.activeSurface;
+    },
+    recordRecentMcpSurface(payload, options = {}) {
+      const surface = normalizeMcpDrawerSurfacePayload(payload);
+      if (!surface) return null;
+      this.mcpDrawer.recentSurfaces = upsertMcpDrawerSurfaceList(this.mcpDrawer.recentSurfaces, surface, {
+        limit: MCP_DRAWER_RECENT_LIMIT,
+        reason: compactText(options.reason || payload?.lastReason || "recent"),
+      });
+      if (options.activate) {
+        this.mcpDrawer.activeSurface = this.mcpDrawer.recentSurfaces[0] || null;
+      }
+      this.persistMcpDrawerState();
+      return this.mcpDrawer.recentSurfaces[0] || null;
+    },
+    pinMcpDrawerSurface(payload) {
+      const baseSurface = normalizeMcpDrawerSurfacePayload(payload || this.mcpDrawer.activeSurface);
+      if (!baseSurface) return null;
+      const activeSurface = this.openMcpDrawerSurface(baseSurface, { reason: "pin", pin: true, pinReason: "pin" });
+      this.mcpDrawer.pinnedSurfaces = upsertMcpDrawerSurfaceList(this.mcpDrawer.pinnedSurfaces, activeSurface, {
+        limit: MCP_DRAWER_PIN_LIMIT,
+        reason: "pin",
+        pin: true,
+      });
+      this.persistMcpDrawerState();
+      return this.mcpDrawer.pinnedSurfaces[0] || activeSurface;
+    },
+    removePinnedMcpDrawerSurface(surfaceId = "") {
+      const normalizedId = compactText(surfaceId);
+      if (!normalizedId) return false;
+      this.mcpDrawer.pinnedSurfaces = (this.mcpDrawer.pinnedSurfaces || []).filter((item) => item.id !== normalizedId);
+      if (this.mcpDrawer.activeSurface?.id === normalizedId) {
+        this.mcpDrawer.activeSurface = this.mcpDrawer.pinnedSurfaces[0] || this.mcpDrawer.recentSurfaces[0] || null;
+      }
+      this.persistMcpDrawerState();
+      return true;
+    },
+    selectMcpDrawerSurface(target) {
+      const normalizedTarget = compactText(typeof target === "string" ? target : target?.id);
+      const directSurface = typeof target === "string" ? null : normalizeMcpDrawerSurfacePayload(target);
+      const surface =
+        directSurface ||
+        this.mcpDrawer.pinnedSurfaces.find((item) => item.id === normalizedTarget) ||
+        this.mcpDrawer.recentSurfaces.find((item) => item.id === normalizedTarget) ||
+        null;
+      if (!surface) return null;
+      this.mcpDrawer.activeSurface = normalizeMcpDrawerSurfacePayload(surface);
+      this.recordRecentMcpSurface(this.mcpDrawer.activeSurface, { reason: "select" });
+      this.persistMcpDrawerState();
+      return this.mcpDrawer.activeSurface;
+    },
+    touchActiveMcpDrawerSurface(reason = "view") {
+      if (!this.mcpDrawer.activeSurface) return null;
+      const surface = this.recordRecentMcpSurface(
+        {
+          ...this.mcpDrawer.activeSurface,
+          lastReason: compactText(reason || "view"),
+        },
+        { reason: compactText(reason || "view"), activate: true },
+      );
+      this.persistMcpDrawerState();
+      return surface;
+    },
+    openEnabledMcpEntry(entry, options = {}) {
+      const surface = buildCatalogMcpDrawerSurface(entry);
+      if (!surface) return null;
+      return this.openMcpDrawerSurface(surface, {
+        reason: compactText(options.reason || "catalog"),
+        pin: Boolean(options.pin),
+        pinReason: "catalog",
+      });
+    },
     applySnapshot(data) {
       this.snapshot.sessionId = data.sessionId || this.snapshot.sessionId;
       this.snapshot.kind = data.kind || this.snapshot.kind || "single_host";

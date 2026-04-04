@@ -314,12 +314,12 @@ function closePreview() {
 
 <template>
   <div class="message-wrapper" :class="{ 'is-user': isUser }">
-    <div class="avatar" v-if="!isUser">
+    <div class="avatar assistant-avatar" v-if="!isUser">
       <BotIcon size="16" />
     </div>
     
     <div class="message-content">
-      <div class="content-block relative-block" v-if="!isUser">
+      <div class="content-block relative-block assistant-thread-block" v-if="!isUser">
         <pre v-if="renderAsCode" class="message-code">{{ messageText }}</pre>
         <div v-else-if="renderAsMarkdown" class="message-text markdown-body" v-html="renderedMarkdown"></div>
         <div v-else class="message-text rich-message">
@@ -363,7 +363,7 @@ function closePreview() {
       </div>
       <template v-else>
         <pre v-if="renderAsCode" class="message-code">{{ messageText }}</pre>
-        <div v-else class="message-text">
+        <div v-else class="message-text user-message-bubble">
           <template v-for="(chunk, idx) in parsedMessageChunks" :key="idx">
             <span v-if="chunk.type === 'text'">{{ chunk.content }}</span>
             <button
@@ -404,7 +404,7 @@ function closePreview() {
 <style scoped>
 .message-wrapper {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   max-width: 100%;
   width: 100%;
 }
@@ -414,53 +414,61 @@ function closePreview() {
 }
 
 .avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  background: white;
-  border: 1px solid #e2e8f0;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.98);
+  border: 1px solid rgba(226, 232, 240, 0.9);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: #94a3b8;
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 4px;
+}
+
+.assistant-avatar {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .user-avatar {
-  background: #f8fafc;
+  background: #eef2f7;
+  color: #475569;
 }
 
 .message-content {
   flex: 1;
-  max-width: calc(100% - 36px);
+  max-width: calc(100% - 40px);
 }
 
 .is-user .message-content {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  max-width: min(560px, 72%);
 }
 
 .message-text {
   font-size: var(--text-body, 14px);
-  line-height: var(--line-height-body, 1.6);
+  line-height: var(--line-height-body, 1.68);
   color: #0f172a;
   white-space: pre-wrap;
+  letter-spacing: 0;
 }
 
 .rich-message {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 
 .message-line {
   white-space: pre-wrap;
+  line-height: 1.68;
 }
 
 .message-spacer {
-  height: 6px;
+  height: 8px;
 }
 
 .file-list-block {
@@ -476,25 +484,28 @@ function closePreview() {
 
 .message-code {
   margin: 0;
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid #dbe3ee;
-  background: #f8fafc;
+  padding: 11px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: rgba(248, 250, 252, 0.96);
   color: #0f172a;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 1.6;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-.is-user .message-text {
+.user-message-bubble {
   background: #f3f4f6;
-  padding: 10px 16px;
-  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  padding: 11px 16px;
+  border-radius: 18px;
   color: #0f172a;
   display: inline-block;
   font-size: 14px;
+  line-height: 1.6;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.02);
 }
 
 .is-user .message-code {
@@ -532,17 +543,18 @@ function closePreview() {
 
 .relative-block {
   position: relative;
-  display: inline-block;
+  display: block;
+  width: min(760px, 100%);
   max-width: 100%;
 }
 
 .copy-btn {
   position: absolute;
-  bottom: 8px;
-  right: 8px;
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  bottom: 6px;
+  right: 0;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 999px;
   padding: 6px;
   color: #6b7280;
   cursor: pointer;
@@ -551,10 +563,11 @@ function closePreview() {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
 }
 
-.relative-block:hover .copy-btn {
+.relative-block:hover .copy-btn,
+.relative-block:focus-within .copy-btn {
   opacity: 1;
 }
 

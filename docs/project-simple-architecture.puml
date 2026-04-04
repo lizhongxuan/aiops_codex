@@ -1,0 +1,61 @@
+@startuml
+title AIOps Codex 项目简单架构图（当前实现）
+
+left to right direction
+!theme plain
+
+skinparam backgroundColor #FFFFFF
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam roundCorner 8
+skinparam linetype ortho
+skinparam defaultFontName "Microsoft YaHei"
+
+actor "用户" as User
+
+rectangle "浏览器\nWeb UI" as Browser
+
+node "本机" as LocalHost {
+  package "ai-server（Go 进程）" as AIServer {
+    component "HTTP API / WebSocket\n前后端入口" as API
+    component "Session Store\n会话 / 卡片 / 运行态" as SessionStore
+    component "Remote Gateway\nterminal / exec / files / approvals" as RemoteGateway
+    component "Codex Client\nstdio JSON-RPC 客户端" as CodexClient
+  }
+
+  component "codex app-server\n子进程" as CodexApp
+}
+
+node "受控主机" as ManagedHosts {
+  component "host-agent" as HostAgent
+  component "Shell / Files / Terminal" as HostRuntime
+}
+
+cloud "OpenAI / ChatGPT" as OpenAI
+
+User --> Browser : 请求
+Browser --> API : 请求
+
+API --> SessionStore : 读写会话状态
+API --> Orchestrator : 创建 / 推进 mission
+Orchestrator --> SessionStore : 回投摘要与任务状态
+API --> RemoteGateway : 终端
+API --> CodexClient : chat / tool calls
+
+CodexClient --> CodexApp : stdio JSON-RPC
+CodexApp --> OpenAI : 模型推理
+
+RemoteGateway <-- HostAgent : gRPC 长连接
+HostAgent --> HostRuntime : 操作
+
+note bottom of AIServer
+ai-server 是当前系统的统一入口：
+- 提供前端 API / WebSocket
+- 管理会话与审批
+- 内嵌 orchestrator
+- 拉起并连接 codex app-server
+end note
+
+
+@enduml

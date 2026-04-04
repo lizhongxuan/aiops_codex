@@ -28,14 +28,14 @@
 
 ## 1. 总体验收目标
 
-- [ ] 用户第一眼看到的是“结果 / 当前阻塞”，而不是过程噪音
-- [ ] 两个 chat 都以 turn 为最小渲染单元，而不是 raw cards
-- [ ] 过程层默认可折叠，展开后仍然清晰可读
-- [ ] plan / background agents / approval / timeline 各回各位，不再混入正文
-- [ ] 用户滚离底部时不会被强制抢走阅读位置
-- [ ] 长会话可以加载历史且不明显卡顿
-- [ ] 输入器能更稳地处理大块粘贴、图片和路径
-- [ ] MCP 监控图表卡和控制面板卡能自然进入 chat，并且不会破坏 turn 结构
+- [x] 用户第一眼看到的是“结果 / 当前阻塞”，而不是过程噪音
+- [x] 两个 chat 都以 turn 为最小渲染单元，而不是 raw cards
+- [x] 过程层默认可折叠，展开后仍然清晰可读
+- [x] plan / background agents / approval / timeline 各回各位，不再混入正文
+- [x] 用户滚离底部时不会被强制抢走阅读位置
+- [x] 长会话可以加载历史且不明显卡顿
+- [x] 输入器能更稳地处理大块粘贴、图片和路径
+- [x] MCP 监控图表卡和控制面板卡能自然进入 chat，并且不会破坏 turn 结构
 
 ---
 
@@ -134,7 +134,7 @@
 
 ## 3. P0 基线冻结
 
-### [ ] TASK-CHAT-FIX-001 盘点两个 chat 的现有状态来源
+### [x] TASK-CHAT-FIX-001 盘点两个 chat 的现有状态来源
 
 - 目标：明确两个页面现在分别依赖哪些 cards、runtime 字段、computed 状态，避免后续 formatter 漏接数据。
 - 涉及文件：
@@ -148,8 +148,11 @@
   3. 标记哪些字段是“最终消息”，哪些是“过程痕迹”，哪些是“阻塞态”。
 - 完成标准：文档或注释中能清楚说明两个 chat 的输入面。
 - 验证方式：后续 formatter 任务不再需要临时补找数据源。
+- 实现备注：已新增 [docs/chat-fix-acceptance-baseline.md](/Users/lizhongxuan/Desktop/aiops-codex/docs/chat-fix-acceptance-baseline.md)，把 [ChatPage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ChatPage.vue)、[ProtocolWorkspacePage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ProtocolWorkspacePage.vue)、[ProtocolConversationPane.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolConversationPane.vue)、[protocolWorkspaceVm.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/protocolWorkspaceVm.js) 的真实输入面、页面本地状态和关键派生链路统一盘点成文档。后续再看“某个状态到底从 store、VM 还是页面本地来”，不需要重新从组件里翻 computed。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex && rg -n "^## 1\\. 当前状态来源盘点|^### 1\\.1 主聊天|^### 1\\.2 协议工作台" docs/chat-fix-acceptance-baseline.md`
 
-### [ ] TASK-CHAT-FIX-002 冻结 6 组验收样本
+### [x] TASK-CHAT-FIX-002 冻结 6 组验收样本
 
 - 目标：提前准备后续结构改造的回归样本。
 - 涉及文件：
@@ -167,8 +170,11 @@
   6. 准备“长线程含多轮消息”样本。
 - 完成标准：测试中有可复用 fixture 或 mock 数据。
 - 验证方式：两页的主要状态都能在本地稳定复现。
+- 实现备注：6 组基础样本已经冻结到 [docs/chat-fix-acceptance-baseline.md](/Users/lizhongxuan/Desktop/aiops-codex/docs/chat-fix-acceptance-baseline.md) 的 `S1-S6`，并映射到现有 [ChatPage.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/ChatPage.spec.js)、[ProtocolWorkspacePage.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/ProtocolWorkspacePage.spec.js)、[chat-fixture-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/chat-fixture-ui.spec.js)、[protocol-fixture-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/protocol-fixture-ui.spec.js)、[chat-ui-visual.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/chat-ui-visual.spec.js)、[protocol-chat-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/protocol-chat-ui.spec.js)。后续新增场景只允许追加，不再改基础样本命名。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex && rg -n "^## 2\\. 冻结的 6 组基础验收样本|^\\| S1|^\\| S6" docs/chat-fix-acceptance-baseline.md`
 
-### [ ] TASK-CHAT-FIX-003 补一份统一验收矩阵
+### [x] TASK-CHAT-FIX-003 补一份统一验收矩阵
 
 - 目标：把“看起来像 Codex”拆成可执行的行为检查项。
 - 涉及文件：
@@ -181,12 +187,15 @@
   3. 给每类补至少一个自动化或人工验证入口。
 - 完成标准：不再依赖抽象描述判断是否达标。
 - 验证方式：后续每个任务都能挂靠到一条验收项。
+- 实现备注：统一验收矩阵已补到 [docs/chat-fix-acceptance-baseline.md](/Users/lizhongxuan/Desktop/aiops-codex/docs/chat-fix-acceptance-baseline.md) 的第 4 节，并在 [chat_fix_codex.md](/Users/lizhongxuan/Desktop/aiops-codex/chat_fix_codex.md) 增加了固定入口。矩阵已把结构、折叠、阻塞边界、滚动、历史、性能、输入器、MCP surface、视觉 9 类验收项全部挂到具体测试入口，不再依赖抽象描述。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex && rg -n "^## 4\\. 统一验收矩阵|chat-fix-acceptance-baseline.md" docs/chat-fix-acceptance-baseline.md chat_fix_codex.md`
 
 ---
 
 ## 4. P1 共享基础层
 
-### [ ] TASK-CHAT-FIX-004 新增共享 formatter 文件
+### [x] TASK-CHAT-FIX-004 新增共享 formatter 文件
 
 - 目标：建立两个 chat 都能复用的 turn 级格式化入口。
 - 涉及文件：
@@ -199,7 +208,7 @@
 - 完成标准：页面层不再直接从 raw cards 推断 turn 结构。
 - 验证方式：formatter 输出的 shape 稳定且可测试。
 
-### [ ] TASK-CHAT-FIX-005 在共享 formatter 中补语义分类器
+### [x] TASK-CHAT-FIX-005 在共享 formatter 中补语义分类器
 
 - 目标：统一决定卡片属于 user、process、final、approval、error 等哪一类。
 - 涉及文件：
@@ -212,8 +221,12 @@
   3. 把 `internal_routing` 单独分类，避免混入 assistant 正文。
 - 完成标准：后续折叠规则不再直接写在页面模板里。
 - 验证方式：给典型 card 输入能产出稳定分类结果。
+- 实现备注：已在 [web/src/lib/chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 新增 `classifyChatCardSemantic()`，统一产出 `user / process / final / blocking / hidden / other` 语义层；同时补了 `processKind` 细分和 `inferProcessKind()`，把 `internal_routing` 作为显式隐藏语义处理。协议工作台与主聊天后续都不再直接在页面模板里硬编码“这张卡算 process 还是 final”。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/chatTurnFormatter.spec.js tests/protocolWorkspaceVm.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/chatTurnFormatter.spec.js tests/protocolWorkspaceVm.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-006 实现 turn 切分规则
+### [x] TASK-CHAT-FIX-006 实现 turn 切分规则
 
 - 目标：统一按用户轮次切 turn，而不是由页面自己拼。
 - 涉及文件：
@@ -227,7 +240,7 @@
 - 完成标准：长线程能被稳定分割为多轮 turn。
 - 验证方式：多轮样本中 turn 数量与用户消息数量关系正确。
 
-### [ ] TASK-CHAT-FIX-007 实现 process summary 与 live hint 生成
+### [x] TASK-CHAT-FIX-007 实现 process summary 与 live hint 生成
 
 - 目标：让折叠头部在不展开时也足够有信息量。
 - 涉及文件：
@@ -242,7 +255,7 @@
 - 完成标准：每个运行中或已完成 turn 都有可读摘要。
 - 验证方式：过程折叠头部不再只剩“处理中”。
 
-### [ ] TASK-CHAT-FIX-008 实现默认展开 / 折叠规则
+### [x] TASK-CHAT-FIX-008 实现默认展开 / 折叠规则
 
 - 目标：统一 process group 在不同生命周期下的默认状态。
 - 涉及文件：
@@ -257,7 +270,7 @@
 - 完成标准：页面层只读取 `collapsedByDefault`，不再自己判断。
 - 验证方式：不同状态样本都符合预期。
 
-### [ ] TASK-CHAT-FIX-009 补文本清洗与内部文案过滤
+### [x] TASK-CHAT-FIX-009 补文本清洗与内部文案过滤
 
 - 目标：把 route JSON、纯内部 dispatch 文案从两个 chat 主线程移除。
 - 涉及文件：
@@ -271,8 +284,13 @@
   3. 明确哪些 notice 应过滤，哪些转进 process group。
 - 完成标准：主线程中不再出现 route JSON 和纯内部路由说明。
 - 验证方式：相关视觉测试和文本断言通过。
+- 实现备注：已在 [workspaceViewModel.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/workspaceViewModel.js) 抽出共享的 `cleanAssistantDisplayText()` 与 `isInternalRoutingMessageText()`，并让 [chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 与 [protocolWorkspaceVm.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/protocolWorkspaceVm.js) 统一复用。现在 assistant 正文里的 route JSON、内嵌 routing 对象、纯“主 Agent 正在判断路径”类内部文案都会在进入 turn 主线程前被清洗或隐藏；保留下来的正常答复则继续进入 process/final 层，不会被误伤。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/chatTurnFormatter.spec.js tests/protocolWorkspaceVm.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm run build`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && PLAYWRIGHT_FIXTURE_BASE_URL=http://127.0.0.1:4174 npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js tests/protocol-ux-fixes.spec.js`
 
-### [ ] TASK-CHAT-FIX-010 建立 ordered rows 与场景排序规则
+### [x] TASK-CHAT-FIX-010 建立 ordered rows 与场景排序规则
 
 - 目标：让对象数据和列表数据的展示顺序统一。
 - 涉及文件：
@@ -286,8 +304,12 @@
   3. 统一 background agents 和 approvals 的排序规则。
 - 完成标准：同类数据在两个 chat 中顺序一致。
 - 验证方式：fixture 截图和对象 rows 断言稳定。
+- 实现备注：已在 [workspaceViewModel.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/workspaceViewModel.js) 新增 `orderedObjectRows()`、`sortProcessDisplayItems()`、`sortApprovalDisplayItems()`、`sortBackgroundAgentItems()`，把 `Task / Host / Status / Approval / Thread / Session` 固定为优先 key，并统一了阻塞优先、最近事件优先的排序规则。[protocolWorkspaceVm.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/protocolWorkspaceVm.js) 现在已用同一套规则排序 terminal rows、approval rail 和 background agents；[chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 也已把 process layer 排序收敛到共享函数，不再各处各排各的。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/chatTurnFormatter.spec.js tests/protocolWorkspaceVm.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && PLAYWRIGHT_FIXTURE_BASE_URL=http://127.0.0.1:4174 npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js tests/protocol-ux-fixes.spec.js`
 
-### [ ] TASK-CHAT-FIX-011 新增共享 unread / scroll 状态 composable
+### [x] TASK-CHAT-FIX-011 新增共享 unread / scroll 状态 composable
 
 - 目标：把自动吸底、未读分隔线、回到底部 pill 的逻辑从页面里抽出来。
 - 涉及文件：
@@ -303,7 +325,7 @@
 - 完成标准：两个页面都能复用同一套滚动状态管理。
 - 验证方式：滚动相关行为测试可独立编写。
 
-### [ ] TASK-CHAT-FIX-012 为共享基础层补单测
+### [x] TASK-CHAT-FIX-012 为共享基础层补单测
 
 - 目标：先把 formatter 和规则层测稳，再动页面。
 - 涉及文件：
@@ -322,7 +344,7 @@
 
 ## 5. P2 协议工作台先落地
 
-### [ ] TASK-CHAT-FIX-013 新增 `ProtocolTurnGroup.vue`
+### [x] TASK-CHAT-FIX-013 新增 `ProtocolTurnGroup.vue`
 
 - 目标：让协议工作台以 turn 为最小渲染单元。
 - 涉及文件：
@@ -336,7 +358,7 @@
 - 完成标准：页面模板不再直接循环 `normalizedMessages`。
 - 验证方式：单个 turn 在视觉上能看出层次。
 
-### [ ] TASK-CHAT-FIX-014 新增 `ProtocolProcessFold.vue`
+### [x] TASK-CHAT-FIX-014 新增 `ProtocolProcessFold.vue`
 
 - 目标：把现有 `statusCard` 升级为真正的过程折叠块。
 - 涉及文件：
@@ -351,7 +373,7 @@
 - 完成标准：协议工作台不再只显示一张孤立状态卡。
 - 验证方式：运行中和已完成状态下都能正确表现。
 
-### [ ] TASK-CHAT-FIX-015 在协议 VM 中输出 `formattedTurns`
+### [x] TASK-CHAT-FIX-015 在协议 VM 中输出 `formattedTurns`
 
 - 目标：把协议工作台现有 conversation/process/result 数据接入共享 formatter。
 - 涉及文件：
@@ -365,7 +387,7 @@
 - 完成标准：协议工作台页面只消费结构化 turns，不再自己拼消息。
 - 验证方式：`buildProtocolWorkspaceModel` 输出更完整且可直接渲染。
 
-### [ ] TASK-CHAT-FIX-016 重构 `ProtocolConversationPane.vue` 渲染逻辑
+### [x] TASK-CHAT-FIX-016 重构 `ProtocolConversationPane.vue` 渲染逻辑
 
 - 目标：把协议工作台的主线程从“消息 + statusCard”切到 turn 线程。
 - 涉及文件：
@@ -380,7 +402,7 @@
 - 完成标准：协议工作台主线程由 turn 驱动。
 - 验证方式：页面上能清楚看到每轮的 user/process/final 结构。
 
-### [ ] TASK-CHAT-FIX-017 收紧协议工作台正文与 widget / 右栏边界
+### [x] TASK-CHAT-FIX-017 收紧协议工作台正文与 widget / 右栏边界
 
 - 目标：确保 plan、agents、approval、timeline 不再回流正文。
 - 涉及文件：
@@ -398,7 +420,7 @@
 - 完成标准：协议工作台各区域职责清晰。
 - 验证方式：视觉上不再像“卡片堆栈”。
 
-### [ ] TASK-CHAT-FIX-018 协议工作台接入 unread divider 与新结果 pill
+### [x] TASK-CHAT-FIX-018 协议工作台接入 unread divider 与新结果 pill
 
 - 目标：解决用户上滑看历史时被强制吸底的问题。
 - 涉及文件：
@@ -413,7 +435,7 @@
 - 完成标准：协议工作台不再在用户阅读过程中抢滚动位置。
 - 验证方式：交互测试覆盖“上滑后有新内容”的场景。
 
-### [ ] TASK-CHAT-FIX-019 协议工作台过程项接入 evidence modal
+### [x] TASK-CHAT-FIX-019 协议工作台过程项接入 evidence modal
 
 - 目标：让过程层保持简洁，同时保留深层钻取能力。
 - 涉及文件：
@@ -428,7 +450,7 @@
 - 完成标准：过程折叠层不会因为细节过多再次膨胀。
 - 验证方式：展开和钻取路径都能正常工作。
 
-### [ ] TASK-CHAT-FIX-020 为协议工作台补页面测试与截图
+### [x] TASK-CHAT-FIX-020 为协议工作台补页面测试与截图
 
 - 目标：先把协议工作台的结构重构测稳。
 - 涉及文件：
@@ -449,7 +471,7 @@
 
 ## 6. P3 主聊天同步升级
 
-### [ ] TASK-CHAT-FIX-021 新增 `ChatTurnGroup.vue`
+### [x] TASK-CHAT-FIX-021 新增 `ChatTurnGroup.vue`
 
 - 目标：让主聊天也按 turn 渲染，而不是继续平铺 `visibleCards`。
 - 涉及文件：
@@ -463,7 +485,7 @@
 - 完成标准：主聊天每一轮都能读成一段完整线程。
 - 验证方式：长线程不会再像无序卡片流。
 
-### [ ] TASK-CHAT-FIX-022 新增 `ChatProcessFold.vue`
+### [x] TASK-CHAT-FIX-022 新增 `ChatProcessFold.vue`
 
 - 目标：把主聊天顶部独立的 `activity-summary` 和 thinking 状态收进 turn。
 - 涉及文件：
@@ -478,7 +500,7 @@
 - 完成标准：主聊天顶部不再漂浮一块独立 activity summary。
 - 验证方式：运行中 turn 的状态收束在本轮内。
 
-### [ ] TASK-CHAT-FIX-023 新增 `ChatComposerDock.vue`
+### [x] TASK-CHAT-FIX-023 新增 `ChatComposerDock.vue`
 
 - 目标：把主聊天的 plan、composer、必要状态收成统一底部主控区。
 - 涉及文件：
@@ -493,7 +515,7 @@
 - 完成标准：主聊天底部形成统一输入区，而不是多个散落区块。
 - 验证方式：视觉上 composer 成为主控件。
 
-### [ ] TASK-CHAT-FIX-024 把主聊天改为消费 `formattedTurns`
+### [x] TASK-CHAT-FIX-024 把主聊天改为消费 `formattedTurns`
 
 - 目标：用 turn model 接管当前 `visibleCards` 逻辑。
 - 涉及文件：
@@ -509,7 +531,7 @@
 - 完成标准：主聊天主线程不再直接遍历 `visibleCards`。
 - 验证方式：主线程层次明确，且旧功能不明显回退。
 
-### [ ] TASK-CHAT-FIX-025 收紧主聊天审批与正文边界
+### [x] TASK-CHAT-FIX-025 收紧主聊天审批与正文边界
 
 - 目标：继续保留 approval overlay，但让正文只展示必要阻塞提示。
 - 涉及文件：
@@ -523,7 +545,7 @@
 - 完成标准：审批不会打散主线程节奏。
 - 验证方式：审批样本中正文与 overlay 分工清晰。
 
-### [ ] TASK-CHAT-FIX-026 收紧主聊天终端输出边界
+### [x] TASK-CHAT-FIX-026 收紧主聊天终端输出边界
 
 - 目标：终端输出继续留在 terminal dock，不要直接污染聊天线程。
 - 涉及文件：
@@ -537,7 +559,7 @@
 - 完成标准：聊天线程更像对话，不像终端镜像。
 - 验证方式：命令型任务场景中正文明显更干净。
 
-### [ ] TASK-CHAT-FIX-027 主聊天接入 unread divider 与回到底部 pill
+### [x] TASK-CHAT-FIX-027 主聊天接入 unread divider 与回到底部 pill
 
 - 目标：让主聊天和协议工作台拥有一致的滚动体验。
 - 涉及文件：
@@ -552,7 +574,7 @@
 - 完成标准：主聊天滚动行为更接近成熟 chat 产品。
 - 验证方式：相关交互测试通过。
 
-### [ ] TASK-CHAT-FIX-028 主聊天补 away summary 与 history sentinel
+### [x] TASK-CHAT-FIX-028 主聊天补 away summary 与 history sentinel
 
 - 目标：提升长线程回访体验。
 - 涉及文件：
@@ -567,7 +589,7 @@
 - 完成标准：用户切走一段时间再回来时能快速找回上下文。
 - 验证方式：长线程样本中有可读的“离开期间摘要”。
 
-### [ ] TASK-CHAT-FIX-029 为主聊天补页面测试与截图
+### [x] TASK-CHAT-FIX-029 为主聊天补页面测试与截图
 
 - 目标：把主聊天的结构变化也稳定下来。
 - 涉及文件：
@@ -587,7 +609,7 @@
 
 ## 7. P4 共性交互增强
 
-### [ ] TASK-CHAT-FIX-030 新增 history / pagination composable
+### [x] TASK-CHAT-FIX-030 新增 history / pagination composable
 
 - 目标：给两个 chat 的长会话加载历史提供统一能力。
 - 涉及文件：
@@ -601,8 +623,9 @@
   3. 提供 `loading older messages`、`failed to load older messages`、`start of session` 三种 sentinel。
 - 完成标准：长会话不再全量渲染并且能回看更早内容。
 - 验证方式：手动和自动化都能触发顶部加载。
+- 实现备注：已新增 [useChatHistoryPager.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/composables/useChatHistoryPager.js)，主聊天接入滚动阈值触发；协议工作台复用同一分页原语，但首屏保留“按钮优先”的加载方式，避免一进入页面就自动把 compact boundary 吃掉。
 
-### [ ] TASK-CHAT-FIX-031 新增 turn 级虚拟滚动能力
+### [x] TASK-CHAT-FIX-031 新增 turn 级虚拟滚动能力
 
 - 目标：解决长线程渲染成本过高的问题。
 - 涉及文件：
@@ -617,8 +640,9 @@
   4. 在 prepend 历史后进行锚点补偿。
 - 完成标准：长会话滚动流畅度明显提升。
 - 验证方式：手动滚动不卡顿，自动化中 DOM 数量受控。
+- 实现备注：已新增 [useVirtualTurnList.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/composables/useVirtualTurnList.js)，主聊天与协议工作台都接入了共享窗口化逻辑；现有 Playwright fixture 已验证长线程下 turn DOM 数量受控，同时不会吞掉 compact boundary、unread divider 或最终消息。
 
-### [ ] TASK-CHAT-FIX-032 在两个 chat 中插入 compact boundary
+### [x] TASK-CHAT-FIX-032 在两个 chat 中插入 compact boundary
 
 - 目标：未来做历史压缩时，不让用户莫名其妙丢上下文。
 - 涉及文件：
@@ -632,8 +656,9 @@
   3. 提供查看完整历史的入口。
 - 完成标准：历史压缩行为可感知、可追溯。
 - 验证方式：视觉和交互都可测试。
+- 实现备注：主聊天与协议工作台均已接入 compact / loading / start 三态 sentinel，并统一提供“查看完整历史”入口；相关视觉与交互回归已纳入 Playwright。
 
-### [ ] TASK-CHAT-FIX-033 为 Omnibar 增加大块粘贴缓冲
+### [x] TASK-CHAT-FIX-033 为 Omnibar 增加大块粘贴缓冲
 
 - 目标：避免大段日志、代码、命令粘贴时误拆分或误提交。
 - 涉及文件：
@@ -646,8 +671,9 @@
   3. 保持 follow-up 模式和 stop/send 状态不回退。
 - 完成标准：长日志和大块代码粘贴稳定。
 - 验证方式：输入器测试覆盖 paste 行为。
+- 实现备注：已新增 [usePasteAssist.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/composables/usePasteAssist.js)，[Omnibar.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/Omnibar.vue) 现在会在大块粘贴后短暂缓冲并提示“正在整理”，期间只阻止发送、不影响 stop；组件测试与 Playwright 页面测试均已覆盖。
 
-### [ ] TASK-CHAT-FIX-034 为 Omnibar 增加图片 / 路径识别
+### [x] TASK-CHAT-FIX-034 为 Omnibar 增加图片 / 路径识别
 
 - 目标：让真实使用中的截图和文件路径更自然地进入输入器流程。
 - 涉及文件：
@@ -660,8 +686,9 @@
   3. 给出轻量提示，而不是直接把内容糊成一大串文本。
 - 完成标准：图片和路径输入体验明显更稳。
 - 验证方式：手动拖拽和粘贴场景验证通过。
+- 实现备注：已在 [usePasteAssist.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/composables/usePasteAssist.js) 中补齐图片与路径识别，并接入 [Omnibar.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/Omnibar.vue) 的 paste / drop 流程；识别后会显示轻量 artifact hint 和 pill，而不会把整段路径列表直接塞进正文。
 
-### [ ] TASK-CHAT-FIX-035 为 Omnibar 增加焦点恢复提示
+### [x] TASK-CHAT-FIX-035 为 Omnibar 增加焦点恢复提示
 
 - 目标：降低用户切回窗口后的输入迷失感。
 - 涉及文件：
@@ -674,8 +701,9 @@
   3. 保证 hint 不抢主线程视觉重心。
 - 完成标准：焦点恢复后的体验更有引导性。
 - 验证方式：聚焦恢复场景可重复验证。
+- 实现备注：输入器在存在待处理路径、图片或粘贴缓冲提示时，重新 focus 会展示轻量 recovery hint；chat 与 protocol 两条页面流都已补 Playwright smoke 覆盖，不会再出现“切回窗口后不知道当前还能继续做什么”的空白感。
 
-### [ ] TASK-CHAT-FIX-036 优化 `ChoiceCard` 与结构化追问
+### [x] TASK-CHAT-FIX-036 优化 `ChoiceCard` 与结构化追问
 
 - 目标：减少自由文本追问带来的使用成本。
 - 涉及文件：
@@ -689,8 +717,13 @@
   3. 保留一个补充输入入口，但不要求用户从零组织答案。
 - 完成标准：结构化提问比现在更省心。
 - 验证方式：选择题型交互更明确且不影响原协议。
+- 实现备注：`ChoiceCard` 现在会把推荐项前置、为缺省选项补默认结果说明，并提供一个可折叠的“补充说明（选填）”入口；主聊天继续复用原有 `/api/v1/choices/:id/answer` 提交流程，协议工作台则把 pending choice 直接挂到 composer 上方并复用同一提交链路。补充说明通过 `note` 字段回写到 choice answer 摘要，不会丢在前端。
+- 验证结果：
+  - `go test ./internal/server`
+  - `cd web && npm test -- ChoiceCard.spec.js ChatPage.spec.js ProtocolWorkspacePage.spec.js`
+  - `cd web && PLAYWRIGHT_FIXTURE_BASE_URL=http://127.0.0.1:4174 npx playwright test tests/chat-choice-ui.spec.js tests/protocol-choice-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-037 统一消息与 composer 的视觉节奏
+### [x] TASK-CHAT-FIX-037 统一消息与 composer 的视觉节奏
 
 - 目标：在结构完成后，再做最后一轮视觉收口。
 - 涉及文件：
@@ -708,12 +741,17 @@
   4. 统一 composer 高度、圆角、工具条密度。
 - 完成标准：两个 chat 视觉语言一致，但不会被改回“卡片堆栈”。
 - 验证方式：视觉截图对比达到目标。
+- 实现备注：`MessageCard` 现在把 assistant 正文收成更接近文本线程的排版，user bubble 的宽度、圆角和边框也统一到一套更轻的节奏；`ChatProcessFold` 与 `ProtocolProcessFold` 同步改成统一的轻量 pill + 浅色 body 结构；`Omnibar` 统一了圆角、最小高度、提示文字和按钮密度。主聊天与协议工作台共用这些基础样式，没有再分叉成两套视觉语言。
+- 验证结果：
+  - `go test ./internal/server`
+  - `cd web && npm test -- ChoiceCard.spec.js Omnibar.spec.js ChatPage.spec.js ProtocolWorkspacePage.spec.js`
+  - `cd web && PLAYWRIGHT_FIXTURE_BASE_URL=http://127.0.0.1:4175 npx playwright test tests/chat-ui-visual.spec.js tests/protocol-chat-ui.spec.js`
 
 ---
 
 ## 8. P4A MCP UI 卡片与控制面板
 
-### [ ] TASK-CHAT-FIX-043 定义 `McpUiCard` 数据契约
+### [x] TASK-CHAT-FIX-043 定义 `McpUiCard` 数据契约
 
 - 目标：让后续所有 MCP 图表卡和控制面板卡都有统一的输入结构与落位规则。
 - 涉及文件：
@@ -727,8 +765,12 @@
   4. 定义 action 元数据：`intent`、`mutation`、`approvalMode`、`confirmText`、`payloadSchema`。
 - 完成标准：前端对 MCP UI 的承接不再依赖后续逐卡硬编码。
 - 验证方式：给一份 mock payload 可以稳定产出统一 view model。
+- 实现备注：已新增 [mcpUiCardModel.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/mcpUiCardModel.js)，把 `uiKind / placement / freshness / scope / actions` 统一规范化，并内建安全默认值；同时在 [chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 新增了从原始卡片抽取 MCP surface 的入口，后续页面层可以直接接统一 model，而不需要到处解析原始 payload。
+- 验证结果：
+  - `cd web && npm test -- mcpUiCardModel.spec.js chatTurnFormatter.spec.js`
+  - `cd web && npm test -- mcpUiCardModel.spec.js chatTurnFormatter.spec.js ChatPage.spec.js ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-043A 定义 `McpBundle` 数据契约
+### [x] TASK-CHAT-FIX-043A 定义 `McpBundle` 数据契约
 
 - 目标：让“聚合监控面板”和“聚合控制面板”成为一等概念，而不是几张松散卡片的偶然组合。
 - 涉及文件：
@@ -742,8 +784,11 @@
   4. 为 `remediation_bundle` 定义 section 标准：`root_cause`、`impact`、`recommended_actions`、`control_panels`、`validation_panels`。
 - 完成标准：后续“redis 面板”“nginx 故障修复面板”都能走统一 bundle 协议。
 - 验证方式：一份 middleware 监控 mock 和一份 RCA mock 都能稳定产出 bundle model。
+- 实现备注：`mcpUiCardModel.js` 已把 `monitor_bundle / remediation_bundle`、标准 section 顺序、`subject / freshness / recommendedActions / validationPanels` 一并规范化；bundle 现在会补齐标准 section，后续 host 渲染层只需要决定“空 section 是否展示”，不用再重复补协议。
+- 验证结果：
+  - `cd web && npm test -- mcpUiCardModel.spec.js chatTurnFormatter.spec.js`
 
-### [ ] TASK-CHAT-FIX-043B 定义 MCP payload 归一化适配层
+### [x] TASK-CHAT-FIX-043B 定义 MCP payload 归一化适配层
 
 - 目标：保证本地 MCP、远端 MCP、host MCP、workspace MCP 的结果最终都进入同一套 bundle / card model。
 - 涉及文件：
@@ -756,8 +801,12 @@
   3. 页面层只接收 normalized 结果，不直接面对原始 payload。
 - 完成标准：chat 层不需要知道“这是哪一路 MCP 回来的”。
 - 验证方式：多种来源的 mock payload 能归到同一 model。
+- 实现备注：已新增 [mcpUiPayloadAdapter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/mcpUiPayloadAdapter.js)，统一兼容 `payload / result / data / detail` wrapper、`mcpUi / mcpBundle / cards / bundles` 容器，以及 `source / origin / mcpServer / scope / freshness / error(s)` 的不同写法；[chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 现已改为通过 adapter 收集 MCP surface，不再自己拆原始 envelope。与此同时，[mcpUiCardModel.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/mcpUiCardModel.js) 补了 `source`、`scope`、`errors` 等通用归一化字段，bundle 与 card 进入了同一层级的结构化 model。
+- 验证结果：
+  - `cd web && npm test -- mcpUiPayloadAdapter.spec.js mcpUiCardModel.spec.js chatTurnFormatter.spec.js`
+  - `cd web && npm test -- mcpUiPayloadAdapter.spec.js mcpUiCardModel.spec.js chatTurnFormatter.spec.js ChatPage.spec.js ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-044 新增 `McpUiCardHost.vue`
+### [x] TASK-CHAT-FIX-044 新增 `McpUiCardHost.vue`
 
 - 目标：统一把结构化 MCP payload 渲染成具体卡片组件。
 - 涉及文件：
@@ -770,8 +819,12 @@
   4. 统一错误态、空态、过期态的基础框架。
 - 完成标准：页面层不需要逐处 `if/else` 渲染 MCP 卡片。
 - 验证方式：同一 host 能承接不同类型的 MCP UI payload。
+- 实现备注：已新增 [McpUiCardHost.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpUiCardHost.vue)，把 `placement / uiKind / stale / error / empty` 做成统一 shell，并按 `readonly_summary / readonly_chart / action_panel / form_panel` 分发到对应 renderer；其中 `action_panel / form_panel` 当前默认接到通用 action fallback，`readonly_chart` 会按 `visual.kind` 区分 timeseries 与 table shell。host 统一向上冒泡 `action / detail / refresh`，后续页面接入时不需要再逐卡写事件桥接。
+- 验证结果：
+  - `cd web && npm test -- McpUiCardHost.spec.js GenericMcpActionCard.spec.js`
+  - `cd web && npm test -- GenericMcpActionCard.spec.js McpUiCardHost.spec.js mcpUiPayloadAdapter.spec.js mcpUiCardModel.spec.js chatTurnFormatter.spec.js ChatPage.spec.js ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-044A 新增 `McpBundleHost.vue`
+### [x] TASK-CHAT-FIX-044A 新增 `McpBundleHost.vue`
 
 - 目标：把聚合 bundle 作为主展示单元渲染，而不是把多张卡片平铺在聊天正文里。
 - 涉及文件：
@@ -784,8 +837,12 @@
   4. 暴露 `action`、`open-detail`、`pin` 等统一事件。
 - 完成标准：用户在 chat 内看到的是“聚合面板”，不是几张散卡。
 - 验证方式：bundle host 可以稳定承接 4-8 张卡的组合展示。
+- 实现备注：已新增 [McpBundleHost.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpBundleHost.vue)，支持 `monitor_bundle` 与 `remediation_bundle` 两种头部信息，并按 section 渲染内部卡片；section 内统一复用 [McpUiCardHost.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpUiCardHost.vue)。默认仅展开前 2 个分区，其余通过“展开剩余分区”按钮按需展开；同时把 bundle 级 `action / open-detail / pin` 事件统一向上冒泡。对于 remediation bundle，`recommendedActions / validationPanels` 也会自动并入对应 section。
+- 验证结果：
+  - `cd web && npm test -- McpReadonlyCards.spec.js McpBundleHost.spec.js McpUiCardHost.spec.js GenericMcpActionCard.spec.js`
+  - `cd web && npm test -- McpReadonlyCards.spec.js McpBundleHost.spec.js McpUiCardHost.spec.js GenericMcpActionCard.spec.js mcpUiPayloadAdapter.spec.js mcpUiCardModel.spec.js chatTurnFormatter.spec.js ChatPage.spec.js ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-044B 新增 `GenericMcpActionCard.vue`
+### [x] TASK-CHAT-FIX-044B 新增 `GenericMcpActionCard.vue`
 
 - 目标：即使前端还没有专门适配某个 MCP action，也能安全展示、审批和执行。
 - 涉及文件：
@@ -799,8 +856,12 @@
   4. 缺少专用 renderer 时自动退回 fallback 卡。
 - 完成标准：新 MCP action 不会因为前端未适配而直接失效或绕过权限。
 - 验证方式：未知 action mock 仍能形成可操作且可审批的卡片。
+- 实现备注：已新增 [GenericMcpActionCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/GenericMcpActionCard.vue)，支持 `action` 与 `actions[]` 两种输入；mutation action 会直接暴露审批语义，只读 `refresh` 会走刷新语义，缺失 `label / intent` 时会安全回退到 `未命名操作 / open`。卡片会固定显示 `target / params / permissionPath / scope / freshness`，避免未知 action 只剩一个空壳按钮。
+- 验证结果：
+  - `cd web && npm test -- McpUiCardHost.spec.js GenericMcpActionCard.spec.js`
+  - `cd web && npm test -- GenericMcpActionCard.spec.js McpUiCardHost.spec.js mcpUiPayloadAdapter.spec.js mcpUiCardModel.spec.js chatTurnFormatter.spec.js ChatPage.spec.js ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-045 实现只读监控卡组件
+### [x] TASK-CHAT-FIX-045 实现只读监控卡组件
 
 - 目标：先完成最常用的监控查看型 UI。
 - 涉及文件：
@@ -815,8 +876,12 @@
   4. 控制默认高度和信息密度，避免把聊天线程挤爆。
 - 完成标准：主聊天和协议工作台都能安全展示只读监控结果。
 - 验证方式：典型 metrics MCP mock 数据可以落成图表卡。
+- 实现备注：已新增 [McpReadonlyCardFrame.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpReadonlyCardFrame.vue) 作为只读卡统一骨架，并落地 [McpSummaryCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpSummaryCard.vue)、[McpKpiStripCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpKpiStripCard.vue)、[McpTimeseriesChartCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpTimeseriesChartCard.vue)、[McpStatusTableCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpStatusTableCard.vue)。当前 `McpUiCardHost` 已切换为真实 renderer 分发：纯摘要继续走 summary card，存在 KPI 数据的 `readonly_summary` 会走 KPI strip，`readonly_chart` 会按 `visual.kind` 分发到 timeseries 或 status table。
+- 验证结果：
+  - `cd web && npm test -- McpReadonlyCards.spec.js McpBundleHost.spec.js McpUiCardHost.spec.js GenericMcpActionCard.spec.js`
+  - `cd web && npm test -- McpReadonlyCards.spec.js McpBundleHost.spec.js McpUiCardHost.spec.js GenericMcpActionCard.spec.js mcpUiPayloadAdapter.spec.js mcpUiCardModel.spec.js chatTurnFormatter.spec.js ChatPage.spec.js ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-045A 实现 `McpMonitorBundleCard.vue`
+### [x] TASK-CHAT-FIX-045A 实现 `McpMonitorBundleCard.vue`
 
 - 目标：让用户问“我想知道 xxx 中间件情况”时，直接看到一个聚合监控工作台。
 - 涉及文件：
@@ -829,8 +894,12 @@
   4. 给“查看完整面板”提供 drawer / modal 入口。
 - 完成标准：用户看到的是一个“redis 当前情况面板”而不是零散监控片段。
 - 验证方式：redis / nginx / kafka 这类 mock 都能落成聚合面板。
+- 实现备注：已新增 [McpMonitorBundleCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpMonitorBundleCard.vue)，固定输出 `overview / trends / alerts / changes / dependencies` 五段式布局；默认完整模式展示全部固定分区，`compact` 模式下只展示前 2 个有内容分区并保留“展开剩余分区”入口。头部已统一展示 `subject / summary / freshness`，并暴露 `刷新面板 / 查看完整面板 / 固定` 入口；卡片内容继续通过 [McpUiCardHost.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpUiCardHost.vue) 渲染，方便后续直接挂入两个 chat。
+- 验证结果：
+  - `cd web && npm test -- --run tests/McpBundleCards.spec.js tests/McpBundleHost.spec.js`
+  - `cd web && npm test -- --run tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/McpReadonlyCards.spec.js tests/GenericMcpActionCard.spec.js tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/chatTurnFormatter.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-046 实现可变更控制面板卡组件
+### [x] TASK-CHAT-FIX-046 实现可变更控制面板卡组件
 
 - 目标：让用户可以在 chat 内直接完成常见修复操作，而不是跳去独立页面。
 - 涉及文件：
@@ -844,8 +913,12 @@
   4. 为 destructive / mutation 操作预留二次确认区。
 - 完成标准：控制卡既能操作，又不会看起来像危险按钮墙。
 - 验证方式：典型 “重启服务 / 修改阈值 / 静音告警” mock 能正确渲染。
+- 实现备注：已新增 [McpControlPanelCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpControlPanelCard.vue) 和 [McpActionFormCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpActionFormCard.vue)。控制卡会统一展示 `target / currentState / permissionPath / risk / confirmText`，并把 destructive 或 mutation 操作收进确认区；表单卡支持 `text / select / textarea / checkbox` 四类基础字段，以及无 schema 时的安全空表单态。与此同时 [McpUiCardHost.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpUiCardHost.vue) 已从通用 fallback 分发升级为 `action_panel -> McpControlPanelCard`、`form_panel -> McpActionFormCard`。
+- 验证结果：
+  - `cd web && npm test -- --run tests/McpMutationCards.spec.js tests/McpUiCardHost.spec.js`
+  - `cd web && npm test -- --run tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/McpReadonlyCards.spec.js tests/GenericMcpActionCard.spec.js tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/chatTurnFormatter.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-046A 实现 `McpRemediationBundleCard.vue`
+### [x] TASK-CHAT-FIX-046A 实现 `McpRemediationBundleCard.vue`
 
 - 目标：在完成根因定位后，自动聚合出本次故障最相关的控制面板和验证面板。
 - 涉及文件：
@@ -858,8 +931,12 @@
   4. 展示 `validation panels`，供操作后立即复看指标。
 - 完成标准：用户定位完问题后，不需要再切去多个页面找修复入口。
 - 验证方式：典型“发布后错误率抬升”“连接池耗尽”“实例异常”都能产出对应 remediation bundle。
+- 实现备注：已新增 [McpRemediationBundleCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpRemediationBundleCard.vue)，固定输出 `root_cause / recommended_actions / control_panels / validation_panels` 四段式修复面板。头部已显示 `subject / summary / rootCause / confidence / freshness`，并兼容把 `recommendedActions`、`validationPanels` 合并进对应分区；同时保留 `执行推荐操作 / 查看完整面板 / 固定` 三个外层入口，为后续审批接线做准备。
+- 验证结果：
+  - `cd web && npm test -- --run tests/McpBundleCards.spec.js tests/McpBundleHost.spec.js`
+  - `cd web && npm test -- --run tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/McpReadonlyCards.spec.js tests/GenericMcpActionCard.spec.js tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/chatTurnFormatter.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-046B 为 remediation bundle 增加 recent-activity strip
+### [x] TASK-CHAT-FIX-046B 为 remediation bundle 增加 recent-activity strip
 
 - 目标：修复执行过程中只显示最近几条关键活动，避免再次刷屏。
 - 涉及文件：
@@ -873,8 +950,12 @@
   4. action 完成后 recent-activity strip 自动收成最终摘要。
 - 完成标准：后台修复过程不再把 chat 正文刷成执行日志面板。
 - 验证方式：长修复链路里正文仍然保持简洁。
+- 实现备注：已在 [mcpUiCardModel.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/mcpUiCardModel.js) 中补齐 `lastActivity / recentActivities / destructive` 归一化，并为监控 bundle 额外加入了 `topology -> dependencies` 兼容映射；[McpRemediationBundleCard.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpRemediationBundleCard.vue) 现在会默认展示最多 5 条 recent activities，并把最后一条可见 activity 标成强调态，终态 activity 则收进 “最终进度” 文案，避免正文再次刷满执行日志。
+- 验证结果：
+  - `cd web && npm test -- --run tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/mcpUiCardModel.spec.js`
+  - `cd web && npm test -- --run tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/McpReadonlyCards.spec.js tests/GenericMcpActionCard.spec.js tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/chatTurnFormatter.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-047 把 MCP action 接进现有审批链路
+### [x] TASK-CHAT-FIX-047 把 MCP action 接进现有审批链路
 
 - 目标：保证控制面板内的变更动作不会绕开你现有的 approval 体系。
 - 涉及文件：
@@ -890,8 +971,18 @@
   4. action 提交、审批、执行、成功/失败都记录进 timeline。
 - 完成标准：MCP 控制面板不会形成第二套平行审批系统。
 - 验证方式：mutation action 从卡片点击到审批完成路径连通。
+- 实现备注：
+  - [web/src/pages/ChatPage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ChatPage.vue) 现在会把 mutation MCP action 转成 synthetic approval overlay，复用现有审批浮层位置，不再让控制面板直接绕过审批。
+  - [web/src/pages/ProtocolWorkspacePage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ProtocolWorkspacePage.vue) 现在会把 mutation MCP action 写进右侧 approval rail，并同步写入 `ProtocolEventTimeline` 的 synthetic MCP 事件。
+  - 新增 [web/src/lib/mcpActionRuntime.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/mcpActionRuntime.js) 统一生成 synthetic approval、timeline event 和最终 decision notice，避免 chat 和 protocol 各自拼装审批文案。
+  - turn 级 action surface 已经从 [web/src/components/chat/ChatTurnGroup.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/chat/ChatTurnGroup.vue) 和 [web/src/components/protocol-workspace/ProtocolTurnGroup.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolTurnGroup.vue) 向页面层冒泡，页面层再决定走 overlay 还是 approval rail。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/chatTurnFormatter.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js tests/chat-ui-visual.spec.js tests/protocol-chat-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-047A 新增 `McpBundleResolver` 与 preset registry
+### [x] TASK-CHAT-FIX-047A 新增 `McpBundleResolver` 与 preset registry
 
 - 目标：把“根据用户想看的中间件自动聚合监控面板”和“根因后自动聚合控制面板”做成规则层，而不是页面层硬编码。
 - 涉及文件：
@@ -905,8 +996,15 @@
   4. 输出 bundle 所需的 section 配置和卡片组合。
 - 完成标准：问 redis、nginx、kafka 时能稳定命中对应聚合面板，而不是零散卡片。
 - 验证方式：preset registry 能对典型中间件和根因类型给出稳定 bundle。
+- 实现备注：
+  - 新增 [web/src/lib/mcpBundlePresetRegistry.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/mcpBundlePresetRegistry.js) 和 [web/src/lib/mcpBundleResolver.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/mcpBundleResolver.js)，把 `monitor_bundle / remediation_bundle` 的 preset、section 配置和卡片组合规则下沉成共享规则层。
+  - resolver 已支持 scope 解析、subject type 归类、root cause 信号识别，以及 bundle section 与 card combo 生成。
+  - [web/src/lib/chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 已经接入 `resolveMcpBundlePreset(...)`，turn formatter 不再只做 bundle 透传，而是会给 bundle 补齐 preset 归类结果。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/mcpBundleResolver.spec.js tests/mcpUiCardModel.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/chatTurnFormatter.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-048 把 MCP UI card 接进 turn formatter
+### [x] TASK-CHAT-FIX-048 把 MCP UI card 接进 turn formatter
 
 - 目标：让 MCP UI card 成为 turn 的一等公民，而不是聊天正文里的特殊 case。
 - 涉及文件：
@@ -920,8 +1018,15 @@
   4. 长驻监控面板优先进入 `workspaceSurfaces`。
 - 完成标准：MCP UI 卡片进入统一的 turn 信息架构。
 - 验证方式：formatter 输出里可以区分普通消息和 MCP surface。
+- 实现备注：
+  - [web/src/lib/chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 现在会从 assistant message payload 和 MCP adapter 里统一抽取 `resultAttachments`、`actionSurfaces`、`workspaceSurfaces`。
+  - formatter 现在会保留 `sourceCard`、`sourceCardId` 和 placement 信息，后续页面层可以判断这些 surface 应该落在 final 区、action 区还是 workspace surface 区。
+  - [web/tests/mcp-surface-integration.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/mcp-surface-integration.spec.js) 已覆盖 turn payload 到 formatter 输出的投影链路。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/chatTurnFormatter.spec.js tests/mcp-surface-integration.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/chatTurnFormatter.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
 
-### [ ] TASK-CHAT-FIX-048A 把 `McpBundle` 接进 turn formatter
+### [x] TASK-CHAT-FIX-048A 把 `McpBundle` 接进 turn formatter
 
 - 目标：让 monitor bundle 和 remediation bundle 成为 turn 的核心结果区域，而不是附件中的附件。
 - 涉及文件：
@@ -935,8 +1040,15 @@
   4. bundle 与普通 `resultAttachments` 同时存在时，bundle 优先级更高。
 - 完成标准：turn 层面明确支持“聚合面板优先于零散卡片”。
 - 验证方式：formatter 输出能稳定将问监控和 RCA 场景提升为 bundle。
+- 实现备注：
+  - [web/src/lib/chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 现在会输出 `resultBundles` 和 `actionBundles`，并在 bundle entry 上挂 resolver 产出的 normalized model。
+  - [web/src/components/chat/ChatTurnGroup.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/chat/ChatTurnGroup.vue) 与 [web/src/components/protocol-workspace/ProtocolTurnGroup.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolTurnGroup.vue) 已开始优先渲染 `resultBundles`，让聚合面板先于零散卡片出现在 turn 下方。
+  - 这一层已经支撑了主聊天和协议工作台的 fixture 验证：同一个 turn 里 bundle 和 action surface 可以同时渲染，且 mutation action 会继续串到审批链路。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/chatTurnFormatter.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-049 协议工作台接入 MCP surfaces
+### [x] TASK-CHAT-FIX-049 协议工作台接入 MCP surfaces
 
 - 目标：让协议工作台成为 MCP 图表和控制面板的主承载场景。
 - 涉及文件：
@@ -951,8 +1063,12 @@
   4. action 完成后把结果回写到当前 turn、timeline、evidence。
 - 完成标准：协议工作台能自然承载“查指标 -> 看图 -> 点操作 -> 审批 -> 回写结果”的闭环。
 - 验证方式：监控和修复场景能在一个 workspace 中完成。
+- 实现备注：协议工作台现在已把 turn 内 bundle/action surface 的 `detail / pin / refresh` 从 [ProtocolTurnGroup.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolTurnGroup.vue) 一路冒泡到 [ProtocolWorkspacePage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ProtocolWorkspacePage.vue)，并通过 `codex:open-mcp-drawer` 全局事件把 bundle/card 固定到抽屉。`detail` 会打开 [ProtocolEvidenceModal.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolEvidenceModal.vue) 的 `MCP 面板` tab，长图表/长表格保持在 modal 中，不再灌回正文；`refresh` 则直接复用 `refreshProtocolState()` 的最小闭环。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/ProtocolWorkspacePage.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/protocol-fixture-ui.spec.js tests/protocol-chat-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-049A 协议工作台优先接入 `monitor_bundle` 与 `remediation_bundle`
+### [x] TASK-CHAT-FIX-049A 协议工作台优先接入 `monitor_bundle` 与 `remediation_bundle`
 
 - 目标：让协议工作台成为“中间件工作台”的首个落地场景。
 - 涉及文件：
@@ -966,8 +1082,12 @@
   4. validation panels 操作后自动刷新。
 - 完成标准：协议工作台能直接承接“问某个中间件情况”和“查明故障后直接修”的完整闭环。
 - 验证方式：用户不必跳去多个监控页和控制页完成同一件事。
+- 实现备注：当前协议工作台已优先把 `monitor_bundle` 与 `remediation_bundle` 作为主展示单元，由 [ProtocolTurnGroup.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolTurnGroup.vue) 和 [ProtocolConversationPane.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolConversationPane.vue) 统一承接；`monitor_bundle` 默认进入 turn 的最终结果区，`remediation_bundle` 则展示根因、推荐操作、控制面板与验证面板，并可继续通过 `pin` 固定到全局 MCP 抽屉。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/ProtocolWorkspacePage.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/protocol-fixture-ui.spec.js tests/protocol-chat-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-050 主聊天接入 MCP surfaces
+### [x] TASK-CHAT-FIX-050 主聊天接入 MCP surfaces
 
 - 目标：让主聊天也能承接结果图表和轻控制卡，但不变成 dashboard 页面。
 - 涉及文件：
@@ -981,8 +1101,12 @@
   4. 给“查看完整监控面板”提供 drawer 或 modal 入口。
 - 完成标准：主聊天可以处理轻量监控和操作，但仍然像 chat，不像控制台首页。
 - 验证方式：用户在单线程对话中也能完成一次“看图 + 执行修复”。
+- 实现备注：主聊天现在已把 turn 内的 bundle 与 action surface 继续接到 [ChatTurnGroup.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/chat/ChatTurnGroup.vue) 和 [ChatPage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ChatPage.vue)；控制面板点击 mutation action 时仍然走现有 synthetic approval overlay，而 bundle/card 的 `detail / pin / refresh` 会继续进入主聊天本地的 `chat-mcp-surface-drawer`。这意味着正文仍然保持轻量，完整监控面板、刷新与固定动作都转移到了 drawer，而不会把单线程聊天重新变成 dashboard 首页。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/ChatPage.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-fixture-ui.spec.js tests/chat-ui-visual.spec.js`
 
-### [ ] TASK-CHAT-FIX-050A 主聊天接入 bundle 简化版
+### [x] TASK-CHAT-FIX-050A 主聊天接入 bundle 简化版
 
 - 目标：让主聊天也能承接聚合面板，但保持更轻量的 chat 气质。
 - 涉及文件：
@@ -996,8 +1120,12 @@
   4. 保持 bundle 可展开，但不让单线程聊天变成满屏 dashboard。
 - 完成标准：主聊天符合“边回答边给聚合面板”的需求，但仍然像对话。
 - 验证方式：单线程场景中既能看聚合面板，又不会压垮消息阅读。
+- 实现备注：主聊天当前默认仍以 turn 下方的 compact bundle 为主，复用 [McpBundleHost.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/mcp/McpBundleHost.vue) 的“默认只展开前 2 个分区”能力；用户如果需要完整 bundle，则通过 [ChatPage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ChatPage.vue) 的本地 MCP drawer 查看完整面板，并可选择固定到全局 MCP 抽屉。这样 monitor bundle 保留概览感，remediation bundle 保留根因与关键操作入口，其他 section 则被收到 drawer，不会压垮消息阅读节奏。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/ChatPage.spec.js tests/mcp-surface-integration.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-fixture-ui.spec.js tests/chat-ui-visual.spec.js`
 
-### [ ] TASK-CHAT-FIX-051 升级全局 `app-mcp-drawer`
+### [x] TASK-CHAT-FIX-051 升级全局 `app-mcp-drawer`
 
 - 目标：把当前空壳的 `Skills & MCP` 抽屉升级成真正的 MCP surface 容器。
 - 涉及文件：
@@ -1011,8 +1139,15 @@
   4. 让 `metrics`、`host-logs` 这类 MCP 有统一入口，而不是分散在各页面各自实现。
 - 完成标准：全局 MCP 抽屉成为统一监控与工具面板容器。
 - 验证方式：用户可以在任一 chat 中打开并复用常驻 MCP 面板。
+- 实现备注：
+  - [App.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/App.vue) 现在不再自己维护临时的 `active / pinned` ref，而是统一消费 [store.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/store.js) 中的 `mcpDrawer.activeSurface / pinnedSurfaces / recentSurfaces`。
+  - 抽屉主体已经升级成 4 个区块：`ACTIVE SURFACE`、`常驻面板`、`最近操作`、`启用中的 MCP`。其中 `最近操作` 会自动记录最近打开 / 刷新 / 切换过的 surface，`启用中的 MCP` 会根据当前 `activeAgentProfile.mcps` 与 `mcpCatalog` 合并得到统一入口。
+  - 全局 drawer 仍然通过 `codex:open-mcp-drawer` 承接 chat / protocol 页面发来的事件，但 surface 的归一化、去重、最近访问顺序和持久化都已下沉到 store，不再散落在各页面里重复实现。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/mcpGlobalDrawerStore.spec.js tests/AppMcpDrawer.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-ui-visual.spec.js tests/protocol-chat-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-051A 支持 bundle 固定与复用
+### [x] TASK-CHAT-FIX-051A 支持 bundle 固定与复用
 
 - 目标：让用户已经打开过的中间件 bundle 可以固定到全局 drawer，避免重复问同一句。
 - 涉及文件：
@@ -1025,8 +1160,15 @@
   3. 支持从聊天中的 bundle 一键跳到全局常驻面板。
 - 完成标准：用户不用重复在多个对话里反复索取同一个中间件面板。
 - 验证方式：固定后的 bundle 可跨 chat 复用。
+- 实现备注：
+  - [store.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/store.js) 新增了 `openMcpDrawerSurface`、`pinMcpDrawerSurface`、`removePinnedMcpDrawerSurface`、`selectMcpDrawerSurface`、`recordRecentMcpSurface`、`openEnabledMcpEntry` 等 action，并把 `mcpDrawer` 状态通过 `localStorage` 持久化，这样固定后的 bundle 可以在 chat / protocol 间直接复用。
+  - 主聊天和协议工作台原有的 `pin` 动作现在都会汇入全局 drawer；关闭局部 drawer、切换到另一个 chat 或 protocol 页面后，常驻列表依然保留，并且能重新选回同一个 surface 继续查看。
+  - 视觉回归里原先针对 `enabled MCP / recent operation` 的 `fixme scaffold` 已正式放开，说明全局 drawer 已经从“占位抽屉”升级成真正可复用的常驻面板容器。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/chatTurnFormatter.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js tests/mcpGlobalDrawerStore.spec.js tests/AppMcpDrawer.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js tests/chat-ui-visual.spec.js tests/protocol-chat-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-052 为 MCP UI 卡片补专项测试与截图
+### [x] TASK-CHAT-FIX-052 为 MCP UI 卡片补专项测试与截图
 
 - 目标：给图表卡和控制面板卡建立专项回归保护。
 - 涉及文件：
@@ -1041,8 +1183,15 @@
   4. 更新 MCP 相关视觉截图基线。
 - 完成标准：MCP UI 卡片上线后不容易因为样式或权限改动而回退。
 - 验证方式：专项自动化测试和截图对比通过。
+- 实现备注：
+  - [McpReadonlyCards.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/McpReadonlyCards.spec.js) 已把 KPI strip、时序图、状态表 3 类只读卡的 `title / summary / freshness / scope` 锁住，避免图表卡退化成只有标题的空壳。
+  - [McpMutationCards.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/McpMutationCards.spec.js) 已补 `action_panel / form_panel / unknown renderer fallback` 的审批语义覆盖，确保 mutation action 仍能透出 `permissionPath`、`approvalMode` 和变更风险。
+  - 页面级上，[chat-ui-visual.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/chat-ui-visual.spec.js) 已新增 `chat-visual-bundle-drawer-heavy.png`，验证长表格与结构化表单进入 drawer；[protocol-chat-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/protocol-chat-ui.spec.js) 已新增 remediation bundle 的视觉基线，验证验证面板仍待在 bundle / modal 语义里，而不是撑爆正文。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/McpReadonlyCards.spec.js tests/McpMutationCards.spec.js tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/mcpUiCardModel.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-ui-visual.spec.js tests/protocol-chat-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-052A 为 bundle 场景补专项测试
+### [x] TASK-CHAT-FIX-052A 为 bundle 场景补专项测试
 
 - 目标：确保真正的“聚合监控面板”和“聚合修复面板”行为不会回退成单卡拼接。
 - 涉及文件：
@@ -1056,8 +1205,14 @@
   4. 更新 bundle 场景截图基线。
 - 完成标准：bundle 是产品主形态，而不是文档概念。
 - 验证方式：专项测试和截图都能证明“聚合”确实发生了。
+- 实现备注：
+  - [chat-fixture-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/chat-fixture-ui.spec.js) 现在明确验证 monitor bundle 只以一个 `mcp-monitor-bundle-card` 作为主形态出现，正文不会把 `alerts / changes / dependencies` 拆回离散卡片；只有展开或进入 drawer 才会看到长表格与表单。
+  - [protocol-fixture-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/protocol-fixture-ui.spec.js) 现在明确验证 remediation bundle 会先展示 `recent activity strip + root cause`，然后通过控制卡进入审批、通过 validation panel 刷新 state，而不是退回“几张散卡 + 用户自己拼上下文”。
+  - 视觉层新增了 [chat-visual-bundle-drawer-heavy.png](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/screenshots/chat-visual-bundle-drawer-heavy.png) 和 [protocol-visual-remediation-bundle.png](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/screenshots/protocol-visual-remediation-bundle.png)，让“聚合面板”作为产品主形态有可见基线。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js tests/chat-ui-visual.spec.js tests/protocol-chat-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-052B 为 payload normalization / fallback / recent-activity 补专项测试
+### [x] TASK-CHAT-FIX-052B 为 payload normalization / fallback / recent-activity 补专项测试
 
 - 目标：把 Claude Code 那三条高价值工程约束真正测住。
 - 涉及文件：
@@ -1070,12 +1225,19 @@
   3. 测 remediation bundle 是否默认只显示 recent activities，而不是全量过程。
 - 完成标准：MCP 体系的可扩展性和克制感有自动化回归保护。
 - 验证方式：专项测试覆盖归一化、fallback、recent-activity 三条约束。
+- 实现备注：
+  - [mcpUiPayloadAdapter.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/mcpUiPayloadAdapter.spec.js) 继续补了不同 `payload / result / data / detail` wrapper 和 source alias 下的 card / bundle 归一化断言，防止不同 MCP 返回格式把前端渲染再次分叉。
+  - [McpMutationCards.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/McpMutationCards.spec.js) 与 [chat-fixture-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/chat-fixture-ui.spec.js) 现在都覆盖了 unknown action renderer 回落到 `GenericMcpActionCard` 的路径，并验证它仍能进入审批态。
+  - [mcp-surface-integration.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/mcp-surface-integration.spec.js) 与 [protocol-fixture-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/protocol-fixture-ui.spec.js) 共同验证 remediation bundle 默认只露出 `recent activity strip`，而不是把全量过程重新刷回正文。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/mcpUiPayloadAdapter.spec.js tests/McpMutationCards.spec.js tests/mcp-surface-integration.spec.js tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/mcpUiCardModel.spec.js tests/mcpBundleResolver.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js`
 
 ---
 
 ## 9. P5 测试与发布收口
 
-### [ ] TASK-CHAT-FIX-038 为滚动与 unread 行为补专项测试
+### [x] TASK-CHAT-FIX-038 为滚动与 unread 行为补专项测试
 
 - 目标：防止滚动体验在后续迭代中退化。
 - 涉及文件：
@@ -1089,8 +1251,15 @@
   4. 测“prepend 历史后视口不跳”。
 - 完成标准：滚动行为有专项回归保护。
 - 验证方式：自动化测试稳定通过。
+- 实现备注：
+  - [web/tests/ChatPage.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/ChatPage.spec.js) 现在补齐了 chat 侧 unread pill 点击回底，以及“加载更早消息后视口不跳回顶部”的断言。
+  - [web/tests/ProtocolWorkspacePage.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/ProtocolWorkspacePage.spec.js) 已覆盖协议工作台的 unread pill、unread divider、点击回底和历史 prepend 行为。
+  - [web/tests/protocol-chat-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/protocol-chat-ui.spec.js) 新增了 `protocol-visual-unread-pill-divider.png`，把未读提示在页面上的最终形态也测住。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && PLAYWRIGHT_FIXTURE_BASE_URL=http://127.0.0.1:4174 npx playwright test tests/protocol-chat-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-039 为输入器增强补专项测试
+### [x] TASK-CHAT-FIX-039 为输入器增强补专项测试
 
 - 目标：把 paste、图片、路径识别这些容易回退的能力测住。
 - 涉及文件：
@@ -1103,8 +1272,15 @@
   3. 测拖入路径时不变成脏文本。
 - 完成标准：输入器改造具备专项保护。
 - 验证方式：自动化与手动验证结果一致。
+- 实现备注：
+  - [web/tests/ChatPage.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/ChatPage.spec.js) 补强了大块历史和 unread 共存时的输入器回归。
+  - [web/tests/chat-ui-visual.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/chat-ui-visual.spec.js) 新增 `chat-visual-omnibar-path-hint.png`，确认路径粘贴和焦点恢复提示稳定可见。
+  - [web/tests/protocol-fixture-ui.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/protocol-fixture-ui.spec.js) 继续覆盖 path-like paste 和 image paste 在协议工作台里的 artifact hint / focus hint。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/ChatPage.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && PLAYWRIGHT_FIXTURE_BASE_URL=http://127.0.0.1:4174 npx playwright test tests/chat-ui-visual.spec.js tests/protocol-fixture-ui.spec.js`
 
-### [ ] TASK-CHAT-FIX-040 更新视觉截图基线
+### [x] TASK-CHAT-FIX-040 更新视觉截图基线
 
 - 目标：为两个 chat 的最终视觉状态保留明确基线。
 - 涉及文件：
@@ -1119,8 +1295,15 @@
   4. 补一张“未读 pill + divider”截图。
 - 完成标准：视觉变化可以被稳定追踪。
 - 验证方式：截图测试通过且人工审阅无明显退化。
+- 实现备注：
+  - 主聊天基线已更新到 [web/tests/screenshots](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/screenshots)，包括 `chat-visual-running-process-fold.png`、`chat-visual-omnibar-path-hint.png`、`chat-visual-history-boundary.png` 等。
+  - 协议工作台补了 `protocol-visual-unread-pill-divider.png`、`protocol-visual-history-boundary.png`、`protocol-visual-remediation-bundle.png` 等最终基线。
+  - `protocol-stale-approval-friendly.png`、`protocol-clean-messages.png`、`protocol-no-raw-json.png` 也重新由 fixture smoke 产出，避免旧截图和当前 UI 脱节。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm run build`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && PLAYWRIGHT_FIXTURE_BASE_URL=http://127.0.0.1:4174 npx playwright test tests/chat-ui-visual.spec.js tests/protocol-chat-ui.spec.js tests/protocol-ux-fixes.spec.js`
 
-### [ ] TASK-CHAT-FIX-041 跑一轮完整 smoke
+### [x] TASK-CHAT-FIX-041 跑一轮完整 smoke
 
 - 目标：在交付前验证结构、交互、性能没有明显断裂。
 - 涉及文件：
@@ -1134,8 +1317,17 @@
   3. 过一轮手工路径：简单问答、读文件、等待审批、失败、长线程回看。
 - 完成标准：没有明显阻塞性回归。
 - 验证方式：测试结果和人工检查清单都通过。
+- 实现备注：
+  - [web/tests/protocol-ux-fixes.spec.js](/Users/lizhongxuan/Desktop/aiops-codex/web/tests/protocol-ux-fixes.spec.js) 已固定为 fixture smoke，不再依赖真实后端或长等待。
+  - 这轮 smoke 的关键坑点是：Playwright 首次失败不是业务回归，而是用了旧 `web/dist`；重建 dist 后，同一组 fixture/UI/visual 测试全部恢复通过。
+  - 手工路径这轮用 fixture 页面替代了不稳定的真后端路径，覆盖了简单问答、等待审批、MCP panel、历史分页、路径/图片粘贴、长线程虚拟化这些交付前最重要的页面链路。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/chatTurnFormatter.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js tests/protocolWorkspaceVm.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/mcpUiPayloadAdapter.spec.js tests/mcpUiCardModel.spec.js tests/McpUiCardHost.spec.js tests/McpBundleHost.spec.js tests/McpBundleCards.spec.js tests/McpMutationCards.spec.js tests/mcp-surface-integration.spec.js tests/mcpBundleResolver.spec.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm run build`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && PLAYWRIGHT_FIXTURE_BASE_URL=http://127.0.0.1:4174 npx playwright test tests/chat-fixture-ui.spec.js tests/protocol-fixture-ui.spec.js tests/chat-ui-visual.spec.js tests/protocol-chat-ui.spec.js tests/protocol-ux-fixes.spec.js`
 
-### [ ] TASK-CHAT-FIX-042 发布前清理旧分支逻辑
+### [x] TASK-CHAT-FIX-042 发布前清理旧分支逻辑
 
 - 目标：防止新结构上线后，旧分支和死代码继续干扰维护。
 - 涉及文件：
@@ -1150,6 +1342,14 @@
   3. 确认新旧逻辑没有并存造成双渲染。
 - 完成标准：代码树回到可维护状态。
 - 验证方式：全量搜索确认没有遗留死分支和废弃 props。
+- 实现备注：
+  - [web/src/pages/ChatPage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ChatPage.vue) 删掉了 `normalizeMcpSurfacePayload` 的死参数、`entrySignature` 里打不到的 `away-summary` 分支，并把 history sentinel 的重复 primary button 收成一个分支。
+  - [web/src/components/protocol-workspace/ProtocolConversationPane.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/components/protocol-workspace/ProtocolConversationPane.vue) 删掉了只做转手的 `streamItems` computed，并合并了顶部 sentinel 的重复“加载更早消息 / 重试”按钮。
+  - [web/src/lib/protocolWorkspaceVm.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/protocolWorkspaceVm.js) 去掉了不再暴露给页面层的 `latestUserIndex / conversationItems / processCards` 返回字段；[web/src/pages/ProtocolWorkspacePage.vue](/Users/lizhongxuan/Desktop/aiops-codex/web/src/pages/ProtocolWorkspacePage.vue) 也同步不再传旧 `messages` 路径。
+  - [web/src/lib/chatTurnFormatter.js](/Users/lizhongxuan/Desktop/aiops-codex/web/src/lib/chatTurnFormatter.js) 删掉了未使用的 `extractMcpUiSurfaceFromCard` 和 bucket 上的死 `timestamps` 状态，同时把 `summarizeTurnProcess` 收窄成实际仍在用的参数。
+- 验证结果：
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex && rg -n "fallbackKind = \\\"\\\"|entry.kind === \\\"away-summary\\\"|const streamItems = computed\\(|latestUserIndex,|conversationItems: buildProtocolConversationItems" web/src/pages/ChatPage.vue web/src/components/protocol-workspace/ProtocolConversationPane.vue web/src/lib/protocolWorkspaceVm.js web/src/lib/chatTurnFormatter.js`
+  - `cd /Users/lizhongxuan/Desktop/aiops-codex/web && npm test -- --run tests/chatTurnFormatter.spec.js tests/ChatPage.spec.js tests/ProtocolWorkspacePage.spec.js`
 
 ---
 
@@ -1210,11 +1410,11 @@
 
 只有下面这些都满足，才算这轮真正完成：
 
-- [ ] 两个 chat 都改成了 turn 级主线程
-- [ ] 过程层可以折叠，并且折叠头部有 summary / live hint / elapsed
-- [ ] 审批、plan、background agents、timeline 都回到了正确区域
-- [ ] 用户上滑后不会被强制吸底，且看得到未读提示
-- [ ] 长线程支持历史加载或至少具备可落地的分页入口
-- [ ] 输入器对真实使用场景更稳
-- [ ] MCP 图表卡和控制面板卡能在 chat 内自然出现、操作、审批、回写结果
-- [ ] 自动化测试和视觉截图都已更新
+- [x] 两个 chat 都改成了 turn 级主线程
+- [x] 过程层可以折叠，并且折叠头部有 summary / live hint / elapsed
+- [x] 审批、plan、background agents、timeline 都回到了正确区域
+- [x] 用户上滑后不会被强制吸底，且看得到未读提示
+- [x] 长线程支持历史加载或至少具备可落地的分页入口
+- [x] 输入器对真实使用场景更稳
+- [x] MCP 图表卡和控制面板卡能在 chat 内自然出现、操作、审批、回写结果
+- [x] 自动化测试和视觉截图都已更新

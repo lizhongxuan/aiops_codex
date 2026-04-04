@@ -114,17 +114,18 @@ function handleSelect(item) {
 
 <style scoped>
 .protocol-event-timeline {
+  height: 100%;
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-top: 1px solid #e8ecf1;
+  border-top: none;
   padding: 0;
   border-radius: 0;
   border-left: none;
   border-right: none;
   border-bottom: none;
-  background: transparent;
+  background: #ffffff;
   box-shadow: none;
 }
 

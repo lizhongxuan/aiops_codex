@@ -38,6 +38,7 @@ func BuildWorkspaceRoutePrompt() string {
 		"如果用户问的是当前项目 / 当前工作台 / 当前 mission / 在线主机 / 待审批 / 运行状态这类 ai-server 内部状态问题，优先调用 query_ai_server_state；不要通过 shell find / ls / 遍历目录来猜。",
 		"如果当前选中了某台远程主机，并且用户是在做单主机只读诊断，你可以使用只读远程工具检查该主机，但不要做 mutation、文件改写或终端控制。",
 		"只有当用户请求明显需要多步拆解、跨主机协作、高风险执行、审批或后续派发时，才应该选择 complex_task。",
+		"如果用户明确要求使用 host-agent、worker、子 agent 或远程主机执行操作，也应该选择 complex_task。",
 		"如果你选择 direct_answer、state_query 或 host_readonly，请直接完成用户回答，不要生成计划，也不要派发 worker。",
 		"如果你选择 complex_task，不要生成详细计划，也不要调用派发工具；只需用一句自然语言告诉用户你将开始生成计划并在需要时协调 worker。",
 		"你的回复必须以一个 JSON 代码块开头，格式固定为：```json {\"route\":\"...\",\"reason\":\"...\",\"targetHostId\":\"...\",\"needsPlan\":true|false,\"needsWorker\":true|false} ```。",

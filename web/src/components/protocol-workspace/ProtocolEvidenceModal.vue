@@ -29,6 +29,7 @@ const props = defineProps({
       { value: "main-agent-plan", label: "主 Agent 计划摘要" },
       { value: "worker-conversation", label: "Worker 对话" },
       { value: "host-terminal", label: "Host Terminal" },
+      { value: "mcp-surface", label: "MCP 面板" },
       { value: "approval-context", label: "审批上下文" },
     ],
   },
@@ -176,6 +177,11 @@ onBeforeUnmount(() => {
             </template>
             <template v-else-if="displayTab === 'host-terminal'">
               <slot name="host-terminal" :panel="activePanel">
+                <EvidencePanelFallback :panel="activePanel" />
+              </slot>
+            </template>
+            <template v-else-if="displayTab === 'mcp-surface'">
+              <slot name="mcp-surface" :panel="activePanel">
                 <EvidencePanelFallback :panel="activePanel" />
               </slot>
             </template>

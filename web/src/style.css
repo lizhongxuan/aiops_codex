@@ -395,7 +395,7 @@ button, input, textarea, select {
   flex: 1;
   overflow-y: auto;
   scroll-behavior: smooth;
-  padding: 16px 0 240px;
+  padding: 16px 0 180px;
 }
 
 .chat-stream-inner {
