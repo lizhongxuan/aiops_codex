@@ -395,13 +395,13 @@ button, input, textarea, select {
   flex: 1;
   overflow-y: auto;
   scroll-behavior: smooth;
-  padding: 16px 0 180px;
+  padding: 12px 0 176px;
 }
 
 .chat-stream-inner {
-  max-width: 820px;
+  max-width: 780px;
   margin: 0 auto;
-  padding: 0 28px;
+  padding: 0 24px;
 }
 
 .empty-state-canvas {
@@ -441,7 +441,7 @@ button, input, textarea, select {
 
 /* Chat Row Cards from old CardItem */
 .stream-row {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   display: flex;
   width: 100%;
 }

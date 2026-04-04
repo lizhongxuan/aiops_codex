@@ -218,6 +218,16 @@ function openAgentProfile() {
   router.push("/settings/agent");
 }
 
+function openSkillCatalog() {
+  closeSettingsMenu();
+  router.push("/settings/skills");
+}
+
+function openMcpCatalog() {
+  closeSettingsMenu();
+  router.push("/settings/mcp");
+}
+
 const authBadgeLabel = computed(() => {
   if (store.snapshot.auth.connected) {
     return `GPT ${store.snapshot.auth.planType || "接入"}`;
@@ -420,14 +430,18 @@ const canReturnToWorkspace = computed(() => store.snapshot.kind === "single_host
 
 const settingsNavTitle = computed(() => {
   if (route.path.startsWith("/settings/agent")) return "Agent Profile";
+  if (route.path.startsWith("/settings/skills")) return "Skills 管理";
+  if (route.path.startsWith("/settings/mcp")) return "MCP 管理";
   if (route.path.startsWith("/settings/experience-packs")) return "Experience Packs";
   if (route.path.startsWith("/settings/hosts")) return "Hosts";
-  return "Hosts / Packs / Agent";
+  return "Hosts / Skills / MCP / Agent";
 });
 
 const settingsNavStatus = computed(() => {
   if (route.path === "/settings") return "设置中心";
   if (route.path.startsWith("/settings/agent")) return "System Prompt / Skills / MCP";
+  if (route.path.startsWith("/settings/skills")) return "Catalog / Defaults / Activation";
+  if (route.path.startsWith("/settings/mcp")) return "Catalog / Defaults / Permission";
   if (route.path.startsWith("/settings/experience-packs")) return "Playbooks";
   if (route.path.startsWith("/settings/hosts")) return "Inventory & Scope";
   return "入口";
@@ -592,6 +606,14 @@ watch(
             <button class="settings-menu-item" @click="openAgentProfile">
               <span class="settings-menu-title">Agent Profile</span>
               <span class="settings-menu-subtitle">System Prompt / Permissions / Skills / MCP</span>
+            </button>
+            <button class="settings-menu-item" @click="openSkillCatalog">
+              <span class="settings-menu-title">Skills 管理</span>
+              <span class="settings-menu-subtitle">Skill catalog / 默认值 / 激活方式</span>
+            </button>
+            <button class="settings-menu-item" @click="openMcpCatalog">
+              <span class="settings-menu-title">MCP 管理</span>
+              <span class="settings-menu-subtitle">MCP catalog / 默认值 / 权限</span>
             </button>
             <button class="settings-menu-item" @click="closeSettingsMenu(); router.push('/settings/experience-packs')">
               <span class="settings-menu-title">Experience Packs</span>

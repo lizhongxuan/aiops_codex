@@ -502,12 +502,85 @@ function cloneCatalogEntries(entries) {
   return (entries || []).map((item) => ({ ...item }));
 }
 
-function createSkillCatalog() {
-  return cloneCatalogEntries(SKILL_CATALOG);
+function normalizeSkillCatalogEntry(rawItem, fallbackItem = {}) {
+  const base = rawItem || {};
+  const fallbackEnabled =
+    typeof base.defaultEnabled === "boolean"
+      ? base.defaultEnabled
+      : typeof fallbackItem.defaultEnabled === "boolean"
+        ? fallbackItem.defaultEnabled
+        : typeof base.enabled === "boolean"
+          ? base.enabled
+          : false;
+  const mode = normalizeSkillActivationMode(
+    base.defaultActivationMode ?? base.default_activation_mode ?? base.activationMode ?? fallbackItem.defaultActivationMode,
+    fallbackEnabled,
+  );
+  return {
+    id: String(base.id || fallbackItem.id || ""),
+    name: String(base.name || fallbackItem.name || base.id || fallbackItem.id || ""),
+    description: String(base.description || fallbackItem.description || ""),
+    source: String(base.source || fallbackItem.source || "local"),
+    defaultEnabled: fallbackEnabled,
+    defaultActivationMode: mode,
+    enabled: fallbackEnabled,
+    activationMode: mode,
+  };
 }
 
-function createMcpCatalog() {
-  return cloneCatalogEntries(MCP_CATALOG);
+function normalizeMcpCatalogEntry(rawItem, fallbackItem = {}) {
+  const base = rawItem || {};
+  return {
+    id: String(base.id || fallbackItem.id || ""),
+    name: String(base.name || fallbackItem.name || base.id || fallbackItem.id || ""),
+    type: String(base.type || fallbackItem.type || "stdio"),
+    source: String(base.source || fallbackItem.source || "local"),
+    defaultEnabled:
+      typeof base.defaultEnabled === "boolean"
+        ? base.defaultEnabled
+        : typeof fallbackItem.defaultEnabled === "boolean"
+          ? fallbackItem.defaultEnabled
+          : typeof base.enabled === "boolean"
+            ? base.enabled
+            : false,
+    enabled:
+      typeof base.defaultEnabled === "boolean"
+        ? base.defaultEnabled
+        : typeof fallbackItem.defaultEnabled === "boolean"
+          ? fallbackItem.defaultEnabled
+          : typeof base.enabled === "boolean"
+            ? base.enabled
+            : false,
+    permission: normalizeMcpPermission(base.permission, fallbackItem.permission),
+    requiresExplicitUserApproval:
+      typeof base.requiresExplicitUserApproval === "boolean"
+        ? base.requiresExplicitUserApproval
+        : base.requires_explicit_user_approval ?? fallbackItem.requiresExplicitUserApproval ?? false,
+  };
+}
+
+function createSkillCatalog(entries = SKILL_CATALOG) {
+  return normalizeSkillCatalogEntries(cloneCatalogEntries(entries), SKILL_CATALOG);
+}
+
+function createMcpCatalog(entries = MCP_CATALOG) {
+  return normalizeMcpCatalogEntries(cloneCatalogEntries(entries), MCP_CATALOG);
+}
+
+function normalizeSkillCatalogEntries(entries, fallbackEntries = SKILL_CATALOG) {
+  const fallbackMap = new Map((fallbackEntries || []).map((item) => [String(item?.id || ""), item]));
+  return (entries || [])
+    .map((item) => normalizeSkillCatalogEntry(item, fallbackMap.get(String(item?.id || "")) || {}))
+    .filter((item) => item.id)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function normalizeMcpCatalogEntries(entries, fallbackEntries = MCP_CATALOG) {
+  const fallbackMap = new Map((fallbackEntries || []).map((item) => [String(item?.id || ""), item]));
+  return (entries || [])
+    .map((item) => normalizeMcpCatalogEntry(item, fallbackMap.get(String(item?.id || "")) || {}))
+    .filter((item) => item.id)
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function normalizeSkillActivationMode(value, fallbackEnabled) {
@@ -543,94 +616,67 @@ function normalizeMcpEnabled(value, fallbackEnabled) {
 
 function normalizeSkillItems(rawSkills, fallbackSkills = [], catalog = SKILL_CATALOG) {
   const fallbackMap = new Map((fallbackSkills || []).map((item) => [String(item?.id || ""), item]));
-  const rawMap = new Map((rawSkills || []).map((item) => [String(item?.id || ""), item]));
-  const merged = [];
-  const seen = new Set();
-
-  for (const entry of catalog) {
-    const raw = rawMap.get(entry.id) || fallbackMap.get(entry.id) || null;
-    const mode = normalizeSkillActivationMode(raw?.activationMode ?? raw?.activation_mode ?? entry.defaultActivationMode, raw?.enabled ?? fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled);
-    merged.push({
-      id: entry.id,
-      name: String(raw?.name || entry.name || entry.id),
-      description: String(raw?.description || entry.description || ""),
-      source: String(raw?.source || entry.source || "local"),
-      enabled: normalizeSkillEnabled(raw?.enabled, mode, fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled),
-      activationMode: mode,
-    });
-    seen.add(entry.id);
-  }
-
-  for (const [id, raw] of rawMap.entries()) {
-    if (!id || seen.has(id)) continue;
-    const mode = normalizeSkillActivationMode(raw?.activationMode ?? raw?.activation_mode, raw?.enabled);
-    merged.push({
-      id,
-      name: String(raw?.name || id),
-      description: String(raw?.description || ""),
-      source: String(raw?.source || "local"),
-      enabled: normalizeSkillEnabled(raw?.enabled, mode),
-      activationMode: mode,
-    });
-  }
-
-  return merged;
+  const catalogMap = new Map(createSkillCatalog(catalog).map((item) => [String(item?.id || ""), item]));
+  return (rawSkills || [])
+    .map((item) => {
+      const id = String(item?.id || "").trim();
+      if (!id) return null;
+      const fallback = fallbackMap.get(id) || {};
+      const catalogItem = catalogMap.get(id) || {};
+      const mode = normalizeSkillActivationMode(
+        item?.activationMode ?? item?.activation_mode ?? fallback.activationMode ?? catalogItem.defaultActivationMode,
+        item?.enabled ?? fallback.enabled ?? catalogItem.defaultEnabled,
+      );
+      return {
+        id,
+        name: String(item?.name || fallback.name || catalogItem.name || id),
+        description: String(item?.description || fallback.description || catalogItem.description || ""),
+        source: String(item?.source || fallback.source || catalogItem.source || "local"),
+        enabled: normalizeSkillEnabled(item?.enabled, mode, fallback.enabled ?? catalogItem.defaultEnabled),
+        activationMode: mode,
+      };
+    })
+    .filter(Boolean);
 }
 
 function normalizeMcpItems(rawMcps, fallbackMcps = [], catalog = MCP_CATALOG) {
   const fallbackMap = new Map((fallbackMcps || []).map((item) => [String(item?.id || ""), item]));
-  const rawMap = new Map((rawMcps || []).map((item) => [String(item?.id || ""), item]));
-  const merged = [];
-  const seen = new Set();
-
-  for (const entry of catalog) {
-    const raw = rawMap.get(entry.id) || fallbackMap.get(entry.id) || null;
-    const permission = normalizeMcpPermission(raw?.permission, entry.permission);
-    merged.push({
-      id: entry.id,
-      name: String(raw?.name || entry.name || entry.id),
-      type: String(raw?.type || entry.type || "stdio"),
-      source: String(raw?.source || entry.source || "local"),
-      enabled: normalizeMcpEnabled(raw?.enabled, fallbackMap.get(entry.id)?.enabled ?? entry.defaultEnabled),
-      permission,
-      requiresExplicitUserApproval:
-        typeof raw?.requiresExplicitUserApproval === "boolean"
-          ? raw.requiresExplicitUserApproval
-          : raw?.requires_explicit_user_approval ?? fallbackMap.get(entry.id)?.requiresExplicitUserApproval ?? entry.requiresExplicitUserApproval,
-    });
-    seen.add(entry.id);
-  }
-
-  for (const [id, raw] of rawMap.entries()) {
-    if (!id || seen.has(id)) continue;
-    merged.push({
-      id,
-      name: String(raw?.name || id),
-      type: String(raw?.type || "stdio"),
-      source: String(raw?.source || "local"),
-      enabled: normalizeMcpEnabled(raw?.enabled, false),
-      permission: normalizeMcpPermission(raw?.permission, "readonly"),
-      requiresExplicitUserApproval:
-        typeof raw?.requiresExplicitUserApproval === "boolean" ? raw.requiresExplicitUserApproval : raw?.requires_explicit_user_approval ?? false,
-    });
-  }
-
-  return merged;
+  const catalogMap = new Map(createMcpCatalog(catalog).map((item) => [String(item?.id || ""), item]));
+  return (rawMcps || [])
+    .map((item) => {
+      const id = String(item?.id || "").trim();
+      if (!id) return null;
+      const fallback = fallbackMap.get(id) || {};
+      const catalogItem = catalogMap.get(id) || {};
+      return {
+        id,
+        name: String(item?.name || fallback.name || catalogItem.name || id),
+        type: String(item?.type || fallback.type || catalogItem.type || "stdio"),
+        source: String(item?.source || fallback.source || catalogItem.source || "local"),
+        enabled: normalizeMcpEnabled(item?.enabled, fallback.enabled ?? catalogItem.defaultEnabled),
+        permission: normalizeMcpPermission(item?.permission, fallback.permission || catalogItem.permission),
+        requiresExplicitUserApproval:
+          typeof item?.requiresExplicitUserApproval === "boolean"
+            ? item.requiresExplicitUserApproval
+            : item?.requires_explicit_user_approval ?? fallback.requiresExplicitUserApproval ?? catalogItem.requiresExplicitUserApproval,
+      };
+    })
+    .filter(Boolean);
 }
 
-function alignAgentProfileCollections(profile) {
+function alignAgentProfileCollections(profile, skillCatalog = createSkillCatalog(), mcpCatalog = createMcpCatalog()) {
   if (!profile || typeof profile !== "object") {
     return profile;
   }
   return {
     ...profile,
-    skills: normalizeSkillItems(profile.skills || [], [], createSkillCatalog()),
-    mcps: normalizeMcpItems(profile.mcps || [], [], createMcpCatalog()),
+    skills: normalizeSkillItems(profile.skills || [], profile.skills || [], skillCatalog),
+    mcps: normalizeMcpItems(profile.mcps || [], profile.mcps || [], mcpCatalog),
   };
 }
 
-function serializeSkillItems(skills) {
-  return normalizeSkillItems(skills || [], [], createSkillCatalog()).map((item) => ({
+function serializeSkillItems(skills, catalog = createSkillCatalog()) {
+  return normalizeSkillItems(skills || [], [], catalog).map((item) => ({
     id: String(item.id || ""),
     name: String(item.name || ""),
     description: String(item.description || ""),
@@ -640,8 +686,8 @@ function serializeSkillItems(skills) {
   }));
 }
 
-function serializeMcpItems(mcps) {
-  return normalizeMcpItems(mcps || [], [], createMcpCatalog()).map((item) => ({
+function serializeMcpItems(mcps, catalog = createMcpCatalog()) {
+  return normalizeMcpItems(mcps || [], [], catalog).map((item) => ({
     id: String(item.id || ""),
     name: String(item.name || ""),
     type: String(item.type || ""),
@@ -867,6 +913,13 @@ function createDefaultAgentProfiles() {
   ];
 }
 
+function realignAgentProfiles(store) {
+  const skillCatalog = Array.isArray(store.skillCatalog) ? store.skillCatalog : createSkillCatalog();
+  const mcpCatalog = Array.isArray(store.mcpCatalog) ? store.mcpCatalog : createMcpCatalog();
+  store.agentProfiles = (store.agentProfiles || []).map((profile) => alignAgentProfileCollections(profile, skillCatalog, mcpCatalog));
+  store.agentProfileDefaults = (store.agentProfileDefaults || []).map((profile) => alignAgentProfileCollections(profile, skillCatalog, mcpCatalog));
+}
+
 function normalizeCategoryPolicies(rawPolicies, fallbackPolicies = []) {
   const fallbackMap = new Map((fallbackPolicies || []).map((item) => [item.id, item]));
   const policies = [];
@@ -923,15 +976,27 @@ function normalizeCapabilityPermissions(rawCapabilities, fallbackCapabilities = 
   });
 }
 
-function normalizeAgentProfile(rawProfile, fallbackProfile) {
+function resolveProfileCollection(rawProfile, keys, fallbackItems = []) {
+  const source = rawProfile && typeof rawProfile === "object" ? rawProfile : {};
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      return Array.isArray(source[key]) ? source[key] : [];
+    }
+  }
+  return Array.isArray(fallbackItems) ? fallbackItems : [];
+}
+
+function normalizeAgentProfile(rawProfile, fallbackProfile, catalogs = {}) {
   const fallback = fallbackProfile || {};
   const raw = rawProfile || {};
+  const skillCatalog = Array.isArray(catalogs.skillCatalog) ? catalogs.skillCatalog : createSkillCatalog();
+  const mcpCatalog = Array.isArray(catalogs.mcpCatalog) ? catalogs.mcpCatalog : createMcpCatalog();
   const runtime = raw.runtime || raw.runtime_settings || {};
   const systemPrompt = raw.systemPrompt || raw.system_prompt || {};
   const commandPermissions = raw.commandPermissions || raw.command_permissions || {};
   const capabilityPermissions = raw.capabilityPermissions || raw.capability_permissions || {};
-  const skills = raw.skills || [];
-  const mcps = raw.mcps || raw.mcpServers || [];
+  const skills = resolveProfileCollection(raw, ["skills"], fallback.skills || []);
+  const mcps = resolveProfileCollection(raw, ["mcps", "mcpServers"], fallback.mcps || []);
 
   const normalized = {
     id: String(raw.id || fallback.id || raw.type || fallback.type || ""),
@@ -973,15 +1038,17 @@ function normalizeAgentProfile(rawProfile, fallbackProfile) {
       ),
     },
     capabilityPermissions: normalizeCapabilityPermissions(capabilityPermissions, fallback.capabilityPermissions || []),
-    skills: normalizeSkillItems(skills, fallback.skills || [], createSkillCatalog()),
-    mcps: normalizeMcpItems(mcps, fallback.mcps || [], createMcpCatalog()),
+    skills: normalizeSkillItems(skills, fallback.skills || [], skillCatalog),
+    mcps: normalizeMcpItems(mcps, fallback.mcps || [], mcpCatalog),
   };
 
-  return alignAgentProfileCollections(normalized);
+  return alignAgentProfileCollections(normalized, skillCatalog, mcpCatalog);
 }
 
 function serializeAgentProfile(profile, options = {}) {
-  const normalized = normalizeAgentProfile(profile, null);
+  const skillCatalog = Array.isArray(options.skillCatalog) ? options.skillCatalog : createSkillCatalog();
+  const mcpCatalog = Array.isArray(options.mcpCatalog) ? options.mcpCatalog : createMcpCatalog();
+  const normalized = normalizeAgentProfile(profile, null, { skillCatalog, mcpCatalog });
   return {
     id: String(normalized?.id || ""),
     name: String(normalized?.name || ""),
@@ -1015,8 +1082,8 @@ function serializeAgentProfile(profile, options = {}) {
     capabilityPermissions: Object.fromEntries(
       (normalized?.capabilityPermissions || []).map((item) => [String(item.id || ""), String(item.state || "enabled")]),
     ),
-    skills: serializeSkillItems(normalized?.skills || []),
-    mcps: serializeMcpItems(normalized?.mcps || []),
+    skills: serializeSkillItems(normalized?.skills || [], skillCatalog),
+    mcps: serializeMcpItems(normalized?.mcps || [], mcpCatalog),
     riskConfirmed: Boolean(options?.riskConfirmed),
   };
 }
@@ -1057,12 +1124,12 @@ function applyAgentProfileErrorState(store, error, fieldErrors) {
   store.agentProfileFieldErrors = normalizeAgentProfileFieldErrors(fieldErrors);
 }
 
-function cloneAgentProfilesForExport(profiles) {
-  return (profiles || []).map((profile) => normalizeAgentProfile(profile, null));
+function cloneAgentProfilesForExport(profiles, catalogs = {}) {
+  return (profiles || []).map((profile) => normalizeAgentProfile(profile, null, catalogs));
 }
 
-function buildAgentProfilesExportPayload(profiles, overrides = {}) {
-  const items = cloneAgentProfilesForExport(profiles);
+function buildAgentProfilesExportPayload(profiles, overrides = {}, catalogs = {}) {
+  const items = cloneAgentProfilesForExport(profiles, catalogs);
   return {
     version: 1,
     configVersion: overrides.configVersion || 1,
@@ -1085,8 +1152,10 @@ function parseAgentProfilesImportPayload(payload) {
   return [];
 }
 
-function normalizeImportedAgentProfiles(rawProfiles) {
+function normalizeImportedAgentProfiles(rawProfiles, catalogs = {}) {
   const defaults = createDefaultAgentProfiles();
+  const skillCatalog = Array.isArray(catalogs.skillCatalog) ? catalogs.skillCatalog : createSkillCatalog();
+  const mcpCatalog = Array.isArray(catalogs.mcpCatalog) ? catalogs.mcpCatalog : createMcpCatalog();
   const imported = Array.isArray(rawProfiles) ? rawProfiles.filter((item) => item && typeof item === "object") : [];
   const importedById = new Map();
   for (const profile of imported) {
@@ -1100,14 +1169,14 @@ function normalizeImportedAgentProfiles(rawProfiles) {
       importedById.get(fallbackProfile.id) ||
       importedById.get(fallbackProfile.type) ||
       null;
-    return normalizeAgentProfile(incoming || fallbackProfile, fallbackProfile);
+    return normalizeAgentProfile(incoming || fallbackProfile, fallbackProfile, { skillCatalog, mcpCatalog });
   });
 
   for (const profile of imported) {
     const key = String(profile.id || profile.type || "").trim();
     if (!key) continue;
     if (merged.some((item) => item.id === key || item.type === key)) continue;
-    merged.push(normalizeAgentProfile(profile, null));
+    merged.push(normalizeAgentProfile(profile, null, { skillCatalog, mcpCatalog }));
   }
 
   return merged;
@@ -1572,6 +1641,110 @@ export const useAppStore = defineStore("app", {
         this.settings = { ...this.settings, ...newSettings }; // Mock fallback
       }
     },
+    async fetchSkillCatalog() {
+      try {
+        const response = await fetch("/api/v1/agent-skills", { credentials: "include" });
+        if (!response.ok) {
+          throw new Error("加载 Skills catalog 失败");
+        }
+        const data = await response.json();
+        this.skillCatalog = normalizeSkillCatalogEntries(data?.items || data?.skills || []);
+        realignAgentProfiles(this);
+        return this.skillCatalog;
+      } catch (e) {
+        console.error("Failed to fetch skill catalog:", e);
+        this.skillCatalog = createSkillCatalog();
+        realignAgentProfiles(this);
+        return this.skillCatalog;
+      }
+    },
+    async saveSkillCatalogItem(item) {
+      const normalized = normalizeSkillCatalogEntry(item || {});
+      const targetId = String(normalized.id || "");
+      if (!targetId) {
+        throw new Error("skill id is required");
+      }
+      const response = await fetch(`/api/v1/agent-skills/${encodeURIComponent(targetId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(normalized),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "保存 Skill 失败");
+      }
+      this.skillCatalog = normalizeSkillCatalogEntries(data?.items || []);
+      await this.fetchAgentProfiles();
+      return data?.item || normalized;
+    },
+    async deleteSkillCatalogItem(skillId) {
+      const targetId = String(skillId || "").trim();
+      if (!targetId) return false;
+      const response = await fetch(`/api/v1/agent-skills/${encodeURIComponent(targetId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "删除 Skill 失败");
+      }
+      this.skillCatalog = normalizeSkillCatalogEntries(data?.items || []);
+      await this.fetchAgentProfiles();
+      return true;
+    },
+    async fetchMcpCatalog() {
+      try {
+        const response = await fetch("/api/v1/agent-mcps", { credentials: "include" });
+        if (!response.ok) {
+          throw new Error("加载 MCP catalog 失败");
+        }
+        const data = await response.json();
+        this.mcpCatalog = normalizeMcpCatalogEntries(data?.items || data?.mcps || []);
+        realignAgentProfiles(this);
+        return this.mcpCatalog;
+      } catch (e) {
+        console.error("Failed to fetch mcp catalog:", e);
+        this.mcpCatalog = createMcpCatalog();
+        realignAgentProfiles(this);
+        return this.mcpCatalog;
+      }
+    },
+    async saveMcpCatalogItem(item) {
+      const normalized = normalizeMcpCatalogEntry(item || {});
+      const targetId = String(normalized.id || "");
+      if (!targetId) {
+        throw new Error("mcp id is required");
+      }
+      const response = await fetch(`/api/v1/agent-mcps/${encodeURIComponent(targetId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(normalized),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "保存 MCP 失败");
+      }
+      this.mcpCatalog = normalizeMcpCatalogEntries(data?.items || []);
+      await this.fetchAgentProfiles();
+      return data?.item || normalized;
+    },
+    async deleteMcpCatalogItem(mcpId) {
+      const targetId = String(mcpId || "").trim();
+      if (!targetId) return false;
+      const response = await fetch(`/api/v1/agent-mcps/${encodeURIComponent(targetId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "删除 MCP 失败");
+      }
+      this.mcpCatalog = normalizeMcpCatalogEntries(data?.items || []);
+      await this.fetchAgentProfiles();
+      return true;
+    },
     async fetchAgentProfiles() {
       this.agentProfilesLoading = true;
       clearAgentProfileErrorState(this);
@@ -1593,6 +1766,18 @@ export const useAppStore = defineStore("app", {
 
         const listPayload = await tryLoad("/api/v1/agent-profiles");
         const singlePayload = listPayload ? null : await tryLoad("/api/v1/agent-profile");
+        const remoteSkillCatalog = Array.isArray(listPayload?.skillCatalog) ? normalizeSkillCatalogEntries(listPayload.skillCatalog) : null;
+        const remoteMcpCatalog = Array.isArray(listPayload?.mcpCatalog) ? normalizeMcpCatalogEntries(listPayload.mcpCatalog) : null;
+        if (remoteSkillCatalog) {
+          this.skillCatalog = remoteSkillCatalog;
+        }
+        if (remoteMcpCatalog) {
+          this.mcpCatalog = remoteMcpCatalog;
+        }
+        const catalogs = {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        };
 
         const ingestPayload = (payload) => {
           if (!payload) return;
@@ -1628,18 +1813,20 @@ export const useAppStore = defineStore("app", {
             return normalizeAgentProfile(
               overrides.get(fallbackProfile.id) || overrides.get(fallbackProfile.type) || null,
               fallbackProfile,
+              catalogs,
             );
           });
           for (const profile of remoteProfiles) {
             const key = String(profile?.id || profile?.type || "");
             if (!key) continue;
             if (mergedProfiles.some((item) => item.id === key || item.type === profile?.type)) continue;
-            mergedProfiles.push(normalizeAgentProfile(profile, null));
+            mergedProfiles.push(normalizeAgentProfile(profile, null, catalogs));
           }
           this.agentProfiles = mergedProfiles;
         } else {
-          this.agentProfiles = defaults.map((profile) => alignAgentProfileCollections(profile));
+          this.agentProfiles = defaults.map((profile) => alignAgentProfileCollections(profile, catalogs.skillCatalog, catalogs.mcpCatalog));
         }
+        realignAgentProfiles(this);
 
         if (!this.agentProfiles.some((profile) => profile.id === this.activeAgentProfileId)) {
           this.activeAgentProfileId = this.agentProfiles[0]?.id || "main-agent";
@@ -1661,7 +1848,7 @@ export const useAppStore = defineStore("app", {
       return true;
     },
     resetAgentProfiles() {
-      this.agentProfiles = createDefaultAgentProfiles().map((profile) => alignAgentProfileCollections(profile));
+      this.agentProfiles = createDefaultAgentProfiles().map((profile) => alignAgentProfileCollections(profile, this.skillCatalog, this.mcpCatalog));
       this.activeAgentProfileId = "main-agent";
       clearAgentProfileErrorState(this);
       this.agentProfilePreview = null;
@@ -1678,15 +1865,24 @@ export const useAppStore = defineStore("app", {
         if (!response.ok) {
           throw new Error(data?.error || "导出 Agent Profiles 失败");
         }
-        const exportedProfiles = normalizeImportedAgentProfiles(parseAgentProfilesImportPayload(data));
+        const exportedProfiles = normalizeImportedAgentProfiles(parseAgentProfilesImportPayload(data), {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
         payload = buildAgentProfilesExportPayload(exportedProfiles, {
           configVersion: Number(data?.configVersion || data?.version || 1),
           exportedAt: data?.exportedAt,
           exportedBy: data?.exportedBy,
+        }, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
         });
       } catch (e) {
         console.error("Failed to export agent profiles from server, using local snapshot:", e);
-        payload = buildAgentProfilesExportPayload(this.agentProfiles);
+        payload = buildAgentProfilesExportPayload(this.agentProfiles, {}, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
       }
       return {
         filename: `agent-profiles-${payload.exportedAt.replace(/[:.]/g, "-")}.json`,
@@ -1715,7 +1911,10 @@ export const useAppStore = defineStore("app", {
           };
         }
         const importedProfiles = parseAgentProfilesImportPayload(data);
-        const mergedProfiles = normalizeImportedAgentProfiles(importedProfiles);
+        const mergedProfiles = normalizeImportedAgentProfiles(importedProfiles, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
         if (!mergedProfiles.length) {
           throw new Error("服务端未返回可导入的 profiles");
         }
@@ -1749,7 +1948,11 @@ export const useAppStore = defineStore("app", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify(serializeAgentProfile(profile, options)),
+          body: JSON.stringify(serializeAgentProfile(profile, {
+            ...options,
+            skillCatalog: this.skillCatalog,
+            mcpCatalog: this.mcpCatalog,
+          })),
         });
         const data = await response.json();
         if (!response.ok) {
@@ -1757,7 +1960,10 @@ export const useAppStore = defineStore("app", {
           return false;
         }
         const fallback = createDefaultAgentProfiles().find((item) => item.id === data.id) || null;
-        const normalized = normalizeAgentProfile(data, fallback);
+        const normalized = normalizeAgentProfile(data, fallback, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
         const index = this.agentProfiles.findIndex((item) => item.id === normalized.id);
         if (index >= 0) {
           this.agentProfiles[index] = normalized;
@@ -1793,7 +1999,10 @@ export const useAppStore = defineStore("app", {
           return false;
         }
         const fallback = createDefaultAgentProfiles().find((item) => item.id === nextId) || null;
-        const normalized = normalizeAgentProfile(data, fallback);
+        const normalized = normalizeAgentProfile(data, fallback, {
+          skillCatalog: this.skillCatalog,
+          mcpCatalog: this.mcpCatalog,
+        });
         const index = this.agentProfiles.findIndex((item) => item.id === normalized.id);
         if (index >= 0) {
           this.agentProfiles[index] = normalized;

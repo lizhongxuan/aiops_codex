@@ -113,26 +113,26 @@ function emitRefresh(payload) {
 .protocol-turn-group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .protocol-turn-final {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 2px;
+  gap: 8px;
+  margin-top: 1px;
 }
 
 .protocol-turn-bundles,
 .protocol-turn-actions {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .protocol-final-divider {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .protocol-final-divider-line {
@@ -143,7 +143,7 @@ function emitRefresh(payload) {
 
 .protocol-final-divider-label {
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
 }

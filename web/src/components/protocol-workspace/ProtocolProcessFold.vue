@@ -95,14 +95,14 @@ function selectItem(item) {
 .protocol-process-fold {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 6px 0 8px;
+  gap: 8px;
+  margin: 4px 0 7px;
 }
 
 .protocol-process-divider {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .divider-line {
@@ -114,14 +114,14 @@ function selectItem(item) {
 .protocol-process-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   max-width: 100%;
-  padding: 5px 12px;
+  padding: 4px 11px;
   border: 1px solid rgba(226, 232, 240, 0.92);
   border-radius: 999px;
   background: rgba(248, 250, 252, 0.96);
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.4;
   cursor: pointer;
   transition: background 0.18s ease, border-color 0.18s ease;
@@ -157,8 +157,8 @@ function selectItem(item) {
 .protocol-process-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 10px 12px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: 14px;
   background: rgba(248, 250, 252, 0.74);
@@ -166,21 +166,21 @@ function selectItem(item) {
 
 .protocol-process-live {
   color: #64748b;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.48;
 }
 
 .protocol-process-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .protocol-process-item {
-  padding-left: 12px;
+  padding-left: 10px;
   border-left: 2px solid rgba(203, 213, 225, 0.92);
 }
 
@@ -199,7 +199,7 @@ function selectItem(item) {
 .protocol-process-item-button {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   width: 100%;
   padding: 0;
   border: 0;
@@ -212,27 +212,27 @@ function selectItem(item) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .protocol-process-item-text {
   color: #0f172a;
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12.25px;
+  line-height: 1.48;
   white-space: pre-wrap;
 }
 
 .protocol-process-item-meta {
   color: #94a3b8;
-  font-size: 11.5px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .protocol-process-item-link {
   color: #2563eb;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
-  line-height: 1.45;
+  line-height: 1.4;
   white-space: nowrap;
 }
 </style>

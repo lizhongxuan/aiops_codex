@@ -150,12 +150,14 @@ type AgentCapabilityPermissions struct {
 }
 
 type AgentSkill struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Description    string `json:"description,omitempty"`
-	Source         string `json:"source,omitempty"`
-	Enabled        bool   `json:"enabled"`
-	ActivationMode string `json:"activationMode,omitempty"`
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Description           string `json:"description,omitempty"`
+	Source                string `json:"source,omitempty"`
+	Enabled               bool   `json:"enabled"`
+	ActivationMode        string `json:"activationMode,omitempty"`
+	DefaultEnabled        bool   `json:"defaultEnabled,omitempty"`
+	DefaultActivationMode string `json:"defaultActivationMode,omitempty"`
 }
 
 type AgentMCP struct {
@@ -164,6 +166,7 @@ type AgentMCP struct {
 	Type                         string `json:"type,omitempty"`
 	Source                       string `json:"source,omitempty"`
 	Enabled                      bool   `json:"enabled"`
+	DefaultEnabled               bool   `json:"defaultEnabled,omitempty"`
 	Permission                   string `json:"permission,omitempty"`
 	RequiresExplicitUserApproval bool   `json:"requiresExplicitUserApproval,omitempty"`
 }
@@ -620,39 +623,49 @@ func DefaultAgentProfiles() []AgentProfile {
 func SupportedAgentSkills() []AgentSkill {
 	return []AgentSkill{
 		{
-			ID:             "ops-triage",
-			Name:           "Ops Triage",
-			Description:    "快速归类问题并给出最小干预路径。",
-			Source:         "built-in",
-			ActivationMode: AgentSkillActivationDefault,
+			ID:                    "ops-triage",
+			Name:                  "Ops Triage",
+			Description:           "快速归类问题并给出最小干预路径。",
+			Source:                "built-in",
+			DefaultEnabled:        true,
+			ActivationMode:        AgentSkillActivationDefault,
+			DefaultActivationMode: AgentSkillActivationDefault,
 		},
 		{
-			ID:             "incident-summary",
-			Name:           "Incident Summary",
-			Description:    "把诊断过程整理成可交付摘要。",
-			Source:         "local",
-			ActivationMode: AgentSkillActivationDefault,
+			ID:                    "incident-summary",
+			Name:                  "Incident Summary",
+			Description:           "把诊断过程整理成可交付摘要。",
+			Source:                "local",
+			DefaultEnabled:        true,
+			ActivationMode:        AgentSkillActivationDefault,
+			DefaultActivationMode: AgentSkillActivationDefault,
 		},
 		{
-			ID:             "safe-change-review",
-			Name:           "Safe Change Review",
-			Description:    "在执行前做变更影响检查。",
-			Source:         "built-in",
-			ActivationMode: AgentSkillActivationExplicit,
+			ID:                    "safe-change-review",
+			Name:                  "Safe Change Review",
+			Description:           "在执行前做变更影响检查。",
+			Source:                "built-in",
+			DefaultEnabled:        false,
+			ActivationMode:        AgentSkillActivationExplicit,
+			DefaultActivationMode: AgentSkillActivationExplicit,
 		},
 		{
-			ID:             "host-diagnostics",
-			Name:           "Host Diagnostics",
-			Description:    "收集主机健康与日志摘要。",
-			Source:         "local",
-			ActivationMode: AgentSkillActivationDefault,
+			ID:                    "host-diagnostics",
+			Name:                  "Host Diagnostics",
+			Description:           "收集主机健康与日志摘要。",
+			Source:                "local",
+			DefaultEnabled:        true,
+			ActivationMode:        AgentSkillActivationDefault,
+			DefaultActivationMode: AgentSkillActivationDefault,
 		},
 		{
-			ID:             "host-change-review",
-			Name:           "Host Change Review",
-			Description:    "对主机变更做安全复核。",
-			Source:         "built-in",
-			ActivationMode: AgentSkillActivationExplicit,
+			ID:                    "host-change-review",
+			Name:                  "Host Change Review",
+			Description:           "对主机变更做安全复核。",
+			Source:                "built-in",
+			DefaultEnabled:        false,
+			ActivationMode:        AgentSkillActivationExplicit,
+			DefaultActivationMode: AgentSkillActivationExplicit,
 		},
 	}
 }
@@ -660,17 +673,19 @@ func SupportedAgentSkills() []AgentSkill {
 func SupportedAgentMCPs() []AgentMCP {
 	return []AgentMCP{
 		{
-			ID:         "filesystem",
-			Name:       "Filesystem MCP",
-			Type:       "stdio",
-			Source:     "built-in",
-			Permission: AgentMCPPermissionReadonly,
+			ID:             "filesystem",
+			Name:           "Filesystem MCP",
+			Type:           "stdio",
+			Source:         "built-in",
+			DefaultEnabled: true,
+			Permission:     AgentMCPPermissionReadonly,
 		},
 		{
 			ID:                           "docs",
 			Name:                         "Docs MCP",
 			Type:                         "http",
 			Source:                       "local",
+			DefaultEnabled:               true,
 			Permission:                   AgentMCPPermissionReadonly,
 			RequiresExplicitUserApproval: true,
 		},
@@ -679,21 +694,24 @@ func SupportedAgentMCPs() []AgentMCP {
 			Name:                         "Metrics MCP",
 			Type:                         "http",
 			Source:                       "built-in",
+			DefaultEnabled:               false,
 			Permission:                   AgentMCPPermissionReadwrite,
 			RequiresExplicitUserApproval: true,
 		},
 		{
-			ID:         "host-files",
-			Name:       "Host Files MCP",
-			Type:       "stdio",
-			Source:     "built-in",
-			Permission: AgentMCPPermissionReadonly,
+			ID:             "host-files",
+			Name:           "Host Files MCP",
+			Type:           "stdio",
+			Source:         "built-in",
+			DefaultEnabled: true,
+			Permission:     AgentMCPPermissionReadonly,
 		},
 		{
 			ID:                           "host-logs",
 			Name:                         "Host Logs MCP",
 			Type:                         "http",
 			Source:                       "local",
+			DefaultEnabled:               true,
 			Permission:                   AgentMCPPermissionReadonly,
 			RequiresExplicitUserApproval: true,
 		},

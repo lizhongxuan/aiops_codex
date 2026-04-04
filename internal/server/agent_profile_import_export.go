@@ -81,7 +81,7 @@ func (a *App) handleAgentProfilesImport(w http.ResponseWriter, r *http.Request, 
 		}
 		incoming.ID = profileID
 		incoming = model.CompleteAgentProfile(incoming)
-		if err := validateAgentProfile(incoming); err != nil {
+		if err := a.validateAgentProfile(incoming); err != nil {
 			a.writeAgentProfileError(w, http.StatusBadRequest, err)
 			return
 		}

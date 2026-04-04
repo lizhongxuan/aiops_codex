@@ -35,6 +35,15 @@ func newOrchestratorTestApp(t *testing.T) *App {
 	return app
 }
 
+func containsStringValue(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestHandleSessionsCanCreateWorkspaceSession(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	handler := app.withBrowserSession(app.handleSessions)
@@ -321,6 +330,160 @@ func TestWorkspaceReadonlyQuestionUsesSelectedRemoteHostDirectly(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRouteThreadOnlyExposesAIServerStateTool(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+
+	spec := app.buildWorkspaceRouteThreadStartSpec(context.Background(), "workspace-route-tools", "host-1")
+
+	var toolNames []string
+	for _, tool := range spec.DynamicTools {
+		toolNames = append(toolNames, strings.TrimSpace(getStringAny(tool, "name")))
+	}
+	if len(toolNames) != 1 || toolNames[0] != "query_ai_server_state" {
+		t.Fatalf("expected only query_ai_server_state on route thread, got %#v", toolNames)
+	}
+}
+
+func TestWorkspaceRouteCompletionStartsReadonlyTurnForTargetHost(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+
+	var threadStartParams map[string]any
+	var turnStartParams map[string]any
+	app.codexRequestFunc = func(_ context.Context, method string, params any, result any) error {
+		payload := map[string]any{}
+		switch method {
+		case "thread/start":
+			threadStartParams, _ = params.(map[string]any)
+			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-readonly-target"}}
+		case "turn/start":
+			turnStartParams, _ = params.(map[string]any)
+			payload = map[string]any{"turnId": "turn-workspace-readonly-target"}
+		}
+		content, _ := json.Marshal(payload)
+		return json.Unmarshal(content, result)
+	}
+
+	workspaceSessionID := "workspace-route-host-readonly"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetSelectedHost(workspaceSessionID, "host-1")
+	app.store.SetThread(workspaceSessionID, "thread-workspace-route-old")
+	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash("host-1"))
+
+	now := model.NowString()
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "msg-user-host-readonly",
+		Type:      "UserMessageCard",
+		Role:      "user",
+		Text:      "看下 host-2 的 CPU",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "msg-assistant-host-readonly",
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      "```json\n{\"route\":\"host_readonly\",\"reason\":\"single-host readonly check\",\"targetHostId\":\"host-2\",\"needsPlan\":false,\"needsWorker\":false}\n```\n我先切到目标主机做只读检查。",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
+
+	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
+		t.Fatalf("expected no mission for host_readonly route, got %#v", mission)
+	}
+	session := app.store.Session(workspaceSessionID)
+	if session == nil {
+		t.Fatalf("expected workspace session")
+	}
+	if session.SelectedHostID != "host-2" {
+		t.Fatalf("expected selected host to switch to host-2, got %q", session.SelectedHostID)
+	}
+	if session.ThreadID != "thread-workspace-readonly-target" {
+		t.Fatalf("expected readonly thread to replace route thread, got %q", session.ThreadID)
+	}
+	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceReadonlyThreadConfigHash("host-2") {
+		t.Fatalf("expected readonly thread config hash, got %q", got)
+	}
+	if threadStartParams == nil {
+		t.Fatalf("expected readonly thread to start")
+	}
+	if turnStartParams == nil {
+		t.Fatalf("expected readonly turn to start")
+	}
+
+	dynamicTools, ok := threadStartParams["dynamicTools"].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected dynamicTools in thread start params, got %#v", threadStartParams["dynamicTools"])
+	}
+	var threadToolNames []string
+	for _, tool := range dynamicTools {
+		threadToolNames = append(threadToolNames, strings.TrimSpace(getStringAny(tool, "name")))
+	}
+	if !containsStringValue(threadToolNames, "query_ai_server_state") {
+		t.Fatalf("expected readonly thread to expose query_ai_server_state, got %#v", threadToolNames)
+	}
+	if !containsStringValue(threadToolNames, "execute_readonly_query") {
+		t.Fatalf("expected readonly thread to expose readonly remote tools, got %#v", threadToolNames)
+	}
+	if containsStringValue(threadToolNames, "orchestrator_dispatch_tasks") {
+		t.Fatalf("did not expect readonly thread to expose orchestrator dispatch, got %#v", threadToolNames)
+	}
+	if got := getStringAny(turnStartParams, "threadId", "thread_id"); got != "thread-workspace-readonly-target" {
+		t.Fatalf("expected readonly turn to start on readonly thread, got %q", got)
+	}
+}
+
+func TestWorkspaceRouteTurnResetsReadonlyThreadBinding(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
+		payload := map[string]any{}
+		switch method {
+		case "thread/start":
+			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-route-fresh"}}
+		case "turn/start":
+			payload = map[string]any{"turnId": "turn-workspace-route-fresh"}
+		}
+		content, _ := json.Marshal(payload)
+		return json.Unmarshal(content, result)
+	}
+
+	workspaceSessionID := "workspace-readonly-then-route"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetSelectedHost(workspaceSessionID, "host-1")
+	app.store.SetThread(workspaceSessionID, "thread-workspace-readonly-old")
+	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceReadonlyThreadConfigHash("host-1"))
+
+	if err := app.startWorkspaceRouteTurn(context.Background(), workspaceSessionID, "host-1", "继续处理后续任务"); err != nil {
+		t.Fatalf("start route turn after readonly: %v", err)
+	}
+
+	session := app.store.Session(workspaceSessionID)
+	if session == nil {
+		t.Fatalf("expected workspace session")
+	}
+	if session.ThreadID != "thread-workspace-route-fresh" {
+		t.Fatalf("expected readonly thread binding to be replaced, got %q", session.ThreadID)
+	}
+	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceRouteThreadConfigHash("host-1") {
+		t.Fatalf("expected route thread config hash after reset, got %q", got)
+	}
+}
+
 func TestWorkspaceSimpleConversationRepliesDirectlyWithoutMission(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
@@ -400,6 +563,42 @@ func TestWorkspaceRouteConversationIgnoresPlanUpdatedEvents(t *testing.T) {
 	for _, card := range session.Cards {
 		if card.Type == "PlanCard" {
 			t.Fatalf("expected route workspace conversation to ignore plan card, got %#v", card)
+		}
+	}
+}
+
+func TestWorkspaceReadonlyConversationIgnoresPlanUpdatedEvents(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	workspaceSessionID := "workspace-readonly-plan-ignore"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetThread(workspaceSessionID, "thread-workspace-readonly-ignore")
+	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceReadonlyThreadConfigHash("host-1"))
+
+	params, err := json.Marshal(map[string]any{
+		"threadId": "thread-workspace-readonly-ignore",
+		"turnId":   "turn-workspace-readonly-ignore",
+		"plan": []map[string]any{
+			{"step": "检查 host-1", "status": "completed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	app.handleCodexNotification("turn/plan/updated", params)
+
+	session := app.store.Session(workspaceSessionID)
+	if session == nil {
+		t.Fatalf("expected workspace session")
+	}
+	for _, card := range session.Cards {
+		if card.Type == "PlanCard" {
+			t.Fatalf("expected readonly workspace conversation to ignore plan card, got %#v", card)
 		}
 	}
 }

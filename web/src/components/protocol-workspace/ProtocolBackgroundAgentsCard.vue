@@ -9,11 +9,11 @@ defineOptions({
 const props = defineProps({
   title: {
     type: String,
-    default: "Background workers",
+    default: "后台 Agent",
   },
   subtitle: {
     type: String,
-    default: "点击查看正在运行的 host-agent",
+    default: "点击查看对应 agent 详情",
   },
   agents: {
     type: Array,
@@ -81,7 +81,7 @@ function toggleExpanded() {
       <div class="background-summary-copy">
         <div class="background-summary-title">
           <BotIcon size="13" />
-          <span>{{ normalizedAgents.length }} background agents</span>
+          <span>{{ normalizedAgents.length }} 个后台 Agent</span>
         </div>
       </div>
       <component :is="expanded ? ChevronUpIcon : ChevronDownIcon" size="14" />
@@ -100,7 +100,7 @@ function toggleExpanded() {
           <span class="agent-separator">-</span>
           <span>{{ agent.detail || agent.meta || agent.statusLabel }}</span>
         </div>
-        <span class="background-open">Open</span>
+        <span class="background-open">详情</span>
       </button>
     </div>
 

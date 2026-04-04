@@ -485,6 +485,12 @@ func TestAgentProfilesBackfillDefaultsOnLoad(t *testing.T) {
 	if hostProfile.Name != "Host Agent Default" || hostProfile.Type != string(model.AgentProfileTypeHostAgentDefault) {
 		t.Fatalf("unexpected host-agent-default profile: %#v", hostProfile)
 	}
+	if len(st.SkillCatalog()) == 0 {
+		t.Fatalf("expected default skill catalog to be backfilled")
+	}
+	if len(st.MCPCatalog()) == 0 {
+		t.Fatalf("expected default mcp catalog to be backfilled")
+	}
 }
 
 func TestAgentProfileUpsertPersistsAndReloads(t *testing.T) {
@@ -612,6 +618,74 @@ func TestResetAgentProfileRestoresDefaultProfile(t *testing.T) {
 	}
 	if profile.SystemPrompt.Content == "" {
 		t.Fatalf("expected restored profile to have system prompt content")
+	}
+}
+
+func TestCatalogDeleteRemovesProfileReferencesAndPersists(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	st := New()
+	st.SetStatePath(statePath)
+	st.UpsertSkillCatalogItem(model.AgentSkill{
+		ID:                    "custom-skill",
+		Name:                  "Custom Skill",
+		Source:                "local",
+		DefaultEnabled:        false,
+		DefaultActivationMode: model.AgentSkillActivationExplicit,
+	})
+	st.UpsertMCPCatalogItem(model.AgentMCP{
+		ID:             "custom-mcp",
+		Name:           "Custom MCP",
+		Type:           "http",
+		Source:         "local",
+		DefaultEnabled: false,
+		Permission:     model.AgentMCPPermissionReadonly,
+	})
+	profile := model.DefaultAgentProfile(string(model.AgentProfileTypeMainAgent))
+	profile.Skills = append(profile.Skills, model.AgentSkill{
+		ID:             "custom-skill",
+		Name:           "Custom Skill",
+		Enabled:        true,
+		ActivationMode: model.AgentSkillActivationExplicit,
+	})
+	profile.MCPs = append(profile.MCPs, model.AgentMCP{
+		ID:         "custom-mcp",
+		Name:       "Custom MCP",
+		Enabled:    true,
+		Permission: model.AgentMCPPermissionReadonly,
+	})
+	st.UpsertAgentProfile(profile)
+
+	st.DeleteSkillCatalogItem("custom-skill")
+	st.DeleteMCPCatalogItem("custom-mcp")
+
+	updated, ok := st.AgentProfile(string(model.AgentProfileTypeMainAgent))
+	if !ok {
+		t.Fatalf("expected profile to exist")
+	}
+	if containsSkill(updated.Skills, "custom-skill") {
+		t.Fatalf("expected deleted skill binding to be removed, got %#v", updated.Skills)
+	}
+	if containsMCP(updated.MCPs, "custom-mcp") {
+		t.Fatalf("expected deleted mcp binding to be removed, got %#v", updated.MCPs)
+	}
+	if err := st.SaveStableState(statePath); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStatePath(statePath)
+	if err := reloaded.LoadStableState(statePath); err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	for _, item := range reloaded.SkillCatalog() {
+		if item.ID == "custom-skill" {
+			t.Fatalf("expected deleted skill catalog item to stay removed")
+		}
+	}
+	for _, item := range reloaded.MCPCatalog() {
+		if item.ID == "custom-mcp" {
+			t.Fatalf("expected deleted mcp catalog item to stay removed")
+		}
 	}
 }
 

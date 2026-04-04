@@ -536,11 +536,37 @@ describe("ProtocolWorkspacePage", () => {
     const thread = wrapper.get(".protocol-turn-stream");
     const backgroundCard = wrapper.get(".protocol-composer-widgets .protocol-background-agents-card");
 
-    expect(backgroundCard.text()).toContain("background agents");
+    expect(backgroundCard.text()).toContain("后台 Agent");
     expect(backgroundCard.text()).toContain("web-01");
     expect(backgroundCard.text()).toContain("web-02");
     expect(thread.text()).not.toContain("采集错误日志并回传摘要");
     expect(thread.text()).not.toContain("执行 systemctl reload nginx");
+  });
+
+  it("opens an agent-centric detail modal when a background agent is selected", async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const backgroundCard = wrapper.get(".protocol-composer-widgets .protocol-background-agents-card");
+    const firstAgent = backgroundCard.get(".background-agent");
+    await firstAgent.trigger("click");
+    await nextTick();
+
+    expect(wrapper.text()).toContain("BACKGROUND AGENT");
+    expect(wrapper.text()).toContain("分配任务信息");
+    expect(wrapper.text()).toContain("与 AI 的对话信息");
+    expect(wrapper.text()).toContain("审核信息");
+    expect(wrapper.text()).toContain("当前状态 / 最近活动");
+    const detailText = wrapper.text();
+    expect(
+      detailText.includes("采集 nginx 错误日志") ||
+        detailText.includes("执行 systemctl reload nginx"),
+    ).toBe(true);
+    expect(detailText.includes("Host analysis") || detailText.includes("approval required before reload")).toBe(true);
+    expect(detailText.includes("执行中") || detailText.includes("等待审批") || detailText.includes("waiting_approval")).toBe(true);
+    expect(wrapper.text()).not.toContain("执行详情 · agent-local");
+    expect(wrapper.text()).not.toContain("执行详情 · web-01");
+    expect(wrapper.text()).not.toContain("命令执行详情 · web-01");
   });
 
   it("renders pending choice cards above the protocol composer and submits structured follow-up", async () => {

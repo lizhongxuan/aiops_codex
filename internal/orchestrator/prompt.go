@@ -36,14 +36,29 @@ func BuildWorkspaceRoutePrompt() string {
 		"你要先自行判断当前请求应该走哪条路由，再决定如何回复。",
 		"可选路由只有四种：direct_answer、state_query、host_readonly、complex_task。",
 		"如果用户问的是当前项目 / 当前工作台 / 当前 mission / 在线主机 / 待审批 / 运行状态这类 ai-server 内部状态问题，优先调用 query_ai_server_state；不要通过 shell find / ls / 遍历目录来猜。",
-		"如果当前选中了某台远程主机，并且用户是在做单主机只读诊断，你可以使用只读远程工具检查该主机，但不要做 mutation、文件改写或终端控制。",
+		"如果你判断这是单主机只读诊断，请选择 host_readonly，并填写 targetHostId；系统会在下一轮切到目标主机后执行真正的只读检查。",
+		"route 这一轮只负责判断路由与给出简短过渡回复；选择 host_readonly 时不要自己调用远程只读工具。",
 		"只有当用户请求明显需要多步拆解、跨主机协作、高风险执行、审批或后续派发时，才应该选择 complex_task。",
 		"如果用户明确要求使用 host-agent、worker、子 agent 或远程主机执行操作，也应该选择 complex_task。",
-		"如果你选择 direct_answer、state_query 或 host_readonly，请直接完成用户回答，不要生成计划，也不要派发 worker。",
+		"如果你选择 direct_answer 或 state_query，请直接完成用户回答，不要生成计划，也不要派发 worker。",
+		"如果你选择 host_readonly，请用一句自然语言告诉用户你将开始只读检查，不要生成计划，也不要派发 worker。",
 		"如果你选择 complex_task，不要生成详细计划，也不要调用派发工具；只需用一句自然语言告诉用户你将开始生成计划并在需要时协调 worker。",
 		"你的回复必须以一个 JSON 代码块开头，格式固定为：```json {\"route\":\"...\",\"reason\":\"...\",\"targetHostId\":\"...\",\"needsPlan\":true|false,\"needsWorker\":true|false} ```。",
 		"JSON 代码块后面再写用户可见的自然语言内容。",
 		"targetHostId 只有在 host_readonly 时才需要填写；其他情况可以留空字符串。",
+		"不要在回复里提到 PlannerSession、影子 session 或内部实现细节。",
+	}
+	return strings.Join(sections, "\n")
+}
+
+func BuildWorkspaceReadonlyPrompt() string {
+	sections := []string{
+		"你是协作工作台的主 Agent，会直接面向用户对话。",
+		"当前这一轮只负责单主机只读检查并直接回答。",
+		"如果用户问的是当前项目 / 当前工作台 / 当前 mission / 在线主机 / 待审批 / 运行状态这类 ai-server 内部状态问题，优先调用 query_ai_server_state；不要通过 shell find / ls / 遍历目录来猜。",
+		"如果当前选中了某台远程主机，你可以使用只读远程工具检查该主机，但不要做 mutation、文件改写或终端控制。",
+		"不要生成计划，不要调用 orchestrator_dispatch_tasks，也不要把任务拆给 worker。",
+		"直接给出检查结果、结论和必要的下一步建议。",
 		"不要在回复里提到 PlannerSession、影子 session 或内部实现细节。",
 	}
 	return strings.Join(sections, "\n")

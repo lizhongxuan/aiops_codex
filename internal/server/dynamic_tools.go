@@ -275,25 +275,7 @@ func (a *App) remoteDynamicTools() []map[string]any {
 
 func (a *App) workspaceDynamicTools(sessionID string) []map[string]any {
 	tools := []map[string]any{
-		{
-			"name":        "query_ai_server_state",
-			"description": "Read the current ai-server workspace/session/host state for questions about online hosts, mission progress, pending approvals, runtime phase, or other project-local status. Use this before any filesystem inspection when the user asks about current state.",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"focus": map[string]any{
-						"type":        "string",
-						"enum":        []string{"summary", "hosts", "runtime", "approvals", "plan", "all"},
-						"description": "Optional area to emphasize in the returned ai-server state snapshot.",
-					},
-					"reason": map[string]any{
-						"type":        "string",
-						"description": "Short explanation of what state you are checking for the user.",
-					},
-				},
-				"additionalProperties": false,
-			},
-		},
+		workspaceStateQueryDynamicTool(),
 		{
 			"name":        "orchestrator_dispatch_tasks",
 			"description": "Submit structured host tasks to the ai-server orchestrator from the main workspace session. Use this after you finish planning and have per-host execution tasks ready.",
@@ -362,27 +344,37 @@ func (a *App) workspaceDynamicTools(sessionID string) []map[string]any {
 	return tools
 }
 
+func workspaceStateQueryDynamicTool() map[string]any {
+	return map[string]any{
+		"name":        "query_ai_server_state",
+		"description": "Read the current ai-server workspace/session/host state for questions about online hosts, mission progress, pending approvals, runtime phase, or other project-local status. Use this before any filesystem inspection when the user asks about current state.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"focus": map[string]any{
+					"type":        "string",
+					"enum":        []string{"summary", "hosts", "runtime", "approvals", "plan", "all"},
+					"description": "Optional area to emphasize in the returned ai-server state snapshot.",
+				},
+				"reason": map[string]any{
+					"type":        "string",
+					"description": "Short explanation of what state you are checking for the user.",
+				},
+			},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func (a *App) workspaceRouteDynamicTools() []map[string]any {
+	return []map[string]any{
+		workspaceStateQueryDynamicTool(),
+	}
+}
+
 func (a *App) workspaceDirectDynamicTools(sessionID string) []map[string]any {
 	tools := []map[string]any{
-		{
-			"name":        "query_ai_server_state",
-			"description": "Read the current ai-server workspace/session/host state for questions about online hosts, mission progress, pending approvals, runtime phase, or other project-local status. Use this before any filesystem inspection when the user asks about current state.",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"focus": map[string]any{
-						"type":        "string",
-						"enum":        []string{"summary", "hosts", "runtime", "approvals", "plan", "all"},
-						"description": "Optional area to emphasize in the returned ai-server state snapshot.",
-					},
-					"reason": map[string]any{
-						"type":        "string",
-						"description": "Short explanation of what state you are checking for the user.",
-					},
-				},
-				"additionalProperties": false,
-			},
-		},
+		workspaceStateQueryDynamicTool(),
 	}
 	session := a.store.Session(sessionID)
 	selectedHostID := defaultHostID("")

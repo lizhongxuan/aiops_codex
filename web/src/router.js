@@ -6,6 +6,8 @@ const ExperiencePacksPage = () => import("./pages/ExperiencePacksPage.vue");
 const ProtocolWorkspacePage = () => import("./pages/ProtocolWorkspacePage.vue");
 const TerminalPage = () => import("./pages/TerminalPage.vue");
 const AgentProfilePage = () => import("./pages/AgentProfilePage.vue");
+const SkillCatalogPage = () => import("./pages/SkillCatalogPage.vue");
+const McpCatalogPage = () => import("./pages/McpCatalogPage.vue");
 const SettingsPage = () => import("./pages/SettingsPage.vue");
 
 const routes = [
@@ -52,6 +54,16 @@ const routes = [
     path: "/settings/agent",
     name: "settings-agent",
     component: AgentProfilePage,
+  },
+  {
+    path: "/settings/skills",
+    name: "settings-skills",
+    component: SkillCatalogPage,
+  },
+  {
+    path: "/settings/mcp",
+    name: "settings-mcp",
+    component: McpCatalogPage,
   },
 ];
 

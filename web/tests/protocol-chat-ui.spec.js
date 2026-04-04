@@ -277,7 +277,7 @@ test.describe("Protocol UI visual fixtures", () => {
     await expect(planWidget).toContainText("工作台计划投影");
     await expect(planWidget).toContainText("共 2 个任务");
     await expect(backgroundAgentsCard).toBeVisible();
-    await expect(backgroundAgentsCard).toContainText("background agents");
+    await expect(backgroundAgentsCard).toContainText("后台 Agent");
     await expect(backgroundAgentsCard).toContainText("web-01");
     await expect(backgroundAgentsCard).toContainText("web-02");
     await expect(omnibar).toBeVisible();

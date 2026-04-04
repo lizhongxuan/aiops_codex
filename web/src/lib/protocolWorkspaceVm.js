@@ -670,6 +670,225 @@ export function buildProtocolEvidenceTabs({
   };
 }
 
+export function buildProtocolAgentDetailModel({
+  backgroundAgent = null,
+  hostRow = null,
+  planCardModel = null,
+  approvalItems = [],
+  eventItems = [],
+  formattedTurns = [],
+} = {}) {
+  const agent = asObject(backgroundAgent);
+  const row = asObject(hostRow);
+  const hostId = compactText(row.hostId || agent.hostId || agent.id);
+  const displayName = compactText(row.displayName || agent.name || agent.title || hostId || "agent");
+  const statusKey = compactText(row.statusKey || agent.status || "idle") || "idle";
+  const statusLabel = compactText(row.statusLabel || agent.statusLabel || agent.subtitle || statusKey || "idle");
+  const tone = statusTone(statusKey);
+  const selectedApproval =
+    asArray(approvalItems).find((item) => compactText(item?.hostId) === hostId) ||
+    row.approvalCard ||
+    null;
+  const evidenceTabs = buildProtocolEvidenceTabs({
+    planCardModel,
+    hostRow: row,
+    approvalItem: selectedApproval,
+    eventItems,
+  });
+  const stepItems = summarizeHostStepItems(planCardModel, row);
+  const matchingTurns = asArray(formattedTurns).filter((turn) => {
+    const turnHostIds = [
+      compactText(turn?.hostId),
+      compactText(turn?.userMessage?.sourceCard?.hostId),
+      compactText(turn?.finalMessage?.sourceCard?.hostId),
+      ...asArray(turn?.processItems).map((item) => compactText(item?.hostId)),
+    ].filter(Boolean);
+    if (!turnHostIds.length) return false;
+    return turnHostIds.some((value) => value === hostId);
+  });
+
+  const taskItems = [];
+  if (compactText(row.taskTitle)) {
+    taskItems.push({ label: "任务标题", value: compactText(row.taskTitle) });
+  }
+  if (compactText(row.summary)) {
+    taskItems.push({ label: "任务摘要", value: compactText(row.summary) });
+  }
+  if (compactText(row.rawStatusLabel)) {
+    taskItems.push({ label: "当前状态", value: compactText(row.rawStatusLabel) });
+  }
+  if (compactText(row.workerSession)) {
+    taskItems.push({ label: "Worker Session", value: compactText(row.workerSession) });
+  }
+  if (compactText(row.worker?.threadId || row.worker?.thread_id)) {
+    taskItems.push({ label: "Worker Thread", value: compactText(row.worker?.threadId || row.worker?.thread_id) });
+  }
+  if (compactText(row.queueCount)) {
+    taskItems.push({ label: "排队任务", value: compactText(row.queueCount) });
+  }
+  if (row.dispatch?.request) {
+    taskItems.push(...buildTaskBindingRows(asObject(row.dispatch.request)));
+  }
+  if (row.dispatch?.taskBinding || row.dispatch?.task_binding) {
+    taskItems.push(...buildTaskBindingRows(asObject(row.dispatch?.taskBinding || row.dispatch?.task_binding)));
+  }
+  if (!row.dispatch?.request && !row.dispatch?.taskBinding && !row.dispatch?.task_binding && row.dispatch && typeof row.dispatch === "object") {
+    taskItems.push(...buildTaskBindingRows(asObject(row.dispatch)));
+  }
+  if (stepItems.length) {
+    taskItems.push({
+      label: "匹配计划步骤",
+      value: `${stepItems.length} 个步骤与当前 agent 关联`,
+    });
+    taskItems.push(
+      ...stepItems.slice(0, 5).map((step, index) => ({
+        label: `Step ${step.index || index + 1}`,
+        value: [step.statusLabel || step.status, step.title, asArray(step.hosts).map((host) => compactText(host.label || host.id)).filter(Boolean).join("、")].filter(Boolean).join(" · "),
+      })),
+    );
+  }
+
+  const conversationItems = [];
+  if (evidenceTabs.workerConversation.length) {
+    conversationItems.push(
+      ...evidenceTabs.workerConversation.slice(0, 8).map((item, index) => ({
+        label: item.time || item.title || `消息 ${index + 1}`,
+        value: compactText(item.text || item.value || item.summary),
+      })),
+    );
+  }
+  if (!conversationItems.length && asArray(row.worker?.transcript).length) {
+    conversationItems.push(
+      ...asArray(row.worker.transcript).slice(-8).map((item, index) => ({
+        label: `Transcript ${index + 1}`,
+        value: compactText(item),
+      })),
+    );
+  }
+  if (matchingTurns.length) {
+    conversationItems.push({
+      label: "相关 Turn",
+      value: `${matchingTurns.length} 个 process turn 与当前 agent 相关`,
+    });
+  }
+
+  const approvalItemsRows = [];
+  if (selectedApproval) {
+    approvalItemsRows.push(
+      ...asArray(selectedApproval.detailRows).map((item) => ({
+        label: compactText(item.label || "详情"),
+        value: compactText(item.value || item.text),
+      })),
+    );
+  } else if (evidenceTabs.approvalContext.length) {
+    approvalItemsRows.push(
+      ...evidenceTabs.approvalContext.map((item) => ({
+        label: compactText(item.title || item.label || "审批信息"),
+        value: compactText(item.text || item.value),
+      })),
+    );
+  }
+  if (row.worker?.approvalAnchor || row.worker?.approval_anchor) {
+    approvalItemsRows.push(
+      ...buildApprovalAnchorRows(asObject(row.worker?.approvalAnchor || row.worker?.approval_anchor)).map((item) => ({
+        label: `锚点 · ${item.label}`,
+        value: item.value,
+      })),
+    );
+  }
+
+  const activityItems = [];
+  const filteredEvents = asArray(eventItems).filter((item) => compactText(item?.hostId) === hostId || compactText(item?.targetId) === hostId);
+  if (filteredEvents.length) {
+    activityItems.push(
+      ...filteredEvents.slice(0, 6).map((item, index) => ({
+        label: item.time || item.source || `事件 ${index + 1}`,
+        value: compactText(item.text || item.title || item.detail),
+      })),
+    );
+  }
+  if (asArray(row.highlights).length) {
+    activityItems.push(
+      ...asArray(row.highlights)
+        .slice(-5)
+        .map((item, index) => ({
+          label: `高亮 ${index + 1}`,
+          value: compactText(item),
+        })),
+    );
+  }
+  if (!activityItems.length && evidenceTabs.hostTerminalRows.length) {
+    activityItems.push(
+      ...evidenceTabs.hostTerminalRows.slice(0, 6).map((item, index) => ({
+        label: item.label || `状态 ${index + 1}`,
+        value: compactText(item.value || item.text),
+      })),
+    );
+  }
+
+  const overviewItems = [
+    { label: "主机", value: displayName },
+    { label: "状态", value: statusLabel },
+    { label: "队列", value: compactText(row.queueCount || 0) },
+    { label: "任务", value: compactText(row.taskTitle || agent.subtitle || "等待执行") },
+  ];
+
+  return {
+    id: hostId || compactText(agent.id) || displayName,
+    hostId,
+    title: displayName,
+    subtitle: compactText(agent.subtitle || row.summary || row.taskTitle || "等待执行"),
+    statusKey,
+    statusLabel,
+    tone,
+    overviewItems,
+    sections: [
+      {
+        key: "task",
+        title: "分配任务信息",
+        summary: compactText(row.taskTitle || row.summary || "当前 agent 的任务分配和计划绑定。"),
+        items: taskItems,
+        raw: {
+          dispatch: row.dispatch || null,
+          planSteps: stepItems,
+        },
+      },
+      {
+        key: "conversation",
+        title: "与 AI 的对话信息",
+        summary: compactText(evidenceTabs.workerConversation.summary || "当前 agent 和 AI 的交互记录。"),
+        items: conversationItems,
+        raw: evidenceTabs.workerConversation.raw || row.worker || null,
+      },
+      {
+        key: "approval",
+        title: "审核信息",
+        summary: compactText(selectedApproval ? "当前 agent 已关联待审核任务。" : "当前 agent 的审核锚点和审批上下文。"),
+        items: approvalItemsRows,
+        raw: selectedApproval?.raw || row.worker?.approval || row.worker?.approvalAnchor || row.worker?.approval_anchor || null,
+      },
+      {
+        key: "activity",
+        title: "当前状态 / 最近活动",
+        summary: compactText(row.statusLabel || row.summary || "当前 agent 的状态和最近变化。"),
+        items: activityItems,
+        raw: {
+          highlights: row.highlights || [],
+          events: filteredEvents,
+          hostTerminalRows: evidenceTabs.hostTerminalRows,
+        },
+      },
+    ],
+    raw: {
+      hostRow: row,
+      backgroundAgent: agent,
+      planCardModel,
+      evidenceTabs,
+      matchingTurns,
+    },
+  };
+}
+
 export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
   const cards = resolveProtocolWorkspaceCards(snapshot.cards || []);
   const hostRows = buildWorkspaceHostRows({

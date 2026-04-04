@@ -70,15 +70,15 @@ function itemMeta(item = {}) {
 .chat-process-fold {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 6px 0 10px 36px;
+  gap: 8px;
+  margin: 4px 0 8px 30px;
   max-width: 720px;
 }
 
 .chat-process-divider {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .chat-process-divider-line {
@@ -90,14 +90,14 @@ function itemMeta(item = {}) {
 .chat-process-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   max-width: 100%;
-  padding: 5px 12px;
+  padding: 4px 11px;
   border: 1px solid rgba(226, 232, 240, 0.92);
   border-radius: 999px;
   background: rgba(248, 250, 252, 0.96);
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.4;
   cursor: pointer;
   transition: background 0.18s ease, border-color 0.18s ease;
@@ -124,8 +124,8 @@ function itemMeta(item = {}) {
 .chat-process-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 10px 12px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: 14px;
   background: rgba(248, 250, 252, 0.74);
@@ -133,14 +133,14 @@ function itemMeta(item = {}) {
 
 .chat-process-live {
   color: #6b7280;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.48;
 }
 
 .chat-process-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -149,15 +149,15 @@ function itemMeta(item = {}) {
 .chat-process-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-left: 12px;
+  gap: 3px;
+  padding-left: 10px;
   border-left: 2px solid rgba(203, 213, 225, 0.92);
 }
 
 .chat-process-item-text {
   color: #334155;
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
   white-space: pre-wrap;
 }
 

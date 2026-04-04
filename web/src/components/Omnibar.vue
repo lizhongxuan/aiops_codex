@@ -159,8 +159,38 @@ function onInput(e) {
   }
 }
 
+function insertTextAtSelection(text) {
+  const textarea = textareaRef.value;
+  const currentValue = props.modelValue ?? "";
+  if (!textarea) {
+    emit("update:modelValue", `${currentValue}${text}`);
+    return;
+  }
+
+  const hasFocus = typeof document !== "undefined" ? document.activeElement === textarea : false;
+  const start = hasFocus && Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : currentValue.length;
+  const end = hasFocus && Number.isInteger(textarea.selectionEnd) ? textarea.selectionEnd : start;
+  const nextValue = `${currentValue.slice(0, start)}${text}${currentValue.slice(end)}`;
+  const nextCursor = start + text.length;
+
+  textarea.value = nextValue;
+  emit("update:modelValue", nextValue);
+
+  nextTick(() => {
+    if (!textareaRef.value) return;
+    textareaRef.value.setSelectionRange(nextCursor, nextCursor);
+  });
+}
+
 function onPaste(event) {
   pasteAssist.handlePaste(event);
+  if (event?.defaultPrevented) return;
+
+  const text = event?.clipboardData?.getData?.("text/plain") ?? "";
+  if (!text) return;
+
+  event.preventDefault();
+  insertTextAtSelection(text);
 }
 
 function onDrop(event) {

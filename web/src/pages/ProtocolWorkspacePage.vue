@@ -2,11 +2,12 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { AlertTriangleIcon, Loader2Icon, PanelsTopLeftIcon, RefreshCwIcon } from "lucide-vue-next";
 import ProtocolApprovalRail from "../components/protocol-workspace/ProtocolApprovalRail.vue";
+import ProtocolAgentDetailModal from "../components/protocol-workspace/ProtocolAgentDetailModal.vue";
 import ProtocolConversationPane from "../components/protocol-workspace/ProtocolConversationPane.vue";
 import ProtocolEventTimeline from "../components/protocol-workspace/ProtocolEventTimeline.vue";
 import ProtocolEvidenceModal from "../components/protocol-workspace/ProtocolEvidenceModal.vue";
 import { buildMcpDecisionNotice, buildSyntheticMcpApproval, buildSyntheticMcpEvent, formatMcpActionLabel, formatMcpActionTarget, isMcpMutationAction } from "../lib/mcpActionRuntime";
-import { buildProtocolEvidenceTabs, buildProtocolWorkspaceModel } from "../lib/protocolWorkspaceVm";
+import { buildProtocolAgentDetailModel, buildProtocolEvidenceTabs, buildProtocolWorkspaceModel } from "../lib/protocolWorkspaceVm";
 import { compactText } from "../lib/workspaceViewModel";
 import { useAppStore } from "../store";
 
@@ -28,6 +29,8 @@ const selectedStepId = ref("");
 const selectedApprovalId = ref("");
 const selectedMessageId = ref("");
 const selectedMcpSurface = ref(null);
+const selectedAgentId = ref("");
+const agentDetailOpen = ref(false);
 const evidenceSource = ref("mission");
 const workspaceBootstrapBusy = ref(false);
 const workspaceBootstrapAttempted = ref(false);
@@ -304,6 +307,29 @@ const approvalItems = computed(() => [...workspaceApprovalItems.value, ...localM
 const eventItems = computed(() => [...workspaceEventItems.value, ...localMcpEvents.value]);
 const timelineItems = computed(() => [...eventItems.value].reverse());
 const backgroundAgents = computed(() => workspaceModel.value.backgroundAgents || []);
+const selectedAgentBackground = computed(() => {
+  if (selectedAgentId.value) {
+    return backgroundAgents.value.find((agent) => agent.id === selectedAgentId.value) || null;
+  }
+  return backgroundAgents.value[0] || null;
+});
+const selectedAgentHostRow = computed(() => {
+  const agentId = compactText(selectedAgentBackground.value?.hostId || selectedAgentBackground.value?.id || selectedAgentId.value);
+  if (!agentId) {
+    return null;
+  }
+  return hostRows.value.find((row) => row.hostId === agentId) || null;
+});
+const selectedAgentDetail = computed(() =>
+  buildProtocolAgentDetailModel({
+    backgroundAgent: selectedAgentBackground.value,
+    hostRow: selectedAgentHostRow.value,
+    planCardModel: planCardModel.value,
+    approvalItems: approvalItems.value,
+    eventItems: eventItems.value,
+    formattedTurns: formattedTurns.value,
+  }),
+);
 const canRestartMission = computed(() => workspaceModel.value.nextSendStartsNewMission);
 const statusBanner = computed(() => {
   const banner = workspaceModel.value.statusBanner;
@@ -762,6 +788,7 @@ onMounted(() => {
 });
 
 function openEvidence({ source = "mission", hostId = "", stepId = "", approvalId = "", tab = "main-agent-plan" } = {}) {
+  agentDetailOpen.value = false;
   if (hostId) selectedHostId.value = hostId;
   if (stepId) selectedStepId.value = stepId;
   if (approvalId) selectedApprovalId.value = approvalId;
@@ -1026,11 +1053,11 @@ function handlePlanAction(payload) {
 }
 
 function handleAgentSelect(agent) {
-  openEvidence({
-    source: "host",
-    hostId: compactText(agent?.hostId || agent?.id),
-    tab: "worker-conversation",
-  });
+  const nextAgentId = compactText(agent?.hostId || agent?.id || agent?.name);
+  if (!nextAgentId) return;
+  selectedAgentId.value = nextAgentId;
+  evidenceOpen.value = false;
+  agentDetailOpen.value = true;
 }
 
 function handleMessageSelect(message) {
@@ -1263,6 +1290,11 @@ function handleMcpSurfaceEventRefresh(surface) {
         </aside>
       </div>
     </template>
+
+    <ProtocolAgentDetailModal
+      v-model:open="agentDetailOpen"
+      :agent="selectedAgentDetail"
+    />
 
     <ProtocolEvidenceModal
       v-model:open="evidenceOpen"

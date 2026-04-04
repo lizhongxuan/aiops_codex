@@ -78,27 +78,27 @@ function emitRefresh(payload) {
 .chat-turn-group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .chat-turn-final {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 2px;
+  gap: 8px;
+  margin-top: 1px;
 }
 
 .chat-turn-bundles,
 .chat-turn-actions {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .chat-turn-final-divider {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-left: 36px;
+  gap: 10px;
+  margin-left: 30px;
   max-width: 720px;
 }
 
@@ -110,7 +110,7 @@ function emitRefresh(payload) {
 
 .chat-turn-final-divider-label {
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
 }

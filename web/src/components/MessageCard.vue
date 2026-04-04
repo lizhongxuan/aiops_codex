@@ -404,7 +404,7 @@ function closePreview() {
 <style scoped>
 .message-wrapper {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   max-width: 100%;
   width: 100%;
 }
@@ -414,8 +414,8 @@ function closePreview() {
 }
 
 .avatar {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 999px;
   background: rgba(248, 250, 252, 0.98);
   border: 1px solid rgba(226, 232, 240, 0.9);
@@ -424,7 +424,7 @@ function closePreview() {
   justify-content: center;
   color: #94a3b8;
   flex-shrink: 0;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .assistant-avatar {
@@ -438,19 +438,19 @@ function closePreview() {
 
 .message-content {
   flex: 1;
-  max-width: calc(100% - 40px);
+  max-width: calc(100% - 34px);
 }
 
 .is-user .message-content {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  max-width: min(560px, 72%);
+  max-width: min(520px, 68%);
 }
 
 .message-text {
-  font-size: var(--text-body, 14px);
-  line-height: var(--line-height-body, 1.68);
+  font-size: var(--text-body, 13.5px);
+  line-height: var(--line-height-body, 1.58);
   color: #0f172a;
   white-space: pre-wrap;
   letter-spacing: 0;
@@ -459,52 +459,52 @@ function closePreview() {
 .rich-message {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .message-line {
   white-space: pre-wrap;
-  line-height: 1.68;
+  line-height: 1.58;
 }
 
 .message-spacer {
-  height: 8px;
+  height: 5px;
 }
 
 .file-list-block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 2px;
+  gap: 4px;
+  margin-top: 1px;
 }
 
 .file-list-item {
-  line-height: 1.65;
+  line-height: 1.55;
 }
 
 .message-code {
   margin: 0;
-  padding: 11px 14px;
-  border-radius: 14px;
+  padding: 9px 12px;
+  border-radius: 12px;
   border: 1px solid rgba(226, 232, 240, 0.92);
   background: rgba(248, 250, 252, 0.96);
   color: #0f172a;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 12.5px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.52;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .user-message-bubble {
   background: #f3f4f6;
   border: 1px solid rgba(226, 232, 240, 0.95);
-  padding: 11px 16px;
-  border-radius: 18px;
+  padding: 9px 14px;
+  border-radius: 16px;
   color: #0f172a;
   display: inline-block;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 13.5px;
+  line-height: 1.55;
   box-shadow: 0 1px 1px rgba(15, 23, 42, 0.02);
 }
 
@@ -517,7 +517,7 @@ function closePreview() {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 6px;
+  margin-top: 4px;
   color: #94a3b8;
 }
 
@@ -544,18 +544,18 @@ function closePreview() {
 .relative-block {
   position: relative;
   display: block;
-  width: min(760px, 100%);
+  width: min(720px, 100%);
   max-width: 100%;
 }
 
 .copy-btn {
   position: absolute;
-  bottom: 6px;
+  bottom: 4px;
   right: 0;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(226, 232, 240, 0.95);
   border-radius: 999px;
-  padding: 6px;
+  padding: 5px;
   color: #6b7280;
   cursor: pointer;
   opacity: 0;
@@ -689,8 +689,8 @@ function closePreview() {
 
 /* Markdown rendered content */
 .markdown-body {
-  font-size: var(--text-body, 14px);
-  line-height: 1.65;
+  font-size: var(--text-body, 13.5px);
+  line-height: 1.58;
   color: #0f172a;
   word-break: break-word;
 }
@@ -701,19 +701,19 @@ function closePreview() {
 .markdown-body :deep(h4),
 .markdown-body :deep(h5),
 .markdown-body :deep(h6) {
-  margin: 8px 0 4px;
+  margin: 6px 0 3px;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.28;
   color: #0f172a;
 }
 
-.markdown-body :deep(h1) { font-size: 1.3em; }
-.markdown-body :deep(h2) { font-size: 1.15em; }
-.markdown-body :deep(h3) { font-size: 1.05em; }
+.markdown-body :deep(h1) { font-size: 1.22em; }
+.markdown-body :deep(h2) { font-size: 1.1em; }
+.markdown-body :deep(h3) { font-size: 1.02em; }
 
 .markdown-body :deep(p) {
-  margin: 0 0 4px;
-  line-height: 1.65;
+  margin: 0 0 2px;
+  line-height: 1.58;
 }
 
 .markdown-body :deep(p:last-child) {
@@ -722,13 +722,13 @@ function closePreview() {
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 2px 0 4px;
-  padding-left: 20px;
+  margin: 1px 0 3px;
+  padding-left: 18px;
 }
 
 .markdown-body :deep(li) {
-  margin: 1px 0;
-  line-height: 1.6;
+  margin: 0;
+  line-height: 1.56;
 }
 
 .markdown-body :deep(li p) {
@@ -739,15 +739,15 @@ function closePreview() {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.88em;
   background: #f1f5f9;
-  padding: 1px 5px;
+  padding: 1px 4px;
   border-radius: 4px;
   color: #334155;
 }
 
 .markdown-body :deep(pre) {
-  margin: 8px 0;
-  padding: 10px 14px;
-  border-radius: 8px;
+  margin: 6px 0;
+  padding: 9px 12px;
+  border-radius: 10px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   overflow-x: auto;
@@ -756,13 +756,13 @@ function closePreview() {
 .markdown-body :deep(pre code) {
   background: transparent;
   padding: 0;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.48;
 }
 
 .markdown-body :deep(blockquote) {
-  margin: 8px 0;
-  padding: 4px 12px;
+  margin: 6px 0;
+  padding: 3px 10px;
   border-left: 3px solid #cbd5e1;
   color: #475569;
 }
@@ -773,14 +773,14 @@ function closePreview() {
 
 .markdown-body :deep(table) {
   border-collapse: collapse;
-  margin: 8px 0;
-  font-size: 13px;
+  margin: 6px 0;
+  font-size: 12.5px;
 }
 
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
   border: 1px solid #e2e8f0;
-  padding: 6px 10px;
+  padding: 5px 8px;
   text-align: left;
 }
 
@@ -792,7 +792,7 @@ function closePreview() {
 .markdown-body :deep(hr) {
   border: none;
   border-top: 1px solid #e2e8f0;
-  margin: 12px 0;
+  margin: 8px 0;
 }
 
 .markdown-body :deep(a) {

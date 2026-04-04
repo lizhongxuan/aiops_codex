@@ -69,6 +69,20 @@ function createSkills() {
   ];
 }
 
+function createSkillCatalog() {
+  return [
+    ...createSkills(),
+    {
+      id: "incident-summary",
+      name: "Incident Summary",
+      description: "把诊断过程整理成可交付摘要。",
+      source: "local",
+      defaultEnabled: true,
+      defaultActivationMode: "default_enabled",
+    },
+  ];
+}
+
 function createMcps() {
   return [
     {
@@ -97,6 +111,21 @@ function createMcps() {
       enabled: false,
       permission: "readwrite",
       requiresExplicitUserApproval: true,
+    },
+  ];
+}
+
+function createMcpCatalog() {
+  return [
+    ...createMcps(),
+    {
+      id: "host-logs",
+      name: "Host Logs MCP",
+      type: "http",
+      source: "local",
+      defaultEnabled: false,
+      permission: "readonly",
+      requiresExplicitUserApproval: false,
     },
   ];
 }
@@ -162,6 +191,8 @@ function createStoreFixture() {
   ];
   const state = reactive({
     agentProfiles: initialProfiles,
+    skillCatalog: createSkillCatalog(),
+    mcpCatalog: createMcpCatalog(),
     activeAgentProfileId: "main-agent",
     agentProfilePreview: createPreviewFromProfile(initialProfiles[0]),
     agentProfilesError: "",
@@ -309,5 +340,35 @@ describe("AgentProfilePage", () => {
     expect(mocks.store.selectAgentProfile).toHaveBeenCalledWith("host-agent-default");
     expect(mocks.store.activeAgentProfileId).toBe("host-agent-default");
     expect(wrapper.get("h1").text()).toContain("Host Agent Default");
+  });
+
+  it("adds and removes explicit skill and mcp bindings before save", async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="skill-binding-select"]').setValue("incident-summary");
+    await wrapper.get('[data-testid="add-skill-binding-btn"]').trigger("click");
+    await nextTick();
+    expect(wrapper.text()).toContain("Incident Summary");
+
+    await wrapper.get('[data-testid="remove-skill-binding-safe-change-review"]').trigger("click");
+    await nextTick();
+    expect(wrapper.find('[data-testid="remove-skill-binding-safe-change-review"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="mcp-binding-select"]').setValue("host-logs");
+    await wrapper.get('[data-testid="add-mcp-binding-btn"]').trigger("click");
+    await nextTick();
+    expect(wrapper.text()).toContain("Host Logs MCP");
+
+    await wrapper.get('[data-testid="remove-mcp-binding-metrics"]').trigger("click");
+    await nextTick();
+    expect(wrapper.find('[data-testid="remove-mcp-binding-metrics"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="save-profile-btn"]').trigger("click");
+    await flushPromises();
+
+    const savedProfile = mocks.store.saveAgentProfile.mock.calls.at(-1)?.[0];
+    expect(savedProfile.skills.map((item) => item.id)).toEqual(["ops-triage", "incident-summary"]);
+    expect(savedProfile.mcps.map((item) => item.id)).toEqual(["filesystem", "docs", "host-logs"]);
   });
 });

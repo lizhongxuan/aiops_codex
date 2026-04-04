@@ -71,6 +71,10 @@ func (a *App) workspaceRouteThreadConfigHash(hostID string) string {
 	return a.mainAgentThreadConfigHash(hostID) + ":workspace-route"
 }
 
+func (a *App) workspaceReadonlyThreadConfigHash(hostID string) string {
+	return a.mainAgentThreadConfigHash(hostID) + ":workspace-readonly"
+}
+
 func (a *App) workspaceOrchestrationThreadConfigHash(hostID string) string {
 	return a.mainAgentThreadConfigHash(hostID) + ":workspace-orchestration"
 }
@@ -88,7 +92,7 @@ func (a *App) buildWorkspaceRouteThreadStartSpec(ctx context.Context, sessionID,
 		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
 		SandboxMode:           profile.Runtime.SandboxMode,
 		DeveloperInstructions: developerInstructions,
-		DynamicTools:          a.workspaceDirectDynamicTools(sessionID),
+		DynamicTools:          a.workspaceRouteDynamicTools(),
 		ThreadConfigHash:      a.workspaceRouteThreadConfigHash(selectedHostID),
 	}
 	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
@@ -101,6 +105,48 @@ func (a *App) buildWorkspaceRouteTurnStartSpec(ctx context.Context, hostID, mess
 	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
 	developerInstructions := orchestrator.BuildWorkspaceRoutePrompt()
+	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
+		developerInstructions = developerInstructions + "\n\n" + base
+	}
+	return turnStartSpec{
+		Cwd:                   a.cfg.DefaultWorkspace,
+		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
+		SandboxMode:           profile.Runtime.SandboxMode,
+		WritableRoots:         a.mainAgentWritableRoots(profile),
+		DeveloperInstructions: developerInstructions,
+		Input: []map[string]any{
+			{"type": "text", "text": message},
+		},
+		ReasoningEffort: profile.Runtime.ReasoningEffort,
+	}
+}
+
+func (a *App) buildWorkspaceReadonlyThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
+	selectedHostID := defaultHostID(hostID)
+	profile := a.mainAgentProfile()
+	developerInstructions := orchestrator.BuildWorkspaceReadonlyPrompt()
+	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
+		developerInstructions = developerInstructions + "\n\n" + base
+	}
+	spec := threadStartSpec{
+		Model:                 profile.Runtime.Model,
+		Cwd:                   a.cfg.DefaultWorkspace,
+		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
+		SandboxMode:           profile.Runtime.SandboxMode,
+		DeveloperInstructions: developerInstructions,
+		DynamicTools:          a.workspaceDirectDynamicTools(sessionID),
+		ThreadConfigHash:      a.workspaceReadonlyThreadConfigHash(selectedHostID),
+	}
+	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
+		spec.Config = threadConfig
+	}
+	return spec
+}
+
+func (a *App) buildWorkspaceReadonlyTurnStartSpec(ctx context.Context, hostID, message string) turnStartSpec {
+	selectedHostID := defaultHostID(hostID)
+	profile := a.mainAgentProfile()
+	developerInstructions := orchestrator.BuildWorkspaceReadonlyPrompt()
 	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
 		developerInstructions = developerInstructions + "\n\n" + base
 	}
