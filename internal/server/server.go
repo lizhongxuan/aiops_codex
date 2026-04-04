@@ -31,6 +31,7 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
 	"github.com/lizhongxuan/aiops-codex/internal/codex"
 	"github.com/lizhongxuan/aiops-codex/internal/config"
+	"github.com/lizhongxuan/aiops-codex/internal/coroot"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 	"github.com/lizhongxuan/aiops-codex/internal/store"
@@ -89,9 +90,16 @@ type App struct {
 	broadcastTimers  map[string]*time.Timer
 	threadStarts     []time.Time
 	turnStarts       []time.Time
-	httpServer       *http.Server
-	grpcServer       *grpc.Server
-	commandRunner    commandRunner
+	approvalAuditStore      *store.ApprovalAuditStore
+	approvalGrantStore      *store.ApprovalGrantStore
+	capabilityBindingStore  *store.CapabilityBindingStore
+	uiCardStore            *store.UICardStore
+	scriptConfigStore      *store.ScriptConfigStore
+	labEnvironmentStore    *store.LabEnvironmentStore
+	corootClient           *coroot.Client
+	httpServer         *http.Server
+	grpcServer         *grpc.Server
+	commandRunner      commandRunner
 }
 
 type authLoginRequest struct {
@@ -104,8 +112,9 @@ type authLoginRequest struct {
 }
 
 type chatRequest struct {
-	Message string `json:"message"`
-	HostID  string `json:"hostId"`
+	Message        string                `json:"message"`
+	HostID         string                `json:"hostId"`
+	MonitorContext *model.MonitorContext  `json:"monitorContext,omitempty"`
 }
 
 type turnTrace struct {
@@ -250,6 +259,33 @@ func (a *App) Start(ctx context.Context) error {
 	if err := a.initOrchestrator(); err != nil {
 		return fmt.Errorf("load orchestrator store: %w", err)
 	}
+	a.approvalAuditStore = store.NewApprovalAuditStore(filepath.Join(filepath.Dir(a.cfg.StatePath), "approval-audits.json"))
+	if err := a.approvalAuditStore.Load(); err != nil {
+		return fmt.Errorf("load approval audit store: %w", err)
+	}
+	a.approvalGrantStore = store.NewApprovalGrantStore(filepath.Join(filepath.Dir(a.cfg.StatePath), "approval-grants.json"))
+	if err := a.approvalGrantStore.Load(); err != nil {
+		return fmt.Errorf("load approval grant store: %w", err)
+	}
+	a.capabilityBindingStore = store.NewCapabilityBindingStore(filepath.Join(filepath.Dir(a.cfg.StatePath), "capability-bindings.json"))
+	if err := a.capabilityBindingStore.Load(); err != nil {
+		return fmt.Errorf("load capability binding store: %w", err)
+	}
+	a.uiCardStore = store.NewUICardStore(filepath.Join(filepath.Dir(a.cfg.StatePath), "ui-cards.json"))
+	if err := a.uiCardStore.Load(); err != nil {
+		return fmt.Errorf("load ui card store: %w", err)
+	}
+	a.scriptConfigStore = store.NewScriptConfigStore(filepath.Join(filepath.Dir(a.cfg.StatePath), "script-configs.json"))
+	if err := a.scriptConfigStore.Load(); err != nil {
+		return fmt.Errorf("load script config store: %w", err)
+	}
+	a.labEnvironmentStore = store.NewLabEnvironmentStore(filepath.Join(filepath.Dir(a.cfg.StatePath), "lab-environments.json"), a.store)
+	if err := a.labEnvironmentStore.Load(); err != nil {
+		return fmt.Errorf("load lab environment store: %w", err)
+	}
+	if a.cfg.CorootConfigured() {
+		a.corootClient = coroot.NewClient(a.cfg.CorootBaseURL, a.cfg.CorootToken, a.cfg.CorootTimeout)
+	}
 	a.store.UpsertHost(model.Host{
 		ID:              model.ServerLocalHostID,
 		Name:            "server-local",
@@ -310,6 +346,20 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/chat/message", a.withSession(a.handleChatMessage))
 	httpMux.HandleFunc("/api/v1/chat/stop", a.withSession(a.handleChatStop))
 	httpMux.HandleFunc("/api/v1/approvals/", a.withSession(a.handleApprovalDecision))
+	httpMux.HandleFunc("/api/v1/approval-audits", a.withSession(a.handleApprovalAudits))
+	httpMux.HandleFunc("/api/v1/approval-audits/", a.withSession(a.handleApprovalAuditByID))
+	httpMux.HandleFunc("/api/v1/approval-grants", a.withSession(a.handleApprovalGrants))
+	httpMux.HandleFunc("/api/v1/approval-grants/", a.withSession(a.handleApprovalGrantAction))
+	httpMux.HandleFunc("/api/v1/capability-bindings", a.withSession(a.handleCapabilityBindings))
+	httpMux.HandleFunc("/api/v1/capability-bindings/", a.withSession(a.handleCapabilityBindingByID))
+	httpMux.HandleFunc("/api/v1/ui-cards", a.withSession(a.handleUICards))
+	httpMux.HandleFunc("/api/v1/ui-cards/", a.withSession(a.handleUICardByID))
+	httpMux.HandleFunc("/api/v1/script-configs", a.withSession(a.handleScriptConfigs))
+	httpMux.HandleFunc("/api/v1/script-configs/", a.withSession(a.handleScriptConfigByID))
+	httpMux.HandleFunc("/api/v1/lab-environments", a.withSession(a.handleLabEnvironments))
+	httpMux.HandleFunc("/api/v1/lab-environments/", a.withSession(a.handleLabEnvironmentByID))
+	httpMux.HandleFunc("/api/v1/generator/", a.withSession(a.handleGenerator))
+	httpMux.HandleFunc("/api/v1/coroot/", a.withSession(a.handleCorootProxy))
 	httpMux.HandleFunc("/api/v1/choices/", a.withSession(a.handleChoiceAnswer))
 	httpMux.HandleFunc("/api/v1/terminal/sessions", a.withSession(a.handleTerminalCreate))
 	httpMux.HandleFunc("/api/v1/terminal/ws", a.withSession(a.handleTerminalWS))
@@ -2313,6 +2363,9 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 		if a.autoApproveBySessionGrant(sessionID, approval) {
 			return
 		}
+		if a.autoApproveByHostGrant(sessionID, approval) {
+			return
+		}
 		if !capabilityNeedsApproval(commandState) && (decision.Mode == model.AgentPermissionModeAllow || decision.Mode == model.AgentPermissionModeReadonlyOnly) {
 			if a.autoApproveLocalApprovalByProfile(sessionID, approval) {
 				return
@@ -2397,6 +2450,9 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			return
 		}
 		if a.autoApproveBySessionGrant(sessionID, approval) {
+			return
+		}
+		if a.autoApproveByHostGrant(sessionID, approval) {
 			return
 		}
 		if !capabilityNeedsApproval(fileChangeState) {
@@ -2713,6 +2769,60 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 	})
 	a.broadcastSnapshot(sessionID)
 	return true
+}
+
+func (a *App) autoApproveByHostGrant(sessionID string, approval model.ApprovalRequest) bool {
+	if approval.Fingerprint == "" || approval.HostID == "" {
+		return false
+	}
+	if a.approvalGrantStore == nil {
+		return false
+	}
+	if _, ok := a.approvalGrantStore.MatchFingerprint(approval.HostID, approval.Fingerprint); !ok {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := a.respondCodex(ctx, approval.RequestIDRaw, map[string]any{
+		"decision": "accept",
+	}); err != nil {
+		log.Printf("auto approval by host grant failed session=%s approval=%s err=%s", sessionID, approval.ID, truncate(err.Error(), 200))
+		return false
+	}
+
+	now := model.NowString()
+	approval.Status = "accepted_for_host_auto"
+	approval.ResolvedAt = now
+	a.store.AddApproval(sessionID, approval)
+	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+	a.setRuntimeTurnPhase(sessionID, "executing")
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        "auto-approval-" + approval.ItemID,
+		Type:      "NoticeCard",
+		Title:     "Auto-approved by host grant",
+		Text:      hostGrantAutoApprovalNoticeText(approval),
+		Status:    "notice",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	log.Printf("approval auto accepted by host grant session=%s approval=%s type=%s host=%s", sessionID, approval.ID, approval.Type, approval.HostID)
+	a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, "auto_accept", approval.Status, approval.RequestedAt, now, map[string]any{
+		"fingerprint": approval.Fingerprint,
+		"grantMode":   "host",
+	})
+	a.broadcastSnapshot(sessionID)
+	return true
+}
+
+func hostGrantAutoApprovalNoticeText(approval model.ApprovalRequest) string {
+	if (approval.Type == "command" || approval.Type == "remote_command") && approval.Command != "" {
+		return fmt.Sprintf("已通过主机级授权自动批准命令：%s", truncate(approval.Command, 72))
+	}
+	if approval.Type == "file_change" || approval.Type == "remote_file_change" {
+		return "已通过主机级授权自动批准文件修改。"
+	}
+	return "已通过主机级授权自动批准操作。"
 }
 
 func (a *App) startRuntimeTurn(sessionID, hostID string) {
@@ -3921,16 +4031,23 @@ func (a *App) auditApprovalRequested(sessionID string, approval model.ApprovalRe
 }
 
 func (a *App) auditApprovalLifecycleEvent(event, sessionID string, approval model.ApprovalRequest, approvalDecision, status, startedAt, endedAt string, fields map[string]any) {
+	threadID := firstNonEmptyString([]string{approval.ThreadID, a.sessionThreadID(sessionID)})
+	turnID := firstNonEmptyString([]string{approval.TurnID, a.sessionTurnID(sessionID)})
+	hostID := defaultHostID(strings.TrimSpace(approval.HostID))
+	hostName := hostNameOrID(a.findHost(approval.HostID))
+	operator := a.auditOperator(sessionID)
+	toolName := approvalAuditToolName(approval)
+
 	payload := map[string]any{
 		"sessionId":        sessionID,
 		"approvalId":       approval.ID,
 		"type":             approval.Type,
-		"threadId":         firstNonEmptyString([]string{approval.ThreadID, a.sessionThreadID(sessionID)}),
-		"turnId":           firstNonEmptyString([]string{approval.TurnID, a.sessionTurnID(sessionID)}),
-		"hostId":           defaultHostID(strings.TrimSpace(approval.HostID)),
-		"hostName":         hostNameOrID(a.findHost(approval.HostID)),
-		"operator":         a.auditOperator(sessionID),
-		"toolName":         approvalAuditToolName(approval),
+		"threadId":         threadID,
+		"turnId":           turnID,
+		"hostId":           hostID,
+		"hostName":         hostName,
+		"operator":         operator,
+		"toolName":         toolName,
 		"command":          emptyToNil(strings.TrimSpace(approval.Command)),
 		"filePath":         approvalAuditFilePath(approval, fields),
 		"cwd":              a.approvalAuditCwd(approval),
@@ -3953,6 +4070,42 @@ func (a *App) auditApprovalLifecycleEvent(event, sessionID string, approval mode
 		payload[key] = value
 	}
 	a.audit(event, payload)
+
+	// Also write structured record to ApprovalAuditStore.
+	if a.approvalAuditStore != nil {
+		sessionKind := model.SessionKindSingleHost
+		if session := a.store.Session(sessionID); session != nil {
+			if k := strings.TrimSpace(session.Meta.Kind); k != "" {
+				sessionKind = k
+			}
+		}
+		record := model.ApprovalAuditRecord{
+			ID:           model.NewID("aaudit"),
+			Event:        event,
+			SessionID:    sessionID,
+			SessionKind:  sessionKind,
+			ThreadID:     threadID,
+			TurnID:       turnID,
+			HostID:       hostID,
+			HostName:     hostName,
+			Operator:     operator,
+			ApprovalID:   approval.ID,
+			ApprovalType: approval.Type,
+			ToolName:     toolName,
+			Command:      strings.TrimSpace(approval.Command),
+			Cwd:          anyToString(a.approvalAuditCwd(approval)),
+			FilePath:     anyToString(approvalAuditFilePath(approval, fields)),
+			Decision:     strings.TrimSpace(approvalDecision),
+			Status:       strings.TrimSpace(status),
+			GrantMode:    approvalGrantMode(approvalDecision),
+			Fingerprint:  strings.TrimSpace(approval.Fingerprint),
+			StartedAt:    strings.TrimSpace(startedAt),
+			EndedAt:      strings.TrimSpace(endedAt),
+		}
+		if err := a.approvalAuditStore.Add(record); err != nil {
+			log.Printf("approval audit store add failed event=%s approval=%s err=%s", event, approval.ID, truncate(err.Error(), 200))
+		}
+	}
 }
 
 func (a *App) sessionThreadID(sessionID string) string {
@@ -4045,6 +4198,27 @@ func approvalGrantFromApproval(approval model.ApprovalRequest) model.ApprovalGra
 		Cwd:         approval.Cwd,
 		CreatedAt:   model.NowString(),
 	}
+}
+
+func approvalGrantMode(decision string) string {
+	switch decision {
+	case "accept_session":
+		return "session"
+	case "accept":
+		return "none"
+	default:
+		return ""
+	}
+}
+
+func anyToString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 func mapApprovalDecision(decision string, approval model.ApprovalRequest) string {

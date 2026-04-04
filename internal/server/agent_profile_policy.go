@@ -429,3 +429,121 @@ func (a *App) autoApproveLocalApprovalByProfile(sessionID string, approval model
 	a.broadcastSnapshot(sessionID)
 	return true
 }
+
+// capabilityGatewayResult holds the result of the three-layer capability gateway evaluation.
+type capabilityGatewayResult struct {
+	// Layer is one of: structured_read, controlled_mutation, raw_shell.
+	Layer string
+	// Allowed indicates whether the tool is permitted under the current profile.
+	Allowed bool
+	// Reason provides a human-readable explanation when Allowed is false.
+	Reason string
+}
+
+// evaluateCapabilityGateway implements the three-tier capability gateway:
+//
+//  1. structured_read  – host.* tools that map to predefined safe commands.
+//  2. controlled_mutation – execute_system_mutation (always requires approval).
+//  3. raw_shell – execute_readonly_query and other raw shell tools.
+//
+// It returns which layer the tool belongs to and whether the current effective
+// profile allows the tool to proceed.
+func (a *App) evaluateCapabilityGateway(hostID, toolName string) capabilityGatewayResult {
+	hostID = defaultHostID(strings.TrimSpace(hostID))
+
+	// Layer 1: structured_read – host.* tools.
+	if isStructuredReadTool(toolName) {
+		state := a.effectiveCapabilityState(hostID, "commandExecution")
+		if capabilityDisabled(state) {
+			return capabilityGatewayResult{
+				Layer:   CapabilityLayerStructuredRead,
+				Allowed: false,
+				Reason:  "commandExecution capability is disabled by the current effective agent profile",
+			}
+		}
+		return capabilityGatewayResult{
+			Layer:   CapabilityLayerStructuredRead,
+			Allowed: true,
+		}
+	}
+
+	// Layer 2: controlled_mutation – execute_system_mutation and controlled mutation tools.
+	if toolName == "execute_system_mutation" || isControlledMutationTool(toolName) {
+		commandState := a.effectiveCapabilityState(hostID, "commandExecution")
+		fileChangeState := a.effectiveCapabilityState(hostID, "fileChange")
+		if capabilityDisabled(commandState) && capabilityDisabled(fileChangeState) {
+			return capabilityGatewayResult{
+				Layer:   CapabilityLayerControlledMutation,
+				Allowed: false,
+				Reason:  "both commandExecution and fileChange capabilities are disabled by the current effective agent profile",
+			}
+		}
+		return capabilityGatewayResult{
+			Layer:   CapabilityLayerControlledMutation,
+			Allowed: true,
+		}
+	}
+
+	// Layer 3: raw_shell – execute_readonly_query and other raw tools.
+	switch toolName {
+	case "execute_readonly_query":
+		state := a.effectiveCapabilityState(hostID, "commandExecution")
+		if capabilityDisabled(state) {
+			return capabilityGatewayResult{
+				Layer:   CapabilityLayerRawShell,
+				Allowed: false,
+				Reason:  "commandExecution capability is disabled by the current effective agent profile",
+			}
+		}
+		return capabilityGatewayResult{
+			Layer:   CapabilityLayerRawShell,
+			Allowed: true,
+		}
+	case "list_remote_files":
+		fileReadState := a.effectiveCapabilityState(hostID, "fileRead")
+		fileSearchState := a.effectiveCapabilityState(hostID, "fileSearch")
+		if capabilityDisabled(fileReadState) && capabilityDisabled(fileSearchState) {
+			return capabilityGatewayResult{
+				Layer:   CapabilityLayerRawShell,
+				Allowed: false,
+				Reason:  "both fileRead and fileSearch capabilities are disabled",
+			}
+		}
+		return capabilityGatewayResult{
+			Layer:   CapabilityLayerRawShell,
+			Allowed: true,
+		}
+	case "read_remote_file":
+		state := a.effectiveCapabilityState(hostID, "fileRead")
+		if capabilityDisabled(state) {
+			return capabilityGatewayResult{
+				Layer:   CapabilityLayerRawShell,
+				Allowed: false,
+				Reason:  "fileRead capability is disabled by the current effective agent profile",
+			}
+		}
+		return capabilityGatewayResult{
+			Layer:   CapabilityLayerRawShell,
+			Allowed: true,
+		}
+	case "search_remote_files":
+		state := a.effectiveCapabilityState(hostID, "fileSearch")
+		if capabilityDisabled(state) {
+			return capabilityGatewayResult{
+				Layer:   CapabilityLayerRawShell,
+				Allowed: false,
+				Reason:  "fileSearch capability is disabled by the current effective agent profile",
+			}
+		}
+		return capabilityGatewayResult{
+			Layer:   CapabilityLayerRawShell,
+			Allowed: true,
+		}
+	default:
+		return capabilityGatewayResult{
+			Layer:   CapabilityLayerRawShell,
+			Allowed: false,
+			Reason:  fmt.Sprintf("unknown tool %q", toolName),
+		}
+	}
+}

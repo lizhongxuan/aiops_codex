@@ -119,6 +119,18 @@ export function resolveMcpBundlePresetKey(source = {}, defaults = {}) {
     return MCP_BUNDLE_PRESET_KEYS.MIDDLEWARE_SERVICE_MONITOR;
   }
 
+  // Coroot-specific resolution: detect coroot source or mcpServer.
+  const mcpServer = compactText(normalizedSource.mcpServer || normalizedSource.mcp_server || normalizedDefaults.mcpServer).toLowerCase();
+  const payloadSource = compactText(normalizedSource.source || normalizedDefaults.source).toLowerCase();
+  const isCoroot = mcpServer.includes("coroot") || payloadSource.includes("coroot") || explicitBundleKind === "coroot_service_monitor" || explicitBundleKind === "coroot_incident_rca";
+
+  if (isCoroot) {
+    if (hasRemediationSignal(normalizedSource) || explicitBundleKind === "coroot_incident_rca") {
+      return MCP_BUNDLE_PRESET_KEYS.COROOT_INCIDENT_RCA;
+    }
+    return MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR;
+  }
+
   const scope = normalizeMcpBundleScope(normalizedSource.scope || normalizedDefaults.scope || {});
   const subjectType = resolveSubjectType(normalizedSource, scope);
   if (hasRemediationSignal(normalizedSource)) {

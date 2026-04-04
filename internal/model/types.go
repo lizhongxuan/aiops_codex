@@ -150,14 +150,20 @@ type AgentCapabilityPermissions struct {
 }
 
 type AgentSkill struct {
-	ID                    string `json:"id"`
-	Name                  string `json:"name"`
-	Description           string `json:"description,omitempty"`
-	Source                string `json:"source,omitempty"`
-	Enabled               bool   `json:"enabled"`
-	ActivationMode        string `json:"activationMode,omitempty"`
-	DefaultEnabled        bool   `json:"defaultEnabled,omitempty"`
-	DefaultActivationMode string `json:"defaultActivationMode,omitempty"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	Description           string   `json:"description,omitempty"`
+	Source                string   `json:"source,omitempty"`
+	Enabled               bool     `json:"enabled"`
+	ActivationMode        string   `json:"activationMode,omitempty"`
+	DefaultEnabled        bool     `json:"defaultEnabled,omitempty"`
+	DefaultActivationMode string   `json:"defaultActivationMode,omitempty"`
+	Category              string   `json:"category,omitempty"`
+	Version               string   `json:"version,omitempty"`
+	ApplicableTo          []string `json:"applicableTo,omitempty"`
+	Status                string   `json:"status,omitempty"`
+	Dependencies          []string `json:"dependencies,omitempty"`
+	HitCount              int      `json:"hitCount,omitempty"`
 }
 
 type AgentMCP struct {
@@ -169,6 +175,12 @@ type AgentMCP struct {
 	DefaultEnabled               bool   `json:"defaultEnabled,omitempty"`
 	Permission                   string `json:"permission,omitempty"`
 	RequiresExplicitUserApproval bool   `json:"requiresExplicitUserApproval,omitempty"`
+	Category                     string `json:"category,omitempty"`
+	AuthMethod                   string `json:"authMethod,omitempty"`
+	Scope                        string `json:"scope,omitempty"`
+	RiskLevel                    string `json:"riskLevel,omitempty"`
+	ToolCount                    int    `json:"toolCount,omitempty"`
+	LastProbeAt                  string `json:"lastProbeAt,omitempty"`
 }
 
 type AuthState struct {
@@ -666,6 +678,46 @@ func SupportedAgentSkills() []AgentSkill {
 			DefaultEnabled:        false,
 			ActivationMode:        AgentSkillActivationExplicit,
 			DefaultActivationMode: AgentSkillActivationExplicit,
+		},
+		{
+			ID:                    "coroot-service-monitor",
+			Name:                  "Coroot Service Monitor",
+			Description:           "通过 Coroot 查询服务健康状态、指标和告警。",
+			Source:                "built-in",
+			DefaultEnabled:        true,
+			ActivationMode:        AgentSkillActivationDefault,
+			DefaultActivationMode: AgentSkillActivationDefault,
+			Category:              "monitoring",
+		},
+		{
+			ID:                    "coroot-topology",
+			Name:                  "Coroot Topology",
+			Description:           "获取 Coroot 服务拓扑图，展示服务间依赖关系。",
+			Source:                "built-in",
+			DefaultEnabled:        true,
+			ActivationMode:        AgentSkillActivationDefault,
+			DefaultActivationMode: AgentSkillActivationDefault,
+			Category:              "monitoring",
+		},
+		{
+			ID:                    "coroot-incident-rca",
+			Name:                  "Coroot Incident RCA",
+			Description:           "通过 Coroot 获取事件时间线和根因分析报告。",
+			Source:                "built-in",
+			DefaultEnabled:        true,
+			ActivationMode:        AgentSkillActivationDefault,
+			DefaultActivationMode: AgentSkillActivationDefault,
+			Category:              "monitoring",
+		},
+		{
+			ID:                    "coroot-alert-triage",
+			Name:                  "Coroot Alert Triage",
+			Description:           "基于 Coroot 告警数据进行快速分类和优先级排序。",
+			Source:                "built-in",
+			DefaultEnabled:        false,
+			ActivationMode:        AgentSkillActivationExplicit,
+			DefaultActivationMode: AgentSkillActivationExplicit,
+			Category:              "monitoring",
 		},
 	}
 }

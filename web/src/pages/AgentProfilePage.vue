@@ -486,6 +486,42 @@ const localPreview = computed(() => {
 });
 
 const preview = computed(() => (isDirty.value ? localPreview.value : store.agentProfilePreview || localPreview.value));
+
+const structuredReadInterfaces = computed(() => [
+  { name: "host.summary", description: "系统概览（hostname, uptime, load, memory, disk）" },
+  { name: "host.process.top", description: "按 CPU/内存排序的进程列表" },
+  { name: "host.service.status", description: "systemd 服务状态" },
+  { name: "host.journal.tail", description: "systemd 日志尾部" },
+  { name: "host.file.exists", description: "文件/目录存在性检查" },
+  { name: "host.file.read", description: "读取文件内容" },
+  { name: "host.file.search", description: "文件内容搜索" },
+  { name: "host.network.listeners", description: "监听端口列表" },
+  { name: "host.network.connections", description: "活跃网络连接" },
+  { name: "host.package.version", description: "已安装包版本" },
+  { name: "host.nginx.status", description: "Nginx 状态" },
+  { name: "host.mysql.summary", description: "MySQL 摘要" },
+  { name: "host.redis.summary", description: "Redis 摘要" },
+  { name: "host.jvm.summary", description: "JVM 进程列表" },
+]);
+
+const controlledMutationInterfaces = computed(() => [
+  { name: "service.restart", description: "重启 systemd 服务（需审批）" },
+  { name: "service.stop", description: "停止 systemd 服务（需审批）" },
+  { name: "config.apply", description: "写入配置文件（需审批）" },
+  { name: "package.install", description: "安装系统包（需审批）" },
+  { name: "package.upgrade", description: "升级系统包（需审批）" },
+]);
+
+const policySource = computed(() => {
+  const profileType = String(draft.type || "").trim().toLowerCase();
+  if (profileType.includes("host-agent-override") || profileType === "host_agent_override") {
+    return { label: "host-agent-override", description: "当前策略来自 host-agent 覆盖配置。" };
+  }
+  if (profileType.includes("host-agent-default") || profileType === "host_agent_default") {
+    return { label: "host-agent-default", description: "当前策略来自 host-agent 默认配置。" };
+  }
+  return { label: "main-agent", description: "当前策略来自主 agent 配置。" };
+});
 const filteredSkills = computed(() => (draft.skills || []).filter(skillRowMatches));
 const filteredMcps = computed(() => (draft.mcps || []).filter(mcpRowMatches));
 const availableSkillCatalog = computed(() => {
@@ -1127,6 +1163,65 @@ onBeforeUnmount(() => {
               </tbody>
             </table>
           </div>
+
+          <div class="section-card" data-testid="structured-read-interfaces">
+            <div class="section-header">
+              <h2>Structured Read Interfaces</h2>
+              <span>{{ structuredReadInterfaces.length }} tools</span>
+            </div>
+            <div class="interface-description">只读结构化接口，映射到预定义的安全命令，无需审批即可执行。</div>
+            <table class="config-table">
+              <thead>
+                <tr>
+                  <th>接口名称</th>
+                  <th>说明</th>
+                  <th>层级</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in structuredReadInterfaces" :key="item.name">
+                  <td><span class="interface-name">{{ item.name }}</span></td>
+                  <td>{{ item.description }}</td>
+                  <td><span class="status-pill">structured_read</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="section-card" data-testid="controlled-mutation-interfaces">
+            <div class="section-header">
+              <h2>Controlled Mutation Interfaces</h2>
+              <span>{{ controlledMutationInterfaces.length }} tools</span>
+            </div>
+            <div class="interface-description">受控变更接口，所有调用强制走审批流程。</div>
+            <table class="config-table">
+              <thead>
+                <tr>
+                  <th>接口名称</th>
+                  <th>说明</th>
+                  <th>层级</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in controlledMutationInterfaces" :key="item.name">
+                  <td><span class="interface-name">{{ item.name }}</span></td>
+                  <td>{{ item.description }}</td>
+                  <td><span class="status-pill mutation">controlled_mutation</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="section-card" data-testid="policy-source">
+            <div class="section-header">
+              <h2>Policy Source</h2>
+              <span>{{ policySource.label }}</span>
+            </div>
+            <div class="policy-source-row">
+              <span class="status-pill" :class="{ mutation: policySource.label !== 'main-agent' }">{{ policySource.label }}</span>
+              <span class="policy-source-description">{{ policySource.description }}</span>
+            </div>
+          </div>
         </section>
 
         <aside class="preview-panel">
@@ -1353,6 +1448,34 @@ onBeforeUnmount(() => {
   .prompt-diff-row {
     grid-template-columns: 18px 40px minmax(0, 1fr);
   }
+}
+
+.interface-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  color: #bfdbfe;
+}
+
+.interface-description {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.status-pill.mutation {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fde68a;
+}
+
+.policy-source-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.policy-source-description {
+  color: #94a3b8;
+  font-size: 0.85rem;
 }
 </style>
 

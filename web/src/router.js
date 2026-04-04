@@ -8,7 +8,14 @@ const TerminalPage = () => import("./pages/TerminalPage.vue");
 const AgentProfilePage = () => import("./pages/AgentProfilePage.vue");
 const SkillCatalogPage = () => import("./pages/SkillCatalogPage.vue");
 const McpCatalogPage = () => import("./pages/McpCatalogPage.vue");
+const ApprovalManagementPage = () => import("./pages/ApprovalManagementPage.vue");
+const CapabilityCenterPage = () => import("./pages/CapabilityCenterPage.vue");
+const UICardManagementPage = () => import("./pages/UICardManagementPage.vue");
+const ScriptConfigPage = () => import("./pages/ScriptConfigPage.vue");
 const SettingsPage = () => import("./pages/SettingsPage.vue");
+const CorootOverviewPage = () => import("./pages/CorootOverviewPage.vue");
+const LabEnvironmentPage = () => import("./pages/LabEnvironmentPage.vue");
+const GeneratorWorkshopPage = () => import("./pages/GeneratorWorkshopPage.vue");
 
 const routes = [
   {
@@ -64,6 +71,41 @@ const routes = [
     path: "/settings/mcp",
     name: "settings-mcp",
     component: McpCatalogPage,
+  },
+  {
+    path: "/approval-management",
+    name: "approval-management",
+    component: ApprovalManagementPage,
+  },
+  {
+    path: "/capability-center",
+    name: "capability-center",
+    component: CapabilityCenterPage,
+  },
+  {
+    path: "/ui-cards",
+    name: "ui-cards",
+    component: UICardManagementPage,
+  },
+  {
+    path: "/script-configs",
+    name: "script-configs",
+    component: ScriptConfigPage,
+  },
+  {
+    path: "/coroot",
+    name: "coroot",
+    component: CorootOverviewPage,
+  },
+  {
+    path: "/lab",
+    name: "lab",
+    component: LabEnvironmentPage,
+  },
+  {
+    path: "/generator",
+    name: "generator",
+    component: GeneratorWorkshopPage,
   },
 ];
 

@@ -51,17 +51,27 @@ func (a *App) buildSingleHostThreadStartSpec(ctx context.Context, sessionID stri
 	if isRemoteHostID(selectedHostID) {
 		spec.DynamicTools = a.remoteDynamicTools()
 	}
+	// Merge Coroot tools when configured.
+	if corootTools := a.corootDynamicTools(); len(corootTools) > 0 {
+		spec.DynamicTools = append(spec.DynamicTools, corootTools...)
+	}
 	return spec
 }
 
 func (a *App) buildSingleHostTurnStartSpec(ctx context.Context, req chatRequest) turnStartSpec {
 	profile := a.mainAgentProfile()
+	devInstructions := a.renderMainAgentDeveloperInstructions(profile, req.HostID, true)
+	if req.MonitorContext != nil {
+		if prefix := model.MonitorContextPromptPrefix(*req.MonitorContext); prefix != "" {
+			devInstructions = prefix + "\n\n" + devInstructions
+		}
+	}
 	return turnStartSpec{
 		Cwd:                   a.cfg.DefaultWorkspace,
 		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
 		SandboxMode:           profile.Runtime.SandboxMode,
 		WritableRoots:         a.mainAgentWritableRoots(profile),
-		DeveloperInstructions: a.renderMainAgentDeveloperInstructions(profile, req.HostID, true),
+		DeveloperInstructions: devInstructions,
 		Input:                 a.buildMainAgentTurnInput(ctx, profile, req.Message),
 		ReasoningEffort:       profile.Runtime.ReasoningEffort,
 	}
