@@ -29,7 +29,7 @@ const normalizedPhase = computed(() => {
 
 const phaseLabel = computed(() => {
   const map = {
-    thinking: "思考中",
+    thinking: "正在思考",
     planning: "正在规划步骤",
     waiting_approval: "等待审批中",
     waiting_confirmation: "等待确认中",

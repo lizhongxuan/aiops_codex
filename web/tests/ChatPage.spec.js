@@ -46,7 +46,7 @@ vi.mock("../src/components/Omnibar.vue", () => ({
 vi.mock("../src/components/ThinkingCard.vue", () => ({
   default: {
     props: ["card"],
-    template: '<div class="thinking-card-stub">{{ card?.phase }}</div>',
+    template: '<div class="thinking-card-stub">{{ card?.phase }} {{ card?.hint }}</div>',
   },
 }));
 
@@ -92,7 +92,7 @@ function createStoreFixture(overrides = {}) {
       approvals: [],
     },
     runtime: {
-      turn: { active: false, phase: "idle" },
+      turn: { active: false, phase: "idle", pendingStart: false },
       codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
       activity: {
         viewedFiles: [],
@@ -107,6 +107,14 @@ function createStoreFixture(overrides = {}) {
     fetchState: vi.fn(async () => true),
     connectWs: vi.fn(),
     setTurnPhase: vi.fn(),
+    markTurnPendingStart: vi.fn((phase = "thinking") => {
+      state.runtime.turn.active = false;
+      state.runtime.turn.phase = phase;
+      state.runtime.turn.pendingStart = true;
+    }),
+    clearTurnPendingStart: vi.fn(() => {
+      state.runtime.turn.pendingStart = false;
+    }),
     resetActivity: vi.fn(),
     canSend: true,
     ...overrides,
@@ -251,6 +259,56 @@ describe("ChatPage terminal dock", () => {
     expect(wrapper.get('[data-testid="chat-turn-turn-user-1"]').exists()).toBe(true);
     expect(wrapper.get('[data-testid="chat-process-fold-turn-user-1"]').text()).toContain("正在思考");
     expect(wrapper.text()).toContain("现在搜索网页");
+    expect(wrapper.get('[data-testid="chat-live-status-card"]').text()).toContain("thinking");
+    expect(wrapper.get('[data-testid="chat-live-status-card"]').text()).toContain("现在搜索网页");
+  });
+
+  it("keeps the live status card visible while the turn is finalizing", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "帮我汇总一下",
+            createdAt: "2026-04-03T10:00:00Z",
+            updatedAt: "2026-04-03T10:00:00Z",
+          },
+          {
+            id: "assistant-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "我先整理结果。",
+            createdAt: "2026-04-03T10:00:05Z",
+            updatedAt: "2026-04-03T10:00:05Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: true, phase: "finalizing" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="chat-live-status-card"]').text()).toContain("finalizing");
   });
 
   it("opens the MCP surface drawer from bundle detail, pin and refresh actions", async () => {

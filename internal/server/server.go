@@ -359,6 +359,7 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/lab-environments", a.withSession(a.handleLabEnvironments))
 	httpMux.HandleFunc("/api/v1/lab-environments/", a.withSession(a.handleLabEnvironmentByID))
 	httpMux.HandleFunc("/api/v1/generator/", a.withSession(a.handleGenerator))
+	httpMux.HandleFunc("/api/v1/coroot/config", a.withSession(a.handleCorootConfig))
 	httpMux.HandleFunc("/api/v1/coroot/", a.withSession(a.handleCorootProxy))
 	httpMux.HandleFunc("/api/v1/choices/", a.withSession(a.handleChoiceAnswer))
 	httpMux.HandleFunc("/api/v1/terminal/sessions", a.withSession(a.handleTerminalCreate))
@@ -2054,6 +2055,7 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		}
 		a.bindTurnToSession(sessionID, payload)
 		a.markTurnTraceTurnStarted(sessionID, getStringAny(payload, "threadId", "thread_id"), getTurnID(payload))
+		a.broadcastSnapshot(sessionID)
 	case "turn/plan/updated":
 		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
 		if sessionID == "" {

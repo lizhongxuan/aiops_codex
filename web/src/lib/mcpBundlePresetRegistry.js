@@ -128,15 +128,16 @@ const REMEDIATION_PRESET = Object.freeze({
 const COROOT_MONITOR_SECTION_BLUEPRINTS = Object.freeze({
   overview: () => [
     makeBlueprint("readonly_summary", "服务概览", "Coroot 服务健康状态与摘要指标"),
+    makeBlueprint("readonly_summary", "KPI 指标", "关键性能指标条"),
   ],
   trends: () => [
     makeBlueprint("readonly_chart", "指标趋势", "Coroot 服务关键指标时间序列"),
   ],
   alerts: () => [
-    makeBlueprint("readonly_summary", "告警", "Coroot 服务当前告警列表"),
+    makeBlueprint("readonly_chart", "告警列表", "Coroot 服务当前告警状态表"),
   ],
   topology: () => [
-    makeBlueprint("readonly_summary", "拓扑", "Coroot 服务依赖拓扑图"),
+    makeBlueprint("readonly_summary", "拓扑概览", "Coroot 服务依赖拓扑摘要"),
   ],
 });
 
@@ -172,8 +173,8 @@ const COROOT_MONITOR_PRESET = Object.freeze({
   sectionTitles: {
     overview: "服务概览",
     trends: "指标趋势",
-    alerts: "告警",
-    topology: "拓扑",
+    alerts: "告警列表",
+    topology: "拓扑概览",
   },
   cardBlueprints: COROOT_MONITOR_SECTION_BLUEPRINTS,
 });

@@ -73,12 +73,16 @@ const activeMentions = computed(() => {
 const pasteAssist = usePasteAssist(toRef(props, "modelValue"));
 const artifactPills = computed(() => pasteAssist.artifactPills.value);
 const showToolTags = computed(() => activeMentions.value.length || artifactPills.value.length);
+const turnPendingStart = computed(() => !!store.runtime.turn.pendingStart);
+const turnActive = computed(() => {
+  const phase = String(store.runtime.turn.phase || "").trim().toLowerCase();
+  return store.runtime.turn.active && !["idle", "completed", "failed", "aborted"].includes(phase);
+});
 
 const canStop = computed(() => {
   if (props.primaryActionOverride === "send") return false;
   if (props.primaryActionOverride === "stop") return true;
-  const phase = String(store.runtime.turn.phase || "").trim().toLowerCase();
-  return store.runtime.turn.active && !["idle", "completed", "failed", "aborted"].includes(phase);
+  return turnPendingStart.value || turnActive.value;
 });
 
 // Stabilize the stop button — once active, hold it for at least 2s to prevent flickering
@@ -100,11 +104,14 @@ watch(canStop, (value) => {
   }
 }, { immediate: true });
 
-const followUpMode = computed(() => props.allowFollowUp && stableCanStop.value);
-const primaryAction = computed(() => (stableCanStop.value && !followUpMode.value ? "stop" : "send"));
+const primaryAction = computed(() => (stableCanStop.value ? "stop" : "send"));
 const canSendMessage = computed(() => (props.forceEnabled ? true : !!store.canSend));
 const inputDisabled = computed(
-  () => props.disabled || props.busy || !canSendMessage.value || store.sending || (stableCanStop.value && !followUpMode.value ? true : false),
+  () =>
+    props.disabled ||
+    props.busy ||
+    !canSendMessage.value ||
+    store.sending,
 );
 const sendDisabled = computed(
   () =>
@@ -112,10 +119,12 @@ const sendDisabled = computed(
     props.busy ||
     !canSendMessage.value ||
     store.sending ||
+    turnActive.value ||
+    turnPendingStart.value ||
     pasteAssist.sendBlocked.value ||
     !props.modelValue.trim(),
 );
-const showSecondaryStop = computed(() => followUpMode.value);
+const showSecondaryStop = computed(() => false);
 const hintTestId = computed(() => {
   if (!pasteAssist.indicator.value) return "omnibar-hint";
   if (pasteAssist.indicator.value.kind === "focus") return "omnibar-focus-hint";
@@ -124,8 +133,8 @@ const hintTestId = computed(() => {
 });
 const hintText = computed(() => {
   if (pasteAssist.indicator.value) return pasteAssist.indicator.value.text;
+  if (turnPendingStart.value) return "消息已发送，等待任务开始";
   if (primaryAction.value === "stop") return "停止当前任务";
-  if (followUpMode.value) return "⌘ ↵ 发送 follow-up";
   return "⌘ ↵ 发送";
 });
 

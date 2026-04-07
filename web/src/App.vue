@@ -21,6 +21,7 @@ import {
   EraserIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
+  ActivityIcon,
 } from "lucide-vue-next";
 
 const store = useAppStore();
@@ -580,6 +581,14 @@ watch(
             <div class="nav-item-content">
               <span class="nav-item-title">协作工作台</span>
               <span class="nav-item-time">{{ workspaceNavStatus }}</span>
+            </div>
+          </button>
+
+          <button class="nav-item" :class="{ active: $route.name === 'coroot' }" @click="router.push('/coroot')">
+            <ActivityIcon size="16" />
+            <div class="nav-item-content">
+              <span class="nav-item-title">Coroot 监控</span>
+              <span class="nav-item-time">Dashboard</span>
             </div>
           </button>
 

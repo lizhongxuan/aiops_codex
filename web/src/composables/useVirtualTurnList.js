@@ -41,6 +41,7 @@ export function useVirtualTurnList({
   estimateSize = 148,
   overscan = 4,
   minItemCount = 14,
+  suspended = false,
   getItemKey = (item, index) => item?.id || index,
 } = {}) {
   const scrollTop = ref(0);
@@ -48,8 +49,12 @@ export function useVirtualTurnList({
   const measuredHeights = ref(new Map());
   const observedItems = new Map();
   let containerObserver = null;
+  let heightUpdateTimer = null;
 
   const resolvedItems = computed(() => asArray(items?.value));
+  const virtualizationSuspended = computed(() =>
+    typeof suspended === "object" && suspended !== null && "value" in suspended ? Boolean(suspended.value) : Boolean(suspended),
+  );
   const itemKeys = computed(() =>
     resolvedItems.value.map((item, index) => String(getItemKey(item, index) ?? index)),
   );
@@ -68,7 +73,7 @@ export function useVirtualTurnList({
   });
   const totalHeight = computed(() => itemOffsets.value[itemOffsets.value.length - 1] || 0);
   const enabled = computed(
-    () => resolvedItems.value.length >= minItemCount && viewportHeight.value > 0,
+    () => !virtualizationSuspended.value && resolvedItems.value.length >= minItemCount && viewportHeight.value > 0,
   );
 
   const startIndex = computed(() => {
@@ -127,6 +132,8 @@ export function useVirtualTurnList({
     if (!roundedHeight) return;
     const previous = measuredHeights.value.get(key);
     if (previous === roundedHeight) return;
+    // Skip tiny fluctuations (< 4px) to prevent layout thrashing during streaming
+    if (previous && Math.abs(previous - roundedHeight) < 4) return;
     const next = new Map(measuredHeights.value);
     next.set(key, roundedHeight);
     measuredHeights.value = next;
@@ -152,7 +159,12 @@ export function useVirtualTurnList({
 
     const observer = new ResizeObserver((entries) => {
       const nextHeight = entries[0]?.contentRect?.height || el.getBoundingClientRect?.().height || 0;
-      updateMeasuredHeight(key, nextHeight);
+      // Batch height updates with a short debounce to prevent layout thrashing
+      if (heightUpdateTimer) clearTimeout(heightUpdateTimer);
+      heightUpdateTimer = setTimeout(() => {
+        heightUpdateTimer = null;
+        updateMeasuredHeight(key, nextHeight);
+      }, 50);
     });
     observer.observe(el);
     observedItems.set(key, { el, observer });
@@ -217,6 +229,7 @@ export function useVirtualTurnList({
   );
 
   onBeforeUnmount(() => {
+    if (heightUpdateTimer) { clearTimeout(heightUpdateTimer); heightUpdateTimer = null; }
     if (containerObserver) {
       containerObserver.disconnect();
       containerObserver = null;

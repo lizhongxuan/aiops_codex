@@ -256,18 +256,25 @@ function isTerminalTurnPhase(phase) {
   return ["idle", "completed", "failed", "aborted"].includes(String(phase || "").trim().toLowerCase());
 }
 
-function normalizeTurnRuntime(turn = {}, fallbackHostId = "server-local") {
+function normalizeTurnRuntime(turn = {}, fallbackHostId = "server-local", previousTurn = null) {
   const phase = String(turn?.phase || "idle").trim().toLowerCase() || "idle";
+  const active = !isTerminalTurnPhase(phase) && !!turn?.active;
+  const pendingStart =
+    active || isTerminalTurnPhase(phase)
+      ? false
+      : Boolean(turn?.pendingStart ?? previousTurn?.pendingStart);
   return {
-    active: !isTerminalTurnPhase(phase) && !!turn?.active,
+    active,
     phase,
     hostId: turn?.hostId || fallbackHostId,
     startedAt: turn?.startedAt || null,
+    pendingStart,
     ...turn,
-    active: !isTerminalTurnPhase(phase) && !!turn?.active,
+    active,
     phase,
     hostId: turn?.hostId || fallbackHostId,
     startedAt: turn?.startedAt || null,
+    pendingStart,
   };
 }
 
@@ -1224,6 +1231,7 @@ export const useAppStore = defineStore("app", {
         phase: "idle", // idle | thinking | planning | waiting_approval | waiting_input | executing | finalizing | completed | failed | aborted
         hostId: "",
         startedAt: null,
+        pendingStart: false,
       },
       codex: {
         status: "connected", // connected | reconnecting | disconnected | stopped
@@ -1478,7 +1486,11 @@ export const useAppStore = defineStore("app", {
       this.snapshot.config = data.config || this.snapshot.config;
       /* Merge runtime if server sends it */
       if (data.runtime) {
-        this.runtime.turn = normalizeTurnRuntime(data.runtime.turn || {}, this.snapshot.selectedHostId || "server-local");
+        this.runtime.turn = normalizeTurnRuntime(
+          data.runtime.turn || {},
+          this.snapshot.selectedHostId || "server-local",
+          this.runtime.turn,
+        );
         this.runtime.codex = {
           status: "connected",
           retryAttempt: this.runtime.codex.retryAttempt,
@@ -1561,6 +1573,29 @@ export const useAppStore = defineStore("app", {
           active: !isTerminalTurnPhase(phase),
         },
         this.snapshot.selectedHostId || "server-local",
+        this.runtime.turn,
+      );
+    },
+    markTurnPendingStart(phase = "thinking") {
+      this.runtime.turn = normalizeTurnRuntime(
+        {
+          ...this.runtime.turn,
+          phase,
+          active: false,
+          pendingStart: true,
+        },
+        this.snapshot.selectedHostId || "server-local",
+        this.runtime.turn,
+      );
+    },
+    clearTurnPendingStart() {
+      this.runtime.turn = normalizeTurnRuntime(
+        {
+          ...this.runtime.turn,
+          pendingStart: false,
+        },
+        this.snapshot.selectedHostId || "server-local",
+        this.runtime.turn,
       );
     },
     resetActivity() {

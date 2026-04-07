@@ -33,7 +33,7 @@ const kpis = computed(() => {
         label: source.label || source.name || `指标 ${index + 1}`,
         value: source.value ?? source.current ?? "--",
         delta: source.delta || source.change || "",
-        tone: source.tone || source.status || "neutral",
+        tone: source.tone || source.status || source.color || "neutral",
       };
     });
 });

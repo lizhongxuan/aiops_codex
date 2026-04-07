@@ -173,7 +173,8 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.list_services failed: %v", err), false))
 			return
 		}
-		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(services), true))
+		card := formatServicesForCard(services)
+		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(card), true))
 
 	case "coroot.service_overview":
 		serviceID := strings.TrimSpace(getStringAny(params.Arguments, "service_id"))
@@ -186,7 +187,8 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.service_overview failed: %v", err), false))
 			return
 		}
-		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(result), true))
+		card := formatServiceOverviewForCard(result)
+		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(card), true))
 
 	case "coroot.service_metrics":
 		serviceID := strings.TrimSpace(getStringAny(params.Arguments, "service_id"))
@@ -201,7 +203,8 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.service_metrics failed: %v", err), false))
 			return
 		}
-		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(result), true))
+		card := formatMetricsForCard(result)
+		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(card), true))
 
 	case "coroot.service_alerts":
 		serviceID := strings.TrimSpace(getStringAny(params.Arguments, "service_id"))
@@ -214,7 +217,8 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.service_alerts failed: %v", err), false))
 			return
 		}
-		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(alerts), true))
+		card := formatAlertsForCard(alerts)
+		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(card), true))
 
 	case "coroot.topology":
 		result, err := a.corootClient.Topology(ctx)
@@ -252,6 +256,194 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 
 	default:
 		_ = a.respondCodex(ctx, rawID, toolResponse("Unknown coroot tool: "+params.Tool, false))
+	}
+}
+
+// ---------- formatForCard helpers ----------
+
+// formatServiceOverviewForCard converts a ServiceOverviewResult into an
+// McpSummaryCard payload (map[string]any) with uiKind "readonly_summary".
+func formatServiceOverviewForCard(result *coroot.ServiceOverviewResult) map[string]any {
+	name := result.Name
+	if name == "" {
+		name = "N/A"
+	}
+	status := result.Status
+	if status == "" {
+		status = "N/A"
+	}
+	id := result.ID
+	if id == "" {
+		id = "N/A"
+	}
+
+	rows := []map[string]any{
+		{"label": "服务 ID", "value": id},
+		{"label": "状态", "value": status, "highlight": true},
+	}
+
+	// Append summary fields as additional rows.
+	if result.Summary != nil {
+		for k, v := range result.Summary {
+			val := "N/A"
+			if v != nil {
+				val = fmt.Sprintf("%v", v)
+			}
+			rows = append(rows, map[string]any{"label": k, "value": val})
+		}
+	}
+
+	return map[string]any{
+		"uiKind": "readonly_summary",
+		"title":  name + " 服务概览",
+		"status": status,
+		"rows":   rows,
+	}
+}
+
+// formatMetricsForCard converts a MetricsResult into an
+// McpTimeseriesChartCard payload with uiKind "readonly_chart".
+func formatMetricsForCard(result *coroot.MetricsResult) map[string]any {
+	series := make([]map[string]any, 0, len(result.Metrics))
+	for _, m := range result.Metrics {
+		name := "N/A"
+		if n, ok := m["name"]; ok && n != nil {
+			name = fmt.Sprintf("%v", n)
+		}
+
+		var data []map[string]any
+		if vals, ok := m["values"]; ok && vals != nil {
+			if arr, ok := vals.([]any); ok {
+				data = make([]map[string]any, 0, len(arr))
+				for _, point := range arr {
+					ts, v := extractTimeseriesPoint(point)
+					data = append(data, map[string]any{"timestamp": ts, "value": v})
+				}
+			}
+		}
+		if data == nil {
+			data = []map[string]any{}
+		}
+
+		series = append(series, map[string]any{"name": name, "data": data})
+	}
+
+	return map[string]any{
+		"uiKind": "readonly_chart",
+		"title":  "指标趋势",
+		"visual": map[string]any{
+			"kind":   "timeseries",
+			"series": series,
+		},
+	}
+}
+
+// extractTimeseriesPoint extracts (timestamp, value) from a single data point.
+// Coroot returns points as [timestamp, value] arrays.
+func extractTimeseriesPoint(point any) (float64, float64) {
+	switch p := point.(type) {
+	case []any:
+		var ts, v float64
+		if len(p) > 0 {
+			ts = toFloat64(p[0])
+		}
+		if len(p) > 1 {
+			v = toFloat64(p[1])
+		}
+		return ts, v
+	default:
+		return 0, 0
+	}
+}
+
+// toFloat64 converts a numeric any value to float64, returning 0 on failure.
+func toFloat64(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	default:
+		return 0
+	}
+}
+
+// formatAlertsForCard converts a slice of Alert into an
+// McpStatusTableCard payload with uiKind "readonly_chart".
+func formatAlertsForCard(alerts []coroot.Alert) map[string]any {
+	rows := make([]map[string]any, 0, len(alerts))
+	for _, a := range alerts {
+		id := a.ID
+		if id == "" {
+			id = "N/A"
+		}
+		name := a.Name
+		if name == "" {
+			name = "N/A"
+		}
+		severity := strings.ToLower(a.Severity)
+		if severity == "" {
+			severity = "N/A"
+		}
+		status := a.Status
+		if status == "" {
+			status = "N/A"
+		}
+		rows = append(rows, map[string]any{
+			"cells":  []string{id, name, severity, status},
+			"status": severity,
+		})
+	}
+
+	return map[string]any{
+		"uiKind": "readonly_chart",
+		"title":  "告警列表",
+		"visual": map[string]any{
+			"kind":    "status_table",
+			"columns": []string{"ID", "名称", "严重程度", "状态"},
+			"rows":    rows,
+		},
+	}
+}
+
+// formatServicesForCard converts a slice of Service into an
+// McpKpiStripCard payload with uiKind "readonly_summary".
+func formatServicesForCard(services []coroot.Service) map[string]any {
+	total := len(services)
+	healthy, warning, critical := 0, 0, 0
+	for _, s := range services {
+		switch strings.ToLower(s.Status) {
+		case "ok", "healthy":
+			healthy++
+		case "warning":
+			warning++
+		case "critical", "error":
+			critical++
+		default:
+			// Unknown statuses count toward the total but not any bucket.
+			// Treat unknown statuses as critical (conservative approach,
+			// consistent with the frontend corootCardAdapter).
+			critical++
+		}
+	}
+
+	return map[string]any{
+		"uiKind": "readonly_summary",
+		"title":  "服务健康概览",
+		"kpis": []map[string]any{
+			{"label": "总服务数", "value": total},
+			{"label": "健康", "value": healthy, "color": "green"},
+			{"label": "告警", "value": warning, "color": "amber"},
+			{"label": "异常", "value": critical, "color": "red"},
+		},
+		"visual": map[string]any{"kind": "kpi_strip"},
 	}
 }
 

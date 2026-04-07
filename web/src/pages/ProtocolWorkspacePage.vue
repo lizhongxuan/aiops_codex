@@ -54,7 +54,7 @@ function normalizePhaseLabel(value) {
     case "planning":
       return "规划中";
     case "thinking":
-      return "思考中";
+      return "正在思考";
     case "waiting_approval":
       return "等待审批";
     case "waiting_input":
@@ -379,7 +379,9 @@ const canSendWorkspaceMessage = computed(() => {
     isWorkspaceSession.value &&
     store.snapshot.auth?.connected !== false &&
     store.snapshot.config?.codexAlive !== false &&
-    !store.sending
+    !store.sending &&
+    !store.runtime.turn.active &&
+    !store.runtime.turn.pendingStart
   );
 });
 
@@ -694,7 +696,7 @@ const runtimeStatus = computed(() => {
   }
   if (!total) {
     if (workspaceModel.value.missionPhase === "thinking") {
-      return "思考中";
+      return "正在思考";
     }
     if (workspaceModel.value.cards?.planCard || compactText(planCardModel.value.generatedAt || planCardModel.value.summary)) {
       return `${phase} | 已收到计划投影，等待步骤同步`;
@@ -880,7 +882,7 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
     evidenceOpen.value = false;
     pushActionNotice("上一轮 mission 已结束，本次发送会在当前工作台启动新的 mission。", "info");
   }
-  store.setTurnPhase("thinking");
+  store.markTurnPendingStart("thinking");
   store.resetActivity();
 
   try {
@@ -897,6 +899,7 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
     if (!response.ok) {
       store.errorMessage = data.error || "message send failed";
       store.setTurnPhase("failed");
+      store.clearTurnPendingStart();
       return;
     }
     composerDraft.value = "";
@@ -905,13 +908,14 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
   } catch (_error) {
     store.errorMessage = "Network error";
     store.setTurnPhase("failed");
+    store.clearTurnPendingStart();
   } finally {
     store.sending = false;
   }
 }
 
 async function stopWorkspaceMessage() {
-  if (!store.runtime.turn.active || decisionBusy.value || stopBusy.value) return;
+  if ((!store.runtime.turn.active && !store.runtime.turn.pendingStart) || decisionBusy.value || stopBusy.value) return;
   stopBusy.value = true;
   pushActionNotice("正在中断当前任务...", "info");
   try {
@@ -1239,6 +1243,7 @@ function handleMcpSurfaceEventRefresh(surface) {
             :sending="store.sending"
             :busy="stopBusy"
             :primary-action-override="composerPrimaryActionOverride"
+            :virtualization-suspended="store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending"
             empty-label="工作台已连接，可以直接开始对话。"
             @update:draft="composerDraft = $event"
             @send="sendWorkspaceMessage"

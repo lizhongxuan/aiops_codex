@@ -383,6 +383,7 @@ function createStoreFixture(overrides = {}) {
       turn: {
         active: true,
         phase: "waiting_approval",
+        pendingStart: false,
       },
       codex: {
         status: "connected",
@@ -404,6 +405,15 @@ function createStoreFixture(overrides = {}) {
     setTurnPhase: vi.fn((phase) => {
       state.runtime.turn.active = !["idle", "completed", "failed", "aborted"].includes(String(phase || ""));
       state.runtime.turn.phase = phase;
+      state.runtime.turn.pendingStart = false;
+    }),
+    markTurnPendingStart: vi.fn((phase = "thinking") => {
+      state.runtime.turn.active = false;
+      state.runtime.turn.phase = phase;
+      state.runtime.turn.pendingStart = true;
+    }),
+    clearTurnPendingStart: vi.fn(() => {
+      state.runtime.turn.pendingStart = false;
     }),
     resetActivity: vi.fn(),
     ...restOverrides,
@@ -827,6 +837,7 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain("正在思考");
+    expect(wrapper.get('[data-testid="protocol-live-status-card"]').text()).toContain("正在思考");
     expect(wrapper.text()).not.toContain("工作台计划投影");
   });
 

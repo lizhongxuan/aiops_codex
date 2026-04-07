@@ -48,13 +48,21 @@ const thinkingHint = ref("");
 const preferredThinkingPhase = ref("");
 let thinkingHintTimer = null;
 
+const thinkingDisplayPhase = computed(() => {
+  const phase = compactText(thinkingPhase.value).toLowerCase();
+  if (["planning", "thinking", "waiting_approval", "waiting_input", "executing", "finalizing"].includes(phase)) {
+    return phase;
+  }
+  return "thinking";
+});
+
 const thinkingCard = computed(() => ({
   id: "__thinking__",
   type: "ThinkingCard",
-  phase: thinkingPhase.value,
-  hint: thinkingHint.value,
+  phase: thinkingDisplayPhase.value,
+  hint: activeActivityLine.value || summaryLine.value || thinkingHint.value,
 }));
-const showThinkingCard = computed(() => showThinking.value && thinkingPhase.value !== "finalizing");
+const showThinkingCard = computed(() => showThinking.value);
 
 function clearThinkingPrelude() {
   if (thinkingHintTimer) {
@@ -244,7 +252,8 @@ watch(
     if (phase === "waiting_approval") {
       authCardCollapsed.value = false;
     }
-  }
+  },
+  { immediate: true },
 );
 
 /* ---- Activity summary ---- */
@@ -416,7 +425,13 @@ const activeApprovalQueueNote = computed(() => {
 
 const activeMcpApproval = computed(() => localMcpApprovals.value[0] || null);
 const hasActiveApprovalOverlay = computed(() => Boolean(activeApprovalCard.value || activeMcpApproval.value));
-const allowFollowUpComposer = computed(() => approvalFollowupMode.value && !hasActiveApprovalOverlay.value);
+const allowFollowUpComposer = computed(
+  () =>
+    approvalFollowupMode.value &&
+    !hasActiveApprovalOverlay.value &&
+    !store.runtime.turn.active &&
+    !store.runtime.turn.pendingStart,
+);
 const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
 const workspaceSessionLabel = computed(() => (isWorkspaceSession.value ? "工作台会话" : ""));
 const workspaceDetailLinkLabel = computed(() => (isWorkspaceSession.value ? "查看只读详情" : ""));
@@ -460,8 +475,8 @@ const terminalDockToolbarLabel = computed(() => {
 });
 const chatContainerStyle = computed(() => ({
   paddingBottom: terminalDockVisible.value
-    ? `${terminalDockHeight.value + (activePlanCard.value || hasActiveApprovalOverlay.value ? 260 : 180)}px`
-    : "180px",
+    ? `${terminalDockHeight.value + (activePlanCard.value || hasActiveApprovalOverlay.value ? 180 : 80)}px`
+    : "80px",
 }));
 
 function queueLocalMcpApproval(action) {
@@ -582,8 +597,8 @@ const mainChatActiveProcess = computed(() => {
   ].filter((item) => item.text);
 
   return {
-    phase: thinkingPhase.value,
-    liveHint: activeActivityLine.value || thinkingCard.value.hint || "",
+    phase: thinkingDisplayPhase.value,
+    liveHint: activeActivityLine.value || thinkingHint.value || "",
     summary: summaryLine.value || (!activeActivityLine.value ? activitySummary.value : ""),
     items,
   };
@@ -626,10 +641,10 @@ const baseStreamEntries = computed(() => {
     });
   }
 
-  if (!mainChatTurns.value.length && showThinking.value && hasTopFeedback.value) {
+  if (!mainChatTurns.value.length && showThinking.value && hasTopFeedback.value && !showThinkingCard.value) {
     entries.push({ id: "__activity__", kind: "activity" });
   }
-  if (!mainChatTurns.value.length && showThinkingCard.value) {
+  if (showThinkingCard.value) {
     entries.push({ id: "__thinking__", kind: "thinking" });
   }
 
@@ -774,6 +789,7 @@ const renderedStreamEntries = computed(() => {
 const virtualStream = useVirtualTurnList({
   items: renderedStreamEntries,
   scrollContainer,
+  suspended: computed(() => store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending),
   estimateSize(entry) {
     if (entry?.kind === "turn") return 172;
     if (entry?.kind === "divider") return 72;
@@ -782,7 +798,7 @@ const virtualStream = useVirtualTurnList({
     if (entry?.kind === "thinking") return 96;
     return 120;
   },
-  overscan: 4,
+  overscan: 8,
   minItemCount: 18,
   getItemKey: (entry, index) => entry?.id || index,
 });
@@ -927,14 +943,14 @@ function getRowClass(card) {
 
 async function sendMessage() {
   if (!store.canSend || !composerMessage.value.trim()) return;
-  if (store.runtime.turn.active && !allowFollowUpComposer.value) return;
+  if (store.runtime.turn.active || store.runtime.turn.pendingStart) return;
 
   const message = composerMessage.value.trim();
   store.sending = true;
   store.errorMessage = "";
   showThinking.value = true;
   queueThinkingPrelude(message);
-  store.setTurnPhase(preferredThinkingPhase.value || "thinking");
+  store.markTurnPendingStart("thinking");
   store.resetActivity();
 
   try {
@@ -952,6 +968,7 @@ async function sendMessage() {
       store.errorMessage = data.error || "message send failed";
       showThinking.value = false;
       store.setTurnPhase("failed");
+      store.clearTurnPendingStart();
       clearThinkingPrelude();
     } else {
       composerMessage.value = "";
@@ -962,6 +979,7 @@ async function sendMessage() {
     store.errorMessage = "Network error";
     showThinking.value = false;
     store.setTurnPhase("failed");
+    store.clearTurnPendingStart();
     clearThinkingPrelude();
   } finally {
     store.sending = false;
@@ -969,7 +987,7 @@ async function sendMessage() {
 }
 
 async function stopMessage() {
-  if (!store.runtime.turn.active) return;
+  if (!store.runtime.turn.active && !store.runtime.turn.pendingStart) return;
   try {
     const response = await fetch("/api/v1/chat/stop", {
       method: "POST",
@@ -1417,7 +1435,7 @@ watch(
             </div>
           </div>
 
-          <div v-else-if="entry.kind === 'thinking'" class="stream-row row-assistant">
+          <div v-else-if="entry.kind === 'thinking'" class="stream-row row-assistant" data-testid="chat-live-status-card">
             <ThinkingCard :card="thinkingCard" />
           </div>
         </template>

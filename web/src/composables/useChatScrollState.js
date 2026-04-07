@@ -41,6 +41,8 @@ export function useChatScrollState({
   const unreadAnchorId = ref("");
   const lastReadItemId = ref("");
   let contentResizeObserver = null;
+  let resizeDebounceTimer = null;
+  let userScrolledAt = 0;
 
   const showUnreadPill = computed(() => unreadCount.value > 0 && !isPinnedToBottom.value);
 
@@ -66,6 +68,9 @@ export function useChatScrollState({
     const el = event?.target || scrollContainer?.value;
     const pinned = isNearBottom(el, threshold);
     isPinnedToBottom.value = pinned;
+    if (!pinned) {
+      userScrolledAt = Date.now();
+    }
     if (pinned) {
       markRead();
     }
@@ -104,13 +109,21 @@ export function useChatScrollState({
     nextTick(() => scrollToBottom(true));
     if (typeof ResizeObserver !== "undefined" && scrollContent?.value) {
       contentResizeObserver = new ResizeObserver(() => {
-        scrollToBottom();
+        // Debounce resize callbacks to prevent layout thrashing during streaming
+        if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = setTimeout(() => {
+          resizeDebounceTimer = null;
+          // Skip auto-scroll if user manually scrolled within the last 1.5s
+          if (Date.now() - userScrolledAt < 1500 && !isPinnedToBottom.value) return;
+          scrollToBottom();
+        }, 80);
       });
       contentResizeObserver.observe(scrollContent.value);
     }
   });
 
   onBeforeUnmount(() => {
+    if (resizeDebounceTimer) { clearTimeout(resizeDebounceTimer); resizeDebounceTimer = null; }
     if (contentResizeObserver) {
       contentResizeObserver.disconnect();
       contentResizeObserver = null;

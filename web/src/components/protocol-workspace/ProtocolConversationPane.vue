@@ -97,6 +97,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  virtualizationSuspended: {
+    type: Boolean,
+    default: false,
+  },
   emptyLabel: {
     type: String,
     default: "这里会显示主 Agent 的对话流。",
@@ -270,7 +274,7 @@ const visibleStreamItems = computed(() => historyPager.visibleItems.value);
 
 const streamSignature = computed(() => {
   if (visibleStreamItems.value.length) {
-    return visibleStreamItems.value
+    const visibleSignature = visibleStreamItems.value
       .map((turn) => [
         turn.id,
         turn.processItems?.length || 0,
@@ -279,6 +283,12 @@ const streamSignature = computed(() => {
         turn.liveHint || "",
       ].join(":"))
       .join("|");
+    return [
+      visibleSignature,
+      props.statusCard?.phase || "",
+      props.statusCard?.hint || "",
+      historyPager.topSentinel.value?.kind || "",
+    ].join("|");
   }
   return [
     visibleStreamItems.value.length,
@@ -311,6 +321,7 @@ const {
 const virtualTurns = useVirtualTurnList({
   items: visibleStreamItems,
   scrollContainer,
+  suspended: computed(() => props.virtualizationSuspended),
   estimateSize(turn) {
     if (turn?.active) return 220;
     return turn?.collapsedByDefault ? 180 : 212;
@@ -439,6 +450,10 @@ function handlePaneScroll(event) {
               @refresh="forwardRefresh"
             />
           </template>
+
+          <div v-if="statusCard" class="stream-row row-assistant protocol-thinking-row" data-testid="protocol-live-status-card">
+            <ThinkingCard :card="statusCard" />
+          </div>
         </div>
 
         <div v-else-if="showLegacyMessageStream" class="chat-stream protocol-chat-stream">
@@ -452,7 +467,7 @@ function handlePaneScroll(event) {
             <MessageCard :card="message.card" />
           </div>
 
-          <div v-if="statusCard" class="stream-row row-assistant protocol-thinking-row">
+          <div v-if="statusCard" class="stream-row row-assistant protocol-thinking-row" data-testid="protocol-live-status-card">
             <ThinkingCard :card="statusCard" />
           </div>
         </div>
