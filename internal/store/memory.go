@@ -766,6 +766,10 @@ func (s *Store) Choice(sessionID, choiceID string) (model.ChoiceRequest, bool) {
 }
 
 func (s *Store) ResolveChoice(sessionID, choiceID, status, resolvedAt string) {
+	s.ResolveChoiceWithAnswers(sessionID, choiceID, status, resolvedAt, nil)
+}
+
+func (s *Store) ResolveChoiceWithAnswers(sessionID, choiceID, status, resolvedAt string, answers []model.ChoiceAnswer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, _ := s.ensureSessionLocked(sessionID)
@@ -774,6 +778,9 @@ func (s *Store) ResolveChoice(sessionID, choiceID, status, resolvedAt string) {
 		return
 	}
 	choice.Status = status
+	if answers != nil {
+		choice.Answers = append([]model.ChoiceAnswer(nil), answers...)
+	}
 	choice.ResolvedAt = resolvedAt
 	session.Choices[choiceID] = choice
 	session.LastActivityAt = model.NowString()
@@ -939,18 +946,331 @@ func (s *Store) Snapshot(sessionID string, cfg model.UIConfig) model.Snapshot {
 	model.SortHosts(hosts)
 
 	cards := append([]model.Card(nil), session.Cards...)
+	agentLoop, iterations, invocations, evidence := buildAgentLoopProjection(session, cards)
 	return model.Snapshot{
-		SessionID:      session.ID,
-		Kind:           session.Meta.Kind,
-		SelectedHostID: session.SelectedHostID,
-		Auth:           session.Auth,
-		Hosts:          hosts,
-		Cards:          cards,
-		Approvals:      approvals,
-		Runtime:        cloneRuntime(session.Runtime),
-		LastActivityAt: session.LastActivityAt,
-		Config:         cfg,
+		SessionID:           session.ID,
+		Kind:                session.Meta.Kind,
+		SelectedHostID:      session.SelectedHostID,
+		Auth:                session.Auth,
+		Hosts:               hosts,
+		Cards:               cards,
+		Approvals:           approvals,
+		Runtime:             cloneRuntime(session.Runtime),
+		AgentLoop:           agentLoop,
+		AgentLoopIterations: iterations,
+		ToolInvocations:     invocations,
+		EvidenceSummaries:   evidence,
+		LastActivityAt:      session.LastActivityAt,
+		Config:              cfg,
 	}
+}
+
+func buildAgentLoopProjection(session *SessionState, cards []model.Card) (*model.AgentLoopRun, []model.AgentLoopIteration, []model.ToolInvocation, []model.EvidenceRecord) {
+	if session == nil {
+		return nil, nil, nil, nil
+	}
+	runID := "loop-" + session.ID
+	iterationID := "iter-" + runID
+	if strings.TrimSpace(session.TurnID) != "" {
+		iterationID = "iter-" + session.TurnID
+	}
+	phase := strings.TrimSpace(session.Runtime.Turn.Phase)
+	if phase == "" {
+		phase = "idle"
+	}
+	invocations, evidence := buildToolInvocationProjection(runID, iterationID, cards)
+	if !session.Runtime.Turn.Active && phase == "idle" && len(invocations) == 0 {
+		return nil, nil, nil, nil
+	}
+
+	status := "completed"
+	switch phase {
+	case "waiting_input":
+		status = "waiting_user"
+	case "waiting_approval":
+		status = "waiting_approval"
+	case "failed":
+		status = "failed"
+	case "aborted":
+		status = "canceled"
+	case "idle", "completed":
+		status = "completed"
+	default:
+		if session.Runtime.Turn.Active {
+			status = "running"
+		}
+	}
+	mode := "answer"
+	switch phase {
+	case "planning":
+		mode = "plan"
+	case "executing", "finalizing":
+		mode = "execute"
+	case "waiting_input":
+		mode = "answer"
+	case "waiting_approval":
+		mode = "plan"
+	}
+	run := &model.AgentLoopRun{
+		ID:                runID,
+		SessionID:         session.ID,
+		Status:            status,
+		Mode:              mode,
+		Kind:              session.Meta.Kind,
+		ActiveIterationID: iterationID,
+		CreatedAt:         firstNonEmptyString(session.Runtime.Turn.StartedAt, session.CreatedAt),
+		UpdatedAt:         session.LastActivityAt,
+	}
+	if !session.Runtime.Turn.Active {
+		run.ActiveIterationID = ""
+	}
+	iteration := model.AgentLoopIteration{
+		ID:            iterationID,
+		RunID:         runID,
+		Index:         1,
+		StopReason:    agentLoopStopReason(phase, session.Runtime.Turn.Active),
+		NeedsFollowUp: session.Runtime.Turn.Active && phase != "waiting_input" && phase != "waiting_approval",
+		ModelAttempt:  1,
+		StartedAt:     firstNonEmptyString(session.Runtime.Turn.StartedAt, session.CreatedAt),
+		CompletedAt:   "",
+	}
+	if !session.Runtime.Turn.Active {
+		iteration.CompletedAt = session.LastActivityAt
+	}
+	return run, []model.AgentLoopIteration{iteration}, invocations, evidence
+}
+
+func buildToolInvocationProjection(runID, iterationID string, cards []model.Card) ([]model.ToolInvocation, []model.EvidenceRecord) {
+	invocations := make([]model.ToolInvocation, 0)
+	evidence := make([]model.EvidenceRecord, 0)
+	for _, card := range cards {
+		name := toolInvocationNameForCard(card)
+		if name == "" {
+			continue
+		}
+		invocationID := "tool-" + card.ID
+		evidenceID := "evidence-" + card.ID
+		input := toolInvocationInputForCard(card)
+		output := toolInvocationOutputForCard(card)
+		invocations = append(invocations, model.ToolInvocation{
+			ID:            invocationID,
+			RunID:         runID,
+			IterationID:   iterationID,
+			Name:          name,
+			Status:        toolInvocationStatusForCard(card),
+			InputJSON:     stableJSON(input),
+			OutputJSON:    stableJSON(output),
+			InputSummary:  toolInvocationInputSummary(card),
+			OutputSummary: toolInvocationOutputSummary(card),
+			EvidenceID:    evidenceID,
+			StartedAt:     card.CreatedAt,
+			CompletedAt:   toolInvocationCompletedAt(card),
+		})
+		evidence = append(evidence, model.EvidenceRecord{
+			ID:           evidenceID,
+			RunID:        runID,
+			InvocationID: invocationID,
+			Kind:         name,
+			Title:        firstNonEmptyString(card.Title, toolInvocationInputSummary(card), name),
+			Summary:      toolInvocationOutputSummary(card),
+			Content:      toolEvidenceContent(card),
+			Metadata: map[string]any{
+				"cardId": card.ID,
+				"type":   card.Type,
+				"status": card.Status,
+				"hostId": card.HostID,
+			},
+			CreatedAt: firstNonEmptyString(card.CreatedAt, card.UpdatedAt),
+		})
+	}
+	return invocations, evidence
+}
+
+func toolInvocationNameForCard(card model.Card) string {
+	if tool := cardDetailString(card, "tool", "toolName"); tool != "" {
+		return tool
+	}
+	switch card.Type {
+	case "ChoiceCard":
+		return "ask_user_question"
+	case "CommandCard":
+		return "command"
+	case "CommandApprovalCard", "FileChangeApprovalCard":
+		return "request_approval"
+	case "DispatchSummaryCard":
+		return "orchestrator_dispatch_tasks"
+	case "PlanCard":
+		return "update_plan"
+	case "PlanApprovalCard":
+		return "exit_plan_mode"
+	default:
+		return ""
+	}
+}
+
+func toolInvocationStatusForCard(card model.Card) string {
+	status := strings.TrimSpace(card.Status)
+	if card.Type == "ChoiceCard" && status == "pending" {
+		return "waiting_user"
+	}
+	if (card.Type == "CommandApprovalCard" || card.Type == "FileChangeApprovalCard" || card.Type == "PlanApprovalCard") && status == "pending" {
+		return "waiting_approval"
+	}
+	if status == "" {
+		return "completed"
+	}
+	return status
+}
+
+func toolInvocationInputForCard(card model.Card) map[string]any {
+	switch card.Type {
+	case "ChoiceCard":
+		return map[string]any{"questions": card.Questions, "question": card.Question, "options": card.Options}
+	case "CommandCard", "CommandApprovalCard":
+		return map[string]any{"hostId": card.HostID, "cwd": card.Cwd, "command": card.Command}
+	case "FileChangeApprovalCard":
+		return map[string]any{"hostId": card.HostID, "changes": card.Changes, "reason": card.Text}
+	case "DispatchSummaryCard", "PlanCard", "PlanApprovalCard":
+		return map[string]any{"title": card.Title, "text": card.Text, "items": card.Items, "detail": card.Detail}
+	default:
+		return map[string]any{"title": card.Title, "text": card.Text}
+	}
+}
+
+func toolInvocationOutputForCard(card model.Card) map[string]any {
+	return map[string]any{
+		"status":        card.Status,
+		"summary":       card.Summary,
+		"text":          card.Text,
+		"message":       card.Message,
+		"output":        card.Output,
+		"stdout":        card.Stdout,
+		"stderr":        card.Stderr,
+		"exitCode":      card.ExitCode,
+		"answerSummary": card.AnswerSummary,
+		"durationMs":    card.DurationMS,
+		"approval":      card.Approval,
+	}
+}
+
+func toolInvocationInputSummary(card model.Card) string {
+	switch card.Type {
+	case "ChoiceCard":
+		return firstNonEmptyString(card.Question, card.Title, "澄清用户意图")
+	case "CommandCard", "CommandApprovalCard":
+		return strings.TrimSpace(card.Command)
+	case "FileChangeApprovalCard":
+		return firstNonEmptyString(card.Text, "文件变更审批")
+	case "PlanCard":
+		return firstNonEmptyString(card.Title, card.Text, "计划更新")
+	case "PlanApprovalCard":
+		return firstNonEmptyString(card.Title, card.Summary, card.Text, "计划审批")
+	default:
+		return firstNonEmptyString(card.Title, card.Text)
+	}
+}
+
+func toolInvocationOutputSummary(card model.Card) string {
+	switch card.Type {
+	case "ChoiceCard":
+		if len(card.AnswerSummary) > 0 {
+			return strings.Join(card.AnswerSummary, "; ")
+		}
+		if strings.TrimSpace(card.Status) == "pending" {
+			return "等待用户回答"
+		}
+	case "CommandCard":
+		return compactProjectionText(firstNonEmptyString(card.Output, card.Stdout, card.Stderr, card.Text, card.Summary, card.Status), 240)
+	case "CommandApprovalCard", "FileChangeApprovalCard", "PlanApprovalCard":
+		return firstNonEmptyString(card.Text, card.Summary, card.Status)
+	}
+	return compactProjectionText(firstNonEmptyString(card.Summary, card.Text, card.Message, card.Status), 240)
+}
+
+func toolEvidenceContent(card model.Card) string {
+	switch card.Type {
+	case "CommandCard":
+		return firstNonEmptyString(card.Output, strings.TrimSpace(strings.Join([]string{card.Stdout, card.Stderr}, "\n")), card.Text, card.Summary)
+	case "ChoiceCard":
+		return strings.Join(append([]string{card.Question}, card.AnswerSummary...), "\n")
+	case "PlanCard", "PlanApprovalCard":
+		return firstNonEmptyString(stableJSON(card.Detail), card.Text, card.Summary, card.Message)
+	default:
+		return firstNonEmptyString(card.Output, card.Text, card.Summary, card.Message)
+	}
+}
+
+func cardDetailString(card model.Card, keys ...string) string {
+	if card.Detail == nil {
+		return ""
+	}
+	for _, key := range keys {
+		value, ok := card.Detail[key]
+		if !ok {
+			continue
+		}
+		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	return ""
+}
+
+func toolInvocationCompletedAt(card model.Card) string {
+	switch toolInvocationStatusForCard(card) {
+	case "pending", "running", "waiting_user", "waiting_approval":
+		return ""
+	default:
+		return firstNonEmptyString(card.UpdatedAt, card.CreatedAt)
+	}
+}
+
+func agentLoopStopReason(phase string, active bool) string {
+	switch phase {
+	case "waiting_input":
+		return "waiting_user"
+	case "waiting_approval":
+		return "waiting_approval"
+	case "failed":
+		return "failed"
+	case "aborted":
+		return "canceled"
+	case "completed", "idle":
+		return "end_turn"
+	default:
+		if active {
+			return "tool_use"
+		}
+		return "end_turn"
+	}
+}
+
+func stableJSON(value any) string {
+	if value == nil {
+		return ""
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if text := strings.TrimSpace(value); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func compactProjectionText(value string, maxLen int) string {
+	text := strings.Join(strings.Fields(value), " ")
+	if maxLen > 0 && len(text) > maxLen {
+		return text[:maxLen] + "..."
+	}
+	return text
 }
 
 func (s *Store) ensureSessionLocked(sessionID string) (*SessionState, bool) {

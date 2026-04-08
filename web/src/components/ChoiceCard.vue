@@ -14,6 +14,14 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  submitting: {
+    type: Boolean,
+    default: false,
+  },
+  errorMessage: {
+    type: String,
+    default: "",
+  },
 });
 
 const emit = defineEmits(["choice"]);
@@ -22,6 +30,7 @@ const selectedValues = ref([]);
 const otherValues = ref([]);
 const noteValues = ref([]);
 const noteExpanded = ref([]);
+const selectionSignature = ref("");
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -101,22 +110,6 @@ const choiceQuestions = computed(() => {
 const resolvedSummary = computed(() => props.card.answerSummary || []);
 const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台输入请求" : ""));
 
-watch(
-  choiceQuestions,
-  (questions) => {
-    selectedValues.value = questions.map((question) => {
-      if (question.options?.length) {
-        return question.options[0]._value;
-      }
-      return OTHER_OPTION_VALUE;
-    });
-    otherValues.value = questions.map(() => "");
-    noteValues.value = questions.map(() => "");
-    noteExpanded.value = questions.map(() => false);
-  },
-  { immediate: true, deep: true },
-);
-
 const canSubmit = computed(() => {
   if (props.card.status !== "pending") return false;
   return choiceQuestions.value.every((question, index) => {
@@ -147,8 +140,62 @@ function toggleSupplementNote(index) {
   noteExpanded.value[index] = !noteExpanded.value[index];
 }
 
+function defaultSelectedValue(question) {
+  if (question.options?.length) {
+    return question.options[0]._value;
+  }
+  return OTHER_OPTION_VALUE;
+}
+
+function hasOptionValue(question, value) {
+  if (question.isOther && value === OTHER_OPTION_VALUE) return true;
+  return Boolean(question.options?.some((option) => option._value === value));
+}
+
+function buildSelectionSignature(questions) {
+  return JSON.stringify({
+    requestId: props.card.requestId || props.card.id || "",
+    questions: questions.map((question) => ({
+      header: question.header,
+      question: question.question,
+      isOther: question.isOther,
+      isSecret: question.isSecret,
+      options: asArray(question.options).map((option) => ({
+        value: option._value,
+        label: option._label,
+      })),
+    })),
+  });
+}
+
+function alignValues(values, questions, fallback) {
+  return questions.map((_, index) => values[index] ?? fallback(index));
+}
+
+watch(
+  choiceQuestions,
+  (questions) => {
+    const nextSignature = buildSelectionSignature(questions);
+    const isSamePrompt = selectionSignature.value === nextSignature;
+    const previousSelected = selectedValues.value;
+
+    selectedValues.value = questions.map((question, index) => {
+      const previous = previousSelected[index];
+      if (isSamePrompt && hasOptionValue(question, previous)) {
+        return previous;
+      }
+      return defaultSelectedValue(question);
+    });
+    otherValues.value = isSamePrompt ? alignValues(otherValues.value, questions, () => "") : questions.map(() => "");
+    noteValues.value = isSamePrompt ? alignValues(noteValues.value, questions, () => "") : questions.map(() => "");
+    noteExpanded.value = isSamePrompt ? alignValues(noteExpanded.value, questions, () => false) : questions.map(() => false);
+    selectionSignature.value = nextSignature;
+  },
+  { immediate: true },
+);
+
 function onSubmit() {
-  if (!canSubmit.value) return;
+  if (!canSubmit.value || props.submitting) return;
   emit("choice", {
     requestId: props.card.requestId,
     answers: choiceQuestions.value.map((question, index) => {
@@ -270,8 +317,11 @@ function onSubmit() {
       </div>
 
       <div v-if="card.status === 'pending'" class="choice-footer">
-        <button class="submit-btn" :disabled="!canSubmit" @click="onSubmit">
-          提交 ↵
+        <p v-if="errorMessage" class="choice-error" data-testid="choice-error-message">
+          {{ errorMessage }}
+        </p>
+        <button class="submit-btn" :disabled="!canSubmit || submitting" @click="onSubmit">
+          {{ submitting ? "提交中..." : "提交 ↵" }}
         </button>
       </div>
 
@@ -495,8 +545,17 @@ function onSubmit() {
 
 .choice-footer {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
   margin-top: 18px;
+}
+
+.choice-error {
+  margin: 0 auto 0 0;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .submit-btn {

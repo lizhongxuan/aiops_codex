@@ -84,6 +84,7 @@ const canStop = computed(() => {
   if (props.primaryActionOverride === "stop") return true;
   return turnPendingStart.value || turnActive.value;
 });
+const forceSendAction = computed(() => props.primaryActionOverride === "send");
 
 // Stabilize the stop button — once active, hold it for at least 2s to prevent flickering
 const stableCanStop = ref(false);
@@ -119,8 +120,7 @@ const sendDisabled = computed(
     props.busy ||
     !canSendMessage.value ||
     store.sending ||
-    turnActive.value ||
-    turnPendingStart.value ||
+    (!forceSendAction.value && (turnActive.value || turnPendingStart.value)) ||
     pasteAssist.sendBlocked.value ||
     !props.modelValue.trim(),
 );

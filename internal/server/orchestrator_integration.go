@@ -311,16 +311,28 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 		UpdatedAt: now,
 	})
 	hostID := a.workspaceDirectTargetHost(sessionID, req)
+	a.store.SetSelectedHost(sessionID, hostID)
+	if workspaceMessageNeedsIntentClarification(req.Message) {
+		log.Printf(
+			"workspace intent guard waiting for clarification session=%s host=%s text=%q",
+			sessionID,
+			hostID,
+			truncate(req.Message, 120),
+		)
+		a.startRuntimeTurn(sessionID, hostID)
+		a.createChoiceRequest("", sessionID, map[string]any{}, workspaceIntentClarificationQuestions(req.Message))
+		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+		return
+	}
 	requestID := a.beginTurnTraceRequest(sessionID, hostID)
 	log.Printf(
-		"workspace route request begin session=%s request=%s kind=%s host=%s text=%q",
+		"workspace react loop request begin session=%s request=%s kind=%s host=%s text=%q",
 		sessionID,
 		requestID,
 		a.sessionKind(sessionID),
 		hostID,
 		truncate(req.Message, 120),
 	)
-	a.store.SetSelectedHost(sessionID, hostID)
 	a.startRuntimeTurn(sessionID, hostID)
 	a.broadcastSnapshot(sessionID)
 
@@ -331,9 +343,17 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 		cancel()
 	}()
 
-	if err := a.startWorkspaceRouteTurn(ctx, sessionID, hostID, req.Message); err != nil {
+	if err := a.runReActAgentLoop(ctx, reActLoopRequest{
+		SessionID:        sessionID,
+		Kind:             reActLoopKindWorkspace,
+		HostID:           hostID,
+		Message:          req.Message,
+		MonitorContext:   req.MonitorContext,
+		RequestID:        requestID,
+		RequestStartedAt: requestStartedAt,
+	}); err != nil {
 		log.Printf(
-			"workspace route request failed session=%s request=%s kind=%s host=%s duration=%s err=%v",
+			"workspace react loop request failed session=%s request=%s kind=%s host=%s duration=%s err=%v",
 			sessionID,
 			requestID,
 			a.sessionKind(sessionID),
@@ -352,7 +372,7 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 		a.store.UpsertCard(sessionID, model.Card{
 			ID:        model.NewID("error"),
 			Type:      "ErrorCard",
-			Title:     "主 Agent 路由失败",
+			Title:     "主 Agent ReAct loop failed",
 			Message:   err.Error(),
 			Text:      err.Error(),
 			Status:    "failed",
@@ -365,7 +385,7 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 	}
 
 	log.Printf(
-		"workspace route request accepted session=%s request=%s kind=%s host=%s duration=%s",
+		"workspace react loop request accepted session=%s request=%s kind=%s host=%s duration=%s",
 		sessionID,
 		requestID,
 		a.sessionKind(sessionID),
@@ -805,7 +825,7 @@ func (a *App) resolveMirroredChoiceCard(workspaceSessionID, choiceID string, ans
 		return
 	}
 	now := model.NowString()
-	a.store.ResolveChoice(workspaceSessionID, choiceID, "completed", now)
+	a.store.ResolveChoiceWithAnswers(workspaceSessionID, choiceID, "completed", now, choiceAnswersToModel(answers))
 	a.store.UpdateCard(workspaceSessionID, choiceID, func(card *model.Card) {
 		card.Status = "completed"
 		card.AnswerSummary = choiceAnswerSummary(questions, answers)

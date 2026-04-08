@@ -397,6 +397,24 @@ func TestValidateReadonlyCommand(t *testing.T) {
 	if err := validateReadonlyCommand("ps -ef | head -20"); err != nil {
 		t.Fatalf("expected simple pipeline to pass, got %v", err)
 	}
+	if err := validateReadonlyCommand("pgrep -lf '[p]ostgres|[p]ostmaster'"); err != nil {
+		t.Fatalf("expected quoted regex alternation to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("ps aux | grep -E '[p]ostgres|[p]ostmaster'"); err != nil {
+		t.Fatalf("expected quoted regex alternation in pipeline to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("command -v psql"); err != nil {
+		t.Fatalf("expected command -v lookup to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("lsof -nP -iTCP:5432 -sTCP:LISTEN"); err != nil {
+		t.Fatalf("expected lsof read-only inspection to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("launchctl list | grep -i postgres"); err != nil {
+		t.Fatalf("expected launchctl list to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("brew services list | grep -i postgres"); err != nil {
+		t.Fatalf("expected brew services list to pass, got %v", err)
+	}
 	if err := validateReadonlyCommand("systemctl restart nginx"); err == nil {
 		t.Fatalf("expected restart to be rejected")
 	}

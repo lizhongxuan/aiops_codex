@@ -58,48 +58,48 @@ var codexReconnectMessagePattern = regexp.MustCompile(`(?i)^reconnecting\.\.\.\s
 var contextualFollowupPattern = regexp.MustCompile(`(?i)(继续|刚才|上面|前面|前文|上一|这个|那个|第\s*\d+\s*步|same|above|previous|continue|earlier|step\s*\d+)`)
 
 type App struct {
-	cfg              config.Config
-	store            *store.Store
-	codex            *codex.Client
-	orchestrator     *orchestrator.Manager
-	codexRequestFunc func(context.Context, string, any, any) error
-	codexRespondFunc func(context.Context, string, any) error
-	upgrader         websocket.Upgrader
-	agentMu          sync.Mutex
-	agents           map[string]*agentConnection
-	wsMu             sync.Mutex
-	wsClients        map[string]map[*websocket.Conn]struct{}
-	turnMu           sync.Mutex
-	turnCancels      map[string]context.CancelFunc
-	terminalMu       sync.Mutex
-	terminals        map[string]*terminalSession
-	execMu           sync.Mutex
-	execs            map[string]*remoteExecSession
-	fileReqMu        sync.Mutex
-	fileReqs         map[string]*agentResponseWaiter
-	approvalMu       sync.Mutex
-	fileChangeClaims map[string]struct{}
-	oauthMu          sync.Mutex
-	oauthStates      map[string]string
-	auditMu          sync.Mutex
-	turnTraceMu      sync.Mutex
-	turnTraces       map[string]*turnTrace
-	orchestratorMu   sync.Mutex
-	orchestratorJobs map[string]string
-	broadcastThrotMu sync.Mutex
-	broadcastTimers  map[string]*time.Timer
-	threadStarts     []time.Time
-	turnStarts       []time.Time
-	approvalAuditStore      *store.ApprovalAuditStore
-	approvalGrantStore      *store.ApprovalGrantStore
-	capabilityBindingStore  *store.CapabilityBindingStore
+	cfg                    config.Config
+	store                  *store.Store
+	codex                  *codex.Client
+	orchestrator           *orchestrator.Manager
+	codexRequestFunc       func(context.Context, string, any, any) error
+	codexRespondFunc       func(context.Context, string, any) error
+	upgrader               websocket.Upgrader
+	agentMu                sync.Mutex
+	agents                 map[string]*agentConnection
+	wsMu                   sync.Mutex
+	wsClients              map[string]map[*websocket.Conn]struct{}
+	turnMu                 sync.Mutex
+	turnCancels            map[string]context.CancelFunc
+	terminalMu             sync.Mutex
+	terminals              map[string]*terminalSession
+	execMu                 sync.Mutex
+	execs                  map[string]*remoteExecSession
+	fileReqMu              sync.Mutex
+	fileReqs               map[string]*agentResponseWaiter
+	approvalMu             sync.Mutex
+	fileChangeClaims       map[string]struct{}
+	oauthMu                sync.Mutex
+	oauthStates            map[string]string
+	auditMu                sync.Mutex
+	turnTraceMu            sync.Mutex
+	turnTraces             map[string]*turnTrace
+	orchestratorMu         sync.Mutex
+	orchestratorJobs       map[string]string
+	broadcastThrotMu       sync.Mutex
+	broadcastTimers        map[string]*time.Timer
+	threadStarts           []time.Time
+	turnStarts             []time.Time
+	approvalAuditStore     *store.ApprovalAuditStore
+	approvalGrantStore     *store.ApprovalGrantStore
+	capabilityBindingStore *store.CapabilityBindingStore
 	uiCardStore            *store.UICardStore
 	scriptConfigStore      *store.ScriptConfigStore
 	labEnvironmentStore    *store.LabEnvironmentStore
 	corootClient           *coroot.Client
-	httpServer         *http.Server
-	grpcServer         *grpc.Server
-	commandRunner      commandRunner
+	httpServer             *http.Server
+	grpcServer             *grpc.Server
+	commandRunner          commandRunner
 }
 
 type authLoginRequest struct {
@@ -114,7 +114,7 @@ type authLoginRequest struct {
 type chatRequest struct {
 	Message        string                `json:"message"`
 	HostID         string                `json:"hostId"`
-	MonitorContext *model.MonitorContext  `json:"monitorContext,omitempty"`
+	MonitorContext *model.MonitorContext `json:"monitorContext,omitempty"`
 }
 
 type turnTrace struct {
@@ -153,8 +153,424 @@ type choiceAnswerInput struct {
 	Note    string `json:"note,omitempty"`
 }
 
+type requiredToolFollowup struct {
+	SessionID    string
+	ChoiceCardID string
+	Tool         string
+	HostID       string
+	Message      string
+}
+
 type choiceAnswerRequest struct {
 	Answers []choiceAnswerInput `json:"answers"`
+}
+
+func (a *App) answerPendingChoiceFromChatMessage(w http.ResponseWriter, r *http.Request, sessionID, message string) bool {
+	choiceID, choice, ok := a.latestPendingChoiceForSession(sessionID)
+	if !ok {
+		return false
+	}
+	if len(choice.Questions) != 1 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "当前有多个待回答问题，请先在澄清卡片中完成选择"})
+		return true
+	}
+	answers := buildChoiceAnswersFromText(choice.Questions, message)
+	if len(answers) == 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := a.submitChoiceAnswer(ctx, sessionID, choiceID, choice, answers); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"answeredChoice": true,
+	})
+	return true
+}
+
+func (a *App) latestPendingChoiceForSession(sessionID string) (string, model.ChoiceRequest, bool) {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return "", model.ChoiceRequest{}, false
+	}
+	for i := len(session.Cards) - 1; i >= 0; i-- {
+		card := session.Cards[i]
+		if card.Type != "ChoiceCard" || strings.TrimSpace(card.Status) != "pending" {
+			continue
+		}
+		choiceID := firstNonEmptyValue(strings.TrimSpace(card.RequestID), strings.TrimSpace(card.ID))
+		if choiceID == "" {
+			continue
+		}
+		_, choice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
+		if ok && strings.TrimSpace(choice.Status) == "pending" {
+			return choiceID, choice, true
+		}
+	}
+	return "", model.ChoiceRequest{}, false
+}
+
+func buildChoiceAnswersFromText(questions []model.ChoiceQuestion, message string) []choiceAnswerInput {
+	text := strings.TrimSpace(message)
+	if text == "" || len(questions) == 0 {
+		return nil
+	}
+	answers := make([]choiceAnswerInput, 0, len(questions))
+	for _, question := range questions {
+		answer := choiceAnswerInput{Value: text, Label: text, IsOther: true}
+		for _, option := range question.Options {
+			value := strings.TrimSpace(option.Value)
+			label := strings.TrimSpace(option.Label)
+			if strings.EqualFold(text, value) || strings.EqualFold(text, label) {
+				answer = choiceAnswerInput{
+					Value: firstNonEmptyValue(value, label),
+					Label: firstNonEmptyValue(label, value),
+				}
+				break
+			}
+		}
+		answers = append(answers, answer)
+	}
+	return answers
+}
+
+func choiceFollowUpPayload(questions []model.ChoiceQuestion, answers []choiceAnswerInput, codexAnswers []map[string]any) map[string]any {
+	answerSummary := choiceAnswerSummary(questions, answers)
+	payload := map[string]any{
+		"answers":        codexAnswers,
+		"answer_summary": answerSummary,
+		"instruction":    "Use this user clarification to continue. Do not ask the same clarification question again.",
+	}
+	if choiceAnswersRequirePlanMode(answers) {
+		payload["next_required_tool"] = "enter_plan_mode"
+		payload["permission_scope"] = "planning_only"
+		payload["intent"] = "enter_plan_mode_required"
+		payload["instruction"] = "The user explicitly selected a repair or execution-planning path. This authorizes planning only, not mutation. Your next assistant action MUST be a tool call to enter_plan_mode. Do not answer in plain text, do not ask the same intent question again, and do not call orchestrator_dispatch_tasks until exit_plan_mode is approved."
+		return payload
+	}
+	if choiceAnswersRequestReadonly(answers) {
+		payload["next_required_tool"] = "readonly_host_inspect"
+		payload["permission_scope"] = "readonly_only"
+		payload["intent"] = "readonly_requested"
+		payload["instruction"] = "The user selected a readonly diagnosis path. Your next assistant action MUST be a tool call to readonly_host_inspect on the selected host. Continue with readonly inspection only, do not mutate state, do not dispatch workers, and do not ask the same intent question again."
+	}
+	return payload
+}
+
+func choiceAnswersRequirePlanMode(answers []choiceAnswerInput) bool {
+	for _, answer := range answers {
+		if choiceAnswerTextRequiresPlanMode(answer.Value) || choiceAnswerTextRequiresPlanMode(answer.Label) || choiceAnswerTextRequiresPlanMode(answer.Note) {
+			return true
+		}
+	}
+	return false
+}
+
+func choiceAnswerInputsFromModel(answers []model.ChoiceAnswer) []choiceAnswerInput {
+	items := make([]choiceAnswerInput, 0, len(answers))
+	for _, answer := range answers {
+		items = append(items, choiceAnswerInput{
+			Value:   answer.Value,
+			Label:   answer.Label,
+			IsOther: answer.IsOther,
+			Note:    answer.Note,
+		})
+	}
+	return items
+}
+
+func choiceAnswerTextRequiresPlanMode(value string) bool {
+	normalized := normalizeChoiceIntentText(value)
+	if normalized == "" {
+		return false
+	}
+	for _, token := range []string{
+		"repair_plan",
+		"execute_repair",
+		"execution_plan",
+		"proceed_to_plan",
+		"plan_execute",
+		"mutation_plan",
+	} {
+		if strings.Contains(normalized, token) {
+			return true
+		}
+	}
+	for _, phrase := range []string{
+		"准备修复",
+		"执行修复",
+		"开始修复",
+		"修复计划",
+		"正式计划流程",
+		"审批后再执行",
+		"按计划执行",
+		"进入计划模式",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func choiceAnswersRequestReadonly(answers []choiceAnswerInput) bool {
+	for _, answer := range answers {
+		normalized := normalizeChoiceIntentText(firstNonEmptyValue(answer.Value, answer.Label, answer.Note))
+		if strings.Contains(normalized, "readonly") ||
+			strings.Contains(normalized, "read_only") ||
+			strings.Contains(normalized, "只读") {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceMessageNeedsIntentClarification(message string) bool {
+	normalized := normalizeChoiceIntentText(message)
+	if normalized == "" {
+		return false
+	}
+	hasCapabilityPhrase := false
+	for _, phrase := range []string{
+		"有办法",
+		"有没有办法",
+		"能不能",
+		"能否",
+		"可以吗",
+		"会不会",
+		"是否能",
+		"can you",
+		"do you have a way",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(phrase)) {
+			hasCapabilityPhrase = true
+			break
+		}
+	}
+	if !hasCapabilityPhrase {
+		return false
+	}
+	highRiskTopic := false
+	for _, token := range []string{
+		"pg",
+		"postgres",
+		"postgresql",
+		"数据库",
+		"同步",
+		"复制",
+		"replication",
+		"部署",
+		"生产",
+		"恢复",
+		"重启",
+		"修复",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(token)) {
+			highRiskTopic = true
+			break
+		}
+	}
+	if !highRiskTopic {
+		return false
+	}
+	for _, explicit := range []string{
+		"先只读",
+		"只读检查",
+		"只读诊断",
+		"不要修改",
+		"开始诊断",
+		"开始检查",
+		"开始修复",
+		"帮我修复",
+		"直接修复",
+		"制定计划",
+		"生成计划",
+		"先规划",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(explicit)) {
+			return false
+		}
+	}
+	return true
+}
+
+func workspaceIntentClarificationQuestions(message string) []model.ChoiceQuestion {
+	return []model.ChoiceQuestion{{
+		Header:   "确认意图",
+		Question: "可以处理，但数据库同步/修复属于高风险操作。你希望我现在按哪种方式继续？",
+		Options: []model.ChoiceOption{
+			{
+				Label:       "只读诊断",
+				Value:       "readonly",
+				Description: "先检查当前选中主机的 PostgreSQL 同步状态、日志和复制线索，不做任何修改。",
+				Recommended: true,
+			},
+			{
+				Label:       "只问能力",
+				Value:       "answer_only",
+				Description: "只回答是否能处理，不访问主机、不执行命令、不派发任务。",
+			},
+			{
+				Label:       "准备修复",
+				Value:       "repair_plan",
+				Description: "进入正式计划流程，列出风险、回滚和验证，待你审批后再执行任何变更。",
+			},
+		},
+		IsOther: true,
+	}}
+}
+
+func (a *App) requiredToolFollowupAfterTurn(sessionID string) (requiredToolFollowup, bool) {
+	if a == nil || a.sessionKind(sessionID) != model.SessionKindWorkspace {
+		return requiredToolFollowup{}, false
+	}
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return requiredToolFollowup{}, false
+	}
+	cards := session.Cards
+	for i := len(cards) - 1; i >= 0; i-- {
+		card := cards[i]
+		if card.Type == "UserMessageCard" || (card.Type == "MessageCard" && card.Role == "user") {
+			return requiredToolFollowup{}, false
+		}
+		if card.Type != "ChoiceCard" || normalizeCardStatus(card.Status) != "completed" {
+			continue
+		}
+		if getBool(card.Detail, "requiredToolFollowupStarted") {
+			return requiredToolFollowup{}, false
+		}
+		choice, ok := a.store.Choice(sessionID, card.RequestID)
+		if !ok {
+			return requiredToolFollowup{}, false
+		}
+		payload := choiceFollowUpPayload(card.Questions, choiceAnswerInputsFromModel(choice.Answers), choiceAnswerMaps(choice.Answers))
+		requiredTool := strings.TrimSpace(getStringAny(payload, "next_required_tool", "required_next_tool"))
+		if requiredTool == "" {
+			return requiredToolFollowup{}, false
+		}
+		if requiredToolObservedInCards(cards[i+1:], requiredTool) {
+			return requiredToolFollowup{}, false
+		}
+		hostID := defaultHostID(session.SelectedHostID)
+		if hostID == "" {
+			hostID = model.ServerLocalHostID
+		}
+		return requiredToolFollowup{
+			SessionID:    sessionID,
+			ChoiceCardID: card.ID,
+			Tool:         requiredTool,
+			HostID:       hostID,
+			Message:      requiredToolFollowupMessage(requiredTool, hostID, a.latestCompletedUserText(sessionID)),
+		}, true
+	}
+	return requiredToolFollowup{}, false
+}
+
+func requiredToolObservedInCards(cards []model.Card, tool string) bool {
+	tool = strings.TrimSpace(tool)
+	if tool == "" {
+		return false
+	}
+	for _, card := range cards {
+		if strings.TrimSpace(getStringAny(card.Detail, "tool", "toolName", "name")) == tool {
+			return true
+		}
+		switch tool {
+		case "enter_plan_mode":
+			if card.Type == "PlanModeCard" || (card.Type == "NoticeCard" && strings.Contains(card.Title, "计划模式")) {
+				return true
+			}
+		case "exit_plan_mode":
+			if card.Type == "PlanApprovalCard" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requiredToolFollowupMessage(tool, hostID, userMessage string) string {
+	hostID = defaultHostID(hostID)
+	switch strings.TrimSpace(tool) {
+	case "readonly_host_inspect":
+		return strings.TrimSpace(fmt.Sprintf(
+			"Required ReAct continuation after user clarification. The user selected readonly diagnosis for the original request: %q.\nYour next assistant action MUST be a tool call to readonly_host_inspect with host=%s. Do not answer in plain text, do not use built-in commandExecution, do not dispatch workers, and do not mutate state. Use safe read-only commands to inspect PostgreSQL availability, process/port state, service status, and replication clues on the selected host.",
+			userMessage,
+			hostID,
+		))
+	case "enter_plan_mode":
+		return strings.TrimSpace(fmt.Sprintf(
+			"Required ReAct continuation after user clarification. The user selected the repair/planning path for the original request: %q.\nYour next assistant action MUST be a tool call to enter_plan_mode. Do not answer in plain text and do not dispatch workers until exit_plan_mode is approved.",
+			userMessage,
+		))
+	default:
+		return strings.TrimSpace(fmt.Sprintf(
+			"Required ReAct continuation after user clarification for the original request: %q.\nYour next assistant action MUST be a tool call to %s. Do not answer in plain text and do not repeat the same clarification question.",
+			userMessage,
+			strings.TrimSpace(tool),
+		))
+	}
+}
+
+func (a *App) startRequiredToolFollowup(followup requiredToolFollowup) {
+	if a == nil || strings.TrimSpace(followup.SessionID) == "" || strings.TrimSpace(followup.Tool) == "" {
+		return
+	}
+	now := model.NowString()
+	a.store.UpdateCard(followup.SessionID, followup.ChoiceCardID, func(card *model.Card) {
+		if card.Detail == nil {
+			card.Detail = map[string]any{}
+		}
+		card.Detail["requiredToolFollowupStarted"] = true
+		card.Detail["requiredTool"] = followup.Tool
+		card.Detail["requiredToolFollowupAt"] = now
+		card.UpdatedAt = now
+	})
+	a.startRuntimeTurn(followup.SessionID, followup.HostID)
+	a.broadcastSnapshot(followup.SessionID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := a.runReActAgentLoop(ctx, reActLoopRequest{
+		SessionID:        followup.SessionID,
+		Kind:             reActLoopKindWorkspace,
+		HostID:           followup.HostID,
+		Message:          followup.Message,
+		RequestID:        model.NewID("req"),
+		RequestStartedAt: time.Now(),
+	}); err != nil {
+		a.finishRuntimeTurn(followup.SessionID, "failed")
+		a.store.UpsertCard(followup.SessionID, model.Card{
+			ID:        model.NewID("error"),
+			Type:      "ErrorCard",
+			Title:     "Required tool follow-up failed",
+			Message:   err.Error(),
+			Text:      err.Error(),
+			Status:    "failed",
+			CreatedAt: model.NowString(),
+			UpdatedAt: model.NowString(),
+		})
+		a.broadcastSnapshot(followup.SessionID)
+	}
+}
+
+func normalizeChoiceIntentText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r', '?', '？', ':', '：', '(', ')', '（', '）', '`', '"', '\'', '“', '”':
+			return -1
+		default:
+			return r
+		}
+	}, value)
 }
 
 type agentProfileResetRequest struct {
@@ -1277,6 +1693,9 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录 GPT 账号"})
 		return
 	}
+	if a.answerPendingChoiceFromChatMessage(w, r, sessionID, req.Message) {
+		return
+	}
 	requestStartedAt := time.Now()
 	kind := a.sessionKind(sessionID)
 	switch kind {
@@ -1506,33 +1925,17 @@ func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID s
 }
 
 func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) error {
-	threadID, err := a.ensureThread(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-
-	err = a.requestTurn(ctx, sessionID, threadID, req)
-	if err == nil {
-		return nil
-	}
-	if !isThreadNotFoundError(err) {
-		return err
-	}
-
-	log.Printf("stale codex thread detected session=%s thread=%s err=%s", sessionID, threadID, truncate(err.Error(), 200))
-	a.store.ClearThread(sessionID)
-	a.appendThreadResetCard(sessionID)
-	a.broadcastSnapshot(sessionID)
-
-	threadID, err = a.ensureThread(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	return a.requestTurn(ctx, sessionID, threadID, req)
+	return a.runReActAgentLoop(ctx, reActLoopRequest{
+		SessionID:      sessionID,
+		Kind:           reActLoopKindSingleHost,
+		HostID:         req.HostID,
+		Message:        req.Message,
+		MonitorContext: req.MonitorContext,
+	})
 }
 
 func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req chatRequest) error {
-	return a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildSingleHostTurnStartSpec(ctx, req))
+	return a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildSingleHostReActTurnStartSpec(ctx, sessionID, req))
 }
 
 func (a *App) appendThreadResetCard(sessionID string) {
@@ -1797,12 +2200,16 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	codexDecision := mapApprovalDecision(decision, approval)
+	codexResponse := map[string]any{
+		"decision": codexDecision,
+	}
+	if approval.Type == "plan_exit" {
+		codexResponse = planExitApprovalToolResponse(approval, decision, codexDecision)
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	err := a.respondCodex(ctx, approval.RequestIDRaw, map[string]any{
-		"decision": codexDecision,
-	})
+	err := a.respondCodex(ctx, approval.RequestIDRaw, codexResponse)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -1816,6 +2223,8 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	nextPhase := "thinking"
 	if a.hasPendingApprovals(targetSessionID) {
 		nextPhase = "waiting_approval"
+	} else if approval.Type == "plan_exit" && codexDecision == "decline" {
+		nextPhase = "planning"
 	} else if decision == "accept" || decision == "accept_session" {
 		nextPhase = "executing"
 	}
@@ -1851,7 +2260,7 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 
 	choiceID := strings.TrimPrefix(r.URL.Path, "/api/v1/choices/")
 	choiceID = strings.TrimSuffix(choiceID, "/answer")
-	targetSessionID, choice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
+	_, choice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "choice not found"})
 		return
@@ -1871,7 +2280,6 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 		return
 	}
 
-	codexAnswers := make([]map[string]any, 0, len(req.Answers))
 	for _, answer := range req.Answers {
 		value := strings.TrimSpace(answer.Value)
 		if value == "" {
@@ -1880,6 +2288,28 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 		if value == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "all answers must be non-empty"})
 			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := a.submitChoiceAnswer(ctx, sessionID, choiceID, choice, req.Answers); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *App) submitChoiceAnswer(ctx context.Context, sessionID, choiceID string, choice model.ChoiceRequest, answers []choiceAnswerInput) error {
+	codexAnswers := make([]map[string]any, 0, len(answers))
+	for _, answer := range answers {
+		value := strings.TrimSpace(answer.Value)
+		if value == "" {
+			value = strings.TrimSpace(answer.Label)
+		}
+		if value == "" {
+			return errors.New("all answers must be non-empty")
 		}
 		codexAnswer := map[string]any{
 			"value": value,
@@ -1891,37 +2321,191 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 		codexAnswers = append(codexAnswers, codexAnswer)
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	if err := a.respondCodex(ctx, choice.RequestIDRaw, map[string]any{
-		"answers": codexAnswers,
-	}); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
+	targetSessionID, resolvedChoice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
+	if !ok {
+		return errors.New("choice not found")
+	}
+	if strings.TrimSpace(resolvedChoice.ID) != "" {
+		choice = resolvedChoice
+	}
+	followUpPayload := choiceFollowUpPayload(choice.Questions, answers, codexAnswers)
+	hasCodexRequest := strings.TrimSpace(choice.RequestIDRaw) != ""
+	if hasCodexRequest {
+		if err := a.respondCodex(ctx, choice.RequestIDRaw, structuredToolResponse(followUpPayload, true)); err != nil {
+			return err
+		}
 	}
 
 	now := model.NowString()
-	a.store.ResolveChoice(targetSessionID, choiceID, "completed", now)
+	modelAnswers := choiceAnswersToModel(answers)
+	a.store.ResolveChoiceWithAnswers(targetSessionID, choiceID, "completed", now, modelAnswers)
 	a.store.UpdateCard(targetSessionID, choice.ItemID, func(card *model.Card) {
 		card.Status = "completed"
-		card.AnswerSummary = choiceAnswerSummary(choice.Questions, req.Answers)
+		card.AnswerSummary = choiceAnswerSummary(choice.Questions, answers)
 		card.UpdatedAt = now
 	})
 	a.setRuntimeTurnPhase(targetSessionID, "thinking")
 	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
 		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
 	}
-	a.recordOrchestratorChoiceResolved(targetSessionID, choice, req.Answers)
+	a.recordOrchestratorChoiceResolved(targetSessionID, choice, answers)
 	a.audit("choice.answer", map[string]any{
 		"sessionId": targetSessionID,
 		"choiceId":  choiceID,
-		"answers":   len(req.Answers),
+		"answers":   len(answers),
 	})
 	a.broadcastSnapshot(targetSessionID)
 	if sessionID != targetSessionID {
-		a.resolveMirroredChoiceCard(sessionID, choiceID, req.Answers, choice.Questions)
+		a.resolveMirroredChoiceCard(sessionID, choiceID, answers, choice.Questions)
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	if !hasCodexRequest {
+		a.continuePlatformChoiceAnswer(targetSessionID, choice.ItemID, followUpPayload)
+	}
+	return nil
+}
+
+func (a *App) continuePlatformChoiceAnswer(sessionID, choiceCardID string, payload map[string]any) {
+	hostID := model.ServerLocalHostID
+	if session := a.store.Session(sessionID); session != nil {
+		hostID = defaultHostID(session.SelectedHostID)
+	}
+	nextTool := strings.TrimSpace(getStringAny(payload, "next_required_tool", "required_next_tool"))
+	if nextTool == "" && choicePayloadRequestsAnswerOnly(payload) {
+		a.completePlatformAnswerOnlyChoice(sessionID, payload)
+		return
+	}
+	message := ""
+	if nextTool != "" {
+		message = requiredToolFollowupMessage(nextTool, hostID, a.latestCompletedUserText(sessionID))
+	} else {
+		message = fmt.Sprintf(
+			"The user clarified the original workspace request with this answer summary: %v.\nContinue accordingly. If the user only asked for capability or a solution outline, answer directly and do not inspect hosts, dispatch workers, or mutate state.",
+			payload["answer_summary"],
+		)
+	}
+	go a.startRequiredToolFollowup(requiredToolFollowup{
+		SessionID:    sessionID,
+		ChoiceCardID: choiceCardID,
+		Tool:         firstNonEmptyValue(nextTool, "answer_only"),
+		HostID:       hostID,
+		Message:      message,
+	})
+}
+
+func choicePayloadRequestsAnswerOnly(payload map[string]any) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	switch answers := payload["answers"].(type) {
+	case []map[string]any:
+		for _, answer := range answers {
+			if choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(answer["value"])) ||
+				choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(answer["label"])) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range answers {
+			answer, _ := item.(map[string]any)
+			if choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(answer["value"])) ||
+				choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(answer["label"])) {
+				return true
+			}
+		}
+	}
+	switch summary := payload["answer_summary"].(type) {
+	case []string:
+		for _, item := range summary {
+			if choiceAnswerTextRequestsAnswerOnly(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range summary {
+			if choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(item)) {
+				return true
+			}
+		}
+	case string:
+		return choiceAnswerTextRequestsAnswerOnly(summary)
+	}
+	return false
+}
+
+func choiceAnswerTextRequestsAnswerOnly(value string) bool {
+	normalized := normalizeChoiceIntentText(value)
+	if normalized == "" {
+		return false
+	}
+	for _, blocked := range []string{
+		"readonly",
+		"read_only",
+		"repair_plan",
+		"execute_repair",
+		"只读",
+		"诊断",
+		"修复计划",
+		"准备修复",
+		"执行修复",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(blocked)) {
+			return false
+		}
+	}
+	for _, token := range []string{
+		"answer_only",
+		"capability",
+		"plan_only",
+		"只问能力",
+		"只给方案",
+		"只回答",
+		"不访问主机",
+		"不执行命令",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(token)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) completePlatformAnswerOnlyChoice(sessionID string, payload map[string]any) {
+	now := model.NowString()
+	text := "可以处理。PG 不同步这类问题通常可以先用只读诊断确认是物理复制延迟、逻辑复制 slot、WAL 保留、网络/权限还是应用层同步失败，再在你明确授权后进入计划和执行流程。\n\n当前我只回答能力边界：不会访问主机、不会执行命令、不会派发 worker，也不会修改任何状态。"
+	if summary := choicePayloadAnswerSummaryText(payload); summary != "" {
+		text += "\n\n你的选择：" + summary
+	}
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("msg"),
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      text,
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.finishRuntimeTurn(sessionID, "completed")
+	a.recordOrchestratorReply(sessionID)
+	a.broadcastSnapshot(sessionID)
+}
+
+func choicePayloadAnswerSummaryText(payload map[string]any) string {
+	switch summary := payload["answer_summary"].(type) {
+	case []string:
+		return strings.Join(summary, "；")
+	case []any:
+		items := make([]string, 0, len(summary))
+		for _, item := range summary {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				items = append(items, text)
+			}
+		}
+		return strings.Join(items, "；")
+	case string:
+		return strings.TrimSpace(summary)
+	default:
+		return ""
+	}
 }
 
 func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -2203,6 +2787,11 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 			return
 		}
 		a.recordOrchestratorReply(sessionID)
+		if followup, ok := a.requiredToolFollowupAfterTurn(sessionID); ok {
+			a.broadcastSnapshot(sessionID)
+			go a.startRequiredToolFollowup(followup)
+			return
+		}
 		a.broadcastSnapshot(sessionID)
 		a.handleMissionTurnCompletedAsync(sessionID, normalizeCardStatus(turnStatus), false)
 	case "turn/aborted":
@@ -2351,6 +2940,10 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by profile", policyErr.Error())
 			return
 		}
+		if a.workspacePlanModeNeedsApproval(sessionID) && commandPolicyDecisionIsMutation(decision) {
+			a.rejectApprovalByPlanMode(sessionID, string(rawID), approval, "计划模式禁止执行变更命令")
+			return
+		}
 		if decision.Category == "filesystem_mutation" && approval.Cwd != "" {
 			if err := a.ensureWritableRoots([]string{approval.Cwd}); err != nil {
 				a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by writable roots", err.Error())
@@ -2446,6 +3039,10 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "File change blocked", "fileChange capability is disabled by the current main-agent profile")
 			return
 		}
+		if a.workspacePlanModeNeedsApproval(sessionID) {
+			a.rejectApprovalByPlanMode(sessionID, string(rawID), approval, "计划模式禁止修改文件")
+			return
+		}
 		if err := a.ensureWritableRoots(changePaths(approval.Changes)); err != nil {
 			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "File change blocked by writable roots", err.Error())
 			return
@@ -2502,51 +3099,72 @@ func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, par
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
+		if a.isReActThread(sessionID) {
+			message := "request_user_input is not available in this ReAct runtime; use the platform dynamic tool ask_user_question instead."
+			log.Printf("react loop request_user_input rejected session=%s raw=%s", sessionID, string(rawID))
+			a.store.UpsertCard(sessionID, model.Card{
+				ID:        model.NewID("error"),
+				Type:      "ErrorCard",
+				Title:     "ReAct clarification tool misconfigured",
+				Message:   message,
+				Text:      message,
+				Status:    "failed",
+				CreatedAt: model.NowString(),
+				UpdatedAt: model.NowString(),
+			})
+			a.broadcastSnapshot(sessionID)
+			_ = a.codex.RespondError(context.Background(), string(rawID), -32000, message)
+			return
+		}
 		questions := toChoiceQuestions(payload["questions"])
 		if len(questions) == 0 {
 			_ = a.codex.RespondError(context.Background(), string(rawID), -32602, "request_user_input requires questions")
 			return
 		}
-		a.setRuntimeTurnPhase(sessionID, "waiting_input")
-		now := model.NowString()
-		choiceID := model.NewID("choice")
-		choice := model.ChoiceRequest{
-			ID:           choiceID,
-			RequestIDRaw: string(rawID),
-			ThreadID:     getStringAny(payload, "threadId", "thread_id"),
-			TurnID:       getStringAny(payload, "turnId", "turn_id"),
-			ItemID:       choiceID,
-			Status:       "pending",
-			Questions:    questions,
-			RequestedAt:  now,
-		}
-		card := model.Card{
-			ID:        choice.ItemID,
-			Type:      "ChoiceCard",
-			Title:     choiceCardTitle(questions),
-			RequestID: choice.ID,
-			Question:  questions[0].Question,
-			Options:   questions[0].Options,
-			Questions: questions,
-			Status:    "pending",
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-		a.store.AddChoice(sessionID, choice)
-		a.store.UpsertCard(sessionID, card)
-		a.recordOrchestratorChoiceRequested(sessionID, choice)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
-			a.mirrorInternalChoiceToWorkspace(sessionID, choice, card)
-		}
-		a.audit("choice.requested", map[string]any{
-			"sessionId": sessionID,
-			"choiceId":  choice.ID,
-			"questions": len(questions),
-		})
-		a.broadcastSnapshot(sessionID)
+		a.createChoiceRequest(string(rawID), sessionID, payload, questions)
 	case "item/tool/call":
 		a.handleDynamicToolCall(string(rawID), payload)
 	}
+}
+
+func (a *App) createChoiceRequest(rawID, sessionID string, payload map[string]any, questions []model.ChoiceQuestion) {
+	a.setRuntimeTurnPhase(sessionID, "waiting_input")
+	now := model.NowString()
+	choiceID := model.NewID("choice")
+	choice := model.ChoiceRequest{
+		ID:           choiceID,
+		RequestIDRaw: rawID,
+		ThreadID:     getStringAny(payload, "threadId", "thread_id"),
+		TurnID:       getStringAny(payload, "turnId", "turn_id"),
+		ItemID:       choiceID,
+		Status:       "pending",
+		Questions:    questions,
+		RequestedAt:  now,
+	}
+	card := model.Card{
+		ID:        choice.ItemID,
+		Type:      "ChoiceCard",
+		Title:     choiceCardTitle(questions),
+		RequestID: choice.ID,
+		Question:  questions[0].Question,
+		Options:   questions[0].Options,
+		Questions: questions,
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	a.store.AddChoice(sessionID, choice)
+	a.store.UpsertCard(sessionID, card)
+	a.recordOrchestratorChoiceRequested(sessionID, choice)
+	if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
+		a.mirrorInternalChoiceToWorkspace(sessionID, choice, card)
+	}
+	a.audit("choice.requested", map[string]any{
+		"sessionId": sessionID,
+		"choiceId":  choice.ID,
+		"questions": len(questions),
+	})
+	a.broadcastSnapshot(sessionID)
 }
 
 func (a *App) codexRequest(ctx context.Context, method string, params any, result any) error {
@@ -3581,6 +4199,15 @@ func (a *App) isWorkspaceDirectThread(sessionID string) bool {
 	return a.isWorkspaceRouteThread(sessionID) || a.isWorkspaceReadonlyThread(sessionID)
 }
 
+func (a *App) isReActThread(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	hash := strings.TrimSpace(session.ThreadConfigHash)
+	return strings.HasSuffix(hash, ":"+reActLoopVersion) || strings.HasSuffix(hash, ":workspace-"+reActLoopVersion)
+}
+
 func (a *App) cardIsFinal(sessionID, cardID string) bool {
 	session := a.store.Session(sessionID)
 	if session == nil {
@@ -4247,6 +4874,60 @@ func approvalStatusFromDecision(decision string) string {
 	return decision
 }
 
+func planExitApprovalToolResponse(approval model.ApprovalRequest, decision, codexDecision string) map[string]any {
+	approved := codexDecision == "accept"
+	payload := map[string]any{
+		"tool":          "exit_plan_mode",
+		"approval_type": "plan_exit",
+		"approval_id":   approval.ID,
+		"decision":      codexDecision,
+		"raw_decision":  decision,
+		"approved":      approved,
+	}
+	if approved {
+		payload["next_mode"] = "execute"
+		payload["instruction"] = "The user approved the plan. You may proceed only within the approved plan scope and dispatch workers only for approved tasks."
+		return structuredToolResponse(payload, true)
+	}
+	payload["next_mode"] = "plan"
+	payload["instruction"] = "The user declined the plan. Do not execute or dispatch workers. Continue in plan mode: revise the plan or ask the user what to change."
+	return structuredToolResponse(payload, true)
+}
+
+func commandPolicyDecisionIsMutation(decision commandPolicyDecision) bool {
+	if !decision.Readonly {
+		return true
+	}
+	return strings.HasSuffix(strings.TrimSpace(decision.Category), "_mutation")
+}
+
+func (a *App) rejectApprovalByPlanMode(sessionID, rawID string, approval model.ApprovalRequest, message string) {
+	now := model.NowString()
+	approval.Status = "blocked_by_plan_mode"
+	approval.ResolvedAt = now
+	a.store.AddApproval(sessionID, approval)
+	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+	a.setRuntimeTurnPhase(sessionID, "planning")
+	a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, "decline", approval.Status, approval.RequestedAt, now, map[string]any{
+		"blockedByPlanMode": true,
+		"reason":            message,
+	})
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("error"),
+		Type:      "ErrorCard",
+		Title:     "Plan mode blocked mutation",
+		Message:   message,
+		Text:      message,
+		Status:    "failed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.broadcastSnapshot(sessionID)
+	_ = a.respondCodex(context.Background(), rawID, map[string]any{
+		"decision": "decline",
+	})
+}
+
 func approvalFingerprintForCommand(hostID, command, cwd string) string {
 	return strings.Join([]string{"command", hostID, cwd, command}, "|")
 }
@@ -4265,7 +4946,7 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 	if session.ThreadID != "" {
 		return session.ThreadID, nil
 	}
-	return a.ensureThreadWithSpec(ctx, sessionID, a.buildSingleHostThreadStartSpec(ctx, sessionID))
+	return a.ensureThreadWithSpec(ctx, sessionID, a.buildSingleHostReActThreadStartSpec(ctx, sessionID))
 }
 
 func (a *App) ensureThreadWithSpec(ctx context.Context, sessionID string, spec threadStartSpec) (string, error) {
@@ -5590,6 +6271,7 @@ func toChoiceOptions(raw any) []model.ChoiceOption {
 				Label:       label,
 				Value:       optionValue,
 				Description: getString(value, "description"),
+				Recommended: getBool(value, "recommended"),
 			})
 		}
 	}
@@ -5649,6 +6331,22 @@ func choiceAnswerSummary(questions []model.ChoiceQuestion, answers []choiceAnswe
 		summary = append(summary, label)
 	}
 	return summary
+}
+
+func choiceAnswersToModel(answers []choiceAnswerInput) []model.ChoiceAnswer {
+	if len(answers) == 0 {
+		return nil
+	}
+	out := make([]model.ChoiceAnswer, 0, len(answers))
+	for _, answer := range answers {
+		out = append(out, model.ChoiceAnswer{
+			Value:   strings.TrimSpace(answer.Value),
+			Label:   strings.TrimSpace(answer.Label),
+			IsOther: answer.IsOther,
+			Note:    strings.TrimSpace(answer.Note),
+		})
+	}
+	return out
 }
 
 func getTurnID(payload map[string]any) string {

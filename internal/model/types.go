@@ -222,6 +222,7 @@ type ChoiceOption struct {
 	Label       string `json:"label"`
 	Value       string `json:"value,omitempty"`
 	Description string `json:"description,omitempty"`
+	Recommended bool   `json:"recommended,omitempty"`
 }
 
 type ChoiceQuestion struct {
@@ -305,6 +306,57 @@ type RuntimeState struct {
 	Activity ActivityRuntime `json:"activity"`
 }
 
+type AgentLoopRun struct {
+	ID                string `json:"id"`
+	SessionID         string `json:"sessionId"`
+	Status            string `json:"status"`
+	Mode              string `json:"mode"`
+	Kind              string `json:"kind,omitempty"`
+	ActiveIterationID string `json:"activeIterationId,omitempty"`
+	LastError         string `json:"lastError,omitempty"`
+	CreatedAt         string `json:"createdAt,omitempty"`
+	UpdatedAt         string `json:"updatedAt,omitempty"`
+}
+
+type AgentLoopIteration struct {
+	ID              string `json:"id"`
+	RunID           string `json:"runId"`
+	Index           int    `json:"index"`
+	StopReason      string `json:"stopReason,omitempty"`
+	NeedsFollowUp   bool   `json:"needsFollowUp"`
+	ModelAttempt    int    `json:"modelAttempt,omitempty"`
+	RecoveryAttempt int    `json:"recoveryAttempt,omitempty"`
+	StartedAt       string `json:"startedAt,omitempty"`
+	CompletedAt     string `json:"completedAt,omitempty"`
+}
+
+type ToolInvocation struct {
+	ID            string `json:"id"`
+	RunID         string `json:"runId,omitempty"`
+	IterationID   string `json:"iterationId,omitempty"`
+	Name          string `json:"name"`
+	Status        string `json:"status"`
+	InputJSON     string `json:"inputJson,omitempty"`
+	OutputJSON    string `json:"outputJson,omitempty"`
+	InputSummary  string `json:"inputSummary,omitempty"`
+	OutputSummary string `json:"outputSummary,omitempty"`
+	EvidenceID    string `json:"evidenceId,omitempty"`
+	StartedAt     string `json:"startedAt,omitempty"`
+	CompletedAt   string `json:"completedAt,omitempty"`
+}
+
+type EvidenceRecord struct {
+	ID           string         `json:"id"`
+	RunID        string         `json:"runId,omitempty"`
+	InvocationID string         `json:"invocationId,omitempty"`
+	Kind         string         `json:"kind"`
+	Title        string         `json:"title,omitempty"`
+	Summary      string         `json:"summary,omitempty"`
+	Content      string         `json:"content,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	CreatedAt    string         `json:"createdAt,omitempty"`
+}
+
 type Card struct {
 	ID            string           `json:"id"`
 	Type          string           `json:"type"`
@@ -381,21 +433,26 @@ type ChoiceRequest struct {
 	ItemID       string           `json:"itemId,omitempty"`
 	Status       string           `json:"status"`
 	Questions    []ChoiceQuestion `json:"questions,omitempty"`
+	Answers      []ChoiceAnswer   `json:"answers,omitempty"`
 	RequestedAt  string           `json:"requestedAt"`
 	ResolvedAt   string           `json:"resolvedAt,omitempty"`
 }
 
 type Snapshot struct {
-	SessionID      string            `json:"sessionId"`
-	Kind           string            `json:"kind,omitempty"`
-	SelectedHostID string            `json:"selectedHostId"`
-	Auth           AuthState         `json:"auth"`
-	Hosts          []Host            `json:"hosts"`
-	Cards          []Card            `json:"cards"`
-	Approvals      []ApprovalRequest `json:"approvals"`
-	Runtime        RuntimeState      `json:"runtime"`
-	LastActivityAt string            `json:"lastActivityAt,omitempty"`
-	Config         UIConfig          `json:"config"`
+	SessionID           string               `json:"sessionId"`
+	Kind                string               `json:"kind,omitempty"`
+	SelectedHostID      string               `json:"selectedHostId"`
+	Auth                AuthState            `json:"auth"`
+	Hosts               []Host               `json:"hosts"`
+	Cards               []Card               `json:"cards"`
+	Approvals           []ApprovalRequest    `json:"approvals"`
+	Runtime             RuntimeState         `json:"runtime"`
+	AgentLoop           *AgentLoopRun        `json:"agentLoop,omitempty"`
+	AgentLoopIterations []AgentLoopIteration `json:"agentLoopIterations,omitempty"`
+	ToolInvocations     []ToolInvocation     `json:"toolInvocations,omitempty"`
+	EvidenceSummaries   []EvidenceRecord     `json:"evidenceSummaries,omitempty"`
+	LastActivityAt      string               `json:"lastActivityAt,omitempty"`
+	Config              UIConfig             `json:"config"`
 }
 
 type SessionSummary struct {

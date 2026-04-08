@@ -30,10 +30,13 @@ function createPlanCard() {
         status: "waiting_approval",
       },
     ],
-    detail: {
-      goal: "帮我执行一轮全网 nginx 巡检，重点关注错误日志。",
-      version: "plan-v3",
-      structured_process: [
+      detail: {
+        goal: "帮我执行一轮全网 nginx 巡检，重点关注错误日志。",
+        risk: "reload 前需要确认错误日志采集完成，避免掩盖现场。",
+        validation: "确认 nginx error log 无新增 upstream timeout。",
+        rollback: "如 reload 后异常，立即回滚到上一个 nginx 配置快照。",
+        version: "plan-v3",
+        structured_process: [
         "task-1 [running] @web-01 采集 nginx 错误日志",
         "task-2 [waiting_approval] @web-02 执行 systemctl reload nginx",
       ],
@@ -526,6 +529,14 @@ function findButtonByText(wrapper, text) {
   return wrapper.findAll("button").find((button) => button.text().includes(text));
 }
 
+async function expandPlanWidget(wrapper) {
+  const summary = wrapper.find(".protocol-inline-plan-widget .plan-widget-summary");
+  if (summary.exists() && !wrapper.find(".protocol-inline-plan-widget .plan-widget-body").exists()) {
+    await summary.trigger("click");
+    await flushPromises();
+  }
+}
+
 describe("ProtocolWorkspacePage", () => {
   beforeEach(() => {
     window.localStorage?.removeItem(DISMISSED_STATUS_BANNER_STORAGE_KEY);
@@ -723,6 +734,154 @@ describe("ProtocolWorkspacePage", () => {
     });
     expect(mocks.store.fetchState).toHaveBeenCalled();
     expect(mocks.store.fetchSessions).toHaveBeenCalled();
+  });
+
+  it("prevents duplicate choice submissions while the first request is pending", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "workspace",
+        sessionId: "workspace-1",
+        selectedHostId: "server-local",
+        approvals: [],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "确认处理方式。",
+            createdAt: "2026-03-31T02:15:00Z",
+            updatedAt: "2026-03-31T02:15:00Z",
+          },
+          createChoiceCard(),
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "waiting_input",
+        },
+      },
+    });
+    let resolveFetch;
+    global.fetch = vi.fn(() => new Promise((resolve) => {
+      resolveFetch = resolve;
+    }));
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const submit = wrapper.get(".submit-btn");
+    await submit.trigger("click");
+    await nextTick();
+    await submit.trigger("click");
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(submit.text()).toBe("提交中...");
+
+    resolveFetch({ ok: true, json: async () => ({}) });
+    await flushPromises();
+  });
+
+  it("shows choice submit errors without clearing the selected option", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "workspace",
+        sessionId: "workspace-1",
+        selectedHostId: "server-local",
+        approvals: [],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "确认处理方式。",
+            createdAt: "2026-03-31T02:15:00Z",
+            updatedAt: "2026-03-31T02:15:00Z",
+          },
+          createChoiceCard(),
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "waiting_input",
+        },
+      },
+    });
+    global.fetch = vi.fn(async () => ({
+      ok: false,
+      json: async () => ({ error: "choice backend failed" }),
+    }));
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const choiceStack = wrapper.get('[data-testid="protocol-choice-stack"]');
+    await choiceStack.findAll(".choice-option")[1].trigger("click");
+    await choiceStack.get(".submit-btn").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("choice backend failed");
+    expect(choiceStack.find(".choice-option.selected").text()).toContain("继续采集日志");
+  });
+
+  it("allows answering a waiting ask_user_question from the composer", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "workspace",
+        sessionId: "workspace-1",
+        selectedHostId: "server-local",
+        auth: { connected: true, planType: "pro" },
+        config: { codexAlive: true },
+        hosts: [{ id: "server-local", name: "server-local", status: "online", executable: true }],
+        approvals: [],
+        agentLoop: {
+          id: "loop-workspace-1",
+          sessionId: "workspace-1",
+          status: "waiting_user",
+          mode: "answer",
+        },
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "你有办法修复 pg 不同步的问题吗？",
+            createdAt: "2026-03-31T02:15:00Z",
+            updatedAt: "2026-03-31T02:15:00Z",
+          },
+          createChoiceCard(),
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "waiting_input",
+          pendingStart: false,
+        },
+      },
+    });
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const input = wrapper.get('[data-testid="omnibar-input"]');
+    expect(input.attributes("placeholder")).toContain("等待澄清回答");
+    await input.setValue("只问能力");
+
+    const primary = wrapper.get('[data-testid="omnibar-primary-action"]');
+    expect(primary.attributes("disabled")).toBeUndefined();
+    await primary.trigger("click");
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/v1/chat/message",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+      }),
+    );
+    const [, request] = global.fetch.mock.calls[0];
+    expect(JSON.parse(request.body)).toMatchObject({
+      message: "只问能力",
+    });
+    expect(mocks.store.resetActivity).not.toHaveBeenCalled();
   });
 
   it("shows an unread pill instead of forcing scroll when new results arrive off-screen", async () => {
@@ -953,6 +1112,7 @@ describe("ProtocolWorkspacePage", () => {
 
     const wrapper = mountPage();
     await flushPromises();
+    await expandPlanWidget(wrapper);
 
     expect(wrapper.text()).toContain("共 2 个任务，已完成 0 个");
     expect(wrapper.text()).toContain("采集 nginx 错误日志");
@@ -972,6 +1132,7 @@ describe("ProtocolWorkspacePage", () => {
 
     const wrapper = mountPage();
     await flushPromises();
+    await expandPlanWidget(wrapper);
 
     expect(wrapper.text()).toContain("nginx 巡检计划");
     expect(wrapper.text()).toContain("已收到计划投影");
@@ -984,6 +1145,36 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
 
     expect(wrapper.find(".protocol-composer-widgets .protocol-inline-plan-widget").exists()).toBe(true);
+    expect(wrapper.find(".protocol-composer-widgets .protocol-inline-plan-widget .plan-widget-body").exists()).toBe(false);
+  });
+
+  it("expands the plan widget with useful plan details and opens full plan evidence", async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+    await expandPlanWidget(wrapper);
+
+    const widget = wrapper.get(".protocol-composer-widgets .protocol-inline-plan-widget");
+    expect(widget.text()).toContain("计划摘要");
+    expect(widget.text()).toContain("风险");
+    expect(widget.text()).toContain("验证");
+    expect(widget.text()).toContain("回滚");
+    expect(widget.text()).toContain("reload 前需要确认错误日志采集完成");
+    expect(widget.text()).toContain("确认 nginx error log 无新增 upstream timeout");
+    expect(widget.text()).not.toContain("PlannerSession");
+
+    const fullPlanButton = wrapper.findAll(".plan-widget-action").find((button) => button.text().includes("查看完整计划"));
+    expect(fullPlanButton).toBeTruthy();
+    await fullPlanButton.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("主 Agent 计划摘要");
+    expect(modal.text()).toContain("风险");
+    expect(modal.text()).toContain("reload 前需要确认错误日志采集完成");
+    expect(modal.text()).toContain("验证");
+    expect(modal.text()).toContain("确认 nginx error log 无新增 upstream timeout");
+    expect(modal.text()).toContain("回滚");
+    expect(modal.text()).toContain("上一个 nginx 配置快照");
   });
 
   it("paginates protocol history from a compact boundary down to the session start", async () => {
@@ -1360,9 +1551,10 @@ describe("ProtocolWorkspacePage", () => {
     expect(wrapper.text()).toContain("已在当前会话启动新一轮 mission");
   });
 
-  it("opens the evidence modal from a step card and shows the main-agent plan context", async () => {
+  it("opens the evidence modal from a step card and shows the dispatched sub-agent task", async () => {
     const wrapper = mountPage();
     await flushPromises();
+    await expandPlanWidget(wrapper);
 
     const stepEvidenceButton = wrapper.findAll(".plan-action").find((button) => button.text().includes("查看证据"));
     expect(stepEvidenceButton).toBeTruthy();
@@ -1370,13 +1562,16 @@ describe("ProtocolWorkspacePage", () => {
     await stepEvidenceButton.trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("主 Agent 计划摘要");
+    expect(wrapper.text()).toContain("任务派发证据");
+    expect(wrapper.text()).toContain("发送给子 Agent 的任务");
     expect(wrapper.text()).toContain("采集 nginx 错误日志");
+    expect(wrapper.text()).toContain("journalctl -u nginx");
   });
 
   it("opens host evidence directly when a host-agent chip is clicked", async () => {
     const wrapper = mountPage();
     await flushPromises();
+    await expandPlanWidget(wrapper);
 
     const hostChip = wrapper.findAll(".plan-host-pill").find((button) => button.text().includes("web-01"));
     expect(hostChip).toBeTruthy();
@@ -1505,6 +1700,363 @@ describe("ProtocolWorkspacePage", () => {
     expect(modal.text()).toContain("uptime");
     expect(modal.text()).toContain("load averages");
     expect(modal.text()).not.toContain("暂无终端输出");
+  });
+
+  it("opens tool invocation evidence from the event stream", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        selectedHostId: "server-local",
+        hosts: [{ id: "server-local", name: "server-local", status: "online", executable: true }],
+        approvals: [],
+        cards: [
+          {
+            id: "cmd-readonly-1",
+            type: "CommandCard",
+            status: "completed",
+            command: "pg_isready",
+            hostId: "server-local",
+            detail: { tool: "readonly_host_inspect", readonly: true },
+            createdAt: "2026-04-08T04:10:00Z",
+            updatedAt: "2026-04-08T04:10:01Z",
+          },
+        ],
+        toolInvocations: [
+          {
+            id: "tool-choice-1",
+            name: "ask_user_question",
+            status: "waiting_user",
+            inputJson: JSON.stringify({
+              questions: [{ question: "你是只问能力，还是要开始只读诊断？" }],
+            }),
+            outputJson: JSON.stringify({ status: "waiting_user" }),
+            inputSummary: "你是只问能力，还是要开始只读诊断？",
+            outputSummary: "等待用户回答",
+            evidenceId: "evidence-choice-1",
+            startedAt: "2026-04-08T04:00:00Z",
+          },
+        ],
+        evidenceSummaries: [
+          {
+            id: "evidence-choice-1",
+            invocationId: "tool-choice-1",
+            kind: "ask_user_question",
+            title: "确认意图",
+            summary: "等待用户回答",
+            content: "你是只问能力，还是要开始只读诊断？",
+            createdAt: "2026-04-08T04:00:00Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "waiting_input",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
+    expect(timeline.text()).toContain("澄清问题");
+    expect(timeline.text()).toContain("等待用户确认");
+
+    const toolEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("澄清问题"));
+    expect(toolEvent).toBeTruthy();
+
+    await toolEvent.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("澄清问题");
+    expect(modal.text()).toContain("输入");
+    expect(modal.text()).toContain("输出");
+    expect(modal.text()).toContain("原始 evidence");
+    expect(modal.text()).toContain("关联审批");
+    expect(modal.text()).toContain("关联 worker");
+    expect(modal.text()).toContain("关联计划");
+    expect(modal.text()).toContain("你是只问能力，还是要开始只读诊断？");
+  });
+
+  it("opens readonly host inspect evidence with a user-facing tool name", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        selectedHostId: "server-local",
+        hosts: [{ id: "server-local", name: "server-local", status: "online", executable: true }],
+        approvals: [],
+        cards: [],
+        toolInvocations: [
+          {
+            id: "tool-readonly-1",
+            name: "readonly_host_inspect",
+            status: "completed",
+            inputJson: JSON.stringify({
+              hostId: "server-local",
+              target: "postgresql_replication",
+              command: "pg_isready",
+              cwd: "/tmp",
+            }),
+            outputJson: JSON.stringify({
+              status: "completed",
+              summary: "replication status checked",
+              output: "accepting connections",
+            }),
+            inputSummary: "检查 PostgreSQL replication 状态",
+            outputSummary: "未发现明显 replication lag",
+            evidenceId: "evidence-readonly-1",
+            startedAt: "2026-04-08T04:10:00Z",
+            completedAt: "2026-04-08T04:10:01Z",
+          },
+        ],
+        evidenceSummaries: [
+          {
+            id: "evidence-readonly-1",
+            invocationId: "tool-readonly-1",
+            kind: "readonly_host_inspect",
+            title: "只读主机检查",
+            summary: "未发现明显 replication lag",
+            content: "pg_isready\naccepting connections",
+            createdAt: "2026-04-08T04:10:01Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "completed",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
+    expect(timeline.text()).toContain("只读主机检查");
+    expect(timeline.text()).not.toContain("readonly_host_inspect");
+    expect(timeline.findAll(".timeline-item").filter((button) => button.text().includes("只读主机检查"))).toHaveLength(1);
+
+    const toolEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("只读主机检查"));
+    expect(toolEvent).toBeTruthy();
+
+    await toolEvent.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("只读主机检查");
+    expect(modal.text()).toContain("postgresql_replication");
+    expect(modal.text()).toContain("pg_isready");
+    const outputTab = wrapper.findAll(".modal-tab").find((button) => button.text().includes("输出"));
+    expect(outputTab).toBeTruthy();
+    await outputTab.trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".protocol-evidence-modal").text()).toContain("未发现明显 replication lag");
+    expect(wrapper.get(".protocol-evidence-modal").text()).toContain("原始 evidence");
+  });
+
+  it("opens DispatchWorkers invocation evidence with full worker task context", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        selectedHostId: "server-local",
+        hosts: [{ id: "server-local", name: "server-local", status: "online", executable: true }],
+        approvals: [],
+        cards: [],
+        toolInvocations: [
+          {
+            id: "tool-dispatch-1",
+            name: "orchestrator_dispatch_tasks",
+            status: "completed",
+            inputJson: JSON.stringify({
+              missionTitle: "PG 同步修复",
+              tasks: [
+                {
+                  taskId: "task-pg-1",
+                  hostId: "web-01",
+                  title: "检查 PG 同步",
+                  instruction: "请在 web-01 上检查 PostgreSQL replication slot 和 WAL 延迟，不要修改任何配置。",
+                  constraints: ["只读执行", "不要重启 PostgreSQL"],
+                },
+              ],
+            }),
+            outputJson: JSON.stringify({ accepted: 1, queued: 0 }),
+            inputSummary: "派发 1 个 PG 同步修复任务",
+            outputSummary: "accepted=1 queued=0",
+            evidenceId: "evidence-dispatch-1",
+            startedAt: "2026-04-08T05:10:00Z",
+            completedAt: "2026-04-08T05:10:01Z",
+          },
+        ],
+        evidenceSummaries: [
+          {
+            id: "evidence-dispatch-1",
+            invocationId: "tool-dispatch-1",
+            kind: "orchestrator_dispatch_tasks",
+            title: "任务派发",
+            summary: "accepted=1 queued=0",
+            content: "任务全文：请在 web-01 上检查 PostgreSQL replication slot 和 WAL 延迟，不要修改任何配置。",
+            createdAt: "2026-04-08T05:10:01Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "completed",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
+    expect(timeline.text()).toContain("任务派发");
+    expect(timeline.text()).toContain("派发 1 个 PG 同步修复任务");
+
+    const toolEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("任务派发"));
+    expect(toolEvent).toBeTruthy();
+    await toolEvent.trigger("click");
+    await flushPromises();
+
+    const workerTab = wrapper.findAll(".modal-tab").find((button) => button.text().includes("关联 worker"));
+    expect(workerTab).toBeTruthy();
+    await workerTab.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("关联 Worker");
+    expect(modal.text()).toContain("检查 PG 同步");
+    expect(modal.text()).toContain("web-01");
+    expect(modal.text()).toContain("请在 web-01 上检查 PostgreSQL replication slot 和 WAL 延迟，不要修改任何配置。");
+    expect(modal.text()).toContain("只读执行 / 不要重启 PostgreSQL");
+  });
+
+  it("renders plan approval cards in the approval rail without session authorization", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [{ id: "approval-plan-1", status: "pending", itemId: "plan-approval-1" }],
+        cards: [
+          {
+            id: "user-plan-approval",
+            type: "UserMessageCard",
+            role: "user",
+            text: "先做计划，审批后再执行。",
+            createdAt: "2026-04-08T05:00:00Z",
+            updatedAt: "2026-04-08T05:00:00Z",
+          },
+          {
+            id: "plan-approval-1",
+            type: "PlanApprovalCard",
+            status: "pending",
+            title: "批准 PG 同步修复计划",
+            text: "先只读确认复制状态，审批后派发 worker。",
+            summary: "PG 同步修复计划",
+            approval: {
+              requestId: "approval-plan-1",
+              type: "plan_exit",
+              decisions: ["accept", "decline"],
+            },
+            detail: {
+              validation: "确认 replication lag 恢复正常。",
+              risk: "数据库同步操作有生产风险。",
+            },
+            createdAt: "2026-04-08T05:00:10Z",
+            updatedAt: "2026-04-08T05:00:10Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "waiting_approval",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const approvalCard = wrapper.get('[data-testid="protocol-approval-plan-approval-1"]');
+    expect(approvalCard.text()).toContain("批准 PG 同步修复计划");
+    expect(approvalCard.text()).toContain("计划:");
+    expect(approvalCard.text()).not.toContain("授权");
+
+    const detailButton = approvalCard.findAll("button").find((button) => button.text().includes("详情"));
+    expect(detailButton).toBeTruthy();
+    await detailButton.trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".protocol-evidence-modal").text()).toContain("确认 replication lag 恢复正常");
+
+    const rejectButton = approvalCard.findAll("button").find((button) => button.text().includes("拒绝"));
+    expect(rejectButton).toBeTruthy();
+    await rejectButton.trigger("click");
+    await flushPromises();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/v1/approvals/approval-plan-1/decision",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    const [, request] = global.fetch.mock.calls.at(-1);
+    expect(JSON.parse(request.body)).toEqual({ decision: "decline" });
+    expect(wrapper.text()).toContain("计划已拒绝，等待主 Agent 调整方案。");
+  });
+
+  it("keeps previous command events visible when a new mission starts", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        selectedHostId: "server-local",
+        hosts: [{ id: "server-local", name: "server-local", status: "online", executable: true }],
+        approvals: [],
+        cards: [
+          {
+            id: "user-old",
+            type: "UserMessageCard",
+            role: "user",
+            text: "继续查看主机状态",
+            createdAt: "2026-04-08T03:18:00Z",
+            updatedAt: "2026-04-08T03:18:00Z",
+          },
+          ...createCommandCards(),
+          {
+            id: "user-new",
+            type: "UserMessageCard",
+            role: "user",
+            text: "你有办法修复 pg 不同步的问题吗？",
+            createdAt: "2026-04-08T04:25:00Z",
+            updatedAt: "2026-04-08T04:25:00Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "planning",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
+    expect(timeline.text()).toContain("uptime");
+    expect(timeline.text()).toContain("load averages");
+    expect(wrapper.get('[data-testid="protocol-live-status-card"]').text()).toContain("正在规划步骤");
   });
 
   it("opens approval evidence and submits decisions from the right rail", async () => {
@@ -1678,6 +2230,7 @@ describe("ProtocolWorkspacePage", () => {
   it("renders four evidence tabs without legacy planner wording", async () => {
     const wrapper = mountPage();
     await flushPromises();
+    await expandPlanWidget(wrapper);
 
     const stepEvidenceButton = wrapper.findAll(".plan-action").find((button) => button.text().includes("查看证据"));
     expect(stepEvidenceButton).toBeTruthy();
@@ -1686,7 +2239,7 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
 
     const tabs = wrapper.findAll(".modal-tab").map((button) => button.text());
-    expect(tabs.join(" ")).toContain("主 Agent 计划摘要");
+    expect(tabs.join(" ")).toContain("任务派发");
     expect(tabs.join(" ")).toContain("Worker 对话");
     expect(tabs.join(" ")).toContain("Host Terminal");
     expect(tabs.join(" ")).toContain("审批上下文");

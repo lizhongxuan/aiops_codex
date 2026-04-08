@@ -364,14 +364,86 @@ func TestChoiceLifecycleInMemory(t *testing.T) {
 		t.Fatalf("unexpected choice payload: %#v", got)
 	}
 
-	st.ResolveChoice(sessionID, choice.ID, "completed", "2026-03-24T12:00:00Z")
+	st.ResolveChoiceWithAnswers(sessionID, choice.ID, "completed", "2026-03-24T12:00:00Z", []model.ChoiceAnswer{{
+		Value: "prod",
+		Label: "prod",
+	}})
 
 	resolved, ok := st.Choice(sessionID, choice.ID)
 	if !ok {
 		t.Fatalf("expected resolved choice to be found")
 	}
-	if resolved.Status != "completed" || resolved.ResolvedAt == "" {
+	if resolved.Status != "completed" || resolved.ResolvedAt == "" || len(resolved.Answers) != 1 || resolved.Answers[0].Value != "prod" {
 		t.Fatalf("expected choice to be resolved, got %#v", resolved)
+	}
+}
+
+func TestSnapshotProjectsAgentLoopToolInvocationsAndEvidence(t *testing.T) {
+	st := New()
+	sessionID := "sess-loop-projection"
+	st.EnsureSession(sessionID)
+	st.SetTurn(sessionID, "turn-loop-projection")
+	st.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.Turn.Active = true
+		runtime.Turn.Phase = "waiting_input"
+		runtime.Turn.StartedAt = "2026-04-08T10:00:00Z"
+	})
+	st.UpsertCard(sessionID, model.Card{
+		ID:        "choice-card",
+		Type:      "ChoiceCard",
+		Title:     "确认意图",
+		Question:  "你是只问能力，还是要开始只读诊断？",
+		Status:    "pending",
+		Questions: []model.ChoiceQuestion{{Question: "你是只问能力，还是要开始只读诊断？"}},
+		CreatedAt: "2026-04-08T10:00:01Z",
+		UpdatedAt: "2026-04-08T10:00:01Z",
+	})
+	st.UpsertCard(sessionID, model.Card{
+		ID:        "command-card",
+		Type:      "CommandCard",
+		Command:   "uptime",
+		Output:    "10:00 up 1 day",
+		Status:    "completed",
+		CreatedAt: "2026-04-08T10:00:02Z",
+		UpdatedAt: "2026-04-08T10:00:03Z",
+	})
+	st.UpsertCard(sessionID, model.Card{
+		ID:        "plan-approval-card",
+		Type:      "PlanApprovalCard",
+		Title:     "计划审批",
+		Text:      "批准后派发 worker。",
+		Status:    "pending",
+		Detail:    map[string]any{"tool": "exit_plan_mode", "summary": "批准后派发 worker。"},
+		CreatedAt: "2026-04-08T10:00:04Z",
+		UpdatedAt: "2026-04-08T10:00:04Z",
+	})
+
+	snapshot := st.Snapshot(sessionID, model.UIConfig{})
+	if snapshot.AgentLoop == nil {
+		t.Fatalf("expected agent loop projection")
+	}
+	if snapshot.AgentLoop.Status != "waiting_user" || snapshot.AgentLoop.ActiveIterationID != "iter-turn-loop-projection" {
+		t.Fatalf("unexpected loop projection: %#v", snapshot.AgentLoop)
+	}
+	if len(snapshot.AgentLoopIterations) != 1 || snapshot.AgentLoopIterations[0].StopReason != "waiting_user" {
+		t.Fatalf("unexpected iterations: %#v", snapshot.AgentLoopIterations)
+	}
+
+	toolByName := make(map[string]model.ToolInvocation)
+	for _, invocation := range snapshot.ToolInvocations {
+		toolByName[invocation.Name] = invocation
+	}
+	if got := toolByName["ask_user_question"]; got.Status != "waiting_user" || got.EvidenceID == "" {
+		t.Fatalf("expected ask_user_question waiting invocation, got %#v", got)
+	}
+	if got := toolByName["command"]; got.InputSummary != "uptime" || got.OutputSummary == "" {
+		t.Fatalf("expected command invocation summary, got %#v", got)
+	}
+	if got := toolByName["exit_plan_mode"]; got.Status != "waiting_approval" || got.InputSummary != "计划审批" {
+		t.Fatalf("expected exit_plan_mode waiting invocation, got %#v", got)
+	}
+	if len(snapshot.EvidenceSummaries) != len(snapshot.ToolInvocations) {
+		t.Fatalf("expected evidence for each invocation, got evidence=%d tools=%d", len(snapshot.EvidenceSummaries), len(snapshot.ToolInvocations))
 	}
 }
 

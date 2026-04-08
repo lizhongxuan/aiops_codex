@@ -33,12 +33,15 @@ const selectedMcpSurface = ref(null);
 const selectedAgentId = ref("");
 const selectedCommandEvidence = ref(null);
 const selectedProcessEvidence = ref(null);
+const selectedToolInvocationId = ref("");
 const agentDetailOpen = ref(false);
 const evidenceSource = ref("mission");
 const workspaceBootstrapBusy = ref(false);
 const workspaceBootstrapAttempted = ref(false);
 const localMcpApprovals = ref([]);
 const localMcpEvents = ref([]);
+const choiceBusyById = ref({});
+const choiceErrorById = ref({});
 const dismissedStatusBannerKeys = ref(readDismissedStatusBannerKeys());
 
 function asArray(value) {
@@ -139,6 +142,79 @@ function commandEvidenceFrom(value = {}) {
     cwd: card.cwd || source.cwd || "",
     exitCode: card.exitCode ?? source.exitCode,
     durationMs: card.durationMs ?? source.durationMs,
+  };
+}
+
+function firstCompactValue(...values) {
+  for (const value of values) {
+    const text = compactText(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function compactRow(label, value) {
+  const text = compactText(value);
+  return text ? { label, value: text } : null;
+}
+
+function objectRows(value = {}) {
+  const source = asObject(value);
+  return Object.entries(source)
+    .filter(([, entry]) => entry !== undefined && entry !== null && compactText(entry) !== "")
+    .map(([key, entry]) => ({ label: key, value: entry }));
+}
+
+function toolDisplayName(name = "") {
+  switch (compactText(name)) {
+    case "ask_user_question":
+      return "澄清问题";
+    case "command":
+      return "命令执行";
+    case "request_approval":
+      return "审批请求";
+    case "readonly_host_inspect":
+      return "只读主机检查";
+    case "orchestrator_dispatch_tasks":
+      return "任务派发";
+    case "enter_plan_mode":
+      return "进入计划模式";
+    case "update_plan":
+      return "计划更新";
+    case "exit_plan_mode":
+      return "计划审批";
+    default:
+      return compactText(name) || "工具调用";
+  }
+}
+
+function selectedStepHostRows(step = null) {
+  const hostIds = new Set(
+    asArray(step?.hosts)
+      .map((host) => compactText(host?.id || host?.hostId || host))
+      .filter(Boolean),
+  );
+  if (!hostIds.size) {
+    return selectedHostRow.value ? [selectedHostRow.value] : [];
+  }
+  return hostRows.value.filter((row) => hostIds.has(compactText(row.hostId)));
+}
+
+function dispatchContextForStep(step = null) {
+  const matchingHosts = selectedStepHostRows(step);
+  const selectedHostMatchesStep = matchingHosts.some((row) => compactText(row.hostId) === compactText(selectedHostRow.value?.hostId));
+  const row = selectedHostMatchesStep ? selectedHostRow.value : matchingHosts[0] || selectedHostRow.value || null;
+  const dispatch = asObject(row?.dispatch);
+  const request = asObject(dispatch.request);
+  const taskBinding = asObject(dispatch.taskBinding || dispatch.task_binding);
+  const worker = asObject(row?.worker);
+  return {
+    row,
+    matchingHosts,
+    dispatch,
+    request,
+    taskBinding,
+    worker,
   };
 }
 
@@ -387,6 +463,17 @@ const planCardModel = computed(() => workspaceModel.value.planCardModel || { ste
 const choiceCards = computed(() => workspaceModel.value.choiceCards || []);
 const workspaceApprovalItems = computed(() => workspaceModel.value.approvalItems || []);
 const workspaceEventItems = computed(() => workspaceModel.value.eventItems || []);
+const toolInvocations = computed(() => workspaceModel.value.toolInvocations || []);
+const evidenceSummaries = computed(() => workspaceModel.value.evidenceSummaries || []);
+const agentLoopRun = computed(() => workspaceModel.value.agentLoop || store.snapshot.agentLoop || null);
+const waitingForUserAnswer = computed(() => {
+  const loopStatus = compactText(agentLoopRun.value?.status);
+  return loopStatus === "waiting_user" || workspaceModel.value.missionPhase === "waiting_input";
+});
+const waitingForApproval = computed(() => {
+  const loopStatus = compactText(agentLoopRun.value?.status);
+  return loopStatus === "waiting_approval" || workspaceModel.value.missionPhase === "waiting_approval";
+});
 const approvalItems = computed(() => [...workspaceApprovalItems.value, ...localMcpApprovals.value]);
 const eventItems = computed(() => [...workspaceEventItems.value, ...localMcpEvents.value]);
 const timelineItems = computed(() => [...eventItems.value].reverse());
@@ -435,7 +522,16 @@ const selectedApprovalItem = computed(() => {
   return approvalItems.value[0] || null;
 });
 
-const selectedStep = computed(() => planCardModel.value.stepItems?.find((item) => item.id === selectedStepId.value) || null);
+const selectedStep = computed(() => {
+  const steps = asArray(planCardModel.value.stepItems);
+  const stepId = compactText(selectedStepId.value);
+  if (!stepId) return null;
+  return (
+    steps.find((item) => compactText(item.id) === stepId) ||
+    steps.find((item) => compactText(item.title) === stepId) ||
+    (steps.length === 1 ? steps[0] : null)
+  );
+});
 const selectedHostRow = computed(() => {
   if (selectedHostId.value) {
     const direct = hostRows.value.find((row) => row.hostId === selectedHostId.value);
@@ -461,12 +557,13 @@ const selectedHostRow = computed(() => {
 });
 
 const canSendWorkspaceMessage = computed(() => {
+  const canAnswerWaitingQuestion = waitingForUserAnswer.value && store.runtime.turn.active && !store.runtime.turn.pendingStart;
   return (
     isWorkspaceSession.value &&
     store.snapshot.auth?.connected !== false &&
     store.snapshot.config?.codexAlive !== false &&
     !store.sending &&
-    !store.runtime.turn.active &&
+    (!store.runtime.turn.active || canAnswerWaitingQuestion) &&
     !store.runtime.turn.pendingStart
   );
 });
@@ -491,13 +588,17 @@ const starterCard = computed(() => {
   };
 });
 
-const composerPrimaryActionOverride = computed(() => (workspaceModel.value.canStopCurrentMission ? "" : "send"));
+const composerPrimaryActionOverride = computed(() => {
+  if (waitingForUserAnswer.value) return "send";
+  return workspaceModel.value.canStopCurrentMission ? "" : "send";
+});
 
-const composerPlaceholder = computed(() =>
-  workspaceModel.value.nextSendStartsNewMission
-    ? "上一轮任务已结束，继续输入会在当前工作台启动新 mission"
-    : "继续输入需求、约束或补充说明",
-);
+const composerPlaceholder = computed(() => {
+  if (waitingForUserAnswer.value) return "当前等待澄清回答：可在卡片中选择，或直接输入你的答案";
+  if (waitingForApproval.value) return "当前等待审批处理，处理后我会继续推进";
+  if (workspaceModel.value.nextSendStartsNewMission) return "上一轮任务已结束，继续输入会在当前工作台启动新 mission";
+  return "继续输入需求、约束或补充说明";
+});
 
 const planSummaryLabel = computed(() => {
   const total = Number(planCardModel.value.totalSteps || 0);
@@ -505,6 +606,14 @@ const planSummaryLabel = computed(() => {
   if (!total) return "计划生成后，会在这里直接展示 step -> host-agent 映射。";
   return `共 ${total} 个任务，已完成 ${completed} 个`;
 });
+
+const planOverviewRows = computed(() => [
+  compactRow("计划摘要", planCardModel.value.summary || planCardModel.value.title),
+  compactRow("范围", planCardModel.value.scope),
+  compactRow("风险", planCardModel.value.risk),
+  compactRow("验证", planCardModel.value.validation),
+  compactRow("回滚", planCardModel.value.rollback),
+].filter(Boolean));
 
 const planCards = computed(() => {
   const stepCards = asArray(planCardModel.value.stepItems).map((item) => ({
@@ -573,6 +682,28 @@ const filteredEventItems = computed(() => {
   return eventItems.value.filter((item) => !item.hostId || item.hostId === selectedHost || item.targetType === "dispatch");
 });
 
+const selectedToolInvocation = computed(() => {
+  if (!selectedToolInvocationId.value) return null;
+  return toolInvocations.value.find((item) => item.id === selectedToolInvocationId.value) || null;
+});
+
+const selectedToolEvidence = computed(() => {
+  const evidenceId = compactText(selectedToolInvocation.value?.evidenceId);
+  if (!evidenceId) return selectedToolInvocation.value?.evidence || null;
+  return evidenceSummaries.value.find((item) => item.id === evidenceId) || selectedToolInvocation.value?.evidence || null;
+});
+
+const selectedToolApprovalItem = computed(() => {
+  const invocation = selectedToolInvocation.value;
+  if (!invocation) return null;
+  const approvalId = compactText(invocation.output?.approval?.requestId || invocation.input?.approvalId || selectedToolEvidence.value?.metadata?.approvalId);
+  const cardId = compactText(selectedToolEvidence.value?.metadata?.cardId || invocation.id.replace(/^tool-/, ""));
+  return approvalItems.value.find((item) =>
+    (approvalId && compactText(item.approvalId) === approvalId) ||
+    (cardId && compactText(item.raw?.id || item.id) === cardId),
+  ) || null;
+});
+
 const evidenceBase = computed(() =>
   buildProtocolEvidenceTabs({
     planCardModel: planCardModel.value,
@@ -599,6 +730,80 @@ const mainAgentPlanPanel = computed(() => {
       raw: item,
     };
   }
+  if (evidenceSource.value === "step") {
+    const step = selectedStep.value;
+    const projectionCard = step
+      ? null
+      : planCards.value.find((card) => compactText(card.id) === compactText(selectedStepId.value)) || planCards.value[0] || null;
+    const projectionStep = asObject(projectionCard?.step);
+    const displayStep = step || (projectionCard
+      ? {
+          id: projectionCard.id,
+          title: projectionStep.title || projectionCard.title,
+          summary: projectionStep.description || projectionCard.detail || projectionCard.note,
+          status: projectionCard.status,
+          statusLabel: projectionCard.statusLabel,
+          hosts: projectionCard.hostAgent || [],
+        }
+      : null);
+    const context = dispatchContextForStep(displayStep);
+    const hostLabels = (context.matchingHosts.length ? context.matchingHosts : asArray(displayStep?.hosts))
+      .map((host) => compactText(host?.displayName || host?.label || host?.hostId || host?.id || host))
+      .filter(Boolean)
+      .join("、");
+    const constraints = [
+      ...asArray(displayStep?.constraints),
+      ...asArray(context.taskBinding.constraints),
+      ...asArray(context.request.constraints),
+    ]
+      .map((item) => compactText(item))
+      .filter(Boolean)
+      .join(" / ");
+    const dispatchedTask = firstCompactValue(
+      context.request.instruction,
+      context.taskBinding.instruction,
+      context.request.summary,
+      context.request.text,
+      context.taskBinding.summary,
+      displayStep?.summary,
+      planCardModel.value.summary,
+      displayStep?.title,
+      context.request.title,
+      context.taskBinding.title,
+      planCardModel.value.title,
+    );
+    const commandOrTarget = firstCompactValue(
+      context.request.command,
+      context.request.shell,
+      context.request.query,
+      context.request.summary && context.request.summary !== dispatchedTask ? context.request.summary : "",
+    );
+    const rows = [
+      compactRow("Step", displayStep?.id || selectedStepId.value || "plan-projection"),
+      compactRow("子任务标题", displayStep?.title || context.taskBinding.title || context.request.title || planCardModel.value.title),
+      compactRow("发送给子 Agent 的任务", dispatchedTask || "主 Agent 还没有同步到具体子任务，当前只收到计划投影。"),
+      compactRow("目标 Host", hostLabels || context.row?.displayName || context.row?.hostId),
+      compactRow("命令 / 检查线索", commandOrTarget),
+      compactRow("约束", constraints),
+      compactRow("状态", displayStep?.statusLabel || displayStep?.status || normalizePhaseLabel(workspaceModel.value.missionPhase)),
+      compactRow("Worker Session", context.worker.sessionId || context.worker.session_id || context.row?.workerSession),
+      compactRow("Worker Thread", context.worker.threadId || context.worker.thread_id),
+    ].filter(Boolean);
+    return {
+      title: "任务派发证据",
+      summary: step
+        ? "这里展示主 Agent 拆出的子任务，以及实际同步给子 Agent / host-agent 的任务内容。"
+        : "当前还没有完整的 step -> host-agent 映射，下面展示主 Agent 计划投影里准备派发或已经记录的任务内容。",
+      items: rows.length ? rows : [{ label: "状态", value: "主 Agent 还没有同步可展示的任务派发内容。" }],
+      raw: {
+        planStep: displayStep || null,
+        dispatch: context.dispatch,
+        dispatchRequest: context.request,
+        taskBinding: context.taskBinding,
+        worker: context.worker,
+      },
+    };
+  }
   const items = [];
   const hasPlanSummary = Boolean(
     compactText(planCardModel.value.summary) || asArray(planCardModel.value.stepItems).length || compactText(planCardModel.value.generatedAt),
@@ -608,6 +813,14 @@ const mainAgentPlanPanel = computed(() => {
       label: "计划摘要",
       value: compactText(planCardModel.value.summary || "当前还没有可用的计划摘要。"),
     });
+  }
+  for (const row of [
+    compactRow("范围", planCardModel.value.scope),
+    compactRow("风险", planCardModel.value.risk),
+    compactRow("验证", planCardModel.value.validation),
+    compactRow("回滚", planCardModel.value.rollback),
+  ].filter(Boolean)) {
+    items.push(row);
   }
   for (const [index, step] of asArray(planCardModel.value.stepItems).entries()) {
     const hostNames = asArray(step.hosts).map((host) => compactText(host.label || host.id)).filter(Boolean).join("、");
@@ -685,7 +898,7 @@ const approvalContextPanel = computed(() => {
     rows.push(
       { label: "主机", value: selectedApprovalItem.value.hostName || selectedApprovalItem.value.hostId || "未指定" },
       { label: "审批ID", value: selectedApprovalItem.value.approvalId || selectedApprovalItem.value.id || "未提供" },
-      { label: "命令", value: selectedApprovalItem.value.command || selectedApprovalItem.value.summary || "未提供命令" },
+      { label: selectedApprovalItem.value.kind === "plan" ? "计划" : "命令", value: selectedApprovalItem.value.command || selectedApprovalItem.value.summary || "未提供命令或计划" },
     );
     rows.push(
       ...asArray(selectedApprovalItem.value.detailRows).map((item) => ({
@@ -716,6 +929,131 @@ const approvalContextPanel = computed(() => {
           },
         ],
     raw: selectedApprovalItem.value?.raw || null,
+  };
+});
+
+const toolInputPanel = computed(() => {
+  const invocation = selectedToolInvocation.value || {};
+  const rows = [
+    compactRow("工具", toolDisplayName(invocation.name)),
+    compactRow("工具名", invocation.name),
+    compactRow("状态", invocation.status),
+    compactRow("输入摘要", invocation.inputSummary),
+    compactRow("开始时间", invocation.startedAt),
+    compactRow("结束时间", invocation.completedAt),
+    ...objectRows(invocation.input),
+  ].filter(Boolean);
+  return {
+    title: "工具输入",
+    summary: "模型请求执行该工具时传入的结构化参数。",
+    items: rows.length ? rows : [{ label: "状态", value: "当前工具调用没有可展示的输入。" }],
+    raw: invocation.input || invocation.inputJson || "",
+  };
+});
+
+const toolOutputPanel = computed(() => {
+  const invocation = selectedToolInvocation.value || {};
+  const rows = [
+    compactRow("输出摘要", invocation.outputSummary),
+    compactRow("Evidence", invocation.evidenceId),
+    ...objectRows(invocation.output),
+  ].filter(Boolean);
+  return {
+    title: "工具输出",
+    summary: "ai-server 记录的工具结果摘要。完整内容可在原始证据 tab 查看。",
+    items: rows.length ? rows : [{ label: "状态", value: "当前工具调用还没有可展示的输出。" }],
+    raw: invocation.output || invocation.outputJson || "",
+  };
+});
+
+const rawEvidencePanel = computed(() => {
+  const evidence = selectedToolEvidence.value || {};
+  return {
+    title: evidence.title || "原始证据",
+    summary: evidence.summary || "工具调用关联的 evidence 记录。",
+    items: [
+      compactRow("Evidence ID", evidence.id),
+      compactRow("Invocation ID", evidence.invocationId),
+      compactRow("类型", evidence.kind),
+      compactRow("创建时间", evidence.createdAt),
+      ...objectRows(evidence.metadata),
+    ].filter(Boolean),
+    raw: evidence.content || evidence || "",
+  };
+});
+
+const toolLinkedPlanPanel = computed(() => {
+  const invocation = selectedToolInvocation.value || {};
+  const input = asObject(invocation.input);
+  const evidence = selectedToolEvidence.value || {};
+  const metadata = asObject(evidence.metadata);
+  const rows = [
+    compactRow("计划标题", input.title || evidence.title || metadata.title),
+    compactRow("计划摘要", input.summary || input.plan || evidence.summary),
+    compactRow("风险", input.risk || input.risks),
+    compactRow("回滚", input.rollback),
+    compactRow("验证方式", input.validation),
+    compactRow("关联 Evidence", evidence.id),
+  ].filter(Boolean);
+  for (const [index, task] of asArray(input.tasks || input.steps).entries()) {
+    rows.push({
+      label: `任务 ${index + 1}`,
+      value: [
+        compactText(task.taskId || task.id),
+        compactText(task.hostId),
+        compactText(task.title || task.instruction || task.description),
+      ].filter(Boolean).join(" · "),
+    });
+  }
+  return {
+    title: "关联计划",
+    summary: "展示该工具调用关联的计划摘要、风险、验证和候选任务。",
+    items: rows.length ? rows : [{ label: "状态", value: "当前工具调用没有关联计划内容。" }],
+    raw: input.plan || input.summary || input,
+  };
+});
+
+const toolLinkedApprovalPanel = computed(() => {
+  const approval = selectedToolApprovalItem.value;
+  if (!approval) {
+    return {
+      title: "关联审批",
+      summary: "当前工具调用没有关联待处理审批。",
+      items: [{ label: "状态", value: "没有找到关联审批。" }],
+      raw: "",
+    };
+  }
+  return {
+    title: approval.kind === "plan" ? "计划审批" : "关联审批",
+    summary: approval.summary || approval.command || "当前工具调用关联的审批上下文。",
+    items: [
+      compactRow("审批ID", approval.approvalId || approval.id),
+      compactRow("类型", approval.kind === "plan" ? "计划审批" : "操作审批"),
+      compactRow(approval.kind === "plan" ? "计划" : "命令", approval.command || approval.summary),
+      ...asArray(approval.detailRows).map((item) => ({
+        label: compactText(item.label || "详情"),
+        value: compactText(item.value || item.text),
+      })),
+    ].filter((item) => item && (item.label || item.value)),
+    raw: approval.raw || approval,
+  };
+});
+
+const toolLinkedWorkerPanel = computed(() => {
+  const invocation = selectedToolInvocation.value || {};
+  const input = asObject(invocation.input);
+  const tasks = asArray(input.tasks);
+  const rows = tasks.flatMap((task, index) => [
+    compactRow(`Task ${index + 1}`, compactText(task.title || task.taskId || task.id)),
+    compactRow(`Host ${index + 1}`, task.hostId),
+    compactRow(`Instruction ${index + 1}`, task.instruction),
+    compactRow(`Constraints ${index + 1}`, asArray(task.constraints).map((item) => compactText(item)).filter(Boolean).join(" / ")),
+  ]).filter(Boolean);
+  return {
+    title: "关联 Worker",
+    summary: "展示主 Agent 准备派发给子 Agent / host-agent 的任务全文。",
+    items: rows.length ? rows : [{ label: "状态", value: "当前工具调用没有关联 worker 派发任务。" }],
+    raw: tasks.length ? tasks : input,
   };
 });
 
@@ -751,14 +1089,37 @@ const evidencePanels = computed(() => ({
   "host-terminal": hostTerminalPanel.value,
   [MCP_SURFACE_TAB]: mcpSurfacePanel.value,
   "approval-context": approvalContextPanel.value,
+  "tool-input": toolInputPanel.value,
+  "tool-output": toolOutputPanel.value,
+  "raw-evidence": rawEvidencePanel.value,
+  "linked-plan": toolLinkedPlanPanel.value,
+  "linked-approval": toolLinkedApprovalPanel.value,
+  "linked-worker": toolLinkedWorkerPanel.value,
 }));
 
+const primaryEvidenceTabLabel = computed(() => {
+  if (evidenceSource.value === "step") return "任务派发";
+  if (evidenceSource.value === "process") return "过程详情";
+  return "主 Agent 计划摘要";
+});
+
 const evidenceTabs = computed(() => [
-  { value: "main-agent-plan", label: "主 Agent 计划摘要", badge: mainAgentPlanPanel.value.items?.length || 0 },
-  { value: "worker-conversation", label: "Worker 对话", badge: workerConversationPanel.value.items?.length || 0 },
-  { value: "host-terminal", label: "Host Terminal", badge: hostTerminalPanel.value.items?.length || 0 },
-  { value: MCP_SURFACE_TAB, label: "MCP 面板", badge: mcpSurfacePanel.value.items?.length || 0 },
-  { value: "approval-context", label: "审批上下文", badge: approvalContextPanel.value.items?.length || 0 },
+  ...(evidenceSource.value === "tool_invocation"
+	    ? [
+	        { value: "tool-input", label: "输入", badge: toolInputPanel.value.items?.length || 0 },
+	        { value: "tool-output", label: "输出", badge: toolOutputPanel.value.items?.length || 0 },
+	        { value: "raw-evidence", label: "原始 evidence", badge: rawEvidencePanel.value.items?.length || 0 },
+	        { value: "linked-approval", label: "关联审批", badge: toolLinkedApprovalPanel.value.items?.length || 0 },
+	        { value: "linked-worker", label: "关联 worker", badge: toolLinkedWorkerPanel.value.items?.length || 0 },
+	        { value: "linked-plan", label: "关联计划", badge: toolLinkedPlanPanel.value.items?.length || 0 },
+	      ]
+    : [
+        { value: "main-agent-plan", label: primaryEvidenceTabLabel.value, badge: mainAgentPlanPanel.value.items?.length || 0 },
+        { value: "worker-conversation", label: "Worker 对话", badge: workerConversationPanel.value.items?.length || 0 },
+        { value: "host-terminal", label: "Host Terminal", badge: hostTerminalPanel.value.items?.length || 0 },
+        { value: MCP_SURFACE_TAB, label: "MCP 面板", badge: mcpSurfacePanel.value.items?.length || 0 },
+        { value: "approval-context", label: "审批上下文", badge: approvalContextPanel.value.items?.length || 0 },
+      ]),
 ]);
 
 const evidenceTitle = computed(() => {
@@ -766,7 +1127,12 @@ const evidenceTitle = computed(() => {
     return `审批上下文 · ${selectedApprovalItem.value.hostName || selectedApprovalItem.value.hostId || "Host"}`;
   }
   if (evidenceSource.value === "step" && selectedStep.value) {
-    return `主 Agent 计划摘要 · ${selectedStep.value.title}`;
+    return `任务派发证据 · ${selectedStep.value.title}`;
+  }
+  if (evidenceSource.value === "step") {
+    const projectionCard = planCards.value.find((card) => compactText(card.id) === compactText(selectedStepId.value)) || planCards.value[0] || null;
+    const title = compactText(projectionCard?.step?.title || projectionCard?.title || planCardModel.value.title);
+    return title ? `任务派发证据 · ${title}` : "任务派发证据";
   }
   if (evidenceSource.value === "host" && selectedHostRow.value) {
     const hostLabel = selectedHostRow.value.displayName || selectedHostRow.value.hostId || "Host";
@@ -778,6 +1144,9 @@ const evidenceTitle = computed(() => {
   if (evidenceSource.value === "command" && selectedCommandEvidence.value) {
     const command = commandEvidenceFrom(selectedCommandEvidence.value);
     return `命令执行详情 · ${command.command || command.hostId || "local"}`;
+  }
+  if (evidenceSource.value === "tool_invocation" && selectedToolInvocation.value) {
+    return `${toolDisplayName(selectedToolInvocation.value.name)} · ${selectedToolInvocation.value.inputSummary || selectedToolInvocation.value.id}`;
   }
   if (evidenceSource.value === "process" && selectedProcessEvidence.value) {
     return "过程详情";
@@ -801,6 +1170,9 @@ const evidenceSubtitle = computed(() => {
   if (evidenceSource.value === "command") {
     return "这里展示实际执行的命令、状态和终端输出。";
   }
+  if (evidenceSource.value === "tool_invocation") {
+    return "这里按工具调用展示输入、输出、原始 evidence 以及关联审批 / worker / 计划，避免落到空的计划摘要。";
+  }
   if (evidenceSource.value === "process") {
     return "这里展示你点击的过程消息本身；如需命令输出，请点击命令类过程项或右侧实时事件。";
   }
@@ -808,6 +1180,9 @@ const evidenceSubtitle = computed(() => {
     return "这里展示当前 MCP 面板的完整详情，不会把长图表和长表格重新灌回正文。";
   }
   if (evidenceSource.value === "step" || evidenceSource.value === "message" || evidenceSource.value === "dispatch" || evidenceSource.value === "event") {
+    if (evidenceSource.value === "step") {
+      return "这里展示主 Agent 拆出的子任务，以及同步给子 Agent / host-agent 的任务内容。";
+    }
     return "这里汇总主 Agent 计划摘要、Worker 对话、Host Terminal 与审批上下文。";
   }
   return "按 tab 切换主 Agent 计划摘要、Worker 对话、Host Terminal 与审批上下文。";
@@ -931,9 +1306,21 @@ function openEvidence({ source = "mission", hostId = "", stepId = "", approvalId
   if (approvalId) selectedApprovalId.value = approvalId;
   if (source !== "command") selectedCommandEvidence.value = null;
   if (source !== "process") selectedProcessEvidence.value = null;
+  if (source !== "tool_invocation") selectedToolInvocationId.value = "";
   evidenceSource.value = source;
   evidenceTab.value = tab;
   evidenceOpen.value = true;
+}
+
+function openToolInvocationEvidence(invocationId = "") {
+  const id = compactText(invocationId);
+  if (!id) return;
+  selectedToolInvocationId.value = id;
+  openEvidence({
+    source: "tool_invocation",
+    hostId: compactText(selectedToolInvocation.value?.input?.hostId || ""),
+    tab: "tool-input",
+  });
 }
 
 function openCommandEvidence(value = {}, fallbackHostId = "") {
@@ -1019,6 +1406,7 @@ async function bootstrapWorkspaceSession() {
 async function sendWorkspaceMessage(payload = composerDraft.value) {
   if (!canSendWorkspaceMessage.value || !compactText(payload)) return;
   const restartingMission = canRestartMission.value;
+  const answeringQuestion = waitingForUserAnswer.value;
   store.sending = true;
   store.errorMessage = "";
   actionNotice.value = "";
@@ -1030,7 +1418,9 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
     pushActionNotice("上一轮 mission 已结束，本次发送会在当前工作台启动新的 mission。", "info");
   }
   store.markTurnPendingStart("thinking");
-  store.resetActivity();
+  if (!answeringQuestion) {
+    store.resetActivity();
+  }
 
   try {
     const response = await fetch("/api/v1/chat/message", {
@@ -1050,7 +1440,7 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
       return;
     }
     composerDraft.value = "";
-    pushActionNotice(restartingMission ? "已在当前会话启动新一轮 mission。" : "消息已发送给主 Agent。", "info");
+    pushActionNotice(answeringQuestion ? "已提交澄清回答。" : restartingMission ? "已在当前会话启动新一轮 mission。" : "消息已发送给主 Agent。", "info");
     await Promise.all([store.fetchState(), store.fetchSessions()]);
   } catch (_error) {
     store.errorMessage = "Network error";
@@ -1090,6 +1480,9 @@ async function stopWorkspaceMessage() {
 
 async function handleChoice({ requestId, answers }) {
   if (!requestId || !Array.isArray(answers) || !answers.length) return;
+  if (choiceBusyById.value[requestId]) return;
+  choiceBusyById.value = { ...choiceBusyById.value, [requestId]: true };
+  choiceErrorById.value = { ...choiceErrorById.value, [requestId]: "" };
   try {
     store.errorMessage = "";
     store.setTurnPhase("thinking");
@@ -1101,15 +1494,22 @@ async function handleChoice({ requestId, answers }) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      store.errorMessage = data.error || "choice submit failed";
+      const message = data.error || "choice submit failed";
+      store.errorMessage = message;
+      choiceErrorById.value = { ...choiceErrorById.value, [requestId]: message };
       store.setTurnPhase("failed");
       return;
     }
+    choiceErrorById.value = { ...choiceErrorById.value, [requestId]: "" };
     pushActionNotice("已提交补充输入，主 Agent 会基于你的选择继续推进。", "info");
     await Promise.all([store.fetchState(), store.fetchSessions()]);
   } catch (_error) {
-    store.errorMessage = "choice submit failed";
+    const message = "choice submit failed";
+    store.errorMessage = message;
+    choiceErrorById.value = { ...choiceErrorById.value, [requestId]: message };
     store.setTurnPhase("failed");
+  } finally {
+    choiceBusyById.value = { ...choiceBusyById.value, [requestId]: false };
   }
 }
 
@@ -1126,6 +1526,17 @@ async function postApprovalDecision(approvalId, decision) {
   }
 }
 
+function approvalDecisionNotice(approval, decision) {
+  const isPlanApproval =
+    compactText(approval?.kind) === "plan" ||
+    compactText(approval?.raw?.type) === "PlanApprovalCard" ||
+    compactText(approval?.raw?.approval?.type) === "plan_exit";
+  if (decision === "decline") {
+    return isPlanApproval ? "计划已拒绝，等待主 Agent 调整方案。" : "已提交拒绝，等待主 Agent 调整方案。";
+  }
+  return isPlanApproval ? "计划审批已通过，主 Agent 将继续推进。" : "审批结果已提交。";
+}
+
 async function submitApprovalDecision(approval, decision) {
   if (approval?.mcpSynthetic) {
     settleLocalMcpApproval(approval, decision);
@@ -1140,7 +1551,7 @@ async function submitApprovalDecision(approval, decision) {
   try {
     store.errorMessage = "";
     await postApprovalDecision(approvalId, decision);
-    pushActionNotice(decision === "decline" ? "已提交拒绝，等待主 Agent 调整方案。" : "审批结果已提交。", decision === "decline" ? "warning" : "info");
+    pushActionNotice(approvalDecisionNotice(approval, decision), decision === "decline" ? "warning" : "info");
     await Promise.all([store.fetchState(), store.fetchSessions()]);
   } catch (error) {
     const msg = error?.message || "approval failed";
@@ -1185,6 +1596,13 @@ function dismissStaleApprovalCard(cardId, approvalId) {
 
 function handlePlanAction(payload) {
   const plan = payload?.plan || {};
+  if (compactText(payload?.action?.key) === "plan-evidence") {
+    openEvidence({
+      source: "message",
+      tab: "main-agent-plan",
+    });
+    return;
+  }
   const hostId = compactText(payload?.host?.id || asArray(plan.hostAgent || plan.hosts || [])[0]?.id);
   if (compactText(payload?.action?.key) === "host" && hostId) {
     openEvidence({
@@ -1252,6 +1670,10 @@ function handleProcessItemSelect(payload) {
 
 function handleEventSelect(item) {
   const targetType = compactText(item?.targetType).toLowerCase();
+  if (targetType === "tool_invocation") {
+    openToolInvocationEvidence(item?.targetId);
+    return;
+  }
   if (targetType === "command") {
     openCommandEvidence(item?.commandCard || item, item?.hostId);
     return;
@@ -1394,8 +1816,11 @@ function handleMcpSurfaceEventRefresh(surface) {
             :status-card="conversationStatusCard"
             :plan-cards="planCards"
             :plan-summary-label="planSummaryLabel"
+            :plan-overview-rows="planOverviewRows"
             :background-agents="backgroundAgents"
             :choice-cards="choiceCards"
+            :choice-submitting="choiceBusyById"
+            :choice-errors="choiceErrorById"
             :starter-card="starterCard"
             :draft="composerDraft"
             :draft-placeholder="composerPlaceholder"

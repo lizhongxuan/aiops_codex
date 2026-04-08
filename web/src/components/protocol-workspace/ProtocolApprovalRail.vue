@@ -98,6 +98,8 @@ function normalizeApproval(value) {
     host: String(value.host || value.hostName || value.hostId || ""),
     command: String(value.command || value.text || value.summary || ""),
     title: String(value.title || value.label || value.name || ""),
+    commandLabel: String(value.commandLabel || "执行命令:"),
+    supportsAuthorize: value.supportsAuthorize !== false,
   };
 }
 
@@ -262,15 +264,15 @@ onBeforeUnmount(() => {
 
         <div class="approval-command-inline">
           <span class="cmd-dot"></span>
-          <span class="cmd-label">执行命令:</span>
+          <span class="cmd-label">{{ approval.commandLabel || commandLabel }}</span>
         </div>
-        <div class="approval-command-text">{{ approval.command || approval.text || approval.summary || "未提供命令" }}</div>
+        <div class="approval-command-text">{{ approval.command || approval.text || approval.summary || "未提供计划或命令" }}</div>
 
         <div class="approval-actions">
           <button class="action-btn ghost" type="button" :disabled="busy" @click="selectApproval(approval)">
             <span>{{ detailButtonLabel }}</span>
           </button>
-          <button class="action-btn secondary" type="button" :disabled="busy" @click="emitAction('authorize', approval)">
+          <button v-if="approval.supportsAuthorize" class="action-btn secondary" type="button" :disabled="busy" @click="emitAction('authorize', approval)">
             <span>{{ authorizeLabel }}</span>
           </button>
           <button class="action-btn danger" type="button" :disabled="busy" @click="emitAction('reject', approval)">

@@ -53,6 +53,14 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  choiceSubmitting: {
+    type: Object,
+    default: () => ({}),
+  },
+  choiceErrors: {
+    type: Object,
+    default: () => ({}),
+  },
   runningAgents: {
     type: Array,
     default: () => [],
@@ -64,6 +72,10 @@ const props = defineProps({
   planSummaryLabel: {
     type: String,
     default: "",
+  },
+  planOverviewRows: {
+    type: Array,
+    default: () => [],
   },
   statusCard: {
     type: Object,
@@ -200,6 +212,10 @@ const normalizedBackgroundAgents = computed(() =>
 const normalizedChoiceCards = computed(() =>
   (Array.isArray(props.choiceCards) ? props.choiceCards : []).filter((card) => card?.status === "pending"),
 );
+
+function choiceRequestId(card) {
+  return String(card?.requestId || card?.id || "");
+}
 
 const normalizedTurns = computed(() =>
   Array.isArray(props.formattedTurns) && props.formattedTurns.length ? props.formattedTurns : [],
@@ -506,6 +522,8 @@ function handlePaneScroll(event) {
             v-for="choiceCard in normalizedChoiceCards"
             :key="choiceCard.id"
             :card="choiceCard"
+            :submitting="Boolean(choiceSubmitting[choiceRequestId(choiceCard)])"
+            :error-message="choiceErrors[choiceRequestId(choiceCard)] || ''"
             session-kind="workspace"
             @choice="submitChoice"
           />
@@ -514,8 +532,11 @@ function handlePaneScroll(event) {
         <ProtocolInlinePlanWidget
           v-if="normalizedPlanCards.length"
           docked
+          :initially-expanded="false"
           :steps="normalizedPlanCards"
           :summary-label="planSummaryLabel"
+          :overview-rows="planOverviewRows"
+          @plan-action="({ action }) => planAction({ action }, null)"
           @step-action="({ action, plan }) => planAction({ action }, plan)"
           @host-select="({ host, plan }) => selectHost(host, plan)"
         />

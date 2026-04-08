@@ -15,6 +15,10 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  overviewRows: {
+    type: Array,
+    default: () => [],
+  },
   steps: {
     type: Array,
     default: () => [],
@@ -29,14 +33,14 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["step-action", "host-select"]);
+const emit = defineEmits(["step-action", "host-select", "plan-action"]);
 
 const expanded = ref(props.initiallyExpanded);
 
 watch(
   () => props.steps.length,
   (next, previous) => {
-    if (!previous && next) {
+    if (!previous && next && props.initiallyExpanded) {
       expanded.value = true;
     }
   },
@@ -61,6 +65,15 @@ const completedCount = computed(() =>
   normalizedSteps.value.filter((step) => /完成|success|done/i.test(step.status)).length,
 );
 
+const normalizedOverviewRows = computed(() =>
+  (Array.isArray(props.overviewRows) ? props.overviewRows : [])
+    .map((row) => ({
+      label: String(row?.label || row?.key || "").trim(),
+      value: String(row?.value || row?.text || "").trim(),
+    }))
+    .filter((row) => row.label || row.value),
+);
+
 const widgetSummary = computed(() => {
   if (props.summaryLabel) return props.summaryLabel;
   const total = normalizedSteps.value.length;
@@ -73,6 +86,10 @@ function toggleExpanded() {
 
 function emitStepAction(action, step) {
   emit("step-action", { action, plan: step.raw });
+}
+
+function emitPlanAction() {
+  emit("plan-action", { action: { key: "plan-evidence", label: "查看完整计划" } });
 }
 
 function emitHostSelect(host, step) {
@@ -109,6 +126,22 @@ function toneClass(status) {
     </button>
 
     <div v-if="expanded" class="plan-widget-body">
+      <div v-if="normalizedOverviewRows.length" class="plan-widget-overview">
+        <div class="plan-widget-overview-rows">
+          <div
+            v-for="row in normalizedOverviewRows"
+            :key="row.label || row.value"
+            class="plan-widget-overview-row"
+          >
+            <span>{{ row.label }}</span>
+            <strong>{{ row.value }}</strong>
+          </div>
+        </div>
+        <button type="button" class="plan-widget-action plan-widget-overview-action" @click="emitPlanAction">
+          查看完整计划
+        </button>
+      </div>
+
       <article
         v-for="step in normalizedSteps"
         :key="step.id"
@@ -159,29 +192,29 @@ function toneClass(status) {
 
 <style scoped>
 .protocol-inline-plan-widget {
-  margin-left: 48px;
-  max-width: 900px;
-  border-radius: 26px;
+  margin-left: 36px;
+  max-width: 820px;
+  border-radius: 10px;
   border: 1px solid rgba(226, 232, 240, 0.96);
   background: #ffffff;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.02);
   overflow: hidden;
 }
 
 .protocol-inline-plan-widget.docked {
   margin-left: 0;
   max-width: 100%;
-  border-radius: 24px;
-  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.03);
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.02);
 }
 
 .plan-widget-summary {
   width: 100%;
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px;
   align-items: center;
-  padding: 16px 20px 15px;
+  padding: 6px 12px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -192,7 +225,7 @@ function toneClass(status) {
 .plan-widget-summary-main {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
   text-align: left;
 }
@@ -200,29 +233,77 @@ function toneClass(status) {
 .plan-widget-title-row {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: #6b7280;
-  font-size: 12.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .plan-widget-summary strong {
   color: #111827;
-  font-size: 16px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.4;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .plan-widget-body {
   border-top: 1px solid rgba(241, 245, 249, 0.95);
-  padding: 4px 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.plan-widget-overview {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(243, 244, 246, 0.95);
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.plan-widget-overview-rows {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plan-widget-overview-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.plan-widget-overview-row span {
+  color: #64748b;
+  font-weight: 700;
+}
+
+.plan-widget-overview-row strong {
+  color: #111827;
+  font-weight: 500;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.plan-widget-overview-action {
+  align-self: flex-start;
+  white-space: nowrap;
 }
 
 .plan-widget-step {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
-  padding: 16px 20px;
+  gap: 10px;
+  padding: 6px 12px;
 }
 
 .plan-widget-step + .plan-widget-step {
@@ -231,13 +312,13 @@ function toneClass(status) {
 
 .plan-widget-step-main {
   display: flex;
-  gap: 14px;
+  gap: 8px;
   min-width: 0;
 }
 
 .plan-widget-index {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -245,7 +326,7 @@ function toneClass(status) {
   border: 1px solid rgba(209, 213, 219, 0.95);
   color: #6b7280;
   font-weight: 600;
-  font-size: 11px;
+  font-size: 10.5px;
   line-height: 1;
   flex: none;
   margin-top: 1px;
@@ -254,34 +335,34 @@ function toneClass(status) {
 .plan-widget-copy {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 4px;
   min-width: 0;
 }
 
 .plan-widget-line {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 6px;
   align-items: center;
 }
 
 .plan-widget-title {
   color: #111827;
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1.6;
+  line-height: 1.4;
 }
 
 .plan-widget-status {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 9px;
+  gap: 4px;
+  padding: 2px 7px;
   border-radius: 999px;
   background: #f8fafc;
   border: 1px solid rgba(226, 232, 240, 0.95);
   color: #475569;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -312,14 +393,18 @@ function toneClass(status) {
 .plan-widget-detail {
   margin: 0;
   color: #6b7280;
-  font-size: 14.5px;
-  line-height: 1.72;
+  font-size: 11px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .plan-widget-hosts {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .plan-widget-host {
@@ -327,9 +412,9 @@ function toneClass(status) {
   background: #f8fafc;
   color: #334155;
   border-radius: 999px;
-  padding: 6px 12px;
+  padding: 3px 8px;
   font: inherit;
-  font-size: 12.5px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -345,9 +430,9 @@ function toneClass(status) {
   background: #ffffff;
   color: #475569;
   border-radius: 999px;
-  padding: 8px 14px;
+  padding: 5px 10px;
   font: inherit;
-  font-size: 12.5px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -369,6 +454,10 @@ function toneClass(status) {
   }
 
   .plan-widget-step {
+    flex-direction: column;
+  }
+
+  .plan-widget-overview {
     flex-direction: column;
   }
 }

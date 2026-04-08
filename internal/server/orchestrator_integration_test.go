@@ -204,12 +204,19 @@ func TestHandleChoiceAnswerRoutesToWorkerSessionMirror(t *testing.T) {
 	if !ok || targetChoice.Status != "completed" {
 		t.Fatalf("expected worker choice completed, got %#v, %v", targetChoice, ok)
 	}
+	if len(targetChoice.Answers) != 1 || targetChoice.Answers[0].Value != "safe" {
+		t.Fatalf("expected worker choice answer to be saved, got %#v", targetChoice.Answers)
+	}
 	workspaceCard := app.cardByID(workspaceSessionID, choice.ItemID)
 	if workspaceCard == nil || workspaceCard.Status != "completed" {
 		t.Fatalf("expected mirrored workspace choice card completed, got %#v", workspaceCard)
 	}
 	if got := strings.Join(workspaceCard.AnswerSummary, " "); !strings.Contains(got, "保守模式") {
 		t.Fatalf("expected answer summary to contain chosen label, got %#v", workspaceCard.AnswerSummary)
+	}
+	workspaceChoice, ok := app.store.Choice(workspaceSessionID, choice.ID)
+	if !ok || len(workspaceChoice.Answers) != 1 || workspaceChoice.Answers[0].Value != "safe" {
+		t.Fatalf("expected mirrored workspace choice answer to be saved, got %#v ok=%v", workspaceChoice.Answers, ok)
 	}
 	session := app.store.Session(workerSessionID)
 	if session == nil || session.Runtime.Turn.Phase != "thinking" {
@@ -218,9 +225,10 @@ func TestHandleChoiceAnswerRoutesToWorkerSessionMirror(t *testing.T) {
 	if respondedRawID != choice.RequestIDRaw {
 		t.Fatalf("expected codex response to original raw id, got %q", respondedRawID)
 	}
-	answers, ok := respondedPayload["answers"].([]any)
+	decodedPayload := decodeStructuredToolResponsePayload(t, respondedPayload)
+	answers, ok := decodedPayload["answers"].([]any)
 	if !ok || len(answers) != 1 {
-		t.Fatalf("expected one answer in codex response, got %#v", respondedPayload["answers"])
+		t.Fatalf("expected one answer in codex response, got %#v", decodedPayload["answers"])
 	}
 }
 
@@ -272,8 +280,8 @@ func TestWorkspaceStateQueryAnswersFromAIServerProjection(t *testing.T) {
 	if session == nil {
 		t.Fatalf("expected workspace session")
 	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-route") {
-		t.Fatalf("expected workspace route thread config hash, got %q", got)
+	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-"+reActLoopVersion) {
+		t.Fatalf("expected workspace ReAct thread config hash, got %q", got)
 	}
 	for _, card := range session.Cards {
 		if card.Type == "NoticeCard" && strings.Contains(card.Title, "主 Agent 正在思考") {
@@ -653,8 +661,8 @@ func TestWorkspaceSimpleConversationRepliesDirectlyWithoutMission(t *testing.T) 
 	if session == nil {
 		t.Fatalf("expected workspace session")
 	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-route") {
-		t.Fatalf("expected route workspace thread config hash, got %q", got)
+	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-"+reActLoopVersion) {
+		t.Fatalf("expected workspace ReAct thread config hash, got %q", got)
 	}
 	for _, card := range session.Cards {
 		if card.Type == "NoticeCard" && strings.Contains(card.Title, "主 Agent 正在思考") {

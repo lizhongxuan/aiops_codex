@@ -1219,6 +1219,10 @@ export const useAppStore = defineStore("app", {
       hosts: [],
       cards: [],
       approvals: [],
+      agentLoop: null,
+      agentLoopIterations: [],
+      toolInvocations: [],
+      evidenceSummaries: [],
       config: {
         oauthConfigured: false,
         codexAlive: false,
@@ -1483,6 +1487,10 @@ export const useAppStore = defineStore("app", {
       this.snapshot.hosts = data.hosts || [];
       this.snapshot.cards = data.cards || [];
       this.snapshot.approvals = data.approvals || [];
+      this.snapshot.agentLoop = data.agentLoop || null;
+      this.snapshot.agentLoopIterations = Array.isArray(data.agentLoopIterations) ? data.agentLoopIterations : [];
+      this.snapshot.toolInvocations = Array.isArray(data.toolInvocations) ? data.toolInvocations : [];
+      this.snapshot.evidenceSummaries = Array.isArray(data.evidenceSummaries) ? data.evidenceSummaries : [];
       this.snapshot.config = data.config || this.snapshot.config;
       /* Merge runtime if server sends it */
       if (data.runtime) {

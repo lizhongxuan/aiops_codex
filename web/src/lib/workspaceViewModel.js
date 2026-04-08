@@ -308,7 +308,7 @@ export function isAssistantMessageCard(card) {
 }
 
 export function isApprovalCard(card) {
-  return card?.type === "CommandApprovalCard" || card?.type === "FileChangeApprovalCard";
+  return card?.type === "CommandApprovalCard" || card?.type === "FileChangeApprovalCard" || card?.type === "PlanApprovalCard";
 }
 
 export function isChoiceCard(card) {

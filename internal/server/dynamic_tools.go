@@ -284,10 +284,15 @@ func (a *App) remoteDynamicTools() []map[string]any {
 
 func (a *App) workspaceDynamicTools(sessionID string) []map[string]any {
 	tools := []map[string]any{
+		askUserQuestionDynamicTool(),
 		workspaceStateQueryDynamicTool(),
+		readonlyHostInspectDynamicTool(),
+		enterPlanModeDynamicTool(),
+		updatePlanDynamicTool(),
+		exitPlanModeDynamicTool(),
 		{
 			"name":        "orchestrator_dispatch_tasks",
-			"description": "Submit structured host tasks to the ai-server orchestrator from the main workspace session. Use this after you finish planning and have per-host execution tasks ready.",
+			"description": "Dispatch structured host tasks to the ai-server orchestrator from the main workspace session. This tool is unavailable before the user approves exit_plan_mode; do not call it while still in plan mode, while waiting for approval, or for ambiguous capability questions. Use it only after planning is approved and per-host execution tasks are ready.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -375,6 +380,210 @@ func workspaceStateQueryDynamicTool() map[string]any {
 	}
 }
 
+func readonlyHostInspectDynamicTool() map[string]any {
+	return map[string]any{
+		"name":        "readonly_host_inspect",
+		"description": "Run a bounded read-only inspection command on the currently selected host, including server-local or an online remote host-agent. Use this after the user explicitly asks for readonly diagnosis. Never write files, restart services, kill processes, install packages, change config, or run mutation commands.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"host": map[string]any{
+					"type":        "string",
+					"description": "Required selected host ID. Must exactly match the current selected host, for example server-local.",
+				},
+				"target": map[string]any{
+					"type":        "string",
+					"description": "Short inspection target, for example postgresql_replication, system_load, disk, process, service_status, logs, network, files.",
+				},
+				"allowed_categories": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Optional read-only command category labels for the UI/evidence trail. This does not bypass the command safety validator.",
+				},
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Single read-only shell command. It is validated by the platform and must not mutate state.",
+				},
+				"cwd": map[string]any{
+					"type":        "string",
+					"description": "Optional working directory on the selected host. Defaults to the ai-server workspace for server-local.",
+				},
+				"timeout_sec": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"maximum":     120,
+					"description": "Optional timeout in seconds.",
+				},
+				"reason": map[string]any{
+					"type":        "string",
+					"description": "One-sentence explanation of what this readonly command checks.",
+				},
+			},
+			"required":             []string{"host", "target", "command", "reason"},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func askUserQuestionDynamicTool() map[string]any {
+	return map[string]any{
+		"name":        "ask_user_question",
+		"description": "Ask the user to clarify ambiguous intent, scope, or authorization before inspecting hosts, dispatching workers, or making changes. This is the platform AskUserQuestion equivalent for the ReAct loop.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"questions": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"header": map[string]any{
+								"type":        "string",
+								"description": "Short UI header, for example 确认意图.",
+							},
+							"question": map[string]any{
+								"type":        "string",
+								"description": "Concrete question for the user.",
+							},
+							"options": map[string]any{
+								"type": "array",
+								"items": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"label":       map[string]any{"type": "string"},
+										"value":       map[string]any{"type": "string"},
+										"description": map[string]any{"type": "string"},
+										"recommended": map[string]any{
+											"type":        "boolean",
+											"description": "Mark the safest or preferred option for the UI.",
+										},
+									},
+									"required":             []string{"label"},
+									"additionalProperties": false,
+								},
+								"minItems":    2,
+								"maxItems":    4,
+								"description": "Two to four mutually exclusive choices.",
+							},
+							"isOther":  map[string]any{"type": "boolean", "description": "Allow a free-text Other answer."},
+							"isSecret": map[string]any{"type": "boolean"},
+						},
+						"required":             []string{"question"},
+						"additionalProperties": false,
+					},
+					"minItems":    1,
+					"maxItems":    3,
+					"description": "One to three concise clarification questions.",
+				},
+			},
+			"required":             []string{"questions"},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func enterPlanModeDynamicTool() map[string]any {
+	return map[string]any{
+		"name":        "enter_plan_mode",
+		"description": "Enter formal plan mode for a complex or risky workspace task. In plan mode the agent may clarify, inspect read-only context, and update the plan, but must not dispatch workers or perform mutation until exit_plan_mode is approved.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"goal": map[string]any{
+					"type":        "string",
+					"description": "The user-facing goal of the plan.",
+				},
+				"reason": map[string]any{
+					"type":        "string",
+					"description": "Why plan mode is needed.",
+				},
+				"scope": map[string]any{
+					"type":        "string",
+					"description": "What is in scope for planning.",
+				},
+			},
+			"required":             []string{"goal", "reason"},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func updatePlanDynamicTool() map[string]any {
+	return map[string]any{
+		"name":        "update_plan",
+		"description": "Update the current workspace plan while in plan mode. Include concrete steps, evidence, risks, rollback, and validation. This is a planning tool only and does not authorize execution.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":      map[string]any{"type": "string"},
+				"summary":    map[string]any{"type": "string"},
+				"background": map[string]any{"type": "string"},
+				"scope":      map[string]any{"type": "string"},
+				"risk":       map[string]any{"type": "string"},
+				"rollback":   map[string]any{"type": "string"},
+				"validation": map[string]any{"type": "string"},
+				"steps": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":          map[string]any{"type": "string"},
+							"title":       map[string]any{"type": "string"},
+							"description": map[string]any{"type": "string"},
+							"status":      map[string]any{"type": "string"},
+							"hostId":      map[string]any{"type": "string"},
+							"constraints": map[string]any{
+								"type":  "array",
+								"items": map[string]any{"type": "string"},
+							},
+						},
+						"additionalProperties": false,
+					},
+				},
+			},
+			"required":             []string{"summary"},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func exitPlanModeDynamicTool() map[string]any {
+	return map[string]any{
+		"name":        "exit_plan_mode",
+		"description": "Submit the completed plan for user approval. This is the only plan-mode exit into execution. It must create a plan approval instead of asking for approval in plain text.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":      map[string]any{"type": "string"},
+				"summary":    map[string]any{"type": "string"},
+				"plan":       map[string]any{"type": "string"},
+				"risk":       map[string]any{"type": "string"},
+				"rollback":   map[string]any{"type": "string"},
+				"validation": map[string]any{"type": "string"},
+				"tasks": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"taskId":      map[string]any{"type": "string"},
+							"hostId":      map[string]any{"type": "string"},
+							"title":       map[string]any{"type": "string"},
+							"instruction": map[string]any{"type": "string"},
+							"constraints": map[string]any{
+								"type":  "array",
+								"items": map[string]any{"type": "string"},
+							},
+						},
+						"additionalProperties": false,
+					},
+				},
+			},
+			"required":             []string{"summary", "risk", "rollback", "validation", "tasks"},
+			"additionalProperties": false,
+		},
+	}
+}
+
 func (a *App) workspaceRouteDynamicTools() []map[string]any {
 	return []map[string]any{
 		workspaceStateQueryDynamicTool(),
@@ -383,7 +592,12 @@ func (a *App) workspaceRouteDynamicTools() []map[string]any {
 
 func (a *App) workspaceDirectDynamicTools(sessionID string) []map[string]any {
 	tools := []map[string]any{
+		askUserQuestionDynamicTool(),
 		workspaceStateQueryDynamicTool(),
+		readonlyHostInspectDynamicTool(),
+		enterPlanModeDynamicTool(),
+		updatePlanDynamicTool(),
+		exitPlanModeDynamicTool(),
 	}
 	session := a.store.Session(sessionID)
 	selectedHostID := defaultHostID("")
@@ -477,6 +691,10 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 	session := a.store.Session(sessionID)
 	if session == nil {
 		_ = a.codex.RespondError(context.Background(), rawID, -32000, "session not found for dynamic tool call")
+		return
+	}
+	if params.Tool == "ask_user_question" {
+		a.handleAskUserQuestionDynamicTool(rawID, payload, sessionID, params.Arguments)
 		return
 	}
 	switch a.sessionKind(sessionID) {
@@ -623,10 +841,48 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 	}
 }
 
+func (a *App) handleAskUserQuestionDynamicTool(rawID string, payload map[string]any, sessionID string, arguments map[string]any) {
+	questions := toChoiceQuestions(arguments["questions"])
+	if len(questions) == 0 {
+		if question := strings.TrimSpace(getStringAny(arguments, "question")); question != "" {
+			questions = []model.ChoiceQuestion{
+				{
+					Header:   getStringAny(arguments, "header"),
+					Question: question,
+					IsOther:  getBool(arguments, "isOther"),
+					IsSecret: getBool(arguments, "isSecret"),
+					Options:  toChoiceOptions(arguments["options"]),
+				},
+			}
+		}
+	}
+	if len(questions) == 0 || strings.TrimSpace(questions[0].Question) == "" {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("ask_user_question requires at least one question.", false))
+		return
+	}
+	if observation, ok := a.completedChoiceObservationForQuestions(sessionID, questions); ok {
+		_ = a.respondCodex(context.Background(), rawID, observation)
+		return
+	}
+	a.createChoiceRequest(rawID, sessionID, payload, questions)
+}
+
 func (a *App) handleOrchestratorDynamicToolCall(rawID string, _ map[string]any, params dynamicToolCallParams, sessionID string) bool {
 	switch params.Tool {
 	case "query_ai_server_state":
 		a.handleWorkspaceQueryAIServerState(rawID, sessionID, params.Arguments)
+		return true
+	case "readonly_host_inspect":
+		a.handleReadonlyHostInspect(rawID, sessionID, params)
+		return true
+	case "enter_plan_mode":
+		a.handleEnterPlanMode(rawID, sessionID, params)
+		return true
+	case "update_plan":
+		a.handleUpdatePlan(rawID, sessionID, params)
+		return true
+	case "exit_plan_mode":
+		a.handleExitPlanMode(rawID, sessionID, params)
 		return true
 	case "orchestrator_dispatch_tasks":
 		a.handleWorkspaceDispatchTasks(rawID, sessionID, params.Arguments)
@@ -634,6 +890,54 @@ func (a *App) handleOrchestratorDynamicToolCall(rawID string, _ map[string]any, 
 	default:
 		return false
 	}
+}
+
+func (a *App) handleReadonlyHostInspect(rawID, sessionID string, params dynamicToolCallParams) {
+	args, err := parseExecToolArgs(params.Arguments)
+	if err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+	if strings.TrimSpace(args.Reason) == "" {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("readonly_host_inspect requires a reason.", false))
+		return
+	}
+	selectedHostID := model.ServerLocalHostID
+	if session := a.store.Session(sessionID); session != nil {
+		selectedHostID = defaultHostID(session.SelectedHostID)
+	}
+	hostID := defaultHostID(args.HostID)
+	if hostID != selectedHostID {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(fmt.Sprintf("readonly_host_inspect host %s does not match selected host %s.", hostID, selectedHostID), false))
+		return
+	}
+	if err := a.ensureCapabilityAllowedForHost(hostID, "commandExecution"); err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+	if err := validateReadonlyCommand(args.Command); err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+	if isRemoteHostID(hostID) {
+		host := a.findHost(hostID)
+		if host.Status != "online" || !host.Executable {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(fmt.Sprintf("selected host %s is offline or not executable; readonly_host_inspect will not fall back to server-local.", hostID), false))
+			return
+		}
+		decision, err := a.evaluateCommandPolicyForHost(hostID, args.Command)
+		if err != nil {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+			return
+		}
+		if decision.Mode == model.AgentPermissionModeApprovalRequired {
+			a.requestRemoteCommandApproval(sessionID, hostID, rawID, params, args, true)
+			return
+		}
+		a.executeReadonlyDynamicTool(sessionID, hostID, rawID, params, args)
+		return
+	}
+	a.executeLocalReadonlyHostInspect(sessionID, rawID, params, args)
 }
 
 func (a *App) handleWorkspaceQueryAIServerState(rawID, sessionID string, arguments map[string]any) {
@@ -654,6 +958,188 @@ func (a *App) handleWorkspaceQueryAIServerState(rawID, sessionID string, argumen
 		workspaceSessionID = strings.TrimSpace(mission.WorkspaceSessionID)
 	}
 	_ = a.respondCodex(context.Background(), rawID, toolResponse(a.renderPlannerAIServerState(workspaceSessionID, mission, focus), true))
+}
+
+func (a *App) handleEnterPlanMode(rawID, sessionID string, params dynamicToolCallParams) {
+	goal := strings.TrimSpace(getStringAny(params.Arguments, "goal", "title", "summary"))
+	reason := strings.TrimSpace(getStringAny(params.Arguments, "reason"))
+	if goal == "" {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("enter_plan_mode requires goal.", false))
+		return
+	}
+	if reason == "" {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("enter_plan_mode requires reason.", false))
+		return
+	}
+	now := model.NowString()
+	cardID := "plan-mode-" + firstNonEmptyValue(strings.TrimSpace(params.CallID), model.NewID("planmode"))
+	card := model.Card{
+		ID:      cardID,
+		Type:    "PlanCard",
+		Title:   "进入计划模式",
+		Text:    goal,
+		Summary: reason,
+		Status:  "inProgress",
+		Detail: map[string]any{
+			"tool":   "enter_plan_mode",
+			"mode":   "plan",
+			"goal":   goal,
+			"reason": reason,
+			"scope":  strings.TrimSpace(getStringAny(params.Arguments, "scope")),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	a.setRuntimeTurnPhase(sessionID, "planning")
+	a.store.UpsertCard(sessionID, card)
+	a.broadcastSnapshot(sessionID)
+	_ = a.respondCodex(context.Background(), rawID, toolResponse("Entered plan mode. Continue with read-only planning, update_plan, ask_user_question, or exit_plan_mode for approval.", true))
+}
+
+func (a *App) handleUpdatePlan(rawID, sessionID string, params dynamicToolCallParams) {
+	summary := strings.TrimSpace(getStringAny(params.Arguments, "summary", "plan"))
+	if summary == "" {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse("update_plan requires summary.", false))
+		return
+	}
+	now := model.NowString()
+	cardID := "plan-update-" + firstNonEmptyValue(strings.TrimSpace(params.CallID), model.NewID("plan"))
+	card := model.Card{
+		ID:      cardID,
+		Type:    "PlanCard",
+		Title:   firstNonEmptyValue(strings.TrimSpace(getStringAny(params.Arguments, "title")), "工作台计划"),
+		Text:    summary,
+		Summary: summary,
+		Status:  "inProgress",
+		Items:   planItemsFromArguments(params.Arguments),
+		Detail: map[string]any{
+			"tool":       "update_plan",
+			"mode":       "plan",
+			"summary":    summary,
+			"background": strings.TrimSpace(getStringAny(params.Arguments, "background")),
+			"scope":      strings.TrimSpace(getStringAny(params.Arguments, "scope")),
+			"risk":       strings.TrimSpace(getStringAny(params.Arguments, "risk", "risks")),
+			"rollback":   strings.TrimSpace(getStringAny(params.Arguments, "rollback")),
+			"validation": strings.TrimSpace(getStringAny(params.Arguments, "validation")),
+			"steps":      params.Arguments["steps"],
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	a.setRuntimeTurnPhase(sessionID, "planning")
+	a.store.UpsertCard(sessionID, card)
+	a.broadcastSnapshot(sessionID)
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(fmt.Sprintf("Plan updated with %d steps. Continue planning or call exit_plan_mode to request approval.", len(card.Items)), true))
+}
+
+func (a *App) handleExitPlanMode(rawID, sessionID string, params dynamicToolCallParams) {
+	summary := strings.TrimSpace(getStringAny(params.Arguments, "summary", "plan"))
+	validation := strings.TrimSpace(getStringAny(params.Arguments, "validation"))
+	if err := a.validateExitPlanModeRequest(sessionID, params.Arguments); err != nil {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+	now := model.NowString()
+	approvalID := model.NewID("approval")
+	cardID := "plan-approval-" + firstNonEmptyValue(strings.TrimSpace(params.CallID), approvalID)
+	approval := model.ApprovalRequest{
+		ID:           approvalID,
+		RequestIDRaw: rawID,
+		HostID:       model.ServerLocalHostID,
+		Type:         "plan_exit",
+		Status:       "pending",
+		ThreadID:     params.ThreadID,
+		TurnID:       params.TurnID,
+		ItemID:       cardID,
+		Reason:       firstNonEmptyValue(strings.TrimSpace(getStringAny(params.Arguments, "title")), "计划审批"),
+		Decisions:    []string{"accept", "decline"},
+		RequestedAt:  now,
+	}
+	card := model.Card{
+		ID:      cardID,
+		Type:    "PlanApprovalCard",
+		Title:   firstNonEmptyValue(strings.TrimSpace(getStringAny(params.Arguments, "title")), "计划审批"),
+		Text:    summary,
+		Summary: summary,
+		Status:  "pending",
+		Approval: &model.ApprovalRef{
+			RequestID: approval.ID,
+			Type:      approval.Type,
+			Decisions: approval.Decisions,
+		},
+		Detail: map[string]any{
+			"tool":       "exit_plan_mode",
+			"mode":       "plan",
+			"summary":    summary,
+			"plan":       strings.TrimSpace(getStringAny(params.Arguments, "plan")),
+			"risk":       strings.TrimSpace(getStringAny(params.Arguments, "risk", "risks")),
+			"rollback":   strings.TrimSpace(getStringAny(params.Arguments, "rollback")),
+			"validation": validation,
+			"tasks":      params.Arguments["tasks"],
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	a.store.AddApproval(sessionID, approval)
+	a.store.UpsertCard(sessionID, card)
+	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
+	a.auditApprovalRequested(sessionID, approval, map[string]any{
+		"planSummary": truncate(summary, 400),
+	})
+	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) validateExitPlanModeRequest(sessionID string, arguments map[string]any) error {
+	if strings.TrimSpace(getStringAny(arguments, "summary", "plan")) == "" {
+		return errors.New("exit_plan_mode requires summary.")
+	}
+	if strings.TrimSpace(getStringAny(arguments, "risk", "risks")) == "" {
+		return errors.New("exit_plan_mode requires risk.")
+	}
+	if strings.TrimSpace(getStringAny(arguments, "rollback")) == "" {
+		return errors.New("exit_plan_mode requires rollback.")
+	}
+	if strings.TrimSpace(getStringAny(arguments, "validation")) == "" {
+		return errors.New("exit_plan_mode requires validation.")
+	}
+	tasks, ok := arguments["tasks"].([]any)
+	if !ok || len(tasks) == 0 {
+		return errors.New("exit_plan_mode requires at least one task.")
+	}
+	hasExecutableTask := false
+	for _, rawTask := range tasks {
+		task, ok := rawTask.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(getStringAny(task, "instruction", "title", "description")) != "" {
+			hasExecutableTask = true
+			break
+		}
+	}
+	if !hasExecutableTask {
+		return errors.New("exit_plan_mode requires at least one task with instruction or title.")
+	}
+	if a.workspaceHasUpdatedPlan(sessionID) {
+		return nil
+	}
+	if strings.TrimSpace(getStringAny(arguments, "plan")) != "" {
+		return nil
+	}
+	return errors.New("exit_plan_mode requires an existing update_plan result or a full plan field.")
+}
+
+func (a *App) workspaceHasUpdatedPlan(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for _, card := range session.Cards {
+		if card.Type == "PlanCard" && planCardToolName(card) == "update_plan" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) renderPlannerAIServerState(workspaceSessionID string, mission *orchestrator.Mission, focus string) string {
@@ -793,9 +1279,33 @@ func (a *App) dispatchOrchestratorTasks(sessionID string, req orchestrator.Dispa
 	if a.orchestrator == nil {
 		return nil, errors.New("orchestrator 未初始化")
 	}
+	if a.workspaceDispatchNeedsClarification(sessionID) {
+		return nil, errors.New("用户意图仍不明确：这看起来像能力询问而不是明确执行授权。请先使用 ask_user_question 确认用户是只问能力、只读诊断，还是授权执行。")
+	}
+	if a.workspacePlanApprovalPending(sessionID) {
+		return nil, errors.New("计划审批仍在等待用户处理；审批通过前不能派发 worker。")
+	}
+	if a.workspacePlanModeNeedsApproval(sessionID) {
+		return nil, errors.New("当前仍处于计划模式；请先调用 exit_plan_mode 提交计划审批，用户批准后才能派发 worker。")
+	}
 	mission, ok := a.resolveOrchestratorMission(sessionID)
 	if !ok || mission == nil {
-		return nil, errors.New("当前会话没有关联 mission")
+		if a.sessionKind(sessionID) != model.SessionKindWorkspace {
+			return nil, errors.New("当前会话没有关联 mission")
+		}
+		title := firstNonEmptyValue(strings.TrimSpace(req.MissionTitle), strings.TrimSpace(req.Summary), a.latestCompletedUserText(sessionID), "workspace mission")
+		summary := firstNonEmptyValue(strings.TrimSpace(req.Summary), a.latestCompletedUserText(sessionID), title)
+		created, err := a.ensureMissionForWorkspaceSession(context.Background(), sessionID, summary)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(req.MissionTitle) == "" {
+			req.MissionTitle = title
+		}
+		if strings.TrimSpace(req.Summary) == "" {
+			req.Summary = summary
+		}
+		mission = created
 	}
 	req.MissionID = mission.ID
 	if len(req.Tasks) == 0 {
@@ -854,6 +1364,308 @@ func (a *App) dispatchOrchestratorTasks(sessionID string, req orchestrator.Dispa
 	return result, nil
 }
 
+func (a *App) workspaceDispatchNeedsClarification(sessionID string) bool {
+	if a == nil || a.sessionKind(sessionID) != model.SessionKindWorkspace {
+		return false
+	}
+	if a.hasCompletedChoiceAfterLatestUser(sessionID) {
+		return false
+	}
+	message := strings.TrimSpace(a.latestCompletedUserText(sessionID))
+	if message == "" || !looksLikeCapabilityQuestion(message) {
+		return false
+	}
+	return !containsExplicitExecutionAuthorization(message)
+}
+
+func planItemsFromArguments(arguments map[string]any) []model.PlanItem {
+	rawSteps, ok := arguments["steps"].([]any)
+	if !ok {
+		return nil
+	}
+	items := make([]model.PlanItem, 0, len(rawSteps))
+	for index, rawStep := range rawSteps {
+		stepMap, ok := rawStep.(map[string]any)
+		if !ok {
+			continue
+		}
+		title := firstNonEmptyValue(
+			strings.TrimSpace(getStringAny(stepMap, "title")),
+			strings.TrimSpace(getStringAny(stepMap, "description")),
+			fmt.Sprintf("Step %d", index+1),
+		)
+		if hostID := strings.TrimSpace(getStringAny(stepMap, "hostId", "host")); hostID != "" {
+			title = fmt.Sprintf("%s %s", hostID, title)
+		}
+		if stepID := strings.TrimSpace(getStringAny(stepMap, "id", "taskId")); stepID != "" {
+			title = fmt.Sprintf("[%s] %s", stepID, title)
+		}
+		status := strings.TrimSpace(getStringAny(stepMap, "status"))
+		if status == "" {
+			status = "pending"
+		}
+		items = append(items, model.PlanItem{Step: title, Status: status})
+	}
+	return items
+}
+
+func planCardToolName(card model.Card) string {
+	if card.Detail == nil {
+		return ""
+	}
+	return strings.TrimSpace(getStringAny(card.Detail, "tool", "toolName"))
+}
+
+func (a *App) workspacePlanApprovalPending(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for _, approval := range session.Approvals {
+		if strings.TrimSpace(approval.Type) == "plan_exit" && strings.TrimSpace(approval.Status) == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) workspacePlanModeNeedsApproval(sessionID string) bool {
+	if a == nil || a.sessionKind(sessionID) != model.SessionKindWorkspace {
+		return false
+	}
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	latestPlanAt := ""
+	for _, card := range session.Cards {
+		if card.Type != "PlanCard" {
+			continue
+		}
+		if planCardToolName(card) == "enter_plan_mode" || planCardToolName(card) == "update_plan" {
+			latestPlanAt = firstNonEmptyValue(card.UpdatedAt, card.CreatedAt)
+		}
+	}
+	if latestPlanAt == "" {
+		return false
+	}
+	for _, approval := range session.Approvals {
+		if strings.TrimSpace(approval.Type) != "plan_exit" {
+			continue
+		}
+		switch strings.TrimSpace(approval.Status) {
+		case "accept", "accepted", "accepted_for_session":
+			if strings.TrimSpace(approval.ResolvedAt) == "" || strings.TrimSpace(approval.ResolvedAt) >= latestPlanAt {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (a *App) hasCompletedChoiceAfterLatestUser(sessionID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	seenLatestUser := false
+	for i := len(session.Cards) - 1; i >= 0; i-- {
+		card := session.Cards[i]
+		if card.Type == "ChoiceCard" && strings.TrimSpace(card.Status) == "completed" {
+			return true
+		}
+		if card.Type == "UserMessageCard" || (card.Type == "MessageCard" && card.Role == "user") {
+			seenLatestUser = true
+			break
+		}
+	}
+	return !seenLatestUser
+}
+
+func (a *App) completedChoiceObservationForQuestions(sessionID string, questions []model.ChoiceQuestion) (map[string]any, bool) {
+	if a == nil || len(questions) == 0 {
+		return nil, false
+	}
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return nil, false
+	}
+	for i := len(session.Cards) - 1; i >= 0; i-- {
+		card := session.Cards[i]
+		if card.Type == "UserMessageCard" || (card.Type == "MessageCard" && card.Role == "user") {
+			return nil, false
+		}
+		if card.Type != "ChoiceCard" || strings.TrimSpace(card.Status) != "completed" {
+			continue
+		}
+		if !choiceQuestionsOverlap(card.Questions, questions) {
+			continue
+		}
+		answers := []model.ChoiceAnswer{}
+		if choice, ok := a.store.Choice(sessionID, card.RequestID); ok {
+			answers = choice.Answers
+		}
+		answerMaps := choiceAnswerMaps(answers)
+		summary := append([]string{}, card.AnswerSummary...)
+		if len(summary) == 0 {
+			summary = choiceAnswerSummaryFromModel(card.Questions, answers)
+		}
+		payload := choiceFollowUpPayload(card.Questions, choiceAnswerInputsFromModel(answers), answerMaps)
+		payload["answer_summary"] = summary
+		if nextTool := strings.TrimSpace(getStringAny(payload, "next_required_tool")); nextTool != "" {
+			payload["instruction"] = fmt.Sprintf("The user already answered this clarification after the latest message. Your next assistant action MUST be a tool call to %s. Do not answer in plain text and do not ask the same clarification question again.", nextTool)
+		}
+		return structuredToolResponse(payload, true), true
+	}
+	return nil, false
+}
+
+func structuredToolResponse(payload map[string]any, success bool) map[string]any {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return toolResponse("failed to serialize structured tool response: "+err.Error(), false)
+	}
+	return toolResponse(string(data), success)
+}
+
+func choiceAnswerMaps(answers []model.ChoiceAnswer) []map[string]any {
+	items := make([]map[string]any, 0, len(answers))
+	for _, answer := range answers {
+		value := strings.TrimSpace(answer.Value)
+		if value == "" {
+			value = strings.TrimSpace(answer.Label)
+		}
+		if value == "" {
+			continue
+		}
+		item := map[string]any{
+			"value": value,
+			"label": emptyToNil(strings.TrimSpace(answer.Label)),
+		}
+		if answer.IsOther {
+			item["isOther"] = true
+		}
+		if note := strings.TrimSpace(answer.Note); note != "" {
+			item["note"] = note
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func choiceAnswerSummaryFromModel(questions []model.ChoiceQuestion, answers []model.ChoiceAnswer) []string {
+	if len(answers) == 0 {
+		return nil
+	}
+	items := make([]string, 0, len(answers))
+	for index, answer := range answers {
+		label := strings.TrimSpace(answer.Label)
+		if label == "" {
+			label = strings.TrimSpace(answer.Value)
+		}
+		if label == "" {
+			continue
+		}
+		prefix := fmt.Sprintf("问题 %d", index+1)
+		if index < len(questions) {
+			prefix = firstNonEmptyValue(strings.TrimSpace(questions[index].Header), strings.TrimSpace(questions[index].Question), prefix)
+		}
+		items = append(items, fmt.Sprintf("%s: %s", prefix, label))
+	}
+	return items
+}
+
+func choiceQuestionsOverlap(left, right []model.ChoiceQuestion) bool {
+	for _, leftQuestion := range left {
+		leftText := normalizeChoiceQuestionText(leftQuestion.Question)
+		if leftText == "" {
+			continue
+		}
+		for _, rightQuestion := range right {
+			if leftText == normalizeChoiceQuestionText(rightQuestion.Question) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeChoiceQuestionText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r', '?', '？', ':', '：', '(', ')', '（', '）', '`', '"', '\'', '“', '”':
+			return -1
+		default:
+			return r
+		}
+	}, value)
+}
+
+func looksLikeCapabilityQuestion(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" {
+		return false
+	}
+	candidates := []string{
+		"有没有办法",
+		"有办法",
+		"能不能",
+		"可以吗",
+		"会不会",
+		"是否能",
+		"能处理",
+		"能修复",
+		"can you",
+		"could you",
+		"do you have a way",
+		"is it possible",
+	}
+	for _, candidate := range candidates {
+		if strings.Contains(normalized, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsExplicitExecutionAuthorization(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" {
+		return false
+	}
+	candidates := []string{
+		"开始",
+		"执行",
+		"帮我修",
+		"帮忙修",
+		"直接修",
+		"修复它",
+		"处理它",
+		"只读诊断",
+		"只读检查",
+		"不要修改",
+		"按计划",
+		"授权",
+		"可以修改",
+		"start",
+		"execute",
+		"fix it",
+		"run",
+		"read-only",
+		"diagnose",
+	}
+	for _, candidate := range candidates {
+		if strings.Contains(normalized, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) resolveOrchestratorMission(sessionID string) (*orchestrator.Mission, bool) {
 	if a == nil || a.orchestrator == nil {
 		return nil, false
@@ -910,6 +1722,7 @@ func (a *App) executeReadonlyDynamicTool(sessionID, hostID, rawID string, params
 		Cwd:        args.Cwd,
 		TimeoutSec: args.TimeoutSec,
 		Readonly:   true,
+		ToolName:   readonlyHostInspectToolName(params.Tool),
 	})
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
@@ -1433,6 +2246,7 @@ func (a *App) executeApprovedRemoteMutation(sessionID string, approval model.App
 		TimeoutSec: args.TimeoutSec,
 		Readonly:   getBool(item, "readonly") || strings.TrimSpace(getString(item, "mode")) == "readonly_command",
 		Approval:   approval.Status,
+		ToolName:   readonlyHostInspectToolName(getStringAny(item, "tool", "toolName")),
 	})
 	if a.turnWasInterrupted(sessionID) {
 		return
@@ -1839,7 +2653,10 @@ func validateReadonlyCommand(command string) error {
 		}
 	}
 
-	segments := strings.Split(clean, "|")
+	segments, err := splitReadonlyPipelineSegments(clean)
+	if err != nil {
+		return err
+	}
 	for _, segment := range segments {
 		fields := strings.Fields(strings.TrimSpace(segment))
 		if len(fields) == 0 {
@@ -1852,6 +2669,34 @@ func validateReadonlyCommand(command string) error {
 	return nil
 }
 
+func splitReadonlyPipelineSegments(command string) ([]string, error) {
+	segments := make([]string, 0, 2)
+	start := 0
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+	for index, r := range command {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && inDoubleQuote:
+			escaped = true
+		case r == '\'' && !inDoubleQuote:
+			inSingleQuote = !inSingleQuote
+		case r == '"' && !inSingleQuote:
+			inDoubleQuote = !inDoubleQuote
+		case r == '|' && !inSingleQuote && !inDoubleQuote:
+			segments = append(segments, command[start:index])
+			start = index + len(string(r))
+		}
+	}
+	if inSingleQuote || inDoubleQuote {
+		return nil, errors.New("read-only command contains unterminated quotes")
+	}
+	segments = append(segments, command[start:])
+	return segments, nil
+}
+
 func validateReadonlyProgram(fields []string) error {
 	program := strings.ToLower(filepathBase(fields[0]))
 	allowed := map[string]bool{
@@ -1860,7 +2705,8 @@ func validateReadonlyProgram(fields []string) error {
 		"df": true, "du": true, "free": true, "uptime": true, "top": true, "ps": true,
 		"ss": true, "netstat": true, "iostat": true, "vmstat": true, "journalctl": true,
 		"dmesg": true, "uname": true, "env": true, "printenv": true, "which": true, "whereis": true,
-		"hostname": true, "id": true, "whoami": true, "pwd": true, "date": true,
+		"hostname": true, "id": true, "whoami": true, "pwd": true, "date": true, "command": true,
+		"pgrep": true, "lsof": true, "launchctl": true, "brew": true,
 		"lsblk": true, "blkid": true,
 		"docker": true, "kubectl": true, "git": true, "systemctl": true,
 	}
@@ -1869,6 +2715,42 @@ func validateReadonlyProgram(fields []string) error {
 	}
 
 	switch program {
+	case "command":
+		if len(fields) >= 2 {
+			switch strings.TrimSpace(fields[1]) {
+			case "-v", "-V", "-p":
+				return nil
+			}
+		}
+		if len(fields) == 1 {
+			return nil
+		}
+		return errors.New("command builtin is only allowed for read-only lookup flags such as -v")
+	case "pgrep", "lsof":
+		return nil
+	case "launchctl":
+		action := firstCommandVerb(fields[1:], map[string]bool{})
+		switch action {
+		case "list", "print", "print-disabled", "blame", "procinfo":
+			return nil
+		default:
+			return errors.New("launchctl mutations must use execute_system_mutation")
+		}
+	case "brew":
+		action := firstCommandVerb(fields[1:], map[string]bool{})
+		switch action {
+		case "--version", "list", "info", "config", "services":
+			if action == "services" {
+				subcommand := firstCommandVerb(fields[2:], map[string]bool{})
+				if subcommand == "" || subcommand == "list" {
+					return nil
+				}
+				return errors.New("brew service mutations must use execute_system_mutation")
+			}
+			return nil
+		default:
+			return errors.New("brew mutations must use execute_system_mutation")
+		}
 	case "find":
 		for _, arg := range fields[1:] {
 			value := strings.ToLower(strings.TrimSpace(arg))

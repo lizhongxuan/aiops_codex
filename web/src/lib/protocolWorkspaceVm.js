@@ -42,6 +42,17 @@ function normalizeWorkspaceCopy(value) {
     .replace(/planner/gi, "主 Agent");
 }
 
+function normalizePlanDetailValue(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizePlanDetailValue(item)).filter(Boolean).join(" / ");
+  }
+  if (typeof value === "object") {
+    return orderedObjectRows(value).map((row) => `${row.key}: ${row.value}`).filter(Boolean).join(" / ");
+  }
+  return normalizeWorkspaceCopy(value);
+}
+
 function findLastIndex(list = [], predicate = () => false) {
   for (let index = list.length - 1; index >= 0; index -= 1) {
     if (predicate(list[index], index)) return index;
@@ -224,14 +235,122 @@ function commandOutputPreview(card = {}) {
   return output ? output.slice(0, 180) : "命令没有输出。";
 }
 
+function safeParseJSON(value) {
+  if (!value || typeof value !== "string") return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function invocationStatusLabel(value = "") {
+  const normalized = compactText(value).toLowerCase();
+  if (normalized === "waiting_user") return "等待用户确认";
+  if (normalized === "waiting_approval") return "等待审批";
+  return commandStatusLabel(value);
+}
+
+function invocationTone(value = "") {
+  const normalized = compactText(value).toLowerCase();
+  if (normalized === "waiting_user" || normalized === "waiting_approval") return "warning";
+  return commandTone(value);
+}
+
+function invocationDisplayName(name = "") {
+  const normalized = compactText(name);
+  switch (normalized) {
+    case "ask_user_question":
+      return "澄清问题";
+    case "command":
+      return "命令执行";
+    case "request_approval":
+      return "审批请求";
+    case "readonly_host_inspect":
+      return "只读主机检查";
+    case "orchestrator_dispatch_tasks":
+      return "任务派发";
+    case "enter_plan_mode":
+      return "进入计划模式";
+    case "update_plan":
+      return "计划更新";
+    case "exit_plan_mode":
+      return "计划审批";
+    default:
+      return normalized || "工具调用";
+  }
+}
+
+function normalizeProtocolToolInvocations(toolInvocations = [], evidenceSummaries = []) {
+  const evidenceById = new Map(asArray(evidenceSummaries).map((item) => [compactText(item?.id), item]));
+  return asArray(toolInvocations)
+    .map((item) => {
+      const evidenceId = compactText(item?.evidenceId);
+      const evidence = evidenceById.get(evidenceId) || null;
+      const input = safeParseJSON(item?.inputJson) || {};
+      const output = safeParseJSON(item?.outputJson) || {};
+      return {
+        ...item,
+        id: compactText(item?.id),
+        name: compactText(item?.name),
+        status: compactText(item?.status),
+        input,
+        output,
+        inputSummary: compactText(item?.inputSummary),
+        outputSummary: compactText(item?.outputSummary),
+        evidenceId,
+        evidence,
+      };
+    })
+    .filter((item) => item.id && item.name);
+}
+
+function buildProtocolToolInvocationEventItems(toolInvocations = [], hostRows = []) {
+  const hostLabelById = new Map(asArray(hostRows).map((row) => [compactText(row.hostId), compactText(row.displayName || row.hostId)]));
+  return asArray(toolInvocations)
+    .slice(-18)
+    .map((invocation) => {
+      const input = asObject(invocation.input);
+      const output = asObject(invocation.output);
+      const hostId = compactText(input.hostId || invocation.hostId || output.hostId || "server-local");
+      const hostLabel = compactText(hostLabelById.get(hostId)) || (hostId === "server-local" ? "local" : hostId);
+      const command = displayCommand(input.command || invocation.inputSummary);
+      const toolLabel = invocationDisplayName(invocation.name);
+      const statusLabel = invocationStatusLabel(invocation.status);
+      const title = invocation.name === "command" && command
+        ? `${hostLabel} · ${command}`
+        : `${toolLabel} · ${invocation.inputSummary || invocation.evidence?.title || invocation.id}`;
+      const detail = compactText(invocation.outputSummary || invocation.evidence?.summary || statusLabel);
+      return {
+        id: `tool-invocation-${invocation.id}`,
+        time: formatShortTime(invocation.completedAt || invocation.startedAt || invocation.evidence?.createdAt),
+        timestamp: parseTimestamp(invocation.completedAt || invocation.startedAt || invocation.evidence?.createdAt),
+        title,
+        text: `${statusLabel}${detail ? ` · ${detail}` : ""}`,
+        detail: detail || statusLabel,
+        tone: invocationTone(invocation.status),
+        targetType: "tool_invocation",
+        targetId: invocation.id,
+        evidenceId: invocation.evidenceId,
+        hostId,
+        toolName: invocation.name,
+        command,
+        status: invocation.status,
+        invocation,
+        evidence: invocation.evidence,
+      };
+    });
+}
+
 function buildProtocolCommandEventItems(commandCards = [], hostRows = []) {
   const hostLabelById = new Map(asArray(hostRows).map((row) => [compactText(row.hostId), compactText(row.displayName || row.hostId)]));
   return asArray(commandCards)
-    .filter((card) => compactText(card?.command))
+    .filter((card) => compactText(card?.command) && !compactText(asObject(card?.detail).tool))
     .slice(-14)
     .map((card) => {
       const hostId = compactText(card.hostId || "server-local");
-      const hostLabel = compactText(hostLabelById.get(hostId) || card.hostName || hostId || "local");
+      const rowHostLabel = compactText(hostLabelById.get(hostId));
+      const hostLabel = rowHostLabel || (hostId === "server-local" ? "local" : compactText(card.hostName || hostId || "local"));
       const command = displayCommand(card.command);
       const statusLabel = commandStatusLabel(card.status);
       return {
@@ -323,6 +442,7 @@ export function resolveProtocolWorkspaceCards(cards = []) {
   const choiceCards = missionScopeCards.filter((card) => isChoiceCard(card) && card.status === "pending");
   const processCards = missionScopeCards.filter((card) => isProcessCard(card));
   const commandCards = missionScopeCards.filter((card) => card?.type === "CommandCard");
+  const eventCommandCards = workspaceCards.filter((card) => card?.type === "CommandCard");
   return {
     workspaceCards,
     currentMissionCards,
@@ -338,6 +458,7 @@ export function resolveProtocolWorkspaceCards(cards = []) {
     choiceCards,
     processCards,
     commandCards,
+    eventCommandCards,
   };
 }
 
@@ -456,11 +577,15 @@ export function buildProtocolApprovalItems(approvalCards = [], hostRows = []) {
     const decisions = asArray(card?.approval?.decisions);
     const dispatchRequest = asObject(host?.dispatch?.request);
     const approvalAnchor = asObject(host?.worker?.approvalAnchor || host?.worker?.approval_anchor);
+    const isPlanApproval = card?.type === "PlanApprovalCard" || compactText(card?.approval?.type) === "plan_exit";
     return {
       id: card.id,
       approvalId: compactText(card?.approval?.requestId || card?.approvalId || card?.requestId),
+      kind: isPlanApproval ? "plan" : "operation",
+      title: normalizeWorkspaceCopy(card.title || (isPlanApproval ? "计划审批" : "")),
       hostId: compactText(card.hostId),
-      hostName: host?.displayName || compactText(card.hostId) || "unknown-host",
+      hostName: isPlanApproval ? "计划审批" : host?.displayName || compactText(card.hostId) || "unknown-host",
+      commandLabel: isPlanApproval ? "计划:" : "执行命令:",
       command: normalizeWorkspaceCopy(card.command || dispatchRequest.summary || dispatchRequest.title || card.text || card.summary),
       summary: normalizeWorkspaceCopy(card.text || card.summary || host?.taskTitle || host?.summary),
       timeLabel: formatTime(card.updatedAt || card.createdAt),
@@ -494,8 +619,15 @@ export function buildProtocolEventItems({
   systemNoticeCards = [],
   dispatchEvents = [],
   commandCards = [],
+  toolInvocations = [],
 } = {}) {
-  const commandEvents = buildProtocolCommandEventItems(commandCards, hostRows);
+  const invocationEvents = buildProtocolToolInvocationEventItems(toolInvocations, hostRows);
+  const hasProjectedCommandEvents = invocationEvents.some((item) => item.toolName === "command");
+  const projectedChoiceCardIds = new Set(invocationEvents
+    .filter((item) => item.toolName === "ask_user_question")
+    .map((item) => compactText(item.evidence?.metadata?.cardId || item.targetId?.replace(/^tool-/, "")))
+    .filter(Boolean));
+  const commandEvents = hasProjectedCommandEvents ? [] : buildProtocolCommandEventItems(commandCards, hostRows);
   const timelineEvents = buildWorkspaceLiveTimeline({
     planCard,
     dispatchEvents,
@@ -517,10 +649,19 @@ export function buildProtocolEventItems({
     targetId: item.targetId || "",
     hostId: item.hostId || "",
   }));
-  const filteredTimelineEvents = commandEvents.length
-    ? timelineEvents.filter((item) => !(item.targetType === "host" && /^已处理\s*\d+\s*个命令/.test(compactText(item.detail || item.text))))
+  const hasProjectedChoiceEvents = projectedChoiceCardIds.size > 0;
+  const filteredTimelineEvents = commandEvents.length || hasProjectedCommandEvents || hasProjectedChoiceEvents
+    ? timelineEvents.filter((item) => {
+        if (item.targetType === "host" && /^已处理\s*\d+\s*个命令/.test(compactText(item.detail || item.text))) {
+          return false;
+        }
+        if (item.targetType === "choice" && projectedChoiceCardIds.has(compactText(item.targetId))) {
+          return false;
+        }
+        return true;
+      })
     : timelineEvents;
-  return [...commandEvents, ...filteredTimelineEvents]
+  return [...invocationEvents, ...commandEvents, ...filteredTimelineEvents]
     .sort((left, right) => (right.timestamp || 0) - (left.timestamp || 0))
     .slice(0, 14);
 }
@@ -559,6 +700,10 @@ export function buildProtocolPlanCardModel({
   return {
     title: normalizeWorkspaceCopy(planCard?.title || planDetail?.goal || "主 Agent 计划摘要"),
     summary: normalizeWorkspaceCopy(planCard?.text || planDetail?.goal || ""),
+    risk: normalizePlanDetailValue(pickField(planDetail, "risk", "risks")),
+    validation: normalizePlanDetailValue(pickField(planDetail, "validation", "verification", "verify")),
+    rollback: normalizePlanDetailValue(pickField(planDetail, "rollback", "rollbackPlan", "rollback_plan")),
+    scope: normalizePlanDetailValue(pickField(planDetail, "scope", "range")),
     version: compactText(planDetailState.version || "plan-v1"),
     generatedAt: compactText(planDetailState.generatedAt || planCard?.updatedAt || planCard?.createdAt),
     totalSteps: stepItems.length || asArray(planCard?.items).length,
@@ -973,6 +1118,8 @@ export function buildProtocolAgentDetailModel({
 
 export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
   const cards = resolveProtocolWorkspaceCards(snapshot.cards || []);
+  const evidenceSummaries = asArray(snapshot.evidenceSummaries);
+  const toolInvocations = normalizeProtocolToolInvocations(snapshot.toolInvocations, evidenceSummaries);
   const hostRows = buildWorkspaceHostRows({
     cards: cards.currentMissionCards,
     hosts: snapshot.hosts || [],
@@ -1006,7 +1153,8 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     hostRows,
     systemNoticeCards: cards.currentMissionCards.filter((card) => isSystemNoticeCard(card)),
     dispatchEvents,
-    commandCards: cards.commandCards,
+    commandCards: cards.eventCommandCards,
+    toolInvocations,
   });
   const approvalItems = buildProtocolApprovalItems(cards.approvalCards, hostRows);
   const backgroundAgents = buildProtocolBackgroundAgents(hostRows);
@@ -1069,6 +1217,10 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     choiceCards: cards.choiceCards,
     planCardModel,
     eventItems,
+    toolInvocations,
+    evidenceSummaries,
+    agentLoop: snapshot.agentLoop || null,
+    agentLoopIterations: asArray(snapshot.agentLoopIterations),
     conversationStatusCard,
     formattedTurns,
     activeProcessTurnId,
