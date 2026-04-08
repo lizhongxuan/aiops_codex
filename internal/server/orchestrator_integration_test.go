@@ -442,6 +442,138 @@ func TestWorkspaceRouteCompletionStartsReadonlyTurnForTargetHost(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRouteCompletionNotificationDoesNotBlockCodexReadLoop(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+
+	backgroundCleanCalled := make(chan struct{}, 1)
+	threadStartCalled := make(chan struct{}, 1)
+	turnStartCalled := make(chan struct{}, 1)
+	allowBackgroundClean := make(chan struct{})
+	allowThreadStart := make(chan struct{})
+	app.codexRequestFunc = func(ctx context.Context, method string, _ any, result any) error {
+		switch method {
+		case "skills/list":
+			return json.Unmarshal([]byte(`{"data":[]}`), result)
+		case "thread/backgroundTerminals/clean":
+			select {
+			case backgroundCleanCalled <- struct{}{}:
+			default:
+			}
+			select {
+			case <-allowBackgroundClean:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case "thread/start":
+			select {
+			case threadStartCalled <- struct{}{}:
+			default:
+			}
+			select {
+			case <-allowThreadStart:
+				content, _ := json.Marshal(map[string]any{"thread": map[string]any{"id": "thread-readonly-after-route"}})
+				return json.Unmarshal(content, result)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case "turn/start":
+			select {
+			case turnStartCalled <- struct{}{}:
+			default:
+			}
+			content, _ := json.Marshal(map[string]any{"turnId": "turn-readonly-after-route"})
+			return json.Unmarshal(content, result)
+		default:
+			return fmt.Errorf("unexpected codex request method %s", method)
+		}
+	}
+
+	workspaceSessionID := "workspace-route-notification-async"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetSelectedHost(workspaceSessionID, model.ServerLocalHostID)
+	app.store.SetThread(workspaceSessionID, "thread-workspace-route-async")
+	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash(model.ServerLocalHostID))
+	app.store.SetTurn(workspaceSessionID, "turn-workspace-route-async")
+
+	now := model.NowString()
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "msg-user-route-async",
+		Type:      "UserMessageCard",
+		Role:      "user",
+		Text:      "继续查看主机的系统状态",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	app.store.UpsertCard(workspaceSessionID, model.Card{
+		ID:        "msg-assistant-route-async",
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      "```json\n{\"route\":\"host_readonly\",\"reason\":\"single-host readonly check\",\"targetHostId\":\"server-local\",\"needsPlan\":false,\"needsWorker\":false}\n```\n我将继续对 `server-local` 做只读系统状态检查。",
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	app.startRuntimeTurn(workspaceSessionID, model.ServerLocalHostID)
+
+	payload := map[string]any{
+		"threadId": "thread-workspace-route-async",
+		"turnId":   "turn-workspace-route-async",
+		"turn": map[string]any{
+			"id":     "turn-workspace-route-async",
+			"status": "completed",
+		},
+	}
+	params, _ := json.Marshal(payload)
+	handlerDone := make(chan struct{})
+	go func() {
+		app.handleCodexNotification("turn/completed", params)
+		close(handlerDone)
+	}()
+
+	select {
+	case <-backgroundCleanCalled:
+	case <-time.After(time.Second):
+		t.Fatal("expected background terminal cleanup request")
+	}
+	select {
+	case <-threadStartCalled:
+	case <-time.After(time.Second):
+		t.Fatal("expected readonly thread/start request")
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(200 * time.Millisecond):
+		close(allowBackgroundClean)
+		close(allowThreadStart)
+		t.Fatal("turn/completed notification handler blocked on a nested codex request")
+	}
+
+	close(allowBackgroundClean)
+	close(allowThreadStart)
+	select {
+	case <-turnStartCalled:
+	case <-time.After(time.Second):
+		t.Fatal("expected readonly turn/start request after releasing thread/start")
+	}
+
+	session := app.store.Session(workspaceSessionID)
+	if session == nil || session.ThreadID != "thread-readonly-after-route" {
+		t.Fatalf("expected readonly thread to be bound, got %#v", session)
+	}
+	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceReadonlyThreadConfigHash(model.ServerLocalHostID) {
+		t.Fatalf("expected readonly thread config hash, got %q", got)
+	}
+	time.Sleep(500 * time.Millisecond)
+}
+
 func TestWorkspaceRouteTurnResetsReadonlyThreadBinding(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }

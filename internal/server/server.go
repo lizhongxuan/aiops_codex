@@ -2194,25 +2194,24 @@ func (a *App) handleCodexNotification(method string, params json.RawMessage) {
 		}
 		a.recordOrchestratorTurnPhase(sessionID, normalizeCardStatus(turnStatus))
 		a.finalizeOpenTurnCards(sessionID, normalizeCardStatus(turnStatus))
-		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
+		go a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
 		log.Printf("turn completed session=%s turn=%s status=%s", sessionID, getString(turn, "id"), turnStatus)
 		if a.isWorkspaceRouteThread(sessionID) {
 			a.flushThrottledBroadcast(sessionID)
-			a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
-			a.recordOrchestratorReply(sessionID)
+			a.handleMissionTurnCompletedAsync(sessionID, normalizeCardStatus(turnStatus), true)
 			a.broadcastSnapshot(sessionID)
 			return
 		}
 		a.recordOrchestratorReply(sessionID)
 		a.broadcastSnapshot(sessionID)
-		a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
+		a.handleMissionTurnCompletedAsync(sessionID, normalizeCardStatus(turnStatus), false)
 	case "turn/aborted":
 		sessionID := a.sessionIDFromPayload(payload)
 		if sessionID == "" {
 			return
 		}
 		a.bindTurnToSession(sessionID, payload)
-		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
+		go a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
 		a.markTurnInterrupted(sessionID, getTurnID(payload))
 		a.recordOrchestratorTurnPhase(sessionID, "aborted")
 		a.broadcastSnapshot(sessionID)

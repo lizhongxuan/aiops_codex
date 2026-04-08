@@ -8,6 +8,7 @@ import ProtocolWorkspacePage from "../src/pages/ProtocolWorkspacePage.vue";
 const mocks = vi.hoisted(() => ({
   store: null,
 }));
+const DISMISSED_STATUS_BANNER_STORAGE_KEY = "codex:protocol-workspace-dismissed-status-banners:v1";
 
 vi.mock("../src/store", () => ({
   useAppStore: () => mocks.store,
@@ -130,6 +131,27 @@ function createProcessCards() {
       },
       createdAt: "2026-03-31T02:19:00Z",
       updatedAt: "2026-03-31T02:19:00Z",
+    },
+  ];
+}
+
+function createCommandCards() {
+  return [
+    {
+      id: "cmd-uptime-1",
+      type: "CommandCard",
+      title: "Command execution",
+      command: "/bin/zsh -lc uptime",
+      text: "11:19  3 users, load averages: 2.92 2.72 2.49",
+      output: "11:19  3 users, load averages: 2.92 2.72 2.49\n",
+      stdout: "11:19  3 users, load averages: 2.92 2.72 2.49\n",
+      status: "completed",
+      hostId: "server-local",
+      cwd: "/Users/lizhongxuan/Desktop/aiops-codex",
+      exitCode: 0,
+      durationMs: 23,
+      createdAt: "2026-04-08T03:19:00Z",
+      updatedAt: "2026-04-08T03:19:00Z",
     },
   ];
 }
@@ -506,6 +528,7 @@ function findButtonByText(wrapper, text) {
 
 describe("ProtocolWorkspacePage", () => {
   beforeEach(() => {
+    window.localStorage?.removeItem(DISMISSED_STATUS_BANNER_STORAGE_KEY);
     mocks.store = createStoreFixture();
     global.fetch = vi.fn(async () => ({
       ok: true,
@@ -523,6 +546,56 @@ describe("ProtocolWorkspacePage", () => {
     expect(wrapper.get('[data-testid="protocol-approval-approval-card-2"]').text()).toContain("failover-master.sh");
     expect(wrapper.text()).toContain("web-01");
     expect(wrapper.text()).toContain("web-02");
+  });
+
+  it("dismisses the workspace failure banner without removing the error card", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        sessionId: "workspace-1",
+        approvals: [],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "看下 server-local 的主机状态",
+            createdAt: "2026-04-08T02:00:00Z",
+            updatedAt: "2026-04-08T02:00:00Z",
+          },
+          {
+            id: "error-readonly",
+            type: "ErrorCard",
+            title: "Workspace readonly failed",
+            text: "context deadline exceeded",
+            message: "context deadline exceeded",
+            status: "failed",
+            createdAt: "2026-04-08T02:01:00Z",
+            updatedAt: "2026-04-08T02:01:00Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "failed",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const banner = wrapper.get(".workspace-status-banner.danger");
+    expect(banner.text()).toContain("Workspace readonly failed");
+
+    await banner.get('button[aria-label="关闭提示"]').trigger("click");
+    await nextTick();
+
+    expect(wrapper.find(".workspace-status-banner").exists()).toBe(false);
+    expect(mocks.store.snapshot.cards.some((card) => card.id === "error-readonly")).toBe(true);
+    expect(JSON.parse(window.localStorage.getItem(DISMISSED_STATUS_BANNER_STORAGE_KEY))).toContain("workspace-1:error-readonly");
   });
 
   it("renders the active mission as a process fold inside the main agent thread", async () => {
@@ -1371,8 +1444,67 @@ describe("ProtocolWorkspacePage", () => {
     await processItem.trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("主 Agent 计划摘要");
-    expect(wrapper.text()).toContain("nginx 巡检计划");
+    expect(wrapper.text()).toContain("过程详情");
+    expect(wrapper.text()).toContain("我先整理刚才收集到的证据。");
+    expect(wrapper.text()).not.toContain("当前还没有可用的计划摘要。");
+  });
+
+  it("shows command names in the event stream and opens terminal output from command details", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        selectedHostId: "server-local",
+        hosts: [{ id: "server-local", name: "server-local", status: "online", executable: true }],
+        approvals: [],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "继续查看主机状态",
+            createdAt: "2026-04-08T03:18:00Z",
+            updatedAt: "2026-04-08T03:18:00Z",
+          },
+          ...createCommandCards(),
+          {
+            id: "process-cmd-uptime-1",
+            type: "ProcessLineCard",
+            text: "已处理 1 个命令",
+            status: "completed",
+            hostId: "server-local",
+            createdAt: "2026-04-08T03:19:01Z",
+            updatedAt: "2026-04-08T03:19:01Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "completed",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
+    expect(timeline.text()).toContain("uptime");
+    expect(timeline.text()).toContain("load averages");
+
+    const commandEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("uptime"));
+    expect(commandEvent).toBeTruthy();
+
+    await commandEvent.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("命令执行详情");
+    expect(modal.text()).toContain("uptime");
+    expect(modal.text()).toContain("load averages");
+    expect(modal.text()).not.toContain("暂无终端输出");
   });
 
   it("opens approval evidence and submits decisions from the right rail", async () => {

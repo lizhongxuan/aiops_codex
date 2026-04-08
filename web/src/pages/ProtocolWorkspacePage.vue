@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
-import { AlertTriangleIcon, Loader2Icon, PanelsTopLeftIcon, RefreshCwIcon } from "lucide-vue-next";
+import { AlertTriangleIcon, Loader2Icon, PanelsTopLeftIcon, RefreshCwIcon, XIcon } from "lucide-vue-next";
 import ProtocolApprovalRail from "../components/protocol-workspace/ProtocolApprovalRail.vue";
 import ProtocolAgentDetailModal from "../components/protocol-workspace/ProtocolAgentDetailModal.vue";
 import ProtocolConversationPane from "../components/protocol-workspace/ProtocolConversationPane.vue";
@@ -15,6 +15,7 @@ const store = useAppStore();
 const OPEN_SESSION_HISTORY_EVENT = "codex:open-session-history";
 const OPEN_MCP_DRAWER_EVENT = "codex:open-mcp-drawer";
 const MCP_SURFACE_TAB = "mcp-surface";
+const DISMISSED_STATUS_BANNER_STORAGE_KEY = "codex:protocol-workspace-dismissed-status-banners:v1";
 
 const refreshBusy = ref(false);
 const decisionBusy = ref(false);
@@ -30,12 +31,15 @@ const selectedApprovalId = ref("");
 const selectedMessageId = ref("");
 const selectedMcpSurface = ref(null);
 const selectedAgentId = ref("");
+const selectedCommandEvidence = ref(null);
+const selectedProcessEvidence = ref(null);
 const agentDetailOpen = ref(false);
 const evidenceSource = ref("mission");
 const workspaceBootstrapBusy = ref(false);
 const workspaceBootstrapAttempted = ref(false);
 const localMcpApprovals = ref([]);
 const localMcpEvents = ref([]);
+const dismissedStatusBannerKeys = ref(readDismissedStatusBannerKeys());
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -92,9 +96,89 @@ function stringifyRaw(value) {
   return "";
 }
 
+function stripMatchingQuotes(value = "") {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith('"') && text.endsWith('"')))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function displayCommand(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const shellMatch = raw.match(/^(?:\/[\w./-]+\/)?(?:zsh|bash|sh)\s+-lc\s+([\s\S]+)$/);
+  if (shellMatch) return stripMatchingQuotes(shellMatch[1]);
+  return raw;
+}
+
+function commandStatusLabel(value = "") {
+  const normalized = compactText(value).toLowerCase();
+  if (normalized.includes("permission") || normalized.includes("denied")) return "权限不足";
+  if (normalized.includes("fail") || normalized.includes("error")) return "失败";
+  if (normalized.includes("complete") || normalized.includes("done")) return "已完成";
+  if (normalized.includes("run") || normalized.includes("progress")) return "执行中";
+  return compactText(value) || "已处理";
+}
+
+function commandOutputText(commandEvidence = {}) {
+  return String(commandEvidence.output || commandEvidence.stdout || commandEvidence.stderr || commandEvidence.text || commandEvidence.summary || "").trim();
+}
+
+function commandEvidenceFrom(value = {}) {
+  const source = asObject(value);
+  const card = asObject(source.commandCard || source.raw?.commandCard || source.card || source);
+  return {
+    ...source,
+    ...card,
+    command: displayCommand(card.command || source.command),
+    rawCommand: card.command || source.command || "",
+    output: card.output || source.output || card.stdout || source.stdout || card.stderr || source.stderr || "",
+    status: card.status || source.status || "",
+    hostId: card.hostId || source.hostId || "",
+    cwd: card.cwd || source.cwd || "",
+    exitCode: card.exitCode ?? source.exitCode,
+    durationMs: card.durationMs ?? source.durationMs,
+  };
+}
+
 function pushActionNotice(message, tone = "info") {
   actionNotice.value = compactText(message);
   actionTone.value = tone;
+}
+
+function readDismissedStatusBannerKeys() {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage?.getItem(DISMISSED_STATUS_BANNER_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.map((item) => compactText(item)).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistDismissedStatusBannerKeys(keys) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage?.setItem(DISMISSED_STATUS_BANNER_STORAGE_KEY, JSON.stringify(keys.slice(0, 200)));
+  } catch {
+    // Ignore storage failures; the banner can still be dismissed for the current render cycle.
+  }
+}
+
+function statusBannerDismissKey(banner) {
+  const cardId = compactText(banner?.cardId);
+  if (!cardId) return "";
+  const sessionId = compactText(store.snapshot.sessionId || store.activeSessionId || "current");
+  return `${sessionId}:${cardId}`;
+}
+
+function dismissStatusBanner() {
+  const key = statusBannerDismissKey(statusBanner.value);
+  if (!key || dismissedStatusBannerKeys.value.includes(key)) return;
+  const nextKeys = [key, ...dismissedStatusBannerKeys.value].slice(0, 200);
+  dismissedStatusBannerKeys.value = nextKeys;
+  persistDismissedStatusBannerKeys(nextKeys);
 }
 
 function pushMcpEvent(action, options = {}) {
@@ -334,7 +418,9 @@ const canRestartMission = computed(() => workspaceModel.value.nextSendStartsNewM
 const statusBanner = computed(() => {
   const banner = workspaceModel.value.statusBanner;
   if (!banner || workspaceModel.value.canStopCurrentMission) return null;
+  if (dismissedStatusBannerKeys.value.includes(statusBannerDismissKey(banner))) return null;
   return {
+    cardId: banner.cardId,
     tone: banner.tone,
     title: banner.title,
     text: banner.detail,
@@ -497,6 +583,22 @@ const evidenceBase = computed(() =>
 );
 
 const mainAgentPlanPanel = computed(() => {
+  if (evidenceSource.value === "process" && selectedProcessEvidence.value) {
+    const item = selectedProcessEvidence.value;
+    const rows = [
+      { label: "过程消息", value: compactText(item.text || item.title || item.summary || "暂无过程消息。") },
+      compactText(item.detail) ? { label: "补充说明", value: compactText(item.detail) } : null,
+      compactText(item.time) ? { label: "时间", value: compactText(item.time) } : null,
+      compactText(item.status) ? { label: "状态", value: compactText(item.status) } : null,
+      compactText(item.hostId) ? { label: "Host", value: compactText(item.hostId) } : null,
+    ].filter(Boolean);
+    return {
+      title: "过程详情",
+      summary: "这里展示你点击的过程项本身，避免跳到空的计划摘要。",
+      items: rows,
+      raw: item,
+    };
+  }
   const items = [];
   const hasPlanSummary = Boolean(
     compactText(planCardModel.value.summary) || asArray(planCardModel.value.stepItems).length || compactText(planCardModel.value.generatedAt),
@@ -547,15 +649,35 @@ const workerConversationPanel = computed(() => {
   };
 });
 
-const hostTerminalPanel = computed(() => ({
-  title: `${selectedHostRow.value?.displayName || "Host"} terminal`,
-  summary: selectedHostRow.value?.summary || "查看当前 host-agent 对应主机的终端输出。",
-  items: asArray(evidenceBase.value.hostTerminalRows).map((row) => ({
-    label: row.label || row.key,
-    value: row.value || row.text,
-  })),
-  raw: evidenceBase.value.hostTerminalOutput || selectedHostRow.value?.worker?.terminal || "",
-}));
+const hostTerminalPanel = computed(() => {
+  if (evidenceSource.value === "command" && selectedCommandEvidence.value) {
+    const command = commandEvidenceFrom(selectedCommandEvidence.value);
+    const output = commandOutputText(command);
+    const rows = [
+      { label: "Host", value: compactText(command.hostId || selectedHostRow.value?.displayName || selectedHostRow.value?.hostId || "local") },
+      { label: "Status", value: commandStatusLabel(command.status) },
+      { label: "Command", value: compactText(command.command || command.rawCommand || "未提供命令") },
+      compactText(command.cwd) ? { label: "Cwd", value: compactText(command.cwd) } : null,
+      command.exitCode !== undefined && command.exitCode !== null ? { label: "Exit Code", value: String(command.exitCode) } : null,
+      command.durationMs ? { label: "Duration", value: `${command.durationMs}ms` } : null,
+    ].filter(Boolean);
+    return {
+      title: command.command || "Command terminal",
+      summary: "实际执行的命令、状态和终端输出。",
+      items: rows,
+      raw: [`$ ${command.rawCommand || command.command}`, output || "（命令没有输出）"].filter(Boolean).join("\n\n"),
+    };
+  }
+  return {
+    title: `${selectedHostRow.value?.displayName || "Host"} terminal`,
+    summary: selectedHostRow.value?.summary || "查看当前 host-agent 对应主机的终端输出。",
+    items: asArray(evidenceBase.value.hostTerminalRows).map((row) => ({
+      label: row.label || row.key,
+      value: row.value || row.text,
+    })),
+    raw: evidenceBase.value.hostTerminalOutput || selectedHostRow.value?.worker?.terminal || "",
+  };
+});
 
 const approvalContextPanel = computed(() => {
   const rows = [];
@@ -653,6 +775,13 @@ const evidenceTitle = computed(() => {
     }
     return `执行详情 · ${hostLabel}`;
   }
+  if (evidenceSource.value === "command" && selectedCommandEvidence.value) {
+    const command = commandEvidenceFrom(selectedCommandEvidence.value);
+    return `命令执行详情 · ${command.command || command.hostId || "local"}`;
+  }
+  if (evidenceSource.value === "process" && selectedProcessEvidence.value) {
+    return "过程详情";
+  }
   if (evidenceSource.value === "mcp-surface" && selectedMcpSurface.value) {
     return `MCP 面板 · ${mcpSurfaceTitle(selectedMcpSurface.value)}`;
   }
@@ -668,6 +797,12 @@ const evidenceSubtitle = computed(() => {
   }
   if (evidenceSource.value === "host") {
     return "这里汇总当前 worker 对话和 Host Terminal 上下文。";
+  }
+  if (evidenceSource.value === "command") {
+    return "这里展示实际执行的命令、状态和终端输出。";
+  }
+  if (evidenceSource.value === "process") {
+    return "这里展示你点击的过程消息本身；如需命令输出，请点击命令类过程项或右侧实时事件。";
   }
   if (evidenceSource.value === "mcp-surface") {
     return "这里展示当前 MCP 面板的完整详情，不会把长图表和长表格重新灌回正文。";
@@ -708,13 +843,13 @@ const runtimeStatus = computed(() => {
 
 const toolbarTone = computed(() => {
   if (store.errorMessage) return "danger";
-  if (!actionNotice.value && workspaceModel.value.statusBanner?.tone) return workspaceModel.value.statusBanner.tone;
+  if (!actionNotice.value && statusBanner.value?.tone) return statusBanner.value.tone;
   if (actionTone.value) return actionTone.value;
   return "info";
 });
 
 const toolbarMessage = computed(() => {
-  const raw = store.errorMessage || actionNotice.value || workspaceModel.value.statusBanner?.detail || store.noticeMessage || "";
+  const raw = store.errorMessage || actionNotice.value || statusBanner.value?.text || store.noticeMessage || "";
   // Replace raw "approval not found" with a user-friendly message
   if (/approval.*not\s*found|not\s*found.*approval/i.test(raw)) {
     return "该审批已过期或已被处理，请刷新页面查看最新状态。";
@@ -794,9 +929,21 @@ function openEvidence({ source = "mission", hostId = "", stepId = "", approvalId
   if (hostId) selectedHostId.value = hostId;
   if (stepId) selectedStepId.value = stepId;
   if (approvalId) selectedApprovalId.value = approvalId;
+  if (source !== "command") selectedCommandEvidence.value = null;
+  if (source !== "process") selectedProcessEvidence.value = null;
   evidenceSource.value = source;
   evidenceTab.value = tab;
   evidenceOpen.value = true;
+}
+
+function openCommandEvidence(value = {}, fallbackHostId = "") {
+  const command = commandEvidenceFrom(value);
+  selectedCommandEvidence.value = command;
+  openEvidence({
+    source: "command",
+    hostId: compactText(command.hostId || fallbackHostId),
+    tab: "host-terminal",
+  });
 }
 
 async function refreshProtocolState() {
@@ -1072,8 +1219,13 @@ function handleMessageSelect(message) {
 function handleProcessItemSelect(payload) {
   const item = payload?.item || {};
   const hostId = compactText(item.hostId);
+  if (item.kind === "command" || item.commandCard || item.command) {
+    openCommandEvidence(item.commandCard || item, hostId);
+    return;
+  }
   if (item.kind === "assistant_message") {
-    openEvidence({ source: "message", tab: "main-agent-plan" });
+    selectedProcessEvidence.value = item;
+    openEvidence({ source: "process", hostId, tab: "main-agent-plan" });
     return;
   }
   if (hostId) {
@@ -1100,6 +1252,10 @@ function handleProcessItemSelect(payload) {
 
 function handleEventSelect(item) {
   const targetType = compactText(item?.targetType).toLowerCase();
+  if (targetType === "command") {
+    openCommandEvidence(item?.commandCard || item, item?.hostId);
+    return;
+  }
   if (targetType === "mcp_approval") {
     selectedApprovalId.value = compactText(item?.targetId);
     pushActionNotice("已定位到 MCP 审批上下文。", "info");
@@ -1221,6 +1377,9 @@ function handleMcpSurfaceEventRefresh(surface) {
           <article v-else-if="statusBanner" class="workspace-status-banner" :class="statusBanner.tone">
             <div class="workspace-status-banner-head">
               <strong>{{ statusBanner.title }}</strong>
+              <button class="workspace-status-banner-close" type="button" title="关闭提示" aria-label="关闭提示" @click="dismissStatusBanner">
+                <XIcon size="14" />
+              </button>
             </div>
             <p>{{ statusBanner.text }}</p>
             <span v-if="statusBanner.hint" class="workspace-status-banner-hint">{{ statusBanner.hint }}</span>
@@ -1477,8 +1636,31 @@ function handleMcpSurfaceEventRefresh(surface) {
 .workspace-status-banner-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
+}
+
+.workspace-status-banner-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.62);
+  color: currentColor;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.78;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.workspace-status-banner-close:hover {
+  background: #ffffff;
+  border-color: currentColor;
+  opacity: 1;
 }
 
 .workspace-status-banner p {

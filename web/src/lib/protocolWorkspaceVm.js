@@ -186,6 +186,76 @@ function buildApprovalAnchorRows(anchor = {}) {
   return rows;
 }
 
+function stripMatchingQuotes(value = "") {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith('"') && text.endsWith('"')))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function displayCommand(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const shellMatch = raw.match(/^(?:\/[\w./-]+\/)?(?:zsh|bash|sh)\s+-lc\s+([\s\S]+)$/);
+  if (shellMatch) return stripMatchingQuotes(shellMatch[1]);
+  return raw;
+}
+
+function commandStatusLabel(value = "") {
+  const normalized = compactText(value).toLowerCase();
+  if (normalized.includes("permission") || normalized.includes("denied")) return "权限不足";
+  if (normalized.includes("fail") || normalized.includes("error")) return "失败";
+  if (normalized.includes("complete") || normalized.includes("done")) return "已完成";
+  if (normalized.includes("run") || normalized.includes("progress")) return "执行中";
+  return compactText(value) || "已处理";
+}
+
+function commandTone(value = "") {
+  const normalized = compactText(value).toLowerCase();
+  if (normalized.includes("permission") || normalized.includes("denied") || normalized.includes("fail") || normalized.includes("error")) return "danger";
+  if (normalized.includes("complete") || normalized.includes("done")) return "success";
+  if (normalized.includes("wait") || normalized.includes("pending")) return "warning";
+  return "neutral";
+}
+
+function commandOutputPreview(card = {}) {
+  const output = compactText(card.output || card.stdout || card.stderr || card.text || card.summary);
+  return output ? output.slice(0, 180) : "命令没有输出。";
+}
+
+function buildProtocolCommandEventItems(commandCards = [], hostRows = []) {
+  const hostLabelById = new Map(asArray(hostRows).map((row) => [compactText(row.hostId), compactText(row.displayName || row.hostId)]));
+  return asArray(commandCards)
+    .filter((card) => compactText(card?.command))
+    .slice(-14)
+    .map((card) => {
+      const hostId = compactText(card.hostId || "server-local");
+      const hostLabel = compactText(hostLabelById.get(hostId) || card.hostName || hostId || "local");
+      const command = displayCommand(card.command);
+      const statusLabel = commandStatusLabel(card.status);
+      return {
+        id: `command-${card.id || command}`,
+        time: formatShortTime(card.updatedAt || card.createdAt),
+        timestamp: parseTimestamp(card.updatedAt || card.createdAt),
+        title: `${hostLabel} · ${command}`,
+        text: `${statusLabel} · ${commandOutputPreview(card)}`,
+        detail: `${statusLabel} · ${commandOutputPreview(card)}`,
+        tone: commandTone(card.status),
+        targetType: "command",
+        targetId: compactText(card.id),
+        hostId,
+        command,
+        status: compactText(card.status),
+        output: card.output || card.stdout || card.stderr || "",
+        cwd: compactText(card.cwd),
+        exitCode: card.exitCode,
+        durationMs: card.durationMs,
+        commandCard: card,
+      };
+    });
+}
+
 export function normalizeProtocolMissionPhase(value) {
   const normalized = compactText(value).toLowerCase();
   switch (normalized) {
@@ -252,6 +322,7 @@ export function resolveProtocolWorkspaceCards(cards = []) {
   const approvalCards = missionScopeCards.filter((card) => isApprovalCard(card) && card.status === "pending");
   const choiceCards = missionScopeCards.filter((card) => isChoiceCard(card) && card.status === "pending");
   const processCards = missionScopeCards.filter((card) => isProcessCard(card));
+  const commandCards = missionScopeCards.filter((card) => card?.type === "CommandCard");
   return {
     workspaceCards,
     currentMissionCards,
@@ -266,6 +337,7 @@ export function resolveProtocolWorkspaceCards(cards = []) {
     approvalCards,
     choiceCards,
     processCards,
+    commandCards,
   };
 }
 
@@ -421,8 +493,10 @@ export function buildProtocolEventItems({
   hostRows = [],
   systemNoticeCards = [],
   dispatchEvents = [],
+  commandCards = [],
 } = {}) {
-  return buildWorkspaceLiveTimeline({
+  const commandEvents = buildProtocolCommandEventItems(commandCards, hostRows);
+  const timelineEvents = buildWorkspaceLiveTimeline({
     planCard,
     dispatchEvents,
     dispatchCards: dispatchSummaryCards,
@@ -434,13 +508,21 @@ export function buildProtocolEventItems({
   }).map((item) => ({
     id: item.id,
     time: item.time || "",
+    timestamp: item.timestamp || 0,
     title: normalizeWorkspaceCopy(item.title || item.source || "事件"),
+    text: normalizeWorkspaceCopy(item.text || ""),
     detail: normalizeWorkspaceCopy(item.text || ""),
     tone: item.tone || "neutral",
     targetType: item.targetType || "",
     targetId: item.targetId || "",
     hostId: item.hostId || "",
   }));
+  const filteredTimelineEvents = commandEvents.length
+    ? timelineEvents.filter((item) => !(item.targetType === "host" && /^已处理\s*\d+\s*个命令/.test(compactText(item.detail || item.text))))
+    : timelineEvents;
+  return [...commandEvents, ...filteredTimelineEvents]
+    .sort((left, right) => (right.timestamp || 0) - (left.timestamp || 0))
+    .slice(0, 14);
 }
 
 export function buildProtocolPlanCardModel({
@@ -924,6 +1006,7 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     hostRows,
     systemNoticeCards: cards.currentMissionCards.filter((card) => isSystemNoticeCard(card)),
     dispatchEvents,
+    commandCards: cards.commandCards,
   });
   const approvalItems = buildProtocolApprovalItems(cards.approvalCards, hostRows);
   const backgroundAgents = buildProtocolBackgroundAgents(hostRows);
@@ -943,6 +1026,7 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     turnActive: runtime?.turn?.active === true,
     statusCard: conversationStatusCard,
     approvalItems,
+    commandCards: cards.commandCards,
   });
   const activeProcessTurnId = formattedTurns.find((turn) => turn.active)?.id || "";
   const canStopCurrentMission =
@@ -954,6 +1038,7 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
   let statusBanner = null;
   if (currentFailureCard) {
     statusBanner = {
+      cardId: compactText(currentFailureCard.id),
       tone: "danger",
       title: compactText(currentFailureCard.title || "当前 mission 执行失败"),
       detail:
@@ -963,6 +1048,7 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     };
   } else if (cards.stopNoticeCard) {
     statusBanner = {
+      cardId: compactText(cards.stopNoticeCard.id),
       tone: "warning",
       title: "当前 mission 已停止",
       detail: "再次发送会在当前工作台里启动一轮新的 mission，不会续跑已停止的那一轮。",

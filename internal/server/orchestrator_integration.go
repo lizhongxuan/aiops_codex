@@ -533,11 +533,11 @@ func (a *App) startWorkspaceReadonlyTurn(ctx context.Context, sessionID, hostID,
 	threadID, err := a.ensureThreadWithSpec(ctx, sessionID, a.buildWorkspaceReadonlyThreadStartSpec(ctx, sessionID, hostID))
 	if err != nil {
 		a.finishRuntimeTurn(sessionID, "failed")
-		return err
+		return fmt.Errorf("workspace readonly thread/start failed for host %s: %w", defaultHostID(hostID), err)
 	}
 	if err := a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildWorkspaceReadonlyTurnStartSpec(ctx, hostID, message)); err != nil {
 		a.finishRuntimeTurn(sessionID, "failed")
-		return err
+		return fmt.Errorf("workspace readonly turn/start failed for host %s: %w", defaultHostID(hostID), err)
 	}
 	return nil
 }
@@ -1261,6 +1261,16 @@ func (a *App) handleMissionTurnCompleted(sessionID, phase string) {
 			a.activateQueuedMissionWorkers(outcome.WorkspaceSessionID)
 		}
 	}
+}
+
+func (a *App) handleMissionTurnCompletedAsync(sessionID, phase string, recordReplyAfter bool) {
+	go func() {
+		a.handleMissionTurnCompleted(sessionID, phase)
+		if recordReplyAfter {
+			a.recordOrchestratorReply(sessionID)
+			a.broadcastSnapshot(sessionID)
+		}
+	}()
 }
 
 func (a *App) syncWorkspaceMissionRuntime(mission *orchestrator.Mission, fallbackPhase string) {

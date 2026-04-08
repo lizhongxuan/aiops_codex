@@ -72,10 +72,35 @@ function messageCardFromRawCard(card = {}) {
 
 function processToneFromStatus(status) {
   const normalized = compactText(status).toLowerCase();
-  if (normalized.includes("fail") || normalized.includes("error")) return "danger";
+  if (normalized.includes("fail") || normalized.includes("error") || normalized.includes("permission") || normalized.includes("denied")) return "danger";
   if (normalized.includes("complete") || normalized.includes("done")) return "success";
   if (normalized.includes("wait")) return "warning";
   return "neutral";
+}
+
+function stripMatchingQuotes(value = "") {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith('"') && text.endsWith('"')))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function displayCommand(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const shellMatch = raw.match(/^(?:\/[\w./-]+\/)?(?:zsh|bash|sh)\s+-lc\s+([\s\S]+)$/);
+  if (shellMatch) return stripMatchingQuotes(shellMatch[1]);
+  return raw;
+}
+
+function commandStatusLabel(value = "") {
+  const normalized = compactText(value).toLowerCase();
+  if (normalized.includes("permission") || normalized.includes("denied")) return "权限不足";
+  if (normalized.includes("fail") || normalized.includes("error")) return "失败";
+  if (normalized.includes("complete") || normalized.includes("done")) return "已完成";
+  if (normalized.includes("run") || normalized.includes("progress")) return "执行中";
+  return compactText(value) || "已处理";
 }
 
 function formatDurationLabel(ms) {
@@ -171,6 +196,28 @@ function buildProcessLineItems(processCards = [], options = {}) {
   }).filter(Boolean);
 }
 
+function buildCommandProcessItems(commandCards = []) {
+  return asArray(commandCards)
+    .filter((card) => compactText(card?.command))
+    .map((card, index) => {
+      const command = displayCommand(card.command);
+      return {
+        id: `command-${compactText(card?.id || index)}`,
+        kind: "command",
+        processKind: "command",
+        text: `${commandStatusLabel(card?.status)} · ${command}`,
+        detail: compactText(card?.output || card?.stdout || card?.stderr || card?.text || card?.summary),
+        time: formatShortTime(card?.updatedAt || card?.createdAt),
+        hostId: compactText(card?.hostId),
+        tone: processToneFromStatus(card?.status),
+        status: compactText(card?.status),
+        sortTimestamp: card?.updatedAt || card?.createdAt || "",
+        command,
+        commandCard: card,
+      };
+    });
+}
+
 function inferProcessKind(value = "") {
   const normalized = compactText(value).toLowerCase();
   if (!normalized) return "notice";
@@ -225,6 +272,9 @@ function isProtocolAssistantProcessRedundant(item = {}) {
 
 function isProtocolProcessCardRedundant(item = {}, card = {}) {
   const text = [item.text, item.detail, item.status, card?.summary, card?.title].filter(Boolean).join(" ");
+  if (/^已处理\s*\d+\s*个命令$/.test(compactText(item.text))) {
+    return true;
+  }
   if (looksLikeProtocolSurfaceOwnedCopy(text)) {
     return true;
   }
@@ -443,6 +493,7 @@ function collectTurnMcpSurfaceGroups(sourceCards = []) {
 export function formatProtocolChatTurns({
   conversationCards = [],
   processCards = [],
+  commandCards = [],
   missionPhase = "idle",
   turnActive = false,
   statusCard = null,
@@ -478,10 +529,12 @@ export function formatProtocolChatTurns({
     const finalMessage = isActiveTurn ? null : assistantMessages[assistantMessages.length - 1] || null;
     const assistantProcessMessages = isActiveTurn ? assistantMessages : assistantMessages.slice(0, -1);
     const activeProcessCards = isCurrentTurn ? asArray(processCards) : [];
+    const activeCommandCards = isCurrentTurn ? asArray(commandCards) : [];
     const processItems = sortProcessDisplayItems([
       ...buildAssistantProcessItems(assistantProcessMessages, {
         exclude: isProtocolAssistantProcessRedundant,
       }),
+      ...buildCommandProcessItems(activeCommandCards),
       ...buildProcessLineItems(activeProcessCards, {
         exclude: isProtocolProcessCardRedundant,
       }),
@@ -499,6 +552,7 @@ export function formatProtocolChatTurns({
       finalMessage?.updatedAt,
       finalMessage?.createdAt,
       ...assistantProcessMessages.flatMap((message) => [message.updatedAt, message.createdAt]),
+      ...activeCommandCards.flatMap((card) => [card?.updatedAt, card?.createdAt]),
       ...activeProcessCards.flatMap((card) => [card?.updatedAt, card?.createdAt]),
     ];
     const firstTimestamp = parseTimestamp(bucket.userMessage?.createdAt || bucket.userMessage?.updatedAt || assistantMessages[0]?.createdAt);
