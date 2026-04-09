@@ -30,7 +30,7 @@ mkdir -p "$ROOT_DIR/.data" "$ROOT_DIR/.gocache"
 
 export GOCACHE="${GOCACHE:-$ROOT_DIR/.gocache}"
 export AIOPS_HTTP_ADDR="${AIOPS_HTTP_ADDR:-127.0.0.1:18080}"
-export AIOPS_GRPC_ADDR="${AIOPS_GRPC_ADDR:-127.0.0.1:19090}"
+export AIOPS_GRPC_ADDR="${AIOPS_GRPC_ADDR:-127.0.0.1:18090}"
 export FRONTEND_REDIRECT_URL="${FRONTEND_REDIRECT_URL:-http://127.0.0.1:5173/}"
 export APP_STATE_PATH="${APP_STATE_PATH:-$ROOT_DIR/.data/ai-server-state.json}"
 export APP_AUDIT_LOG_PATH="${APP_AUDIT_LOG_PATH:-$ROOT_DIR/.data/ai-audit.log}"

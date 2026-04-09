@@ -290,6 +290,7 @@ func (a *App) workspaceDynamicTools(sessionID string) []map[string]any {
 		enterPlanModeDynamicTool(),
 		updatePlanDynamicTool(),
 		exitPlanModeDynamicTool(),
+		requestApprovalDynamicTool(),
 		{
 			"name":        "orchestrator_dispatch_tasks",
 			"description": "Dispatch structured host tasks to the ai-server orchestrator from the main workspace session. This tool is unavailable before the user approves exit_plan_mode; do not call it while still in plan mode, while waiting for approval, or for ambiguous capability questions. Use it only after planning is approved and per-host execution tasks are ready.",
@@ -584,6 +585,43 @@ func exitPlanModeDynamicTool() map[string]any {
 	}
 }
 
+func requestApprovalDynamicTool() map[string]any {
+	return map[string]any{
+		"name":        "request_approval",
+		"description": "Request approval for mutation operations. Use this tool when you need to execute commands that modify system state, change configuration files, restart services, or perform any destructive operations. The approval context must include command details, risk assessment, expected impact, and rollback suggestion.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "The command or operation that requires approval.",
+				},
+				"hostId": map[string]any{
+					"type":        "string",
+					"description": "Target host ID for the operation.",
+				},
+				"cwd": map[string]any{
+					"type":        "string",
+					"description": "Working directory for the command.",
+				},
+				"riskAssessment": map[string]any{
+					"type":        "string",
+					"description": "Assessment of risks involved in this operation.",
+				},
+				"expectedImpact": map[string]any{
+					"type":        "string",
+					"description": "Expected impact of the operation on the system.",
+				},
+				"rollbackSuggestion": map[string]any{
+					"type":        "string",
+					"description": "Suggested rollback steps if the operation fails.",
+				},
+			},
+			"required": []string{"command", "hostId", "riskAssessment"},
+		},
+	}
+}
+
 func (a *App) workspaceRouteDynamicTools() []map[string]any {
 	return []map[string]any{
 		workspaceStateQueryDynamicTool(),
@@ -598,6 +636,7 @@ func (a *App) workspaceDirectDynamicTools(sessionID string) []map[string]any {
 		enterPlanModeDynamicTool(),
 		updatePlanDynamicTool(),
 		exitPlanModeDynamicTool(),
+		requestApprovalDynamicTool(),
 	}
 	session := a.store.Session(sessionID)
 	selectedHostID := defaultHostID("")
@@ -693,6 +732,19 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 		_ = a.codex.RespondError(context.Background(), rawID, -32000, "session not found for dynamic tool call")
 		return
 	}
+
+	// Enforce plan mode tool restrictions
+	if session.Runtime.PlanMode && params.Tool != "" {
+		if !planModeAllowedTools()[params.Tool] {
+			log.Printf("plan mode rejected tool=%s session=%s", params.Tool, sessionID)
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(
+				fmt.Sprintf("Tool %q is not allowed in plan mode. Only read-only tools, update_plan, ask_user_question, and exit_plan_mode are permitted.", params.Tool),
+				false,
+			))
+			return
+		}
+	}
+
 	if params.Tool == "ask_user_question" {
 		a.handleAskUserQuestionDynamicTool(rawID, payload, sessionID, params.Arguments)
 		return
@@ -887,6 +939,9 @@ func (a *App) handleOrchestratorDynamicToolCall(rawID string, _ map[string]any, 
 	case "orchestrator_dispatch_tasks":
 		a.handleWorkspaceDispatchTasks(rawID, sessionID, params.Arguments)
 		return true
+	case "request_approval":
+		a.handleRequestApproval(rawID, sessionID, params)
+		return true
 	default:
 		return false
 	}
@@ -941,23 +996,91 @@ func (a *App) handleReadonlyHostInspect(rawID, sessionID string, params dynamicT
 }
 
 func (a *App) handleWorkspaceQueryAIServerState(rawID, sessionID string, arguments map[string]any) {
-	if a.orchestrator == nil {
-		_ = a.respondCodex(context.Background(), rawID, toolResponse("orchestrator 未初始化。", false))
-		return
+	focus := strings.TrimSpace(getStringAny(arguments, "focus", "query", "topic"))
+	session := a.store.EnsureSession(sessionID)
+
+	// Build structured state response
+	state := map[string]any{
+		"sessionId":      sessionID,
+		"kind":           session.Meta.Kind,
+		"selectedHostId": session.SelectedHostID,
+		"runtime": map[string]any{
+			"turnActive": session.Runtime.Turn.Active,
+			"phase":      session.Runtime.Turn.Phase,
+			"hostId":     session.Runtime.Turn.HostID,
+		},
 	}
-	mission, ok := a.resolveOrchestratorMission(sessionID)
-	if !ok || mission == nil {
-		if a.sessionKind(sessionID) != model.SessionKindWorkspace {
-			_ = a.respondCodex(context.Background(), rawID, toolResponse("当前会话没有关联 workspace mission。", false))
-			return
+
+	// Add hosts info
+	hosts := a.store.Hosts()
+	hostSummaries := make([]map[string]any, 0, len(hosts))
+	for _, h := range hosts {
+		hostSummaries = append(hostSummaries, map[string]any{
+			"id":     h.ID,
+			"name":   h.Name,
+			"status": h.Status,
+			"kind":   h.Kind,
+		})
+	}
+	state["hosts"] = hostSummaries
+	state["hostCount"] = len(hosts)
+
+	// Add approval info
+	pendingApprovals := 0
+	for _, ap := range session.Approvals {
+		if ap.Status == "pending" {
+			pendingApprovals++
 		}
 	}
-	focus := strings.TrimSpace(getStringAny(arguments, "focus"))
-	workspaceSessionID := strings.TrimSpace(sessionID)
-	if mission != nil && strings.TrimSpace(mission.WorkspaceSessionID) != "" {
-		workspaceSessionID = strings.TrimSpace(mission.WorkspaceSessionID)
+	state["pendingApprovals"] = pendingApprovals
+
+	// Add card count
+	state["cardCount"] = len(session.Cards)
+
+	// Generate evidence
+	evidenceID := model.NewID("ev")
+	a.store.RememberItem(sessionID, evidenceID, map[string]any{
+		"kind":  "ai_server_state",
+		"focus": focus,
+		"state": state,
+	})
+
+	// Build response text
+	stateJSON, _ := json.Marshal(state)
+	responseText := fmt.Sprintf("AI Server State (focus=%s):\n%s\n\n[evidence: %s]", focus, string(stateJSON), evidenceID)
+
+	cardID := dynamicToolCardID(rawID)
+	now := model.NowString()
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:      cardID,
+		Type:    "WorkspaceResultCard",
+		Title:   "AI Server State Query",
+		Summary: fmt.Sprintf("查询焦点: %s | Hosts: %d | 待审批: %d", focus, len(hosts), pendingApprovals),
+		Text:    responseText,
+		Status:  "completed",
+		Detail: map[string]any{
+			"tool":       "query_ai_server_state",
+			"focus":      focus,
+			"evidenceId": evidenceID,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.broadcastSnapshot(sessionID)
+
+	_ = a.respondCodex(context.Background(), rawID, structuredToolResponse(state, true))
+}
+
+// planModeAllowedTools returns the tool names allowed when plan mode is active.
+func planModeAllowedTools() map[string]bool {
+	return map[string]bool{
+		"ask_user_question":     true,
+		"query_ai_server_state": true,
+		"readonly_host_inspect": true,
+		"enter_plan_mode":       true,
+		"update_plan":           true,
+		"exit_plan_mode":        true,
 	}
-	_ = a.respondCodex(context.Background(), rawID, toolResponse(a.renderPlannerAIServerState(workspaceSessionID, mission, focus), true))
 }
 
 func (a *App) handleEnterPlanMode(rawID, sessionID string, params dynamicToolCallParams) {
@@ -991,6 +1114,9 @@ func (a *App) handleEnterPlanMode(rawID, sessionID string, params dynamicToolCal
 		UpdatedAt: now,
 	}
 	a.setRuntimeTurnPhase(sessionID, "planning")
+	a.store.UpdateRuntime(sessionID, func(rt *model.RuntimeState) {
+		rt.PlanMode = true
+	})
 	a.store.UpsertCard(sessionID, card)
 	a.broadcastSnapshot(sessionID)
 	_ = a.respondCodex(context.Background(), rawID, toolResponse("Entered plan mode. Continue with read-only planning, update_plan, ask_user_question, or exit_plan_mode for approval.", true))
@@ -1087,6 +1213,97 @@ func (a *App) handleExitPlanMode(rawID, sessionID string, params dynamicToolCall
 		"planSummary": truncate(summary, 400),
 	})
 	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) respondDynamicToolError(rawID, sessionID, message string) {
+	cardID := dynamicToolCardID(rawID)
+	now := model.NowString()
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        cardID,
+		Type:      "ErrorCard",
+		Title:     "Tool Error",
+		Message:   message,
+		Status:    "failed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) handleRequestApproval(rawID, sessionID string, params dynamicToolCallParams) {
+	arguments := params.Arguments
+	command := getStringAny(arguments, "command")
+	hostID := getStringAny(arguments, "hostId", "host_id")
+	cwd := getStringAny(arguments, "cwd")
+	riskAssessment := getStringAny(arguments, "riskAssessment", "risk_assessment")
+	expectedImpact := getStringAny(arguments, "expectedImpact", "expected_impact")
+	rollbackSuggestion := getStringAny(arguments, "rollbackSuggestion", "rollback_suggestion")
+
+	if command == "" {
+		a.respondDynamicToolError(rawID, sessionID, "request_approval requires a command")
+		return
+	}
+	if hostID == "" {
+		hostID = a.sessionHostID(sessionID)
+	}
+
+	now := model.NowString()
+	approvalID := model.NewID("approval")
+	cardID := dynamicToolCardID(rawID)
+
+	approval := model.ApprovalRequest{
+		ID:          approvalID,
+		Type:        "mutation",
+		Status:      "pending",
+		HostID:      hostID,
+		Command:     command,
+		Cwd:         cwd,
+		ThreadID:    params.ThreadID,
+		TurnID:      params.TurnID,
+		ItemID:      cardID,
+		Decisions:   []string{"accept", "decline"},
+		RequestedAt: now,
+	}
+
+	detail := map[string]any{
+		"riskAssessment":     riskAssessment,
+		"expectedImpact":     expectedImpact,
+		"rollbackSuggestion": rollbackSuggestion,
+		"toolCallId":         rawID,
+	}
+
+	a.store.AddApproval(sessionID, approval)
+
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:      cardID,
+		Type:    "ApprovalCard",
+		Title:   fmt.Sprintf("审批请求: %s", truncate(command, 60)),
+		Summary: fmt.Sprintf("Host: %s | Risk: %s", hostID, truncate(riskAssessment, 80)),
+		Status:  "pending",
+		Detail:  detail,
+		Approval: &model.ApprovalRef{
+			RequestID: approval.ID,
+			Type:      approval.Type,
+			Decisions: approval.Decisions,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	evidenceID := model.NewID("ev")
+	a.store.RememberItem(sessionID, evidenceID, map[string]any{
+		"kind":               "approval_request",
+		"command":            command,
+		"hostId":             hostID,
+		"cwd":                cwd,
+		"riskAssessment":     riskAssessment,
+		"expectedImpact":     expectedImpact,
+		"rollbackSuggestion": rollbackSuggestion,
+	})
+
+	a.broadcastSnapshot(sessionID)
+
+	log.Printf("request_approval created session=%s approval=%s host=%s command=%q", sessionID, approvalID, hostID, truncate(command, 80))
 }
 
 func (a *App) validateExitPlanModeRequest(sessionID string, arguments map[string]any) error {
@@ -1690,6 +1907,18 @@ func (a *App) resolveOrchestratorMission(sessionID string) (*orchestrator.Missio
 }
 
 func (a *App) handleWorkspaceDispatchTasks(rawID, sessionID string, arguments map[string]any) {
+	// Check plan mode and authorization
+	session := a.store.EnsureSession(sessionID)
+	if session.Runtime.PlanMode {
+		if rawID != "" {
+			_ = a.respondCodex(context.Background(), rawID, toolResponse(
+				"orchestrator_dispatch_tasks is not allowed in plan mode. Use exit_plan_mode to get approval first.",
+				false,
+			))
+		}
+		return
+	}
+
 	var req orchestrator.DispatchRequest
 	if err := remarshalInto(arguments, &req); err != nil {
 		if rawID != "" {
@@ -1710,6 +1939,37 @@ func (a *App) handleWorkspaceDispatchTasks(rawID, sessionID string, arguments ma
 			true,
 		))
 	}
+
+	// Create dispatch evidence
+	evidenceID := model.NewID("ev")
+	a.store.RememberItem(sessionID, evidenceID, map[string]any{
+		"kind":      "dispatch_workers",
+		"accepted":  result.Accepted,
+		"activated": result.Activated,
+		"queued":    result.Queued,
+		"tasks":     arguments,
+	})
+
+	// Create dispatch summary card
+	now := model.NowString()
+	cardID := dynamicToolCardID(rawID)
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:      cardID,
+		Type:    "DispatchSummaryCard",
+		Title:   fmt.Sprintf("派发 %d 个任务", result.Accepted),
+		Summary: fmt.Sprintf("Activated: %d | Queued: %d", result.Activated, result.Queued),
+		Status:  "inProgress",
+		Detail: map[string]any{
+			"tool":       "orchestrator_dispatch_tasks",
+			"evidenceId": evidenceID,
+			"accepted":   result.Accepted,
+			"activated":  result.Activated,
+			"queued":     result.Queued,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.broadcastSnapshot(sessionID)
 }
 
 func (a *App) executeReadonlyDynamicTool(sessionID, hostID, rawID string, params dynamicToolCallParams, args execToolArgs) {

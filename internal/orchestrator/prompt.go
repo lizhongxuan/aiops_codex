@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+// BuildWorkspacePrompt is LEGACY — retained only for historical data compatibility.
+// New workspace requests use BuildWorkspaceReActPrompt.
 func BuildWorkspacePrompt(title, summary string) string {
 	sections := []string{
 		"你是协作工作台的主 Agent，会直接面向用户对话并统筹后续执行。",
@@ -62,6 +64,9 @@ func BuildWorkspaceReActPrompt(title, summary string) string {
 	return strings.Join(sections, "\n")
 }
 
+// BuildWorkspaceRoutePrompt is LEGACY — retained only for historical data compatibility
+// and emergency rollback. New workspace chat requests use BuildWorkspaceReActPrompt via
+// the WorkspaceAgentLoop. Do not use this for new request paths.
 func BuildWorkspaceRoutePrompt() string {
 	sections := []string{
 		"你是协作工作台的主 Agent，会直接面向用户对话。",
@@ -83,6 +88,8 @@ func BuildWorkspaceRoutePrompt() string {
 	return strings.Join(sections, "\n")
 }
 
+// BuildWorkspaceReadonlyPrompt is LEGACY — retained only for historical data compatibility.
+// New readonly diagnostics use readonly_host_inspect via the ReAct loop.
 func BuildWorkspaceReadonlyPrompt() string {
 	sections := []string{
 		"你是协作工作台的主 Agent，会直接面向用户对话。",

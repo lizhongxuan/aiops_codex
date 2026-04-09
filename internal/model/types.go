@@ -304,6 +304,7 @@ type RuntimeState struct {
 	Turn     TurnRuntime     `json:"turn"`
 	Codex    CodexRuntime    `json:"codex"`
 	Activity ActivityRuntime `json:"activity"`
+	PlanMode bool            `json:"planMode,omitempty"`
 }
 
 type AgentLoopRun struct {

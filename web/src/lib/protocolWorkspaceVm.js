@@ -38,8 +38,29 @@ function asObject(value) {
 function normalizeWorkspaceCopy(value) {
   return compactText(value)
     .replace(/PlannerSession/gi, "主 Agent Session")
+    .replace(/Planner\s*trace/gi, "执行记录")
+    .replace(/planner\s*trace/gi, "执行记录")
     .replace(/Planner/gi, "主 Agent")
-    .replace(/planner/gi, "主 Agent");
+    .replace(/planner/gi, "主 Agent")
+    .replace(/影子\s*session/gi, "内部会话")
+    .replace(/shadow\s*session/gi, "内部会话")
+    .replace(/route\s*thread/gi, "主链路")
+    .replace(/Route\s*Thread/gi, "主链路");
+}
+
+function buildInvocationEvidenceIndex(invocations, evidenceSummaries) {
+  const index = {};
+  for (const inv of invocations || []) {
+    if (inv.evidenceId) {
+      index[inv.id] = inv.evidenceId;
+    }
+  }
+  for (const ev of evidenceSummaries || []) {
+    if (ev.invocationId) {
+      index[ev.invocationId] = ev.id;
+    }
+  }
+  return index;
 }
 
 function normalizePlanDetailValue(value) {
@@ -1228,5 +1249,9 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     nextSendStartsNewMission,
     statusBanner,
     currentFailureCard,
+    invocationEvidenceIndex: buildInvocationEvidenceIndex(
+      snapshot.toolInvocations,
+      snapshot.evidenceSummaries
+    ),
   };
 }

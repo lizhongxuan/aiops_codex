@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lizhongxuan/aiops-codex/internal/coroot"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 )
@@ -115,6 +117,29 @@ func TestSingleHostReActThreadSpecIncludesRuntimeAttachment(t *testing.T) {
 	}
 }
 
+func TestSingleHostReActThreadSpecUsesCodexSafeCorootToolNames(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.corootClient = coroot.NewClient("http://coroot.internal:8080", "test-token", time.Second)
+	sessionID := "single-host-react-coroot-tools"
+	app.store.EnsureSession(sessionID)
+
+	spec := app.buildSingleHostReActThreadStartSpec(context.Background(), sessionID)
+	validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	foundCoroot := 0
+	for _, tool := range spec.DynamicTools {
+		name := strings.TrimSpace(getStringAny(tool, "name"))
+		if strings.HasPrefix(name, "coroot") {
+			foundCoroot++
+			if !validName.MatchString(name) {
+				t.Fatalf("expected coroot tool name to satisfy Codex pattern, got %q", name)
+			}
+		}
+	}
+	if foundCoroot == 0 {
+		t.Fatalf("expected coroot tools to be exposed when coroot is configured, got %#v", spec.DynamicTools)
+	}
+}
+
 func TestWorkspaceReActThreadSpecIncludesPromptAndTools(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	sessionID := "workspace-react-spec"
@@ -162,6 +187,37 @@ func TestWorkspaceReActThreadSpecIncludesPromptAndTools(t *testing.T) {
 	dispatchDescription := toolDescriptions["orchestrator_dispatch_tasks"]
 	if !strings.Contains(dispatchDescription, "exit_plan_mode") || !strings.Contains(dispatchDescription, "approved") || !strings.Contains(dispatchDescription, "unavailable") {
 		t.Fatalf("DispatchWorkers tool description must state approval gate, got %q", dispatchDescription)
+	}
+}
+
+func TestWorkspaceAndSingleHostReActThreadSpecsExposeOnlyCodexSafeToolNames(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.corootClient = coroot.NewClient("http://coroot.internal:8080", "test-token", time.Second)
+	validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+	singleSessionID := "single-host-react-safe-tools"
+	app.store.EnsureSession(singleSessionID)
+	singleSpec := app.buildSingleHostReActThreadStartSpec(context.Background(), singleSessionID)
+	for _, tool := range singleSpec.DynamicTools {
+		name := strings.TrimSpace(getStringAny(tool, "name"))
+		if !validName.MatchString(name) {
+			t.Fatalf("expected single-host tool name to satisfy Codex pattern, got %q", name)
+		}
+	}
+
+	workspaceSessionID := "workspace-react-safe-tools"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	workspaceSpec := app.buildWorkspaceReActThreadStartSpec(context.Background(), workspaceSessionID, "remote-safe-01")
+	for _, tool := range workspaceSpec.DynamicTools {
+		name := strings.TrimSpace(getStringAny(tool, "name"))
+		if !validName.MatchString(name) {
+			t.Fatalf("expected workspace tool name to satisfy Codex pattern, got %q", name)
+		}
 	}
 }
 
@@ -1250,5 +1306,149 @@ func TestReadonlyHostInspectRejectsMutationCommand(t *testing.T) {
 	}
 	if card := app.cardByID(sessionID, dynamicToolCardID("call-readonly-reject-mutation")); card != nil {
 		t.Fatalf("mutation rejection must not create a command card, got %#v", card)
+	}
+}
+func TestReActLoopMaxTokensRecoveryAction(t *testing.T) {
+	state := &reActLoopState{
+		Request: reActLoopRequest{
+			SessionID: "test-max-tokens",
+		},
+		Iteration:     1,
+		RecoveryCount: 0,
+	}
+
+	err := fmt.Errorf("max_tokens exceeded")
+	action := recoverFromError(err, state, defaultErrorRecoveryConfig())
+
+	if action.Action != "inject_message" {
+		t.Fatalf("expected inject_message action for max_tokens, got %q", action.Action)
+	}
+	if action.Message == "" {
+		t.Fatal("expected non-empty recovery message")
+	}
+	if !strings.Contains(action.Message, "Resume directly") {
+		t.Fatalf("expected recovery message to contain 'Resume directly', got %q", action.Message)
+	}
+}
+
+func TestReActLoopPromptTooLongCompactRetry(t *testing.T) {
+	state := &reActLoopState{
+		Request: reActLoopRequest{
+			SessionID: "test-prompt-long",
+		},
+		Iteration:     1,
+		RecoveryCount: 0,
+	}
+
+	err := fmt.Errorf("prompt_too_long: context exceeds limit")
+	action := recoverFromError(err, state, defaultErrorRecoveryConfig())
+
+	if action.Action != "compact_retry" {
+		t.Fatalf("expected compact_retry action for prompt_too_long, got %q", action.Action)
+	}
+
+	// After max retries, should circuit break
+	state.RecoveryCount = 3
+	action = recoverFromError(err, state, defaultErrorRecoveryConfig())
+	if action.Action != "circuit_break" {
+		t.Fatalf("expected circuit_break after max retries, got %q", action.Action)
+	}
+}
+
+func TestReActLoopAppServerDisconnectTerminates(t *testing.T) {
+	state := &reActLoopState{
+		Request: reActLoopRequest{
+			SessionID: "test-disconnect",
+		},
+		Iteration:     1,
+		RecoveryCount: 0,
+	}
+
+	err := fmt.Errorf("connection refused: app-server unavailable")
+	action := recoverFromError(err, state, defaultErrorRecoveryConfig())
+
+	if action.Action != "terminate" {
+		t.Fatalf("expected terminate action for disconnect, got %q", action.Action)
+	}
+	if !strings.Contains(action.Evidence, "disconnected") {
+		t.Fatalf("expected disconnect evidence, got %q", action.Evidence)
+	}
+}
+
+func TestReActLoopModelOverloadFallback(t *testing.T) {
+	state := &reActLoopState{
+		Request: reActLoopRequest{
+			SessionID: "test-overload",
+		},
+		Iteration:     1,
+		RecoveryCount: 0,
+	}
+
+	err := fmt.Errorf("model overloaded, please retry")
+	action := recoverFromError(err, state, defaultErrorRecoveryConfig())
+
+	if action.Action != "fallback_model" {
+		t.Fatalf("expected fallback_model action for overload, got %q", action.Action)
+	}
+	if action.FallbackModel == "" {
+		t.Fatal("expected non-empty fallback model")
+	}
+}
+
+func TestApplyRecoveryActionInjectsMessage(t *testing.T) {
+	state := &reActLoopState{
+		Request: reActLoopRequest{
+			SessionID: "test-apply-recovery",
+		},
+		Messages: []map[string]any{
+			{"role": "user", "content": "hello"},
+		},
+		RecoveryCount: 0,
+	}
+
+	action := errorRecoveryAction{
+		Action:  "inject_message",
+		Message: "Resume directly.",
+	}
+
+	applyRecoveryAction(action, state, nil)
+
+	if !state.NeedsFollowUp {
+		t.Fatal("expected NeedsFollowUp=true after inject_message")
+	}
+	if state.RecoveryCount != 1 {
+		t.Fatalf("expected RecoveryCount=1, got %d", state.RecoveryCount)
+	}
+	if len(state.Messages) != 2 {
+		t.Fatalf("expected 2 messages after injection, got %d", len(state.Messages))
+	}
+	injected := state.Messages[1]["content"].(string)
+	if injected != "Resume directly." {
+		t.Fatalf("expected injected message, got %q", injected)
+	}
+}
+
+func TestToolDispatcherCategorization(t *testing.T) {
+	tests := []struct {
+		tool     string
+		expected toolDispatchCategory
+	}{
+		{"ask_user_question", toolCategoryBlocking},
+		{"exit_plan_mode", toolCategoryApproval},
+		{"request_approval", toolCategoryApproval},
+		{"query_ai_server_state", toolCategoryReadonly},
+		{"readonly_host_inspect", toolCategoryReadonly},
+		{"enter_plan_mode", toolCategoryReadonly},
+		{"update_plan", toolCategoryReadonly},
+		{"orchestrator_dispatch_tasks", toolCategoryMutation},
+		{"execute_system_mutation", toolCategoryMutation},
+		{"unknown_tool", toolCategoryMutation},
+	}
+
+	for _, tt := range tests {
+		got := categorizeToolForDispatch(tt.tool)
+		if got != tt.expected {
+			t.Errorf("categorizeToolForDispatch(%q) = %q, want %q", tt.tool, got, tt.expected)
+		}
 	}
 }

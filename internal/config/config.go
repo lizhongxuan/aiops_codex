@@ -42,6 +42,7 @@ type Config struct {
 	CorootBaseURL            string
 	CorootToken              string
 	CorootTimeout            time.Duration
+	WorkspaceReActLoopEnabled bool
 }
 
 func Load() Config {
@@ -89,6 +90,7 @@ func Load() Config {
 		CorootBaseURL:            env("COROOT_BASE_URL", ""),
 		CorootToken:              env("COROOT_TOKEN", ""),
 		CorootTimeout:            envDuration("COROOT_TIMEOUT", 30*time.Second),
+		WorkspaceReActLoopEnabled: envBool("WORKSPACE_REACT_LOOP_ENABLED", true),
 	}
 }
 
@@ -193,4 +195,19 @@ func (c Config) effectiveBootstrapTokens() []string {
 		return c.HostAgentBootstrapTokens
 	}
 	return []string{c.HostAgentBootstrapToken}
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

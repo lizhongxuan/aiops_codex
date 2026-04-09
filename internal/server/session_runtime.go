@@ -78,14 +78,17 @@ func (a *App) buildSingleHostTurnStartSpec(ctx context.Context, req chatRequest)
 	}
 }
 
+// LEGACY: Route thread config hash, retained for rollback only.
 func (a *App) workspaceRouteThreadConfigHash(hostID string) string {
 	return a.mainAgentThreadConfigHash(hostID) + ":workspace-route"
 }
 
+// LEGACY: Readonly thread config hash, retained for rollback only.
 func (a *App) workspaceReadonlyThreadConfigHash(hostID string) string {
 	return a.mainAgentThreadConfigHash(hostID) + ":workspace-readonly"
 }
 
+// LEGACY: Orchestration thread config hash, retained for rollback only.
 func (a *App) workspaceOrchestrationThreadConfigHash(hostID string) string {
 	return a.mainAgentThreadConfigHash(hostID) + ":workspace-orchestration"
 }
@@ -211,6 +214,7 @@ func (a *App) buildReActLoopInstructions(kind, sessionID, hostID string, turnSco
 	return strings.Join(lines, "\n")
 }
 
+// LEGACY: Only used for historical data recovery and rollback. New requests use buildWorkspaceReActThreadStartSpec.
 func (a *App) buildWorkspaceRouteThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
 	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
@@ -233,6 +237,7 @@ func (a *App) buildWorkspaceRouteThreadStartSpec(ctx context.Context, sessionID,
 	return spec
 }
 
+// LEGACY: Only used for historical data recovery and rollback. New requests use buildWorkspaceReActTurnStartSpec.
 func (a *App) buildWorkspaceRouteTurnStartSpec(ctx context.Context, hostID, message string) turnStartSpec {
 	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
@@ -253,6 +258,7 @@ func (a *App) buildWorkspaceRouteTurnStartSpec(ctx context.Context, hostID, mess
 	}
 }
 
+// LEGACY: Only used for historical data recovery and rollback. New readonly uses readonly_host_inspect tool.
 func (a *App) buildWorkspaceReadonlyThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
 	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
@@ -275,6 +281,7 @@ func (a *App) buildWorkspaceReadonlyThreadStartSpec(ctx context.Context, session
 	return spec
 }
 
+// LEGACY: Only used for historical data recovery and rollback.
 func (a *App) buildWorkspaceReadonlyTurnStartSpec(ctx context.Context, hostID, message string) turnStartSpec {
 	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
@@ -295,6 +302,7 @@ func (a *App) buildWorkspaceReadonlyTurnStartSpec(ctx context.Context, hostID, m
 	}
 }
 
+// LEGACY: Only used for historical data recovery and rollback. New orchestration uses DispatchWorkers tool.
 func (a *App) buildWorkspaceOrchestrationThreadStartSpec(ctx context.Context, sessionID string, mission *orchestrator.Mission) threadStartSpec {
 	session := a.store.EnsureSession(sessionID)
 	selectedHostID := defaultHostID(session.SelectedHostID)
@@ -318,6 +326,7 @@ func (a *App) buildWorkspaceOrchestrationThreadStartSpec(ctx context.Context, se
 	return spec
 }
 
+// LEGACY: Only used for historical data recovery and rollback.
 func (a *App) buildWorkspaceOrchestrationTurnStartSpec(ctx context.Context, sessionID string, mission *orchestrator.Mission, message string) turnStartSpec {
 	session := a.store.EnsureSession(sessionID)
 	selectedHostID := defaultHostID(session.SelectedHostID)

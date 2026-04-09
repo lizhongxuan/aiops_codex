@@ -27,6 +27,23 @@ const (
 	reActStageLoopDecision      = "loop_decision"
 )
 
+const (
+	reActModeAnswer   = "answer"
+	reActModeReadonly  = "readonly"
+	reActModePlan     = "plan"
+	reActModeExecute  = "execute"
+)
+
+const (
+	stopReasonEndTurn         = "end_turn"
+	stopReasonToolUse         = "tool_use"
+	stopReasonMaxTokens       = "max_tokens"
+	stopReasonWaitingUser     = "waiting_user"
+	stopReasonWaitingApproval = "waiting_approval"
+	stopReasonFailed          = "failed"
+	stopReasonCanceled        = "canceled"
+)
+
 type reActLoopStage interface {
 	Name() string
 	Run(context.Context, *reActLoopState) error
@@ -43,22 +60,26 @@ type reActLoopRequest struct {
 }
 
 type reActLoopState struct {
-	Request        reActLoopRequest
-	Messages       []map[string]any
-	Attachments    []string
-	AvailableTools []string
-	PermissionMode string
-	PlanMode       bool
-	RunID          string
-	Iteration      int
-	MaxIterations  int
-	ThreadSpec     threadStartSpec
-	TurnSpec       turnStartSpec
-	ThreadID       string
-	LastError      error
-	NeedsFollowUp  bool
-	RecoveryCount  int
-	Checkpoints    []string
+	Request            reActLoopRequest
+	Messages           []map[string]any
+	Attachments        []string
+	AvailableTools     []string
+	PermissionMode     string
+	PlanMode           bool
+	Mode               string
+	RunID              string
+	Iteration          int
+	MaxIterations      int
+	ThreadSpec         threadStartSpec
+	TurnSpec           turnStartSpec
+	ThreadID           string
+	LastError          error
+	NeedsFollowUp     bool
+	RecoveryCount      int
+	Checkpoints        []string
+	StopReason         string
+	AbortSignal        context.CancelFunc
+	IterationStartedAt time.Time
 }
 
 type reActLoop struct {
@@ -95,7 +116,15 @@ func (loop reActLoop) Run(ctx context.Context, state *reActLoopState) error {
 	if state.MaxIterations <= 0 {
 		state.MaxIterations = 3
 	}
+	if state.Mode == "" {
+		state.Mode = reActModeAnswer
+	}
 	for {
+		// Check for cancellation at the start of each iteration.
+		if ctx.Err() != nil {
+			state.StopReason = stopReasonCanceled
+			return ctx.Err()
+		}
 		if state.Iteration >= state.MaxIterations {
 			if state.LastError != nil {
 				return fmt.Errorf("react loop exceeded max iterations after recovery: %w", state.LastError)
@@ -105,6 +134,8 @@ func (loop reActLoop) Run(ctx context.Context, state *reActLoopState) error {
 		state.Iteration++
 		state.NeedsFollowUp = false
 		state.LastError = nil
+		state.IterationStartedAt = time.Now()
+		log.Printf("react loop iteration started session=%s iteration=%d mode=%s", state.Request.SessionID, state.Iteration, state.Mode)
 		for _, stage := range loop.stages {
 			if stage == nil {
 				continue
@@ -114,6 +145,8 @@ func (loop reActLoop) Run(ctx context.Context, state *reActLoopState) error {
 				return err
 			}
 		}
+		iterationElapsed := time.Since(state.IterationStartedAt)
+		log.Printf("react loop iteration completed session=%s iteration=%d elapsed=%s stop_reason=%s needs_followup=%v", state.Request.SessionID, state.Iteration, iterationElapsed, state.StopReason, state.NeedsFollowUp)
 		if state.NeedsFollowUp {
 			continue
 		}
@@ -145,6 +178,13 @@ func (stage reActContextPreprocessStage) Run(_ context.Context, state *reActLoop
 	}
 	if state.PermissionMode == "" {
 		state.PermissionMode = "normal"
+	}
+	if state.Mode == "" {
+		if state.PlanMode {
+			state.Mode = reActModePlan
+		} else {
+			state.Mode = reActModeAnswer
+		}
 	}
 	if len(state.Messages) == 0 {
 		state.Messages = []map[string]any{{
@@ -269,9 +309,43 @@ type reActLoopDecisionStage struct {
 func (reActLoopDecisionStage) Name() string { return reActStageLoopDecision }
 
 func (reActLoopDecisionStage) Run(_ context.Context, state *reActLoopState) error {
-	// A successful turn/start hands the streaming ReAct continuation to the Codex
-	// app-server. Follow-up iterations inside the same turn are driven by tool
-	// result notifications; synchronous follow-up is only used for recovery.
+	switch state.StopReason {
+	case stopReasonToolUse:
+		// Tools completed — schedule a follow-up iteration so the model can
+		// observe tool results and decide the next action.
+		state.NeedsFollowUp = true
+		log.Printf("react loop decision: tool_use follow-up session=%s iteration=%d", state.Request.SessionID, state.Iteration)
+
+	case stopReasonWaitingUser, stopReasonWaitingApproval:
+		// The model is waiting on external input. Don't mark the run as
+		// completed but also don't loop — the caller will resume later.
+		state.NeedsFollowUp = false
+		log.Printf("react loop decision: waiting session=%s iteration=%d reason=%s", state.Request.SessionID, state.Iteration, state.StopReason)
+
+	case stopReasonEndTurn:
+		// Model finished its turn with no pending tool calls — we're done.
+		state.NeedsFollowUp = false
+		log.Printf("react loop decision: end_turn completed session=%s iteration=%d", state.Request.SessionID, state.Iteration)
+
+	case stopReasonMaxTokens:
+		// Output was truncated. Attempt recovery if we haven't exhausted the
+		// recovery budget (reuse the existing RecoveryCount threshold).
+		const maxTokenRecoveryThreshold = 2
+		if state.RecoveryCount < maxTokenRecoveryThreshold {
+			state.RecoveryCount++
+			state.NeedsFollowUp = true
+			log.Printf("react loop decision: max_tokens recovery session=%s iteration=%d recovery=%d", state.Request.SessionID, state.Iteration, state.RecoveryCount)
+		} else {
+			state.NeedsFollowUp = false
+			state.LastError = fmt.Errorf("react loop max_tokens exceeded recovery threshold session=%s", state.Request.SessionID)
+			log.Printf("react loop decision: max_tokens threshold reached session=%s iteration=%d", state.Request.SessionID, state.Iteration)
+		}
+
+	default:
+		// No explicit stop reason (legacy path) — fall through to the existing
+		// behaviour where NeedsFollowUp is only set by recovery stages.
+		log.Printf("react loop decision: default pass-through session=%s iteration=%d stop_reason=%s", state.Request.SessionID, state.Iteration, state.StopReason)
+	}
 	return nil
 }
 
@@ -279,6 +353,7 @@ func (a *App) runReActAgentLoop(ctx context.Context, req reActLoopRequest) error
 	state := &reActLoopState{
 		Request:        req,
 		PermissionMode: "normal",
+		Mode:           reActModeAnswer,
 		MaxIterations:  3,
 	}
 	return newDefaultReActLoop(a).Run(ctx, state)

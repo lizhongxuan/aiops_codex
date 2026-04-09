@@ -8,9 +8,32 @@ import (
 
 // CapabilityLayer represents the three-tier capability gateway layers.
 const (
-	CapabilityLayerStructuredRead    = "structured_read"
+	CapabilityLayerStructuredRead     = "structured_read"
 	CapabilityLayerControlledMutation = "controlled_mutation"
-	CapabilityLayerRawShell          = "raw_shell"
+	CapabilityLayerRawShell           = "raw_shell"
+)
+
+const (
+	hostSummaryToolName            = "host_summary"
+	hostProcessTopToolName         = "host_process_top"
+	hostServiceStatusToolName      = "host_service_status"
+	hostJournalTailToolName        = "host_journal_tail"
+	hostFileExistsToolName         = "host_file_exists"
+	hostFileReadToolName           = "host_file_read"
+	hostFileSearchToolName         = "host_file_search"
+	hostNetworkListenersToolName   = "host_network_listeners"
+	hostNetworkConnectionsToolName = "host_network_connections"
+	hostPackageVersionToolName     = "host_package_version"
+	hostNginxStatusToolName        = "host_nginx_status"
+	hostMySQLSummaryToolName       = "host_mysql_summary"
+	hostRedisSummaryToolName       = "host_redis_summary"
+	hostJVMSummaryToolName         = "host_jvm_summary"
+
+	serviceRestartToolName = "service_restart"
+	serviceStopToolName    = "service_stop"
+	configApplyToolName    = "config_apply"
+	packageInstallToolName = "package_install"
+	packageUpgradeToolName = "package_upgrade"
 )
 
 // structuredReadToolDef holds the metadata for a single structured read tool.
@@ -31,12 +54,12 @@ type structuredReadToolDef struct {
 func structuredReadToolRegistry() []structuredReadToolDef {
 	return []structuredReadToolDef{
 		{
-			Name:            "host.summary",
+			Name:            hostSummaryToolName,
 			Description:     "Get a quick system summary of the remote host including hostname, uptime, load, memory, and disk usage.",
 			CommandTemplate: `hostname && uptime && free -h | head -3 && df -h / | tail -1`,
 		},
 		{
-			Name:            "host.process.top",
+			Name:            hostProcessTopToolName,
 			Description:     "List the top processes by CPU or memory usage on the remote host.",
 			CommandTemplate: `ps aux --sort=-%s | head -n %s`,
 			ArgKeys:         []string{"sort_by", "limit"},
@@ -46,7 +69,7 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 			},
 		},
 		{
-			Name:            "host.service.status",
+			Name:            hostServiceStatusToolName,
 			Description:     "Check the status of a systemd service on the remote host.",
 			CommandTemplate: `systemctl status %s --no-pager -l 2>&1 | head -30`,
 			ArgKeys:         []string{"service"},
@@ -56,7 +79,7 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 			RequiredArgs: []string{"service"},
 		},
 		{
-			Name:            "host.journal.tail",
+			Name:            hostJournalTailToolName,
 			Description:     "Tail recent journal logs for a systemd unit on the remote host.",
 			CommandTemplate: `journalctl -u %s --no-pager -n %s --output=short-iso`,
 			ArgKeys:         []string{"unit", "lines"},
@@ -67,7 +90,7 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 			RequiredArgs: []string{"unit"},
 		},
 		{
-			Name:            "host.file.exists",
+			Name:            hostFileExistsToolName,
 			Description:     "Check whether a file or directory exists on the remote host.",
 			CommandTemplate: `test -e %s && echo "EXISTS" || echo "NOT_FOUND"`,
 			ArgKeys:         []string{"path"},
@@ -77,7 +100,7 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 			RequiredArgs: []string{"path"},
 		},
 		{
-			Name:            "host.file.read",
+			Name:            hostFileReadToolName,
 			Description:     "Read the contents of a file on the remote host (up to a limited number of lines).",
 			CommandTemplate: `head -n %s %s`,
 			ArgKeys:         []string{"max_lines", "path"},
@@ -88,7 +111,7 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 			RequiredArgs: []string{"path"},
 		},
 		{
-			Name:            "host.file.search",
+			Name:            hostFileSearchToolName,
 			Description:     "Search for a text pattern in files under a directory on the remote host.",
 			CommandTemplate: `grep -rn --include='*' %s %s | head -n %s`,
 			ArgKeys:         []string{"pattern", "path", "max_matches"},
@@ -100,17 +123,17 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 			RequiredArgs: []string{"path", "pattern"},
 		},
 		{
-			Name:            "host.network.listeners",
+			Name:            hostNetworkListenersToolName,
 			Description:     "List listening TCP/UDP ports on the remote host.",
 			CommandTemplate: `ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null`,
 		},
 		{
-			Name:            "host.network.connections",
+			Name:            hostNetworkConnectionsToolName,
 			Description:     "Show active network connections on the remote host, optionally filtered by port.",
 			CommandTemplate: `ss -tnp state established 2>/dev/null | head -n 50`,
 		},
 		{
-			Name:            "host.package.version",
+			Name:            hostPackageVersionToolName,
 			Description:     "Check the installed version of a package on the remote host.",
 			CommandTemplate: `(dpkg -l %s 2>/dev/null || rpm -q %s 2>/dev/null) | tail -3`,
 			ArgKeys:         []string{"package", "package"},
@@ -120,28 +143,27 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 			RequiredArgs: []string{"package"},
 		},
 		{
-			Name:            "host.nginx.status",
+			Name:            hostNginxStatusToolName,
 			Description:     "Get Nginx status including version, config test, and active connections on the remote host.",
 			CommandTemplate: `nginx -v 2>&1; nginx -t 2>&1; curl -s http://127.0.0.1/nginx_status 2>/dev/null || echo "stub_status not available"`,
 		},
 		{
-			Name:            "host.mysql.summary",
+			Name:            hostMySQLSummaryToolName,
 			Description:     "Get a MySQL/MariaDB summary including version, uptime, and connection count on the remote host.",
 			CommandTemplate: `mysqladmin -u root status 2>/dev/null || mysql -u root -e "SHOW GLOBAL STATUS LIKE 'Uptime'; SELECT COUNT(*) AS connections FROM information_schema.processlist;" 2>/dev/null || echo "mysql not accessible"`,
 		},
 		{
-			Name:            "host.redis.summary",
+			Name:            hostRedisSummaryToolName,
 			Description:     "Get a Redis summary including version, memory, and connected clients on the remote host.",
 			CommandTemplate: `redis-cli info server 2>/dev/null | grep -E "redis_version|uptime_in_seconds|connected_clients|used_memory_human" || echo "redis-cli not available"`,
 		},
 		{
-			Name:            "host.jvm.summary",
+			Name:            hostJVMSummaryToolName,
 			Description:     "List running JVM processes and their basic info on the remote host.",
 			CommandTemplate: `jps -lv 2>/dev/null || ps aux | grep '[j]ava' | head -10`,
 		},
 	}
 }
-
 
 // controlledMutationToolDef holds the metadata for a single controlled mutation tool.
 // These tools always require approval before execution.
@@ -163,7 +185,7 @@ type controlledMutationToolDef struct {
 func controlledMutationToolRegistry() []controlledMutationToolDef {
 	return []controlledMutationToolDef{
 		{
-			Name:            "service.restart",
+			Name:            serviceRestartToolName,
 			Description:     "Restart a systemd service on the remote host. Always requires approval.",
 			CommandTemplate: `systemctl restart %s`,
 			ArgKeys:         []string{"service"},
@@ -173,7 +195,7 @@ func controlledMutationToolRegistry() []controlledMutationToolDef {
 			RequiredArgs: []string{"service"},
 		},
 		{
-			Name:            "service.stop",
+			Name:            serviceStopToolName,
 			Description:     "Stop a systemd service on the remote host. Always requires approval.",
 			CommandTemplate: `systemctl stop %s`,
 			ArgKeys:         []string{"service"},
@@ -183,7 +205,7 @@ func controlledMutationToolRegistry() []controlledMutationToolDef {
 			RequiredArgs: []string{"service"},
 		},
 		{
-			Name:            "config.apply",
+			Name:            configApplyToolName,
 			Description:     "Apply a configuration file change on the remote host by writing content to a path. Always requires approval.",
 			CommandTemplate: `cat > %s << 'AIOPS_EOF'\n%s\nAIOPS_EOF`,
 			ArgKeys:         []string{"path", "content"},
@@ -194,7 +216,7 @@ func controlledMutationToolRegistry() []controlledMutationToolDef {
 			RequiredArgs: []string{"path", "content"},
 		},
 		{
-			Name:            "package.install",
+			Name:            packageInstallToolName,
 			Description:     "Install a package on the remote host using the system package manager. Always requires approval.",
 			CommandTemplate: `(command -v apt-get >/dev/null 2>&1 && apt-get install -y %s) || (command -v yum >/dev/null 2>&1 && yum install -y %s) || (command -v dnf >/dev/null 2>&1 && dnf install -y %s) || echo "no supported package manager found"`,
 			ArgKeys:         []string{"package", "package", "package"},
@@ -204,7 +226,7 @@ func controlledMutationToolRegistry() []controlledMutationToolDef {
 			RequiredArgs: []string{"package"},
 		},
 		{
-			Name:            "package.upgrade",
+			Name:            packageUpgradeToolName,
 			Description:     "Upgrade a package on the remote host using the system package manager. Always requires approval.",
 			CommandTemplate: `(command -v apt-get >/dev/null 2>&1 && apt-get install --only-upgrade -y %s) || (command -v yum >/dev/null 2>&1 && yum update -y %s) || (command -v dnf >/dev/null 2>&1 && dnf upgrade -y %s) || echo "no supported package manager found"`,
 			ArgKeys:         []string{"package", "package", "package"},
@@ -226,10 +248,14 @@ func controlledMutationToolNames() map[string]bool {
 	return names
 }
 
+func normalizeControlledMutationToolName(name string) string {
+	return strings.ReplaceAll(strings.TrimSpace(name), ".", "_")
+}
+
 // isControlledMutationTool returns true if the tool name is a controlled mutation tool
 // (service.*, config.*, package.* prefix).
 func isControlledMutationTool(name string) bool {
-	return controlledMutationToolNames()[name]
+	return controlledMutationToolNames()[normalizeControlledMutationToolName(name)]
 }
 
 // controlledMutationToolDefinitions returns the controlled mutation tools in the same
@@ -271,6 +297,7 @@ func controlledMutationToolDefinitions() []map[string]any {
 
 // buildControlledMutationCommand constructs the shell command for a controlled mutation tool call.
 func buildControlledMutationCommand(toolName string, arguments map[string]any) (string, error) {
+	toolName = normalizeControlledMutationToolName(toolName)
 	registry := controlledMutationToolRegistry()
 	var def *controlledMutationToolDef
 	for i := range registry {
@@ -311,9 +338,14 @@ func structuredReadToolNames() map[string]bool {
 	return names
 }
 
-// isStructuredReadTool returns true if the tool name is a structured read tool (host.* prefix).
+func normalizeStructuredReadToolName(name string) string {
+	return strings.ReplaceAll(strings.TrimSpace(name), ".", "_")
+}
+
+// isStructuredReadTool returns true if the tool name is a structured read tool (host_* canonical form).
 func isStructuredReadTool(name string) bool {
-	return strings.HasPrefix(name, "host.") && structuredReadToolNames()[name]
+	name = normalizeStructuredReadToolName(name)
+	return strings.HasPrefix(name, "host_") && structuredReadToolNames()[name]
 }
 
 // structuredReadToolDefinitions returns the 14 structured read tools in the same
@@ -355,6 +387,7 @@ func structuredReadToolDefinitions() []map[string]any {
 
 // buildStructuredReadCommand constructs the shell command for a structured read tool call.
 func buildStructuredReadCommand(toolName string, arguments map[string]any) (string, error) {
+	toolName = normalizeStructuredReadToolName(toolName)
 	registry := structuredReadToolRegistry()
 	var def *structuredReadToolDef
 	for i := range registry {

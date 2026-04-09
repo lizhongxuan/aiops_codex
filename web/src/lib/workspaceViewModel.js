@@ -720,10 +720,10 @@ export function buildWorkspaceOrchestrationLanes({
     },
     {
       id: "planner",
-      title: "主 Agent 计划",
-      summary: plannerSessionLabel || "等待主 Agent 计划",
+      title: "计划与审批",
+      summary: plannerSessionLabel || "等待计划审批",
       caption: planVersion ? `当前版本 ${planVersion}` : "负责拆分结构化步骤并解释计划。",
-      status: plannerSessionLabel ? "计划已挂载" : "待生成",
+      status: plannerSessionLabel ? "计划就绪" : "待生成",
       tone: plannerSessionLabel ? "info" : "neutral",
       meta: [
         { key: "主 Agent", value: plannerSessionLabel || "-" },
@@ -763,11 +763,11 @@ export function buildWorkspaceLiveTimeline({
   if (planCard) {
     items.push({
       id: `plan-${planCard.id}`,
-      source: "Planner",
+      source: "主 Agent",
       tone: "info",
       time: formatShortTime(planCard.updatedAt || planCard.createdAt),
       timestamp: parseTimestamp(planCard.updatedAt || planCard.createdAt),
-      title: compactText(planCard.title) || "Planner 已生成计划",
+      title: compactText(planCard.title) || "主 Agent 已生成计划",
       text: compactText(planCard.text) || "结构化步骤已准备就绪",
       targetType: "plan",
       targetId: planCard.id,

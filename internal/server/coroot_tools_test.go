@@ -3,11 +3,54 @@ package server
 import (
 	"encoding/json"
 	"math/rand"
+	"regexp"
 	"testing"
 	"testing/quick"
 
 	"github.com/lizhongxuan/aiops-codex/internal/coroot"
 )
+
+func TestCorootDynamicToolNamesAreCodexCompatible(t *testing.T) {
+	app := &App{corootClient: coroot.NewClient("http://coroot.internal:8080", "test-token", 0)}
+	tools := app.corootDynamicTools()
+	if len(tools) == 0 {
+		t.Fatal("expected coroot tools when coroot client is configured")
+	}
+	validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	for _, tool := range tools {
+		name := getStringAny(tool, "name")
+		if !validName.MatchString(name) {
+			t.Fatalf("tool name %q does not satisfy Codex pattern", name)
+		}
+	}
+}
+
+func TestNormalizeCorootToolNameSupportsLegacyAliases(t *testing.T) {
+	cases := map[string]string{
+		"coroot.list_services":     corootToolListServices,
+		"coroot.service_overview":  corootToolServiceOverview,
+		"coroot.service_metrics":   corootToolServiceMetrics,
+		"coroot.service_alerts":    corootToolServiceAlerts,
+		"coroot.topology":          corootToolTopology,
+		"coroot.incident_timeline": corootToolIncidentTime,
+		"coroot.rca_report":        corootToolRCAReport,
+		corootToolListServices:     corootToolListServices,
+		corootToolServiceOverview:  corootToolServiceOverview,
+		corootToolServiceMetrics:   corootToolServiceMetrics,
+		corootToolServiceAlerts:    corootToolServiceAlerts,
+		corootToolTopology:         corootToolTopology,
+		corootToolIncidentTime:     corootToolIncidentTime,
+		corootToolRCAReport:        corootToolRCAReport,
+	}
+	for input, want := range cases {
+		if got := normalizeCorootToolName(input); got != want {
+			t.Fatalf("normalizeCorootToolName(%q) = %q, want %q", input, got, want)
+		}
+		if !isCorootTool(input) {
+			t.Fatalf("expected %q to be recognized as a coroot tool", input)
+		}
+	}
+}
 
 // ---------- formatServiceOverviewForCard ----------
 

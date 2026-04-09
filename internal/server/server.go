@@ -2229,6 +2229,11 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		nextPhase = "executing"
 	}
 	a.setRuntimeTurnPhase(targetSessionID, nextPhase)
+	if approval.Type == "plan_exit" && (decision == "accept" || decision == "accept_session") {
+		a.store.UpdateRuntime(targetSessionID, func(rt *model.RuntimeState) {
+			rt.PlanMode = false
+		})
+	}
 	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
 		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, nextPhase)
 	}

@@ -9,6 +9,16 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/coroot"
 )
 
+const (
+	corootToolListServices    = "coroot_list_services"
+	corootToolServiceOverview = "coroot_service_overview"
+	corootToolServiceMetrics  = "coroot_service_metrics"
+	corootToolServiceAlerts   = "coroot_service_alerts"
+	corootToolTopology        = "coroot_topology"
+	corootToolIncidentTime    = "coroot_incident_timeline"
+	corootToolRCAReport       = "coroot_rca_report"
+)
+
 // corootDynamicTools returns the 7 Coroot MCP dynamic tool definitions in the
 // same map[string]any format used by remoteDynamicTools().
 func (a *App) corootDynamicTools() []map[string]any {
@@ -17,7 +27,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 	}
 	return []map[string]any{
 		{
-			"name":        "coroot.list_services",
+			"name":        corootToolListServices,
 			"description": "List all services monitored by Coroot. Returns service IDs, names, and health status.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -32,7 +42,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 			},
 		},
 		{
-			"name":        "coroot.service_overview",
+			"name":        corootToolServiceOverview,
 			"description": "Get the overview for a single Coroot service including health status and summary metrics.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -51,7 +61,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 			},
 		},
 		{
-			"name":        "coroot.service_metrics",
+			"name":        corootToolServiceMetrics,
 			"description": "Query metrics for a Coroot service within a time range.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -78,7 +88,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 			},
 		},
 		{
-			"name":        "coroot.service_alerts",
+			"name":        corootToolServiceAlerts,
 			"description": "Get active alerts for a Coroot service.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -97,7 +107,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 			},
 		},
 		{
-			"name":        "coroot.topology",
+			"name":        corootToolTopology,
 			"description": "Get the full service topology graph from Coroot showing service dependencies and connections.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -112,7 +122,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 			},
 		},
 		{
-			"name":        "coroot.incident_timeline",
+			"name":        corootToolIncidentTime,
 			"description": "Get the timeline of events for a specific Coroot incident.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -131,7 +141,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 			},
 		},
 		{
-			"name":        "coroot.rca_report",
+			"name":        corootToolRCAReport,
 			"description": "Get the root-cause analysis report for a Coroot incident including identified root causes and remediation suggestions.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -152,12 +162,45 @@ func (a *App) corootDynamicTools() []map[string]any {
 	}
 }
 
-// isCorootTool returns true if the tool name has the coroot.* prefix.
-func isCorootTool(name string) bool {
-	return strings.HasPrefix(name, "coroot.")
+func normalizeCorootToolName(name string) string {
+	switch strings.TrimSpace(name) {
+	case "coroot.list_services", corootToolListServices:
+		return corootToolListServices
+	case "coroot.service_overview", corootToolServiceOverview:
+		return corootToolServiceOverview
+	case "coroot.service_metrics", corootToolServiceMetrics:
+		return corootToolServiceMetrics
+	case "coroot.service_alerts", corootToolServiceAlerts:
+		return corootToolServiceAlerts
+	case "coroot.topology", corootToolTopology:
+		return corootToolTopology
+	case "coroot.incident_timeline", corootToolIncidentTime:
+		return corootToolIncidentTime
+	case "coroot.rca_report", corootToolRCAReport:
+		return corootToolRCAReport
+	default:
+		return strings.TrimSpace(name)
+	}
 }
 
-// executeCorootTool handles the execution of a coroot.* dynamic tool call.
+// isCorootTool returns true for both the current underscore names and the
+// legacy dot-separated aliases kept for compatibility with old transcripts.
+func isCorootTool(name string) bool {
+	switch normalizeCorootToolName(name) {
+	case corootToolListServices,
+		corootToolServiceOverview,
+		corootToolServiceMetrics,
+		corootToolServiceAlerts,
+		corootToolTopology,
+		corootToolIncidentTime,
+		corootToolRCAReport:
+		return true
+	default:
+		return false
+	}
+}
+
+// executeCorootTool handles the execution of a Coroot dynamic tool call.
 func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallParams) {
 	if a.corootClient == nil {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse("Coroot is not configured.", false))
@@ -165,18 +208,19 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 	}
 
 	ctx := context.Background()
+	toolName := normalizeCorootToolName(params.Tool)
 
-	switch params.Tool {
-	case "coroot.list_services":
+	switch toolName {
+	case corootToolListServices:
 		services, err := a.corootClient.ListServices(ctx)
 		if err != nil {
-			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.list_services failed: %v", err), false))
+			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("%s failed: %v", toolName, err), false))
 			return
 		}
 		card := formatServicesForCard(services)
 		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(card), true))
 
-	case "coroot.service_overview":
+	case corootToolServiceOverview:
 		serviceID := strings.TrimSpace(getStringAny(params.Arguments, "service_id"))
 		if serviceID == "" {
 			_ = a.respondCodex(ctx, rawID, toolResponse("service_id is required", false))
@@ -184,13 +228,13 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 		}
 		result, err := a.corootClient.ServiceOverview(ctx, serviceID)
 		if err != nil {
-			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.service_overview failed: %v", err), false))
+			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("%s failed: %v", toolName, err), false))
 			return
 		}
 		card := formatServiceOverviewForCard(result)
 		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(card), true))
 
-	case "coroot.service_metrics":
+	case corootToolServiceMetrics:
 		serviceID := strings.TrimSpace(getStringAny(params.Arguments, "service_id"))
 		from := strings.TrimSpace(getStringAny(params.Arguments, "from"))
 		to := strings.TrimSpace(getStringAny(params.Arguments, "to"))
@@ -200,13 +244,13 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 		}
 		result, err := a.corootClient.ServiceMetrics(ctx, serviceID, coroot.TimeRange{From: from, To: to})
 		if err != nil {
-			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.service_metrics failed: %v", err), false))
+			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("%s failed: %v", toolName, err), false))
 			return
 		}
 		card := formatMetricsForCard(result)
 		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(card), true))
 
-	case "coroot.service_alerts":
+	case corootToolServiceAlerts:
 		serviceID := strings.TrimSpace(getStringAny(params.Arguments, "service_id"))
 		if serviceID == "" {
 			_ = a.respondCodex(ctx, rawID, toolResponse("service_id is required", false))
@@ -214,21 +258,21 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 		}
 		alerts, err := a.corootClient.ServiceAlerts(ctx, serviceID)
 		if err != nil {
-			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.service_alerts failed: %v", err), false))
+			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("%s failed: %v", toolName, err), false))
 			return
 		}
 		card := formatAlertsForCard(alerts)
 		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(card), true))
 
-	case "coroot.topology":
+	case corootToolTopology:
 		result, err := a.corootClient.Topology(ctx)
 		if err != nil {
-			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.topology failed: %v", err), false))
+			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("%s failed: %v", toolName, err), false))
 			return
 		}
 		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(result), true))
 
-	case "coroot.incident_timeline":
+	case corootToolIncidentTime:
 		incidentID := strings.TrimSpace(getStringAny(params.Arguments, "incident_id"))
 		if incidentID == "" {
 			_ = a.respondCodex(ctx, rawID, toolResponse("incident_id is required", false))
@@ -236,12 +280,12 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 		}
 		result, err := a.corootClient.IncidentTimeline(ctx, incidentID)
 		if err != nil {
-			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.incident_timeline failed: %v", err), false))
+			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("%s failed: %v", toolName, err), false))
 			return
 		}
 		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(result), true))
 
-	case "coroot.rca_report":
+	case corootToolRCAReport:
 		incidentID := strings.TrimSpace(getStringAny(params.Arguments, "incident_id"))
 		if incidentID == "" {
 			_ = a.respondCodex(ctx, rawID, toolResponse("incident_id is required", false))
@@ -249,7 +293,7 @@ func (a *App) executeCorootTool(sessionID, rawID string, params dynamicToolCallP
 		}
 		result, err := a.corootClient.RCAReport(ctx, incidentID)
 		if err != nil {
-			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("coroot.rca_report failed: %v", err), false))
+			_ = a.respondCodex(ctx, rawID, toolResponse(fmt.Sprintf("%s failed: %v", toolName, err), false))
 			return
 		}
 		_ = a.respondCodex(ctx, rawID, toolResponse(mustJSON(result), true))

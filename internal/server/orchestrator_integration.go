@@ -1443,6 +1443,17 @@ func (a *App) projectWorkerOutcome(outcome *orchestrator.WorkerTurnOutcome) {
 	if outcome == nil || outcome.WorkspaceSessionID == "" {
 		return
 	}
+
+	// Create worker result evidence for fan-in
+	workerEvidenceID := model.NewID("ev")
+	a.store.RememberItem(outcome.WorkspaceSessionID, workerEvidenceID, map[string]any{
+		"kind":    "worker_result",
+		"taskId":  outcome.CompletedTaskID,
+		"hostId":  outcome.WorkerHostID,
+		"status":  string(outcome.CompletedTaskStatus),
+		"summary": workerOutcomeFallbackText(outcome.CompletedTaskStatus),
+	})
+
 	reply := strings.TrimSpace(a.latestCompletedAssistantText(outcome.WorkerSessionID))
 	detail := compactDetailMap(map[string]any{
 		"workerSessionId": outcome.WorkerSessionID,

@@ -27,6 +27,7 @@ const props = defineProps({
 const emit = defineEmits(["choice"]);
 
 const selectedValues = ref([]);
+const multiSelectedValues = ref([]);
 const otherValues = ref([]);
 const noteValues = ref([]);
 const noteExpanded = ref([]);
@@ -75,6 +76,7 @@ function normalizeQuestion(question, index, fallbackTitle) {
     question: question?.question || "",
     isOther: Boolean(question?.isOther),
     isSecret: Boolean(question?.isSecret),
+    multiSelect: Boolean(question?.multiSelect),
     options: normalizedOptions,
     allowSupplementNote: question?.allowSupplementNote !== false,
     notePlaceholder: String(question?.notePlaceholder || "").trim() || "补充偏好、风险边界，或你已经确认过的信息（选填）",
@@ -113,6 +115,10 @@ const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作
 const canSubmit = computed(() => {
   if (props.card.status !== "pending") return false;
   return choiceQuestions.value.every((question, index) => {
+    if (question.multiSelect) {
+      const selected = multiSelectedValues.value[index] || [];
+      return selected.length > 0;
+    }
     const selectedValue = selectedValues.value[index];
     if (question.options?.length && selectedValue !== OTHER_OPTION_VALUE) {
       return Boolean(selectedValue);
@@ -138,6 +144,21 @@ function showSupplementNote(question) {
 
 function toggleSupplementNote(index) {
   noteExpanded.value[index] = !noteExpanded.value[index];
+}
+
+function toggleMultiSelectValue(questionIndex, optionValue) {
+  const current = multiSelectedValues.value[questionIndex] || [];
+  const idx = current.indexOf(optionValue);
+  if (idx === -1) {
+    multiSelectedValues.value[questionIndex] = [...current, optionValue];
+  } else {
+    multiSelectedValues.value[questionIndex] = current.filter((v) => v !== optionValue);
+  }
+}
+
+function isMultiSelected(questionIndex, optionValue) {
+  const current = multiSelectedValues.value[questionIndex] || [];
+  return current.includes(optionValue);
 }
 
 function defaultSelectedValue(question) {
@@ -180,12 +201,16 @@ watch(
     const previousSelected = selectedValues.value;
 
     selectedValues.value = questions.map((question, index) => {
+      if (question.multiSelect) return null;
       const previous = previousSelected[index];
       if (isSamePrompt && hasOptionValue(question, previous)) {
         return previous;
       }
       return defaultSelectedValue(question);
     });
+    multiSelectedValues.value = isSamePrompt
+      ? alignValues(multiSelectedValues.value, questions, () => [])
+      : questions.map(() => []);
     otherValues.value = isSamePrompt ? alignValues(otherValues.value, questions, () => "") : questions.map(() => "");
     noteValues.value = isSamePrompt ? alignValues(noteValues.value, questions, () => "") : questions.map(() => "");
     noteExpanded.value = isSamePrompt ? alignValues(noteExpanded.value, questions, () => false) : questions.map(() => false);
@@ -199,8 +224,25 @@ function onSubmit() {
   emit("choice", {
     requestId: props.card.requestId,
     answers: choiceQuestions.value.map((question, index) => {
-      const selectedValue = selectedValues.value[index];
       const note = noteValues.value[index]?.trim() || "";
+
+      if (question.multiSelect) {
+        const selected = multiSelectedValues.value[index] || [];
+        const selectedOptions = selected
+          .map((val) => question.options.find((opt) => opt._value === val))
+          .filter(Boolean);
+        return {
+          values: selectedOptions.map((opt) => ({
+            value: opt._value,
+            label: opt._label,
+          })),
+          multiSelect: true,
+          isOther: false,
+          note,
+        };
+      }
+
+      const selectedValue = selectedValues.value[index];
       if (!question.options?.length || selectedValue === OTHER_OPTION_VALUE) {
         const value = otherValues.value[index].trim();
         return {
@@ -248,44 +290,69 @@ function onSubmit() {
         </p>
 
         <div v-if="card.status === 'pending' && question.options?.length" class="choice-options">
-          <label
-            v-for="(option, optionIndex) in question.options"
-            :key="`${card.id}-${index}-${optionIndex}`"
-            class="choice-option"
-            :class="{ selected: selectedValues[index] === option._value }"
-            @click="selectedValues[index] = option._value"
-          >
-            <span class="option-radio">
-              <span
-                v-if="selectedValues[index] === option._value"
-                class="radio-dot"
-              ></span>
-            </span>
-            <span class="option-copy">
-              <span class="option-label-row">
-                <span class="option-label">{{ option._label }}</span>
-                <span v-if="option._recommended" class="option-badge">推荐</span>
+          <!-- Multi-select: checkboxes -->
+          <template v-if="question.multiSelect">
+            <label
+              v-for="(option, optionIndex) in question.options"
+              :key="`${card.id}-${index}-${optionIndex}`"
+              class="choice-option"
+              :class="{ selected: isMultiSelected(index, option._value) }"
+              @click="toggleMultiSelectValue(index, option._value)"
+            >
+              <span class="option-checkbox" :class="{ checked: isMultiSelected(index, option._value) }">
+                <span v-if="isMultiSelected(index, option._value)" class="checkbox-check">✓</span>
               </span>
-              <span class="option-description">{{ option._description }}</span>
-            </span>
-          </label>
+              <span class="option-copy">
+                <span class="option-label-row">
+                  <span class="option-label">{{ option._label }}</span>
+                  <span v-if="option._recommended" class="option-badge">推荐</span>
+                </span>
+                <span class="option-description">{{ option._description }}</span>
+              </span>
+            </label>
+          </template>
 
-          <label
-            v-if="question.isOther"
-            class="choice-option"
-            :class="{ selected: selectedValues[index] === OTHER_OPTION_VALUE }"
-            @click="selectedValues[index] = OTHER_OPTION_VALUE"
-          >
-            <span class="option-radio">
-              <span v-if="selectedValues[index] === OTHER_OPTION_VALUE" class="radio-dot"></span>
-            </span>
-            <span class="option-copy">
-              <span class="option-label-row">
-                <span class="option-label">其他</span>
+          <!-- Single-select: radio buttons -->
+          <template v-else>
+            <label
+              v-for="(option, optionIndex) in question.options"
+              :key="`${card.id}-${index}-${optionIndex}`"
+              class="choice-option"
+              :class="{ selected: selectedValues[index] === option._value }"
+              @click="selectedValues[index] = option._value"
+            >
+              <span class="option-radio">
+                <span
+                  v-if="selectedValues[index] === option._value"
+                  class="radio-dot"
+                ></span>
               </span>
-              <span class="option-description">自己补充当前更合适的处理方向。</span>
-            </span>
-          </label>
+              <span class="option-copy">
+                <span class="option-label-row">
+                  <span class="option-label">{{ option._label }}</span>
+                  <span v-if="option._recommended" class="option-badge">推荐</span>
+                </span>
+                <span class="option-description">{{ option._description }}</span>
+              </span>
+            </label>
+
+            <label
+              v-if="question.isOther"
+              class="choice-option"
+              :class="{ selected: selectedValues[index] === OTHER_OPTION_VALUE }"
+              @click="selectedValues[index] = OTHER_OPTION_VALUE"
+            >
+              <span class="option-radio">
+                <span v-if="selectedValues[index] === OTHER_OPTION_VALUE" class="radio-dot"></span>
+              </span>
+              <span class="option-copy">
+                <span class="option-label-row">
+                  <span class="option-label">其他</span>
+                </span>
+                <span class="option-description">自己补充当前更合适的处理方向。</span>
+              </span>
+            </label>
+          </template>
         </div>
 
         <div v-if="card.status === 'pending' && showInlineInput(question, index)" class="choice-inline-input">
@@ -457,6 +524,31 @@ function onSubmit() {
   height: 8px;
   border-radius: 50%;
   background: #0f172a;
+}
+
+.option-checkbox {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 4px;
+  border: 2px solid #d1d5db;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.option-checkbox.checked {
+  border-color: #0f172a;
+  background: #0f172a;
+}
+
+.checkbox-check {
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .option-copy {
