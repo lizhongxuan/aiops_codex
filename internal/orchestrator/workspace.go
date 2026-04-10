@@ -31,5 +31,12 @@ func EnsureWorkspace(path string) error {
 }
 
 func BootstrapRemoteWorkspaceCommand(remotePath string) string {
-	return fmt.Sprintf("mkdir -p %s", strings.TrimSpace(remotePath))
+	path := strings.TrimSpace(remotePath)
+	if path == "" {
+		return "mkdir -p \"$HOME/.aiops_codex\""
+	}
+	if filepath.IsAbs(path) {
+		return fmt.Sprintf("mkdir -p %s", path)
+	}
+	return fmt.Sprintf("mkdir -p \"$HOME/%s\"", strings.TrimLeft(path, "/"))
 }

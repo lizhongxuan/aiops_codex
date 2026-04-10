@@ -53,9 +53,12 @@ func (a *App) mainAgentCapabilityState(capability string) string {
 func (a *App) hostAgentDefaultProfile() model.AgentProfile {
 	profile, ok := a.store.AgentProfile(string(model.AgentProfileTypeHostAgentDefault))
 	if !ok {
-		return model.DefaultAgentProfile(string(model.AgentProfileTypeHostAgentDefault))
+		profile = model.DefaultAgentProfile(string(model.AgentProfileTypeHostAgentDefault))
 	}
-	return model.CompleteAgentProfile(profile)
+	profile = model.CompleteAgentProfile(profile)
+	allowShellWrapper := false
+	profile.CommandPermissions.AllowShellWrapper = &allowShellWrapper
+	return profile
 }
 
 func normalizeCapabilityState(state string) string {

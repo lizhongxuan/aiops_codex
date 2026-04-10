@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -128,5 +130,48 @@ func TestAgentExecManagerStreamsStructuredExecOutputAndExit(t *testing.T) {
 	}
 	if !foundStdout || !foundStderr {
 		t.Fatalf("expected stdout/stderr streams, got %v", streams)
+	}
+}
+
+func TestBuildAgentExecCommandUsesNonLoginShellWrapper(t *testing.T) {
+	cmd, err := buildAgentExecCommand(context.Background(), "uptime", "/bin/sh", true)
+	if err != nil {
+		t.Fatalf("buildAgentExecCommand: %v", err)
+	}
+	if len(cmd.Args) != 3 {
+		t.Fatalf("expected 3 args, got %#v", cmd.Args)
+	}
+	if got := cmd.Args[1]; got != "-c" {
+		t.Fatalf("expected non-login shell flag -c, got %q", got)
+	}
+	if got := cmd.Args[2]; got != "uptime" {
+		t.Fatalf("unexpected command payload %q", got)
+	}
+}
+
+func TestResolveAgentExecCwdDefaultsToTmp(t *testing.T) {
+	cwd, err := resolveAgentExecCwd("")
+	if err != nil {
+		t.Fatalf("resolveAgentExecCwd: %v", err)
+	}
+	if cwd != "/tmp" {
+		t.Fatalf("expected /tmp, got %q", cwd)
+	}
+}
+
+func TestResolveAgentExecCwdResolvesRelativePathFromHome(t *testing.T) {
+	home := t.TempDir()
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	t.Setenv("HOME", home)
+
+	cwd, err := resolveAgentExecCwd("workspace")
+	if err != nil {
+		t.Fatalf("resolveAgentExecCwd relative: %v", err)
+	}
+	if cwd != workspace {
+		t.Fatalf("expected %q, got %q", workspace, cwd)
 	}
 }

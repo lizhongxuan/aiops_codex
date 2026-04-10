@@ -972,7 +972,7 @@ func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 			if msg.Kind != "exec/start" || msg.ExecStart == nil {
 				return nil
 			}
-			if want := "mkdir -p .aiops_codex/missions/mission-1/host-1"; msg.ExecStart.Command != want {
+			if want := "mkdir -p /tmp/.aiops_codex/missions/mission-1/host-1"; msg.ExecStart.Command != want {
 				t.Fatalf("unexpected bootstrap command %q", msg.ExecStart.Command)
 			}
 			app.handleAgentExecExit("host-1", &agentrpc.ExecExit{

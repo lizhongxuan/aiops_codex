@@ -64,6 +64,25 @@ vi.mock("../src/components/PlanCard.vue", () => ({
   },
 }));
 
+
+vi.mock("naive-ui", () => ({
+  NBadge: {
+    name: "NBadge",
+    props: { value: [Number, String], dot: Boolean },
+    template: '<span class="n-badge-stub"><slot /></span>',
+  },
+  NDrawer: {
+    name: "NDrawer",
+    props: { show: Boolean, placement: String, width: Number, maskClosable: Boolean },
+    emits: ["update:show"],
+    template: '<div v-if="show" data-testid="chat-mcp-surface-drawer"><slot /></div>',
+  },
+  NDrawerContent: {
+    name: "NDrawerContent",
+    props: { title: String, nativeScrollbar: Boolean, closable: Boolean },
+    template: '<div class="n-drawer-content-stub"><slot /></div>',
+  },
+}));
 const workspaceHostTerminalStub = {
   name: "WorkspaceHostTerminal",
   props: ["hostId", "hostName", "panelHeight"],

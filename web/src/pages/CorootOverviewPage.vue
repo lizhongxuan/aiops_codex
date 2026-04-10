@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { NBadge, NButton } from "naive-ui";
 import {
   ArrowLeftIcon,
   ActivityIcon,
@@ -167,23 +168,29 @@ onBeforeUnmount(() => {
         <h1>Coroot 监控总览</h1>
         <p>查看 Coroot 监控的服务健康状态、拓扑和告警。</p>
       </div>
-      <div class="coroot-hero-stats">
-        <div class="coroot-stat stat-ok">
-          <ActivityIcon :size="18" />
-          <span>健康</span>
-          <strong>{{ healthyCount }}</strong>
-        </div>
-        <div class="coroot-stat stat-warn">
-          <AlertTriangleIcon :size="18" />
-          <span>告警</span>
-          <strong>{{ warningCount }}</strong>
-        </div>
-        <div class="coroot-stat stat-crit">
-          <AlertTriangleIcon :size="18" />
-          <span>异常</span>
-          <strong>{{ criticalCount }}</strong>
-        </div>
-      </div>
+      <n-grid :cols="3" :x-gap="12">
+        <n-gi>
+          <n-card size="small">
+            <n-statistic label="健康" :value="healthyCount">
+              <template #prefix><ActivityIcon :size="18" style="color:#16a34a" /></template>
+            </n-statistic>
+          </n-card>
+        </n-gi>
+        <n-gi>
+          <n-card size="small">
+            <n-statistic label="告警" :value="warningCount">
+              <template #prefix><AlertTriangleIcon :size="18" style="color:#d97706" /></template>
+            </n-statistic>
+          </n-card>
+        </n-gi>
+        <n-gi>
+          <n-card size="small">
+            <n-statistic label="异常" :value="criticalCount">
+              <template #prefix><AlertTriangleIcon :size="18" style="color:#dc2626" /></template>
+            </n-statistic>
+          </n-card>
+        </n-gi>
+      </n-grid>
     </header>
 
     <!-- Degraded state: Coroot not configured -->
@@ -195,116 +202,83 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- Tab bar (shown when configured or still loading config) -->
     <template v-if="corootConfigured || corootConfigLoading">
-      <nav class="tab-bar" data-testid="coroot-tab-bar">
-        <button
-          :class="{ active: activeTab === 'services' }"
-          @click="activeTab = 'services'"
-          data-testid="tab-services"
-        >
-          <ListIcon :size="14" />
-          服务总览
-        </button>
-        <button
-          :class="{ active: activeTab === 'dashboard' }"
-          @click="activeTab = 'dashboard'"
-          data-testid="tab-dashboard"
-        >
-          <LayoutDashboardIcon :size="14" />
-          Dashboard
-        </button>
-        <button
-          :class="{ active: activeTab === 'topology' }"
-          @click="activeTab = 'topology'"
-          data-testid="tab-topology"
-        >
-          <NetworkIcon :size="14" />
-          拓扑视图
-        </button>
-        <button class="refresh-btn" type="button" @click="fetchServices" :disabled="loading">
-          <RefreshCwIcon :size="14" :class="{ spinning: loading }" />
+      <n-space align="center" style="margin-bottom:12px;">
+        <n-button size="small" @click="fetchServices" :disabled="loading">
+          <template #icon><RefreshCwIcon :size="14" :class="{ spinning: loading }" /></template>
           刷新
-        </button>
-        <button class="ai-btn" type="button" @click="aiDrawerVisible = true">
-          <SparklesIcon :size="14" />
+        </n-button>
+        <n-button size="small" type="primary" @click="aiDrawerVisible = true">
+          <template #icon><SparklesIcon :size="14" /></template>
           AI 助手
-        </button>
-      </nav>
+        </n-button>
+      </n-space>
 
       <div v-if="loading" class="loading-hint">加载中…</div>
 
-      <!-- Services Tab -->
-      <section v-if="activeTab === 'services'" class="tab-content" data-testid="tab-content-services">
-        <div class="cards-grid">
-          <McpUiCardHost v-if="kpiCard" :card="kpiCard" />
-          <McpUiCardHost v-if="statusTableCard" :card="statusTableCard" />
-          <McpUiCardHost v-if="summaryCard" :card="summaryCard" />
-        </div>
-
-        <div class="section-card">
-          <h2>服务列表</h2>
-          <table class="data-table" v-if="services.length" role="table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>名称</th>
-                <th>状态</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="s in services" :key="s.id">
-                <td>{{ s.id }}</td>
-                <td>{{ s.name }}</td>
-                <td><span class="status-badge" :class="statusBadgeClass(s.status)">{{ s.status || "unknown" }}</span></td>
-                <td>
-                  <button class="action-btn" type="button" @click="openServiceEmbed(s)">详情</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <p v-else-if="!loading" class="empty-hint">暂无 Coroot 服务数据。请确认 Coroot 已配置。</p>
-        </div>
-      </section>
-
-      <!-- Dashboard Tab (inline iframe, not teleported overlay) -->
-      <section v-if="activeTab === 'dashboard'" class="tab-content" data-testid="tab-content-dashboard">
-        <div class="dashboard-container">
-          <div v-if="dashboardLoading && !dashboardError" class="dashboard-loading">
-            <span class="spinner" aria-hidden="true"></span>
-            Dashboard 加载中…
+      <n-tabs v-model:value="activeTab" type="line" data-testid="coroot-tab-bar">
+        <n-tab-pane name="services" tab="服务总览" data-testid="tab-content-services">
+          <div class="cards-grid">
+            <McpUiCardHost v-if="kpiCard" :card="kpiCard" />
+            <McpUiCardHost v-if="statusTableCard" :card="statusTableCard" />
+            <McpUiCardHost v-if="summaryCard" :card="summaryCard" />
           </div>
-          <div v-if="dashboardError" class="dashboard-error">
-            <AlertTriangleIcon :size="18" />
-            Dashboard 加载失败，请检查 Coroot 连接
-          </div>
-          <iframe
-            v-show="!dashboardError"
-            :src="corootBaseUrl"
-            class="dashboard-iframe"
-            sandbox="allow-scripts allow-same-origin allow-forms"
-            referrerpolicy="no-referrer"
-            data-testid="dashboard-iframe"
-            @load="onDashboardIframeLoad"
-            @error="onDashboardIframeError"
-          />
-        </div>
-      </section>
 
-      <!-- Topology Tab -->
-      <section v-if="activeTab === 'topology'" class="tab-content" data-testid="tab-content-topology">
-        <div class="section-card">
-          <h2>
-            <NetworkIcon :size="18" style="vertical-align: middle; margin-right: 6px;" />
-            服务拓扑
-          </h2>
-          <p class="topology-hint">拓扑视图通过 Coroot 嵌入面板展示。点击下方按钮打开。</p>
-          <button class="action-btn" type="button" @click="embedTitle = '服务拓扑'; embedUrl = '/api/v1/coroot/api/v1/topology'; embedVisible = true;">
-            打开拓扑视图
-          </button>
-        </div>
-      </section>
+          <n-card>
+            <template #header>服务列表</template>
+            <n-data-table
+              v-if="services.length"
+              :columns="[
+                { title: 'ID', key: 'id' },
+                { title: '名称', key: 'name' },
+                { title: '状态', key: 'status', render: (row) => h(NBadge, { type: row.status === 'ok' || row.status === 'healthy' ? 'success' : row.status === 'warning' ? 'warning' : row.status === 'critical' || row.status === 'error' ? 'error' : 'default', value: row.status || 'unknown', processing: row.status === 'warning' || row.status === 'critical' }) },
+                { title: '操作', key: 'actions', render: (row) => h(NButton, { size: 'small', quaternary: true, onClick: () => openServiceEmbed(row) }, { default: () => '详情' }) },
+              ]"
+              :data="services"
+              :row-key="(row) => row.id"
+              :bordered="false"
+              size="small"
+            />
+            <n-empty v-else-if="!loading" description="暂无 Coroot 服务数据。请确认 Coroot 已配置。" />
+          </n-card>
+        </n-tab-pane>
+
+        <n-tab-pane name="dashboard" tab="Dashboard" data-testid="tab-content-dashboard">
+          <div class="dashboard-container">
+            <div v-if="dashboardLoading && !dashboardError" class="dashboard-loading">
+              <n-spin size="medium" />
+              <span>Dashboard 加载中…</span>
+            </div>
+            <div v-if="dashboardError" class="dashboard-error">
+              <AlertTriangleIcon :size="18" />
+              Dashboard 加载失败，请检查 Coroot 连接
+            </div>
+            <iframe
+              v-show="!dashboardError"
+              :src="corootBaseUrl"
+              class="dashboard-iframe"
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              referrerpolicy="no-referrer"
+              data-testid="dashboard-iframe"
+              @load="onDashboardIframeLoad"
+              @error="onDashboardIframeError"
+            />
+          </div>
+        </n-tab-pane>
+
+        <n-tab-pane name="topology" tab="拓扑视图" data-testid="tab-content-topology">
+          <n-card>
+            <template #header>
+              <NetworkIcon :size="18" style="vertical-align: middle; margin-right: 6px;" />
+              服务拓扑
+            </template>
+            <p class="topology-hint">拓扑视图通过 Coroot 嵌入面板展示。点击下方按钮打开。</p>
+            <n-button @click="embedTitle = '服务拓扑'; embedUrl = '/api/v1/coroot/api/v1/topology'; embedVisible = true;">
+              打开拓扑视图
+            </n-button>
+          </n-card>
+        </n-tab-pane>
+      </n-tabs>
     </template>
 
     <!-- Embed Panel (overlay for service detail / topology) -->
@@ -316,11 +290,15 @@ onBeforeUnmount(() => {
     />
 
     <!-- Monitor AI Drawer -->
-    <MonitorAIDrawer
-      v-if="aiDrawerVisible"
-      :monitorContext="monitorContext"
-      @close="aiDrawerVisible = false"
-    />
+    <n-drawer v-model:show="aiDrawerVisible" :width="400" placement="right">
+      <n-drawer-content title="AI 助手" closable>
+        <MonitorAIDrawer
+          v-if="aiDrawerVisible"
+          :monitorContext="monitorContext"
+          @close="aiDrawerVisible = false"
+        />
+      </n-drawer-content>
+    </n-drawer>
   </section>
 </template>
 

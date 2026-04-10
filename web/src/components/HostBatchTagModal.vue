@@ -1,6 +1,5 @@
 <script setup>
 import { ref } from "vue";
-import Modal from "./Modal.vue";
 
 const props = defineProps({
   count: {
@@ -44,73 +43,51 @@ function submit() {
 </script>
 
 <template>
-  <Modal title="批量标签" @close="emit('close')">
-    <form class="tag-form" @submit.prevent="submit">
-      <p class="tag-note">已选 {{ count }} 台主机。支持批量添加标签，也可以按 key 批量删除。</p>
+  <n-modal
+    :show="true"
+    preset="card"
+    title="批量标签"
+    :bordered="false"
+    style="width: 480px; max-width: 90vw;"
+    :mask-closable="true"
+    @update:show="(val) => { if (!val) emit('close'); }"
+  >
+    <p class="tag-note">已选 {{ count }} 台主机。支持批量添加标签，也可以按 key 批量删除。</p>
 
-      <label class="tag-field">
-        <span>新增标签</span>
-        <textarea v-model="addText" rows="4" placeholder="env=prod&#10;role=web&#10;batch=blue" />
-      </label>
+    <n-form label-placement="top" @submit.prevent="submit">
+      <n-form-item label="新增标签">
+        <n-input
+          v-model:value="addText"
+          type="textarea"
+          :rows="4"
+          placeholder="env=prod&#10;role=web&#10;batch=blue"
+        />
+      </n-form-item>
 
-      <label class="tag-field">
-        <span>删除标签</span>
-        <textarea v-model="removeText" rows="3" placeholder="batch&#10;owner" />
-      </label>
+      <n-form-item label="删除标签">
+        <n-input
+          v-model:value="removeText"
+          type="textarea"
+          :rows="3"
+          placeholder="batch&#10;owner"
+        />
+      </n-form-item>
+    </n-form>
 
-      <div class="tag-actions">
-        <button type="button" class="ops-button ghost" @click="emit('close')">取消</button>
-        <button type="submit" class="ops-button primary">应用到已选主机</button>
-      </div>
-    </form>
-  </Modal>
+    <template #action>
+      <n-space justify="end">
+        <n-button @click="emit('close')">取消</n-button>
+        <n-button type="primary" @click="submit">应用到已选主机</n-button>
+      </n-space>
+    </template>
+  </n-modal>
 </template>
 
 <style scoped>
-.tag-form {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
 .tag-note {
-  margin: 0;
+  margin: 0 0 16px;
   font-size: 13px;
   color: #475569;
   line-height: 1.6;
-}
-
-.tag-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.tag-field span {
-  font-size: 13px;
-  font-weight: 600;
-  color: #334155;
-}
-
-.tag-field textarea {
-  width: 100%;
-  border: 1px solid #dbe3ee;
-  border-radius: 12px;
-  padding: 10px 12px;
-  font-size: 14px;
-  color: #0f172a;
-  resize: vertical;
-}
-
-.tag-field textarea:focus {
-  outline: none;
-  border-color: #93c5fd;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
-}
-
-.tag-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
 }
 </style>

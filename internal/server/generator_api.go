@@ -69,6 +69,8 @@ func (a *App) handleGenerator(w http.ResponseWriter, r *http.Request, _ string) 
 		a.handleGeneratorPreview(w, r, svc)
 	case "publish-draft":
 		a.handleGeneratorPublishDraft(w, r)
+	case "coroot-skills":
+		a.handleCorootSkillsGenerate(w, r, svc)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown generator endpoint"})
 	}

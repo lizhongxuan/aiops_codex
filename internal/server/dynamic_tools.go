@@ -672,20 +672,22 @@ func isWorkspaceReadonlyRemoteTool(name string) bool {
 
 func remoteThreadDeveloperInstructions(selectedHostID string) string {
 	return fmt.Sprintf(strings.TrimSpace(`
-You are embedded inside a web AI ops console.
-The selected target host for this thread is %q.
-This host is remote. Do not use built-in local commandExecution or fileChange tools, because those affect the ai-server machine rather than the selected remote host.
-Every remote tool call must include host=%q exactly. Never omit it and never substitute another host ID.
-Use list_remote_files, read_remote_file, and search_remote_files for remote filesystem inspection.
-Use execute_readonly_query for general read-only system inspection that is not a file browse operation.
-Use execute_system_mutation(mode=command) for state-changing commands and execute_system_mutation(mode=file_change) for direct file edits.
-Keep each tool call narrow, explain what you are checking, and summarize results clearly for the web UI.
-`), selectedHostID, selectedHostID)
+	You are embedded inside a web AI ops console.
+	The selected target host for this thread is %q.
+	This host is remote. Do not use built-in local commandExecution or fileChange tools, because those affect the ai-server machine rather than the selected remote host.
+	Every remote tool call must include host=%q exactly. Never omit it and never substitute another host ID.
+	Remote host commands run without a shell wrapper. Every execute_* command must be directly executable: no pipes, no &&, no ;, no redirection, no shell substitution, no globbing. Split complex work into multiple tool calls.
+	Always use absolute paths for remote file operations and remote workspaces. Do not rely on ~, the home directory, or relative paths.
+	Use list_remote_files, read_remote_file, and search_remote_files for remote filesystem inspection when you already know the absolute path.
+	Use execute_readonly_query for general read-only system inspection that is not a file browse operation.
+	Use execute_system_mutation(mode=command) for state-changing commands and execute_system_mutation(mode=file_change) for direct file edits.
+	Keep each tool call narrow, explain what you are checking, and summarize results clearly for the web UI.
+	`), selectedHostID, selectedHostID)
 }
 
 func remoteTurnDeveloperInstructions(hostID string) string {
 	return fmt.Sprintf(
-		"Current selected host is %s. This is a remote host. Do not use local built-in commandExecution or fileChange tools. Every remote tool call must include host=%s exactly. Prefer list_remote_files, read_remote_file, and search_remote_files for filesystem inspection. Use execute_readonly_query for other read-only checks, execute_system_mutation(mode=command) for state-changing commands, and execute_system_mutation(mode=file_change) for remote file edits on the selected host only.",
+		"Current selected host is %s. This is a remote host. Do not use local built-in commandExecution or fileChange tools. Every remote tool call must include host=%s exactly. Remote host commands run without a shell wrapper, so every execute_* command must be directly executable: no pipes, no &&, no ;, no redirection, no shell substitution, and no globbing. Split complex work into multiple tool calls and use absolute paths instead of ~ or relative paths. Prefer list_remote_files, read_remote_file, and search_remote_files for filesystem inspection when you know the absolute path. Use execute_readonly_query for other read-only checks, execute_system_mutation(mode=command) for state-changing commands, and execute_system_mutation(mode=file_change) for remote file edits on the selected host only.",
 		hostID, hostID,
 	)
 }
@@ -2187,6 +2189,10 @@ func (a *App) requestRemoteCommandApproval(sessionID, hostID, rawID string, para
 	cardID := dynamicToolCardID(params.CallID)
 	now := model.NowString()
 	host := a.findHost(hostID)
+	args.Cwd = strings.TrimSpace(args.Cwd)
+	if args.Cwd == "" {
+		args.Cwd = defaultRemoteExecCwd(host)
+	}
 	decision, err := a.evaluateCommandPolicyForHost(hostID, args.Command)
 	if err != nil {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))

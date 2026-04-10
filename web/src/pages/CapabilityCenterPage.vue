@@ -73,78 +73,69 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <nav class="tab-bar">
-      <button :class="{ active: activeTab === 'skills' }" @click="activeTab = 'skills'">Skills</button>
-      <button :class="{ active: activeTab === 'mcps' }" @click="activeTab = 'mcps'">MCP Servers</button>
-      <button :class="{ active: activeTab === 'bindings' }" @click="activeTab = 'bindings'">Bindings</button>
-    </nav>
+    <n-tabs v-model:value="activeTab" type="line">
+      <n-tab-pane name="skills" tab="Skills">
+        <n-card>
+          <template #header>Skills Catalog</template>
+          <n-data-table
+            v-if="skills.length"
+            :columns="[
+              { title: 'ID', key: 'id' },
+              { title: '名称', key: 'name' },
+              { title: '来源', key: 'source', render: (row) => row.source || '-' },
+              { title: '状态', key: 'status', render: (row) => row.status || 'active' },
+              { title: '启用', key: 'enabled', render: (row) => (row.enabled || row.defaultEnabled) ? '是' : '否' },
+            ]"
+            :data="skills"
+            :row-key="(row) => row.id"
+            :bordered="false"
+            size="small"
+          />
+          <n-empty v-else description="暂无 Skills 数据。" />
+        </n-card>
+      </n-tab-pane>
 
-    <div v-if="loading" class="loading-hint">加载中…</div>
+      <n-tab-pane name="mcps" tab="MCP Servers">
+        <n-card>
+          <template #header>MCP Servers Catalog</template>
+          <n-data-table
+            v-if="mcps.length"
+            :columns="[
+              { title: 'ID', key: 'id' },
+              { title: '名称', key: 'name' },
+              { title: '类型', key: 'type', render: (row) => row.type || '-' },
+              { title: '来源', key: 'source', render: (row) => row.source || '-' },
+              { title: '权限', key: 'permission', render: (row) => row.permission || '-' },
+            ]"
+            :data="mcps"
+            :row-key="(row) => row.id"
+            :bordered="false"
+            size="small"
+          />
+          <n-empty v-else description="暂无 MCP Servers 数据。" />
+        </n-card>
+      </n-tab-pane>
 
-    <!-- Skills Tab -->
-    <section v-if="activeTab === 'skills'" class="tab-content">
-      <div class="section-card">
-        <h2>Skills Catalog</h2>
-        <table class="data-table" v-if="skills.length">
-          <thead>
-            <tr><th>ID</th><th>名称</th><th>来源</th><th>状态</th><th>启用</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="s in skills" :key="s.id">
-              <td>{{ s.id }}</td>
-              <td>{{ s.name }}</td>
-              <td>{{ s.source || '-' }}</td>
-              <td>{{ s.status || 'active' }}</td>
-              <td>{{ s.enabled || s.defaultEnabled ? '是' : '否' }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-else class="empty-hint">暂无 Skills 数据。</p>
-      </div>
-    </section>
-
-    <!-- MCP Servers Tab -->
-    <section v-if="activeTab === 'mcps'" class="tab-content">
-      <div class="section-card">
-        <h2>MCP Servers Catalog</h2>
-        <table class="data-table" v-if="mcps.length">
-          <thead>
-            <tr><th>ID</th><th>名称</th><th>类型</th><th>来源</th><th>权限</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="m in mcps" :key="m.id">
-              <td>{{ m.id }}</td>
-              <td>{{ m.name }}</td>
-              <td>{{ m.type || '-' }}</td>
-              <td>{{ m.source || '-' }}</td>
-              <td>{{ m.permission || '-' }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-else class="empty-hint">暂无 MCP Servers 数据。</p>
-      </div>
-    </section>
-
-    <!-- Bindings Tab -->
-    <section v-if="activeTab === 'bindings'" class="tab-content">
-      <div class="section-card">
-        <h2>Capability Bindings</h2>
-        <table class="data-table" v-if="bindings.length">
-          <thead>
-            <tr><th>ID</th><th>Source</th><th>Target</th><th>状态</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="b in bindings" :key="b.id">
-              <td>{{ b.id }}</td>
-              <td>{{ b.sourceType }}:{{ b.sourceId }}</td>
-              <td>{{ b.targetType }}:{{ b.targetId }}</td>
-              <td>{{ b.status || 'active' }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-else class="empty-hint">暂无绑定数据。</p>
-      </div>
-    </section>
+      <n-tab-pane name="bindings" tab="Bindings">
+        <n-card>
+          <template #header>Capability Bindings</template>
+          <n-data-table
+            v-if="bindings.length"
+            :columns="[
+              { title: 'ID', key: 'id' },
+              { title: 'Source', key: 'source', render: (row) => `${row.sourceType}:${row.sourceId}` },
+              { title: 'Target', key: 'target', render: (row) => `${row.targetType}:${row.targetId}` },
+              { title: '状态', key: 'status', render: (row) => row.status || 'active' },
+            ]"
+            :data="bindings"
+            :row-key="(row) => row.id"
+            :bordered="false"
+            size="small"
+          />
+          <n-empty v-else description="暂无绑定数据。" />
+        </n-card>
+      </n-tab-pane>
+    </n-tabs>
   </section>
 </template>
 

@@ -2126,6 +2126,11 @@ export const useAppStore = defineStore("app", {
         window.clearTimeout(this._heartbeatTimer);
         this._heartbeatTimer = null;
       }
+      if (this._snapshotThrottleTimer) {
+        clearTimeout(this._snapshotThrottleTimer);
+        this._snapshotThrottleTimer = null;
+      }
+      this._pendingSnapshotData = null;
     },
     disconnectWs() {
       const socket = this._socket;
@@ -2307,7 +2312,29 @@ export const useAppStore = defineStore("app", {
           if (data?.type === "heartbeat") {
             return;
           }
-          this.applySnapshot(data);
+          // Task 10: Streaming snapshot throttle (48ms)
+          const turnPhase = String(data?.runtime?.turn?.phase || "").trim().toLowerCase();
+          const isNonStreaming = ["completed", "failed", "aborted", "waiting_approval", "idle"].includes(turnPhase);
+          if (isNonStreaming) {
+            // Non-streaming: immediate update
+            if (this._snapshotThrottleTimer) {
+              clearTimeout(this._snapshotThrottleTimer);
+              this._snapshotThrottleTimer = null;
+            }
+            this.applySnapshot(data);
+          } else {
+            // Streaming: throttle at 48ms
+            this._pendingSnapshotData = data;
+            if (!this._snapshotThrottleTimer) {
+              this._snapshotThrottleTimer = setTimeout(() => {
+                this._snapshotThrottleTimer = null;
+                if (this._pendingSnapshotData) {
+                  this.applySnapshot(this._pendingSnapshotData);
+                  this._pendingSnapshotData = null;
+                }
+              }, 48);
+            }
+          }
         } catch (e) {
           console.error("Failed to parse websocket message:", e);
         }

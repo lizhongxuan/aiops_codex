@@ -708,11 +708,10 @@ describe("ProtocolWorkspacePage", () => {
 
     const choiceStack = wrapper.get('[data-testid="protocol-choice-stack"]');
     expect(choiceStack.text()).toContain("推荐：重载并观察");
-    expect(choiceStack.text()).toContain("选择后会按该方案继续推进。");
 
     await choiceStack.get(".choice-note-toggle").trigger("click");
     await choiceStack.get(".choice-note-input").setValue("如果 reload，需要先避开业务高峰。");
-    await choiceStack.get(".submit-btn").trigger("click");
+    await choiceStack.get(".n-button--primary-type").trigger("click");
 
     expect(global.fetch).toHaveBeenCalledWith(
       "/api/v1/choices/choice-1/answer",
@@ -769,13 +768,13 @@ describe("ProtocolWorkspacePage", () => {
     const wrapper = mountPage();
     await flushPromises();
 
-    const submit = wrapper.get(".submit-btn");
+    const submit = wrapper.get(".n-button--primary-type");
     await submit.trigger("click");
     await nextTick();
     await submit.trigger("click");
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(submit.text()).toBe("提交中...");
+    expect(submit.attributes("disabled")).toBeDefined();
 
     resolveFetch({ ok: true, json: async () => ({}) });
     await flushPromises();
@@ -815,12 +814,12 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
 
     const choiceStack = wrapper.get('[data-testid="protocol-choice-stack"]');
-    await choiceStack.findAll(".choice-option")[1].trigger("click");
-    await choiceStack.get(".submit-btn").trigger("click");
+    await choiceStack.findAll(".n-radio")[1].trigger("click");
+    await choiceStack.get(".n-button--primary-type").trigger("click");
     await flushPromises();
 
     expect(wrapper.text()).toContain("choice backend failed");
-    expect(choiceStack.find(".choice-option.selected").text()).toContain("继续采集日志");
+    expect(choiceStack.find(".n-radio--checked").exists()).toBe(true);
   });
 
   it("allows answering a waiting ask_user_question from the composer", async () => {
@@ -1374,7 +1373,7 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
 
     await wrapper.get(".omnibar-input").setValue("继续确认异常主机的日志来源");
-    await wrapper.get(".send-btn").trigger("click");
+    await wrapper.get('[data-testid="omnibar-primary-action"]').trigger("click");
     await flushPromises();
 
     expect(global.fetch).toHaveBeenCalledWith(
@@ -1403,9 +1402,9 @@ describe("ProtocolWorkspacePage", () => {
     const wrapper = mountPage();
     await flushPromises();
 
-    expect(wrapper.find(".send-btn.stop-btn").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="omnibar-primary-action"]').classes()).not.toContain("n-button--error-type");
     expect(wrapper.text()).toContain("已停止");
-    expect(wrapper.find(".send-btn").exists()).toBe(true);
+    expect(wrapper.find('[data-testid="omnibar-primary-action"]').exists()).toBe(true);
   });
 
   it("does not leak the previous mission plan into the latest user turn", async () => {
@@ -1545,7 +1544,7 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
 
     await wrapper.get(".omnibar-input").setValue("重新看下CPU");
-    await wrapper.get(".send-btn").trigger("click");
+    await wrapper.get('[data-testid="omnibar-primary-action"]').trigger("click");
     await flushPromises();
 
     expect(wrapper.text()).toContain("已在当前会话启动新一轮 mission");
@@ -2188,7 +2187,7 @@ describe("ProtocolWorkspacePage", () => {
     const wrapper = mountPage();
     await flushPromises();
 
-    await wrapper.get(".send-btn.stop-btn").trigger("click");
+    await wrapper.get('[data-testid="omnibar-primary-action"]').trigger("click");
     await nextTick();
 
     expect(wrapper.text()).toContain("正在中断当前任务...");

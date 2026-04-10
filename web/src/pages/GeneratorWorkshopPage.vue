@@ -172,53 +172,46 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <nav class="tab-bar">
-      <button :class="{ active: activeTab === 'source' }" @click="activeTab = 'source'">来源选择</button>
-      <button :class="{ active: activeTab === 'preview' }" @click="activeTab = 'preview'" :disabled="!hasDraft">预览</button>
-      <button :class="{ active: activeTab === 'validate' }" @click="activeTab = 'validate'" :disabled="!hasDraft">校验</button>
-      <button :class="{ active: activeTab === 'publish' }" @click="activeTab = 'publish'" :disabled="!hasDraft">发布</button>
-    </nav>
+    <n-steps :current="activeTab === 'source' ? 1 : activeTab === 'preview' ? 2 : activeTab === 'validate' ? 3 : 4" style="margin-bottom:18px;">
+      <n-step title="来源选择" @click="activeTab = 'source'" />
+      <n-step title="预览" :disabled="!hasDraft" @click="hasDraft && (activeTab = 'preview')" />
+      <n-step title="校验" :disabled="!hasDraft" @click="hasDraft && (activeTab = 'validate')" />
+      <n-step title="发布" :disabled="!hasDraft" @click="hasDraft && (activeTab = 'publish')" />
+    </n-steps>
 
     <!-- Source Selection Tab -->
     <section v-if="activeTab === 'source'" class="tab-content">
-      <div class="section-card">
-        <h2>选择生成来源</h2>
-        <div class="source-selector">
-          <label><input type="radio" v-model="source" value="mcp_tool" /> MCP 工具</label>
-          <label><input type="radio" v-model="source" value="script_config" /> 脚本配置</label>
-          <label><input type="radio" v-model="source" value="coroot" /> Coroot 服务</label>
-        </div>
+      <n-card>
+        <template #header>选择生成来源</template>
+        <n-form label-placement="top">
+          <n-form-item label="来源类型">
+            <n-radio-group v-model:value="source">
+              <n-radio value="mcp_tool">MCP 工具</n-radio>
+              <n-radio value="script_config">脚本配置</n-radio>
+              <n-radio value="coroot">Coroot 服务</n-radio>
+            </n-radio-group>
+          </n-form-item>
 
-        <!-- MCP Tool inputs -->
-        <div v-if="source === 'mcp_tool'" class="form-grid">
-          <label>工具名称 <input v-model="toolName" placeholder="e.g. list-services" /></label>
-          <label>工具描述 <input v-model="toolDesc" placeholder="e.g. Lists all monitored services" /></label>
-          <label>Input Schema (JSON)
-            <textarea v-model="inputSchemaText" rows="4" placeholder='{"properties":{}}'></textarea>
-          </label>
-        </div>
+          <template v-if="source === 'mcp_tool'">
+            <n-form-item label="工具名称"><n-input v-model:value="toolName" placeholder="e.g. list-services" /></n-form-item>
+            <n-form-item label="工具描述"><n-input v-model:value="toolDesc" placeholder="e.g. Lists all monitored services" /></n-form-item>
+            <n-form-item label="Input Schema (JSON)"><n-input v-model:value="inputSchemaText" type="textarea" :rows="4" placeholder='{"properties":{}}' /></n-form-item>
+          </template>
 
-        <!-- Script Config inputs -->
-        <div v-if="source === 'script_config'" class="form-grid">
-          <label>ScriptConfigProfile (JSON)
-            <textarea v-model="scriptConfigText" rows="6" placeholder='{"scriptName":"restart-service","description":"..."}'></textarea>
-          </label>
-        </div>
+          <template v-if="source === 'script_config'">
+            <n-form-item label="ScriptConfigProfile (JSON)"><n-input v-model:value="scriptConfigText" type="textarea" :rows="6" placeholder='{"scriptName":"restart-service","description":"..."}' /></n-form-item>
+          </template>
 
-        <!-- Coroot inputs -->
-        <div v-if="source === 'coroot'" class="form-grid">
-          <label>服务类型 <input v-model="serviceType" placeholder="e.g. web-api" /></label>
-          <label>Query Schema (JSON)
-            <textarea v-model="querySchemaText" rows="4" placeholder='{"properties":{}}'></textarea>
-          </label>
-        </div>
+          <template v-if="source === 'coroot'">
+            <n-form-item label="服务类型"><n-input v-model:value="serviceType" placeholder="e.g. web-api" /></n-form-item>
+            <n-form-item label="Query Schema (JSON)"><n-input v-model:value="querySchemaText" type="textarea" :rows="4" placeholder='{"properties":{}}' /></n-form-item>
+          </template>
+        </n-form>
 
-        <div class="gen-actions">
-          <button class="btn-primary" :disabled="loading" @click="generate">
-            {{ loading ? '生成中…' : '生成草稿' }}
-          </button>
-        </div>
-      </div>
+        <n-button type="primary" :loading="loading" @click="generate">
+          {{ loading ? '生成中…' : '生成草稿' }}
+        </n-button>
+      </n-card>
     </section>
 
     <!-- Preview Tab -->

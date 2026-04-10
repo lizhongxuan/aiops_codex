@@ -414,25 +414,17 @@ onBeforeUnmount(() => {
             </label>
             <label class="field">
               <span>权限</span>
-              <select v-model="draft.permission" class="text-input">
-                <option value="readonly">readonly</option>
-                <option value="readwrite">readwrite</option>
-              </select>
+              <n-select v-model:value="draft.permission" :options="[{label:'readonly',value:'readonly'},{label:'readwrite',value:'readwrite'}]" />
             </label>
             <label class="field">
               <span>显式确认</span>
-              <select v-model="draft.requiresExplicitUserApproval" class="text-input">
-                <option :value="false">false</option>
-                <option :value="true">true</option>
-              </select>
+              <n-select v-model:value="draft.requiresExplicitUserApproval" :options="[{label:'false',value:false},{label:'true',value:true}]" />
             </label>
           </div>
 
           <div class="toggle-row">
-            <label class="toggle-field">
-              <input v-model="draft.defaultEnabled" type="checkbox" />
-              <span>默认启用</span>
-            </label>
+            <n-switch v-model:value="draft.defaultEnabled" />
+            <span style="margin-left:8px;">默认启用</span>
             <div class="toggle-hint">
               {{ permissionHint(draft.permission) }}
             </div>

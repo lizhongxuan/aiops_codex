@@ -16,6 +16,8 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
 )
 
+var agentUserHomeDir = os.UserHomeDir
+
 type agentStreamSender struct {
 	stream agentrpc.AgentService_ConnectClient
 	sendMu sync.Mutex
@@ -324,12 +326,27 @@ func resolveAgentShell(requested string) string {
 }
 
 func resolveAgentTerminalCwd(requested string) (string, error) {
-	home, err := os.UserHomeDir()
+	cwd := strings.TrimSpace(requested)
+	if cwd != "" && cwd != "~" && filepath.IsAbs(cwd) {
+		resolved, err := filepath.Abs(filepath.Clean(cwd))
+		if err != nil {
+			return "", err
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return "", err
+		}
+		if !info.IsDir() {
+			return "", errors.New("cwd must be a directory")
+		}
+		return resolved, nil
+	}
+
+	home, err := agentUserHomeDir()
 	if err != nil || home == "" {
 		home = "/tmp"
 	}
 
-	cwd := strings.TrimSpace(requested)
 	if cwd == "" || cwd == "~" {
 		cwd = home
 	}

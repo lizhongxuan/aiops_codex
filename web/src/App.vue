@@ -1,13 +1,15 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAppStore } from "./store";
 import { resolveHostDisplay } from "./lib/hostDisplay";
+import { createDiscreteApi } from "naive-ui";
 import LoginModal from "./components/LoginModal.vue";
 import HostModal from "./components/HostModal.vue";
 import SessionHistoryDrawer from "./components/SessionHistoryDrawer.vue";
 import McpBundleHost from "./components/mcp/McpBundleHost.vue";
 import McpUiCardHost from "./components/mcp/McpUiCardHost.vue";
+import StatusBar from "./components/StatusBar.vue";
 import {
   MessageSquarePlusIcon,
   AppWindowIcon,
@@ -27,16 +29,16 @@ import {
 const store = useAppStore();
 const router = useRouter();
 const route = useRoute();
+const { message, dialog } = createDiscreteApi(["message", "dialog"]);
 
 const isLoginModalOpen = ref(false);
 const isHostModalOpen = ref(false);
-const isSettingsMenuOpen = ref(false);
 const isMcpDrawerOpen = ref(false);
 const isHistoryDrawerOpen = ref(false);
 const isSidebarCollapsed = ref(false);
 const historyDrawerMode = ref("single_host");
 const settingsMenuRef = ref(null);
-let noticeTimer = null;
+const isSettingsMenuOpen = ref(false);
 const isRouteHostSyncing = ref(false);
 const OPEN_SESSION_HISTORY_EVENT = "codex:open-session-history";
 const OPEN_MCP_DRAWER_EVENT = "codex:open-mcp-drawer";
@@ -81,18 +83,18 @@ function pinActiveMcpSurface() {
   if (!mcpDrawerActiveSurface.value) return;
   const surface = store.pinMcpDrawerSurface(mcpDrawerActiveSurface.value);
   if (!surface) return;
-  store.noticeMessage = `${surface.title} 已固定到 MCP 抽屉。`;
+  message.success(`${surface.title} 已固定到 MCP 抽屉。`);
 }
 
 function pinMcpSurface(surface) {
   const pinnedSurface = store.pinMcpDrawerSurface(surface);
   if (!pinnedSurface) return;
-  store.noticeMessage = `${pinnedSurface.title} 已固定到 MCP 抽屉。`;
+  message.success(`${pinnedSurface.title} 已固定到 MCP 抽屉。`);
 }
 
 function handleDrawerSurfaceAction() {
   store.touchActiveMcpDrawerSurface?.("action");
-  store.noticeMessage = "该 MCP 操作已定位到当前对话上下文，请在对应 turn 中继续执行。";
+  message.success("该 MCP 操作已定位到当前对话上下文，请在对应 turn 中继续执行。");
 }
 
 function handleDrawerSurfaceDetail(payload) {
@@ -103,7 +105,7 @@ function handleDrawerSurfaceDetail(payload) {
 
 function handleDrawerSurfaceRefresh() {
   store.touchActiveMcpDrawerSurface?.("refresh");
-  store.noticeMessage = "已定位到当前 MCP 面板，可在对话页触发刷新并等待结果回写。";
+  message.success("已定位到当前 MCP 面板，可在对话页触发刷新并等待结果回写。");
 }
 
 function removePinnedMcpSurface(surfaceId = "") {
@@ -123,7 +125,7 @@ function openEnabledMcpEntry(entry, pin = false) {
   });
   if (!surface) return;
   isMcpDrawerOpen.value = true;
-  store.noticeMessage = pin ? `${surface.title} 已加入常驻 MCP 面板。` : `${surface.title} 已打开统一入口。`;
+  message.success(pin ? `${surface.title} 已加入常驻 MCP 面板。` : `${surface.title} 已打开统一入口。`);
 }
 
 function normalizeRouteValue(value) {
@@ -244,7 +246,6 @@ async function createSession(kind = "single_host") {
   const ok = await store.createSession(kind);
   if (!ok) return;
   store.errorMessage = "";
-  store.noticeMessage = "";
   isHistoryDrawerOpen.value = false;
   if (kind === "workspace") {
     router.push("/protocol");
@@ -345,24 +346,19 @@ const resetButtonTitle = computed(() => {
   return "清空当前会话的消息、审批和运行态";
 });
 
-function pushNotice(message) {
-  store.noticeMessage = message;
-  if (noticeTimer) {
-    window.clearTimeout(noticeTimer);
-  }
-  noticeTimer = window.setTimeout(() => {
-    store.noticeMessage = "";
-    noticeTimer = null;
-  }, 3000);
-}
-
 async function resetCurrentSession() {
   if (!canResetCurrentSession.value) return;
-  const confirmed = window.confirm("确认清空当前会话上下文吗？这会移除当前会话的消息、审批和运行态，其他历史会话不会受影响。");
-  if (!confirmed) return;
-  const ok = await store.resetThread();
-  if (!ok) return;
-  pushNotice("已清空当前会话上下文");
+  dialog.warning({
+    title: "确认清空",
+    content: "确认清空当前会话上下文吗？这会移除当前会话的消息、审批和运行态，其他历史会话不会受影响。",
+    positiveText: "确认清空",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      const ok = await store.resetThread();
+      if (!ok) return;
+      message.success("已清空当前会话上下文");
+    },
+  });
 }
 
 const currentSessionStatus = computed(() => {
@@ -488,6 +484,63 @@ const historyDrawerSessions = computed(() => {
 const showHeaderHistoryButton = computed(() => isChatRoute.value || isProtocolRoute.value);
 const showHeaderHostControls = computed(() => isChatRoute.value);
 
+/* --- n-menu integration --- */
+const menuActiveKey = computed(() => {
+  if (route.name === "chat") return "chat";
+  if (route.name === "protocol") return "protocol";
+  if (route.name === "coroot") return "coroot";
+  if (route.path.startsWith("/settings")) return "hosts";
+  return "";
+});
+
+function renderMenuIcon(icon) {
+  return () => h(icon, { size: 16 });
+}
+
+const menuOptions = computed(() => [
+  {
+    label: "单机会话",
+    key: "chat",
+    icon: renderMenuIcon(AppWindowIcon),
+    extra: currentSessionStatus.value,
+  },
+  {
+    label: "协作工作台",
+    key: "protocol",
+    icon: renderMenuIcon(PanelsTopLeftIcon),
+    extra: workspaceNavStatus.value,
+  },
+  {
+    label: "Coroot 监控",
+    key: "coroot",
+    icon: renderMenuIcon(ActivityIcon),
+    extra: "Dashboard",
+  },
+  {
+    label: "主机列表",
+    key: "hosts",
+    icon: renderMenuIcon(ServerIcon),
+    extra: "Hosts",
+  },
+]);
+
+function handleMenuSelect(key) {
+  switch (key) {
+    case "chat":
+      router.push("/");
+      break;
+    case "protocol":
+      openWorkspaceEntry();
+      break;
+    case "coroot":
+      router.push("/coroot");
+      break;
+    case "hosts":
+      router.push("/settings/hosts");
+      break;
+  }
+}
+
 onMounted(() => {
   store.hydrateMcpDrawerState?.();
   store.fetchState();
@@ -505,9 +558,6 @@ onBeforeUnmount(() => {
   window.removeEventListener(OPEN_SESSION_HISTORY_EVENT, handleOpenSessionHistoryEvent);
   window.removeEventListener(OPEN_MCP_DRAWER_EVENT, handleOpenMcpDrawerEvent);
   document.removeEventListener("click", handleDocumentClick);
-  if (noticeTimer) {
-    window.clearTimeout(noticeTimer);
-  }
 });
 
 watch(
@@ -542,71 +592,50 @@ watch(
 </script>
 
 <template>
+  <n-config-provider cls-prefix="ops">
+  <n-message-provider>
+  <n-dialog-provider>
+  <n-notification-provider>
   <div class="app-layout">
-    <!-- Left Sidebar: Navigation & Threads -->
-    <aside class="app-sidebar" :class="{ collapsed: isSidebarCollapsed }">
+    <!-- Left Sidebar: n-layout-sider + n-menu -->
+    <n-layout-sider
+      bordered
+      :collapsed="isSidebarCollapsed"
+      :collapsed-width="64"
+      :width="260"
+      collapse-mode="width"
+      show-trigger="bar"
+      @update:collapsed="(val) => isSidebarCollapsed = val"
+      class="app-sidebar"
+    >
       <div class="sidebar-top">
-        <div class="sidebar-toolbar">
-          <button class="nav-icon-btn sidebar-collapse-btn" :title="isSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'" @click="toggleSidebar">
-            <PanelLeftOpenIcon v-if="isSidebarCollapsed" size="18" />
-            <PanelLeftCloseIcon v-else size="18" />
-          </button>
-        </div>
         <div class="sidebar-actions">
-          <button class="nav-button new-thread" @click="startNewThread">
-            <MessageSquarePlusIcon size="18" />
-            <span class="nav-label">新建会话</span>
-            <span class="shortcut">⌘ N</span>
-          </button>
-          <button class="nav-button secondary" @click="startWorkspaceSession">
-            <PanelsTopLeftIcon size="18" />
+          <n-button block @click="startNewThread" :quaternary="false" class="new-thread-btn">
+            <template #icon><MessageSquarePlusIcon size="18" /></template>
+            <span v-if="!isSidebarCollapsed" class="nav-label">新建会话</span>
+            <span v-if="!isSidebarCollapsed" class="shortcut">⌘ N</span>
+          </n-button>
+          <n-button block quaternary @click="startWorkspaceSession" v-if="!isSidebarCollapsed">
+            <template #icon><PanelsTopLeftIcon size="18" /></template>
             <span class="nav-label">新建工作台</span>
-          </button>
+          </n-button>
         </div>
       </div>
 
-        <div class="sidebar-scroll">
-        <div class="nav-group">
-          <div class="nav-group-title">主导航</div>
-          <button class="nav-item" :class="{ active: $route.name === 'chat' }" @click="router.push('/')">
-            <AppWindowIcon size="16" />
-            <div class="nav-item-content">
-              <span class="nav-item-title">单机会话</span>
-              <span class="nav-item-time">{{ currentSessionStatus }}</span>
-            </div>
-          </button>
-
-          <button class="nav-item" :class="{ active: $route.name === 'protocol' }" @click="openWorkspaceEntry">
-            <PanelsTopLeftIcon size="16" />
-            <div class="nav-item-content">
-              <span class="nav-item-title">协作工作台</span>
-              <span class="nav-item-time">{{ workspaceNavStatus }}</span>
-            </div>
-          </button>
-
-          <button class="nav-item" :class="{ active: $route.name === 'coroot' }" @click="router.push('/coroot')">
-            <ActivityIcon size="16" />
-            <div class="nav-item-content">
-              <span class="nav-item-title">Coroot 监控</span>
-              <span class="nav-item-time">Dashboard</span>
-            </div>
-          </button>
-
-          <button class="nav-item" :class="{ active: $route.path.startsWith('/settings') }" @click="router.push('/settings/hosts')">
-            <ServerIcon size="16" />
-            <div class="nav-item-content">
-              <span class="nav-item-title">主机列表</span>
-              <span class="nav-item-time">Hosts</span>
-            </div>
-          </button>
-        </div>
-      </div>
+      <n-menu
+        :value="menuActiveKey"
+        :options="menuOptions"
+        :collapsed="isSidebarCollapsed"
+        :collapsed-width="64"
+        :collapsed-icon-size="20"
+        @update:value="handleMenuSelect"
+      />
 
       <div class="sidebar-bottom">
         <div ref="settingsMenuRef" class="settings-menu">
-          <button class="nav-icon-btn" title="Settings" @click.stop="isSettingsMenuOpen = !isSettingsMenuOpen">
-            <SettingsIcon size="20" />
-          </button>
+          <n-button quaternary circle @click.stop="isSettingsMenuOpen = !isSettingsMenuOpen" title="Settings">
+            <template #icon><SettingsIcon size="20" /></template>
+          </n-button>
           <div v-if="isSettingsMenuOpen" class="settings-menu-popover" @click.stop>
             <button class="settings-menu-item" @click="openGeneralSettings">
               <span class="settings-menu-title">设置总览</span>
@@ -630,10 +659,10 @@ watch(
             </button>
           </div>
         </div>
-        <div class="flex-spacer"></div>
+        <div class="flex-spacer" v-if="!isSidebarCollapsed"></div>
         <div class="ws-badge" :class="store.wsStatus" :title="'WS: ' + store.wsStatus"></div>
       </div>
-    </aside>
+    </n-layout-sider>
 
     <!-- Main Canvas -->
     <main class="app-main">
@@ -643,82 +672,118 @@ watch(
         </div>
         
         <div class="header-right">
-          <button
+          <n-button
             v-if="showHeaderHistoryButton"
-            class="header-pill subtle-pill"
+            quaternary
+            size="small"
             :title="headerHistoryLabel"
             @click="openHeaderHistoryDrawer"
+            data-testid="header-history-btn"
           >
-            <HistoryIcon size="14" />
-            <span class="pill-text">{{ headerHistoryLabel }}</span>
-          </button>
+            <template #icon><HistoryIcon size="14" /></template>
+            {{ headerHistoryLabel }}
+          </n-button>
 
-          <button class="header-pill subtle-pill" :disabled="!canResetCurrentSession" :title="resetButtonTitle" @click="resetCurrentSession">
-            <EraserIcon size="14" />
-            <span class="pill-text">清空上下文</span>
-          </button>
+          <n-button
+            quaternary
+            size="small"
+            :disabled="!canResetCurrentSession"
+            :title="resetButtonTitle"
+            @click="resetCurrentSession"
+          >
+            <template #icon><EraserIcon size="14" /></template>
+            清空上下文
+          </n-button>
 
-          <button
+          <n-button
             v-if="canReturnToWorkspace && isChatRoute"
-            class="header-pill subtle-pill"
+            quaternary
+            size="small"
             :title="`返回到 ${workspaceSession?.title || '工作台'}`"
             @click="openWorkspaceEntry"
           >
-            <ArrowLeftIcon size="14" />
-            <span class="pill-text">返回工作台</span>
-          </button>
+            <template #icon><ArrowLeftIcon size="14" /></template>
+            返回工作台
+          </n-button>
 
-          <button v-if="showHeaderHostControls" class="header-pill" @click="isHostModalOpen = true">
-            <ServerIcon size="14" />
-            <span class="pill-text">{{ selectedHostLabel }}</span>
-            <span class="pill-dot" :class="store.selectedHost.status"></span>
-          </button>
-
-          <button
+          <n-button
             v-if="showHeaderHostControls"
-            class="header-pill"
+            tertiary
+            size="small"
+            @click="isHostModalOpen = true"
+          >
+            <template #icon><ServerIcon size="14" /></template>
+            {{ selectedHostLabel }}
+            <n-badge dot :type="store.selectedHost.status === 'online' ? 'success' : 'default'" :offset="[-2, 0]" />
+          </n-button>
+
+          <n-button
+            v-if="showHeaderHostControls"
+            tertiary
+            size="small"
             :disabled="!store.canOpenTerminal"
             @click="openTerminal"
             title="打开终端"
           >
-            <TerminalIcon size="14" />
-            <span class="pill-text">终端</span>
-          </button>
+            <template #icon><TerminalIcon size="14" /></template>
+            终端
+          </n-button>
           
-          <button class="header-pill auth-pill" @click="isLoginModalOpen = true" :class="{'connected': store.snapshot.auth.connected}">
-            <UserCircleIcon size="16" />
-            <span class="pill-text">{{ authBadgeLabel }}</span>
-          </button>
+          <n-button
+            tertiary
+            size="small"
+            @click="isLoginModalOpen = true"
+            :type="store.snapshot.auth.connected ? 'success' : 'default'"
+          >
+            <template #icon><UserCircleIcon size="16" /></template>
+            {{ authBadgeLabel }}
+          </n-button>
           
-          <button class="header-icon-btn" @click="toggleMcpDrawer" :class="{ 'is-active': isMcpDrawerOpen }" title="Skills & MCP">
-            <PanelsTopLeftIcon size="20" />
-          </button>
+          <n-button quaternary circle @click="toggleMcpDrawer" :class="{ 'is-active': isMcpDrawerOpen }" title="Skills & MCP">
+            <template #icon><PanelsTopLeftIcon size="20" /></template>
+          </n-button>
         </div>
       </header>
 
       <router-view />
+
+      <!-- Status Bar (Task 4) -->
+      <StatusBar
+        :ws-status="store.wsStatus"
+        :selected-host="store.selectedHost"
+        :selected-host-label="selectedHostLabel"
+        :turn-phase="store.runtime.turn.phase"
+        :turn-active="store.runtime.turn.active"
+        :describe-turn-phase="describeTurnPhase"
+        @open-settings="openGeneralSettings"
+      />
     </main>
 
-    <!-- Right Drawer: MCP & Core Panel -->
-    <aside class="app-mcp-drawer" :class="{ 'is-open': isMcpDrawerOpen }">
-      <div class="mcp-header">
-        <div class="mcp-header-copy">
-          <h3>MCP Surfaces</h3>
-          <p>在这里复用当前对话里打开或固定的监控面板与控制卡片。</p>
-        </div>
-        <button v-if="mcpDrawerActiveSurface" class="mcp-header-pin" type="button" @click="pinActiveMcpSurface">
-          固定当前面板
-        </button>
-      </div>
-      <div class="mcp-body">
-        <section v-if="mcpDrawerActiveSurface" class="mcp-drawer-section active" data-testid="app-mcp-active-surface">
-          <div class="mcp-section-head">
-            <div>
-              <span class="mcp-section-kicker">ACTIVE SURFACE</span>
-              <h4>{{ mcpDrawerActiveSurface.title }}</h4>
-              <p>{{ mcpDrawerActiveSurface.source || "来自当前对话" }}</p>
-            </div>
+    <!-- Right Drawer: MCP & Core Panel (n-drawer) -->
+    <n-drawer
+      :show="isMcpDrawerOpen"
+      placement="right"
+      :width="320"
+      :mask-closable="true"
+      @update:show="(val) => { isMcpDrawerOpen = val; }"
+    >
+      <n-drawer-content title="MCP Surfaces" :native-scrollbar="false" closable>
+        <template #header>
+          <div class="mcp-drawer-header">
+            <span>MCP Surfaces</span>
+            <n-button v-if="mcpDrawerActiveSurface" text size="small" @click="pinActiveMcpSurface">
+              固定当前面板
+            </n-button>
           </div>
+        </template>
+
+        <!-- Active Surface -->
+        <section v-if="mcpDrawerActiveSurface" data-testid="app-mcp-active-surface" style="margin-bottom: 8px;">
+          <n-divider title-placement="left" style="margin: 8px 0;">
+            <span class="mcp-section-kicker">ACTIVE SURFACE</span>
+          </n-divider>
+          <h4 style="margin: 0 0 2px;">{{ mcpDrawerActiveSurface.title }}</h4>
+          <p class="mcp-sub-text">{{ mcpDrawerActiveSurface.source || "来自当前对话" }}</p>
 
           <McpBundleHost
             v-if="mcpDrawerActiveSurface.kind === 'bundle'"
@@ -736,94 +801,84 @@ watch(
           />
         </section>
 
-        <section class="mcp-drawer-section" data-testid="app-mcp-pinned-list">
-          <div class="mcp-section-head">
-            <div>
-              <span class="mcp-section-kicker">PINNED</span>
-              <h4>常驻面板</h4>
-              <p>固定后可以在不同 chat 间复用查看。</p>
-            </div>
-          </div>
-
-          <div v-if="mcpDrawerPinnedSurfaces.length" class="mcp-pinned-list">
-            <article
+        <!-- Pinned -->
+        <n-divider title-placement="left" style="margin: 12px 0 8px;">
+          <span class="mcp-section-kicker">PINNED</span>
+        </n-divider>
+        <section data-testid="app-mcp-pinned-list">
+          <n-list v-if="mcpDrawerPinnedSurfaces.length" hoverable clickable bordered>
+            <n-list-item
               v-for="surface in mcpDrawerPinnedSurfaces"
               :key="surface.id"
-              class="mcp-pinned-item"
-              :class="{ active: surface.id === mcpDrawerActiveSurface?.id }"
+              :class="{ 'mcp-item-active': surface.id === mcpDrawerActiveSurface?.id }"
+              @click="selectMcpDrawerSurface(surface)"
             >
-              <button type="button" class="mcp-pinned-select" @click="selectMcpDrawerSurface(surface)">
-                <strong>{{ surface.title }}</strong>
-                <span>{{ surface.source || "来自当前对话" }}</span>
-              </button>
-              <button type="button" class="mcp-pinned-remove" @click="removePinnedMcpSurface(surface.id)">
-                移除
-              </button>
-            </article>
-          </div>
-          <p v-else class="mcp-empty">当前还没有固定的 MCP 面板。你可以从聊天里的监控 bundle 或控制卡片把它固定到这里。</p>
+              <div class="mcp-item-row">
+                <div class="mcp-item-info">
+                  <strong>{{ surface.title }}</strong>
+                  <span class="mcp-sub-text">{{ surface.source || "来自当前对话" }}</span>
+                </div>
+                <n-button text type="error" size="small" @click.stop="removePinnedMcpSurface(surface.id)">
+                  移除
+                </n-button>
+              </div>
+            </n-list-item>
+          </n-list>
+          <n-empty v-else description="当前还没有固定的 MCP 面板。" style="margin: 12px 0;" />
         </section>
 
-        <section class="mcp-drawer-section" data-testid="app-mcp-recent-list">
-          <div class="mcp-section-head">
-            <div>
-              <span class="mcp-section-kicker">RECENT</span>
-              <h4>最近操作</h4>
-              <p>保留最近打开、刷新或执行过的 MCP 面板，方便跨 chat 继续处理。</p>
-            </div>
-          </div>
-
-          <div v-if="mcpDrawerRecentSurfaces.length" class="mcp-pinned-list recent">
-            <article
+        <!-- Recent -->
+        <n-divider title-placement="left" style="margin: 12px 0 8px;">
+          <span class="mcp-section-kicker">RECENT</span>
+        </n-divider>
+        <section data-testid="app-mcp-recent-list">
+          <n-list v-if="mcpDrawerRecentSurfaces.length" hoverable clickable bordered>
+            <n-list-item
               v-for="surface in mcpDrawerRecentSurfaces"
               :key="`recent-${surface.id}`"
-              class="mcp-pinned-item recent"
-              :class="{ 'is-current': surface.id === mcpDrawerActiveSurface?.id }"
+              :class="{ 'mcp-item-active': surface.id === mcpDrawerActiveSurface?.id }"
+              @click="selectMcpDrawerSurface(surface)"
             >
-              <button type="button" class="mcp-pinned-select" @click="selectMcpDrawerSurface(surface)">
-                <strong>{{ surface.title }}</strong>
-                <span>{{ surface.subtitle || surface.source || "最近打开" }}</span>
-              </button>
-              <button
-                type="button"
-                class="mcp-pinned-remove secondary"
-                @click="pinMcpSurface(surface)"
-              >
-                固定
-              </button>
-            </article>
-          </div>
-          <p v-else class="mcp-empty">最近还没有 MCP 操作记录。打开监控 bundle、刷新卡片或执行操作后会自动出现在这里。</p>
+              <div class="mcp-item-row">
+                <div class="mcp-item-info">
+                  <strong>{{ surface.title }}</strong>
+                  <span class="mcp-sub-text">{{ surface.subtitle || surface.source || "最近打开" }}</span>
+                </div>
+                <n-button text type="info" size="small" @click.stop="pinMcpSurface(surface)">
+                  固定
+                </n-button>
+              </div>
+            </n-list-item>
+          </n-list>
+          <n-empty v-else description="最近还没有 MCP 操作记录。" style="margin: 12px 0;" />
         </section>
 
-        <section class="mcp-drawer-section" data-testid="app-mcp-enabled-list">
-          <div class="mcp-section-head">
-            <div>
-              <span class="mcp-section-kicker">ENABLED MCPS</span>
-              <h4>启用中的 MCP</h4>
-              <p>统一列出当前 Agent Profile 已启用的 MCP，作为常驻入口而不是分散在各页面里。</p>
-            </div>
-          </div>
-
-          <div v-if="enabledMcpEntries.length" class="mcp-pinned-list enabled">
-            <article
+        <!-- Enabled MCPs -->
+        <n-divider title-placement="left" style="margin: 12px 0 8px;">
+          <span class="mcp-section-kicker">ENABLED MCPS</span>
+        </n-divider>
+        <section data-testid="app-mcp-enabled-list">
+          <n-list v-if="enabledMcpEntries.length" hoverable clickable bordered>
+            <n-list-item
               v-for="entry in enabledMcpEntries"
               :key="`enabled-${entry.id}`"
-              class="mcp-pinned-item enabled"
+              @click="openEnabledMcpEntry(entry)"
             >
-              <button type="button" class="mcp-pinned-select" @click="openEnabledMcpEntry(entry)">
-                <strong>{{ entry.name }}</strong>
-                <span>{{ entry.permission === "readwrite" ? "读写" : "只读" }} · {{ entry.source || "local" }}</span>
-              </button>
-              <button type="button" class="mcp-pinned-remove secondary" @click="openEnabledMcpEntry(entry, true)">
-                固定入口
-              </button>
-            </article>
-          </div>
-          <p v-else class="mcp-empty">当前 Agent Profile 还没有启用中的 MCP。</p>
+              <div class="mcp-item-row">
+                <div class="mcp-item-info">
+                  <strong>{{ entry.name }}</strong>
+                  <span class="mcp-sub-text">{{ entry.permission === "readwrite" ? "读写" : "只读" }} · {{ entry.source || "local" }}</span>
+                </div>
+                <n-button text type="info" size="small" @click.stop="openEnabledMcpEntry(entry, true)">
+                  固定入口
+                </n-button>
+              </div>
+            </n-list-item>
+          </n-list>
+          <n-empty v-else description="当前 Agent Profile 还没有启用中的 MCP。" style="margin: 12px 0;" />
         </section>
-      </div>
-    </aside>
+      </n-drawer-content>
+    </n-drawer>
 
     <SessionHistoryDrawer
       v-if="isHistoryDrawerOpen"
@@ -844,19 +899,49 @@ watch(
     <LoginModal v-if="isLoginModalOpen" @close="isLoginModalOpen = false" />
     <HostModal v-if="isHostModalOpen" @close="isHostModalOpen = false" />
   </div>
+  </n-notification-provider>
+  </n-dialog-provider>
+  </n-message-provider>
+  </n-config-provider>
 </template>
 
 <style scoped>
-.pill-dot-inline {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  margin-right: 4px;
-  vertical-align: middle;
+.app-sidebar {
+  display: flex;
+  flex-direction: column;
 }
-.pill-dot-inline.online { background: #22c55e; }
-.pill-dot-inline.offline { background: #94a3b8; }
+
+.sidebar-top {
+  padding: 16px;
+}
+
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.new-thread-btn {
+  justify-content: flex-start;
+}
+
+.shortcut {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-subtle, #64748b);
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.sidebar-bottom {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+}
 
 .settings-menu {
   position: relative;
@@ -911,78 +996,26 @@ watch(
   color: #94a3b8;
 }
 
-.app-mcp-drawer {
-  width: 0;
-  overflow: hidden;
-  border-left: 1px solid transparent;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.98));
-  transition: width 0.22s ease, border-color 0.22s ease;
+.flex-spacer {
+  flex: 1;
 }
 
-.app-mcp-drawer.is-open {
-  width: min(420px, 36vw);
-  border-left-color: rgba(226, 232, 240, 0.92);
+.ws-badge {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #cbd5e1;
 }
+.ws-badge.connected { background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.4); }
+.ws-badge.connecting { background: #eab308; }
+.ws-badge.error { background: #ef4444; }
 
-.mcp-header {
+.mcp-drawer-header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 18px 18px 14px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-}
-
-.mcp-header-copy h3,
-.mcp-section-head h4 {
-  margin: 0;
-  color: #0f172a;
-}
-
-.mcp-header-copy p,
-.mcp-section-head p,
-.mcp-empty,
-.mcp-pinned-select span {
-  margin: 4px 0 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #64748b;
-}
-
-.mcp-header-pin,
-.mcp-pinned-remove {
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  border-radius: 999px;
-  background: #fff;
-  color: #0f172a;
-  font-size: 12px;
-  padding: 6px 10px;
-  cursor: pointer;
-}
-
-.mcp-pinned-remove.secondary {
-  color: #0369a1;
-  border-color: rgba(14, 165, 233, 0.24);
-  background: rgba(240, 249, 255, 0.98);
-}
-
-.mcp-body {
-  display: grid;
-  gap: 16px;
-  padding: 16px 18px 20px;
-  overflow-y: auto;
-  max-height: calc(100vh - 78px);
-}
-
-.mcp-drawer-section {
-  display: grid;
-  gap: 12px;
-}
-
-.mcp-section-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
+  width: 100%;
+  gap: 8px;
 }
 
 .mcp-section-kicker {
@@ -993,50 +1026,39 @@ watch(
   color: #0ea5e9;
 }
 
-.mcp-pinned-list {
-  display: grid;
-  gap: 10px;
+.mcp-sub-text {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
 }
 
-.mcp-pinned-item {
+.mcp-item-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 16px;
-  background: #fff;
+  width: 100%;
 }
 
-.mcp-pinned-item.active {
-  border-color: rgba(14, 165, 233, 0.36);
-  box-shadow: 0 10px 30px rgba(14, 165, 233, 0.08);
-}
-
-.mcp-pinned-item.recent,
-.mcp-pinned-item.enabled {
-  align-items: stretch;
-}
-
-.mcp-pinned-item.is-current {
-  border-color: rgba(14, 165, 233, 0.24);
-  box-shadow: 0 8px 24px rgba(14, 165, 233, 0.06);
-}
-
-.mcp-pinned-select {
-  display: grid;
+.mcp-item-info {
+  display: flex;
+  flex-direction: column;
   gap: 2px;
-  border: none;
-  background: transparent;
-  padding: 0;
-  text-align: left;
-  cursor: pointer;
+  min-width: 0;
 }
 
-.mcp-pinned-select strong {
-  color: #0f172a;
+.mcp-item-info strong {
   font-size: 13px;
-  font-weight: 600;
+  color: #0f172a;
+}
+
+.mcp-item-active {
+  background: rgba(14, 165, 233, 0.06) !important;
+}
+
+.is-active {
+  background: #e2e8f0;
+  border-radius: 8px;
 }
 </style>

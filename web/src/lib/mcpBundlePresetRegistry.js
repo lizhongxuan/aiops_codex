@@ -137,7 +137,7 @@ const COROOT_MONITOR_SECTION_BLUEPRINTS = Object.freeze({
     makeBlueprint("readonly_chart", "告警列表", "Coroot 服务当前告警状态表"),
   ],
   topology: () => [
-    makeBlueprint("readonly_summary", "拓扑概览", "Coroot 服务依赖拓扑摘要"),
+    makeBlueprint("topology_card", "拓扑概览", "Coroot 服务依赖拓扑摘要"),
   ],
 });
 
@@ -156,6 +156,13 @@ const COROOT_RCA_SECTION_BLUEPRINTS = Object.freeze({
       compactText(source.rootCause || source.root_cause || "Coroot RCA 根因定位"),
     ),
   ],
+  evidence: (source = {}) => {
+    const items = Array.isArray(source.evidence) ? source.evidence : [];
+    if (items.length) return items;
+    return [
+      makeBlueprint("readonly_summary", "证据链", compactText(source.evidenceHint || "Coroot RCA 关联证据")),
+    ];
+  },
   suggestions: (source = {}) => {
     const items = Array.isArray(source.suggestions) ? source.suggestions : [];
     if (items.length) return items;
@@ -183,10 +190,11 @@ const COROOT_RCA_PRESET = Object.freeze({
   key: MCP_BUNDLE_PRESET_KEYS.COROOT_INCIDENT_RCA,
   label: "coroot incident rca",
   bundleKind: "remediation_bundle",
-  sectionKinds: ["incident_timeline", "root_cause", "suggestions"],
+  sectionKinds: ["incident_timeline", "root_cause", "evidence", "suggestions"],
   sectionTitles: {
     incident_timeline: "事件时间线",
     root_cause: "根因分析",
+    evidence: "证据链",
     suggestions: "修复建议",
   },
   cardBlueprints: COROOT_RCA_SECTION_BLUEPRINTS,

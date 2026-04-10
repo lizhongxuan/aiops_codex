@@ -97,6 +97,8 @@ type App struct {
 	scriptConfigStore      *store.ScriptConfigStore
 	labEnvironmentStore    *store.LabEnvironmentStore
 	corootClient           *coroot.Client
+	dataSourceRouter       *coroot.DataSourceRouter
+	rcaEngine              coroot.RCAEngine
 	httpServer             *http.Server
 	grpcServer             *grpc.Server
 	commandRunner          commandRunner
@@ -701,6 +703,19 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	if a.cfg.CorootConfigured() {
 		a.corootClient = coroot.NewClient(a.cfg.CorootBaseURL, a.cfg.CorootToken, a.cfg.CorootTimeout)
+		a.dataSourceRouter = coroot.NewDataSourceRouter(
+			coroot.NewClientProvider(a.corootClient),
+			nil, // fallback provider — will be wired in a later task
+			coroot.ParsePriorityStrategy(a.cfg.CorootPriority),
+		)
+		log.Printf("coroot data source router initialized (strategy=%s)", a.cfg.CorootPriority)
+	}
+	if a.cfg.CorootRCAEnabled && a.cfg.CorootConfigured() {
+		a.rcaEngine = coroot.NewCorootRCAEngine(a.corootClient)
+		log.Printf("coroot RCA engine initialized (live)")
+	} else {
+		a.rcaEngine = coroot.NewStubRCAEngine()
+		log.Printf("coroot RCA engine initialized (stub)")
 	}
 	a.store.UpsertHost(model.Host{
 		ID:              model.ServerLocalHostID,
@@ -776,6 +791,8 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/lab-environments/", a.withSession(a.handleLabEnvironmentByID))
 	httpMux.HandleFunc("/api/v1/generator/", a.withSession(a.handleGenerator))
 	httpMux.HandleFunc("/api/v1/coroot/config", a.withSession(a.handleCorootConfig))
+	httpMux.HandleFunc("/api/v1/coroot/rca/", a.withSession(a.handleCorootRCA))
+	httpMux.HandleFunc("/api/v1/coroot/hosts/", a.withSession(a.handleCorootHostOverview))
 	httpMux.HandleFunc("/api/v1/coroot/", a.withSession(a.handleCorootProxy))
 	httpMux.HandleFunc("/api/v1/choices/", a.withSession(a.handleChoiceAnswer))
 	httpMux.HandleFunc("/api/v1/terminal/sessions", a.withSession(a.handleTerminalCreate))

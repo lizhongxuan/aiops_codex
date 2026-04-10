@@ -1,6 +1,5 @@
 <script setup>
 import { computed, ref } from "vue";
-import Modal from "./Modal.vue";
 
 const props = defineProps({
   host: {
@@ -58,139 +57,68 @@ function submit() {
 </script>
 
 <template>
-  <Modal :title="isEditing ? '编辑主机' : '新增主机'" @close="emit('close')">
-    <form class="host-form" @submit.prevent="submit">
-      <label class="host-form-field">
-        <span>Host ID</span>
-        <input v-model="form.id" :disabled="isEditing" placeholder="web-01" required />
-      </label>
+  <n-modal
+    :show="true"
+    preset="card"
+    :title="isEditing ? '编辑主机' : '新增主机'"
+    :bordered="false"
+    style="width: 480px; max-width: 90vw;"
+    :mask-closable="true"
+    @update:show="(val) => { if (!val) emit('close'); }"
+  >
+    <n-form label-placement="top" @submit.prevent="submit">
+      <n-form-item label="Host ID">
+        <n-input v-model:value="form.id" :disabled="isEditing" placeholder="web-01" />
+      </n-form-item>
 
-      <label class="host-form-field">
-        <span>显示名称</span>
-        <input v-model="form.name" placeholder="web-01 / 支付-应用节点" />
-      </label>
+      <n-form-item label="显示名称">
+        <n-input v-model:value="form.name" placeholder="web-01 / 支付-应用节点" />
+      </n-form-item>
 
-      <label class="host-form-field">
-        <span>目标机器</span>
-        <input v-model="form.address" placeholder="10.0.0.21 或 web-01.internal" required />
-      </label>
+      <n-form-item label="目标机器">
+        <n-input v-model:value="form.address" placeholder="10.0.0.21 或 web-01.internal" />
+      </n-form-item>
 
-      <div class="host-form-grid">
-        <label class="host-form-field">
-          <span>SSH 用户</span>
-          <input v-model="form.sshUser" placeholder="ubuntu / root" />
-        </label>
+      <n-grid :cols="2" :x-gap="12">
+        <n-gi>
+          <n-form-item label="SSH 用户">
+            <n-input v-model:value="form.sshUser" placeholder="ubuntu / root" />
+          </n-form-item>
+        </n-gi>
+        <n-gi>
+          <n-form-item label="SSH 端口">
+            <n-input-number v-model:value="form.sshPort" :min="1" :max="65535" style="width: 100%" />
+          </n-form-item>
+        </n-gi>
+      </n-grid>
 
-        <label class="host-form-field">
-          <span>SSH 端口</span>
-          <input v-model="form.sshPort" type="number" min="1" max="65535" />
-        </label>
-      </div>
-
-      <label class="host-form-field">
-        <span>标签</span>
-        <textarea
-          v-model="form.labelsText"
-          rows="4"
+      <n-form-item label="标签">
+        <n-input
+          v-model:value="form.labelsText"
+          type="textarea"
+          :rows="4"
           placeholder="env=prod&#10;role=web&#10;app=nginx"
         />
-      </label>
+      </n-form-item>
 
-      <label class="host-form-checkbox" v-if="!isEditing">
-        <input v-model="form.installViaSsh" type="checkbox" />
-        <span>保存后通过 SSH 安装 host-agent</span>
-      </label>
+      <n-form-item v-if="!isEditing">
+        <n-checkbox v-model:checked="form.installViaSsh">
+          保存后通过 SSH 安装 host-agent
+        </n-checkbox>
+      </n-form-item>
 
-      <p class="host-form-note">
+      <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
         SSH 安装依赖当前机器已经可以访问目标主机，例如本机已有 SSH key、跳板机或 agent 转发。
-      </p>
+      </n-alert>
+    </n-form>
 
-      <div class="host-form-actions">
-        <button type="button" class="ops-button ghost" @click="emit('close')">取消</button>
-        <button type="submit" class="ops-button primary">
+    <template #action>
+      <n-space justify="end">
+        <n-button @click="emit('close')">取消</n-button>
+        <n-button type="primary" @click="submit">
           {{ isEditing ? "保存主机" : "创建主机" }}
-        </button>
-      </div>
-    </form>
-  </Modal>
+        </n-button>
+      </n-space>
+    </template>
+  </n-modal>
 </template>
-
-<style scoped>
-.host-form {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.host-form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.host-form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.host-form-field span {
-  font-size: 13px;
-  font-weight: 600;
-  color: #334155;
-}
-
-.host-form-field input,
-.host-form-field textarea {
-  width: 100%;
-  border: 1px solid #dbe3ee;
-  border-radius: 12px;
-  padding: 10px 12px;
-  font-size: 14px;
-  color: #0f172a;
-  background: #fff;
-}
-
-.host-form-field textarea {
-  resize: vertical;
-  min-height: 96px;
-}
-
-.host-form-field input:focus,
-.host-form-field textarea:focus {
-  outline: none;
-  border-color: #93c5fd;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
-}
-
-.host-form-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 14px;
-  color: #1e293b;
-}
-
-.host-form-note {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #64748b;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 10px 12px;
-}
-
-.host-form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-@media (max-width: 720px) {
-  .host-form-grid {
-    grid-template-columns: 1fr;
-  }
-}
-</style>

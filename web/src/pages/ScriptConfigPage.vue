@@ -234,30 +234,22 @@ onBeforeUnmount(() => {
         <!-- Editor view -->
         <template v-if="editDraft">
           <h2>{{ editDraft.id ? "编辑配置" : "新建配置" }}</h2>
-          <div class="form-grid">
-            <label>脚本名称 <input v-model="editDraft.scriptName" /></label>
-            <label>描述 <input v-model="editDraft.description" /></label>
-            <label>环境引用 <input v-model="editDraft.environmentRef" /></label>
-            <label>Inventory Preset <input v-model="editDraft.inventoryPreset" /></label>
-            <label>Runner Profile <input v-model="editDraft.runnerProfile" /></label>
-            <label>审批策略
-              <select v-model="editDraft.approvalPolicy">
-                <option value="none">none</option>
-                <option value="required">required</option>
-                <option value="auto">auto</option>
-              </select>
-            </label>
-            <label>状态
-              <select v-model="editDraft.status">
-                <option value="active">active</option>
-                <option value="draft">draft</option>
-                <option value="disabled">disabled</option>
-              </select>
-            </label>
-          </div>
+          <n-form label-placement="top">
+            <n-form-item label="脚本名称"><n-input v-model:value="editDraft.scriptName" /></n-form-item>
+            <n-form-item label="描述"><n-input v-model:value="editDraft.description" /></n-form-item>
+            <n-form-item label="环境引用"><n-input v-model:value="editDraft.environmentRef" /></n-form-item>
+            <n-form-item label="Inventory Preset"><n-input v-model:value="editDraft.inventoryPreset" /></n-form-item>
+            <n-form-item label="Runner Profile"><n-input v-model:value="editDraft.runnerProfile" /></n-form-item>
+            <n-form-item label="审批策略">
+              <n-select v-model:value="editDraft.approvalPolicy" :options="[{label:'none',value:'none'},{label:'required',value:'required'},{label:'auto',value:'auto'}]" />
+            </n-form-item>
+            <n-form-item label="状态">
+              <n-select v-model:value="editDraft.status" :options="[{label:'active',value:'active'},{label:'draft',value:'draft'},{label:'disabled',value:'disabled'}]" />
+            </n-form-item>
+          </n-form>
           <div class="editor-actions">
-            <button class="btn-primary" @click="saveEdit">保存</button>
-            <button class="btn-sm" @click="editDraft = null">取消</button>
+            <n-button type="primary" @click="saveEdit">保存</n-button>
+            <n-button @click="editDraft = null">取消</n-button>
           </div>
         </template>
 

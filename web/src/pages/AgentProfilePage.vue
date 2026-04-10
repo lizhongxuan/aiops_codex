@@ -1,8 +1,9 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { onBeforeRouteLeave, useRouter } from "vue-router";
 import { ArrowLeftIcon, RefreshCcwIcon, SaveIcon } from "lucide-vue-next";
 import { useAppStore } from "../store";
+import { NSelect, NSwitch } from "naive-ui";
 
 const store = useAppStore();
 const router = useRouter();
@@ -793,44 +794,47 @@ onBeforeUnmount(() => {
               <h2>Profile 概览</h2>
               <span>{{ draft.type }}</span>
             </div>
-            <div class="form-grid two-col">
-              <label class="field">
-                <span>Profile Name</span>
-                <input v-model="draft.name" type="text" class="text-input" data-testid="profile-name-input" />
-              </label>
-              <label class="field">
-                <span>Profile ID</span>
-                <input :value="draft.id" type="text" class="text-input muted" readonly />
-              </label>
-              <label class="field field-span-2">
-                <span>Description</span>
-                <input v-model="draft.description" type="text" class="text-input" />
-              </label>
-              <label class="field">
-                <span>Model</span>
-                <input v-model="draft.runtime.model" type="text" class="text-input" />
-              </label>
-              <label class="field">
-                <span>Reasoning</span>
-                <select v-model="draft.runtime.reasoningEffort" class="text-input">
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>Approval Policy</span>
-                <input v-model="draft.runtime.approvalPolicy" type="text" class="text-input" />
-              </label>
-              <label class="field">
-                <span>Sandbox</span>
-                <select v-model="draft.runtime.sandboxMode" class="text-input">
-                  <option value="workspace-write">workspace-write</option>
-                  <option value="read-only">read-only</option>
-                  <option value="danger-full-access">danger-full-access</option>
-                </select>
-              </label>
-            </div>
+            <n-form label-placement="top">
+              <n-grid :cols="2" :x-gap="14" :y-gap="14">
+                <n-gi>
+                  <n-form-item label="Profile Name">
+                    <div data-testid="profile-name-input">
+                      <n-input v-model:value="draft.name" />
+                    </div>
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Profile ID">
+                    <n-input :value="draft.id" readonly />
+                  </n-form-item>
+                </n-gi>
+                <n-gi :span="2">
+                  <n-form-item label="Description">
+                    <n-input v-model:value="draft.description" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Model">
+                    <n-input v-model:value="draft.runtime.model" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Reasoning">
+                    <n-select v-model:value="draft.runtime.reasoningEffort" :options="[{label:'low',value:'low'},{label:'medium',value:'medium'},{label:'high',value:'high'}]" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Approval Policy">
+                    <n-input v-model:value="draft.runtime.approvalPolicy" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Sandbox">
+                    <n-select v-model:value="draft.runtime.sandboxMode" :options="[{label:'workspace-write',value:'workspace-write'},{label:'read-only',value:'read-only'},{label:'danger-full-access',value:'danger-full-access'}]" />
+                  </n-form-item>
+                </n-gi>
+              </n-grid>
+            </n-form>
           </div>
 
           <div v-if="riskWarnings.length" class="section-card alert-card warn-card" data-testid="risk-warning">
@@ -872,10 +876,11 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div v-if="promptExpanded" class="prompt-expanded">
-              <label class="field">
-                <span>Prompt Content</span>
-                <textarea v-model="draft.systemPrompt.content" class="prompt-editor" rows="12" data-testid="system-prompt-input"></textarea>
-              </label>
+              <n-form-item label="Prompt Content">
+                <div data-testid="system-prompt-input">
+                  <n-input v-model:value="draft.systemPrompt.content" type="textarea" :rows="12" :show-count="true" />
+                </div>
+              </n-form-item>
               <div class="prompt-guidance">
                 <div v-for="item in promptSections" :key="item.title" class="prompt-guidance-item">
                   <div class="prompt-guidance-title">{{ item.title }}</div>
@@ -890,10 +895,9 @@ onBeforeUnmount(() => {
                 <span>{{ promptLineCount }} lines</span>
               </div>
             </div>
-            <label class="field">
-              <span>Notes</span>
-              <input v-model="draft.systemPrompt.notes" type="text" class="text-input" />
-            </label>
+            <n-form-item label="Notes">
+              <n-input v-model:value="draft.systemPrompt.notes" />
+            </n-form-item>
           </div>
 
           <div class="section-card">
@@ -901,50 +905,46 @@ onBeforeUnmount(() => {
               <h2>Command Permissions</h2>
               <span>{{ draft.commandPermissions?.defaultMode }}</span>
             </div>
-            <div class="form-grid two-col">
-              <label class="toggle-field">
-                <input v-model="draft.commandPermissions.enabled" type="checkbox" />
-                <span>允许执行命令</span>
-              </label>
-              <label class="toggle-field">
-                <input v-model="draft.commandPermissions.allowShellWrapper" type="checkbox" />
-                <span>允许 shell wrapper</span>
-              </label>
-              <label class="toggle-field">
-                <input v-model="draft.commandPermissions.allowSudo" type="checkbox" />
-                <span>允许 sudo</span>
-              </label>
-              <label class="field">
-                <span>默认超时（秒）</span>
-                <input v-model.number="draft.commandPermissions.defaultTimeoutSeconds" type="number" min="1" max="3600" class="text-input" />
-              </label>
-              <label class="field field-span-2">
-                <span>允许写入路径</span>
-                <textarea v-model="writableRootsText" class="mini-editor" rows="3"></textarea>
-              </label>
-            </div>
+            <n-form label-placement="top">
+              <n-grid :cols="2" :x-gap="14" :y-gap="14">
+                <n-gi>
+                  <n-form-item label="允许执行命令">
+                    <n-switch v-model:value="draft.commandPermissions.enabled" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="允许 shell wrapper">
+                    <n-switch v-model:value="draft.commandPermissions.allowShellWrapper" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="允许 sudo">
+                    <n-switch v-model:value="draft.commandPermissions.allowSudo" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="默认超时（秒）">
+                    <n-input-number v-model:value="draft.commandPermissions.defaultTimeoutSeconds" :min="1" :max="3600" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi :span="2">
+                  <n-form-item label="允许写入路径">
+                    <n-input v-model:value="writableRootsText" type="textarea" :rows="3" />
+                  </n-form-item>
+                </n-gi>
+              </n-grid>
+            </n-form>
 
-            <table class="config-table">
-              <thead>
-                <tr>
-                  <th>类别</th>
-                  <th>模式</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="item in draft.commandPermissions.categoryPolicies" :key="item.id">
-                  <td>{{ item.label }}</td>
-                  <td>
-                    <select v-model="item.mode" class="table-select">
-                      <option value="allow">allow</option>
-                      <option value="approval_required">approval_required</option>
-                      <option value="readonly_only">readonly_only</option>
-                      <option value="deny">deny</option>
-                    </select>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <n-data-table
+              :columns="[
+                { title: '类别', key: 'label' },
+                { title: '模式', key: 'mode', render: (row) => h(NSelect, { value: row.mode, options: [{label:'allow',value:'allow'},{label:'approval_required',value:'approval_required'},{label:'readonly_only',value:'readonly_only'},{label:'deny',value:'deny'}], size: 'small', style: 'width:180px', onUpdateValue: (v) => { row.mode = v; } }) },
+              ]"
+              :data="draft.commandPermissions.categoryPolicies"
+              :row-key="(row) => row.id"
+              :bordered="false"
+              size="small"
+            />
           </div>
 
           <div class="section-card">
@@ -952,26 +952,16 @@ onBeforeUnmount(() => {
               <h2>Capability Permissions</h2>
               <span>{{ draft.capabilityPermissions?.length || 0 }} capabilities</span>
             </div>
-            <table class="config-table">
-              <thead>
-                <tr>
-                  <th>能力</th>
-                  <th>状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="item in draft.capabilityPermissions" :key="item.id">
-                  <td>{{ item.label }}</td>
-                  <td>
-                    <select v-model="item.state" class="table-select">
-                      <option value="enabled">enabled</option>
-                      <option value="approval_required">approval_required</option>
-                      <option value="disabled">disabled</option>
-                    </select>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <n-data-table
+              :columns="[
+                { title: '能力', key: 'label' },
+                { title: '状态', key: 'state', render: (row) => h(NSelect, { value: row.state, options: [{label:'enabled',value:'enabled'},{label:'approval_required',value:'approval_required'},{label:'disabled',value:'disabled'}], size: 'small', style: 'width:180px', onUpdateValue: (v) => { row.state = v; } }) },
+              ]"
+              :data="draft.capabilityPermissions"
+              :row-key="(row) => row.id"
+              :bordered="false"
+              size="small"
+            />
           </div>
 
           <div class="section-card">
@@ -1015,54 +1005,20 @@ onBeforeUnmount(() => {
             </div>
             <div v-if="!(draft.skills || []).length" class="empty-state">当前 profile 还没有挂载任何 skills 条目，可从上方 catalog 添加。</div>
             <div v-else-if="!(filteredSkills || []).length" class="empty-state">当前筛选条件下没有匹配的 skills。</div>
-            <table v-else class="config-table">
-              <thead>
-                <tr>
-                  <th>Skill</th>
-                  <th>Source</th>
-                  <th>Status</th>
-                  <th>Activation</th>
-                  <th>Binding</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="item in filteredSkills" :key="item.id">
-                  <td>
-                    <div class="row-title">{{ item.name }}</div>
-                    <div class="row-subtitle">{{ item.description || item.id }}</div>
-                  </td>
-                  <td>
-                    <div class="row-title">{{ item.source || "local" }}</div>
-                    <div class="row-subtitle">{{ item.id }}</div>
-                  </td>
-                  <td>
-                    <span class="status-pill" :class="{ muted: !item.enabled }">{{ skillStatusText(item) }}</span>
-                  </td>
-                  <td>
-                    <select v-model="item.activationMode" class="table-select">
-                      <option value="default_enabled">default_enabled</option>
-                      <option value="explicit_only">explicit_only</option>
-                      <option value="disabled">disabled</option>
-                    </select>
-                    <label class="toggle-field compact">
-                      <input v-model="item.enabled" type="checkbox" />
-                      <span>启用</span>
-                    </label>
-                    <div class="row-subtitle">{{ skillModeDescription(item.activationMode) }}</div>
-                  </td>
-                  <td>
-                    <button
-                      class="header-btn secondary table-action-btn"
-                      type="button"
-                      @click="removeSkillBinding(item.id)"
-                      :data-testid="`remove-skill-binding-${item.id}`"
-                    >
-                      移除
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <n-data-table
+              v-if="filteredSkills.length"
+              :columns="[
+                { title: 'Skill', key: 'name', render: (row) => h('div', {}, [h('div', { class: 'row-title' }, row.name), h('div', { class: 'row-subtitle' }, row.description || row.id)]) },
+                { title: 'Source', key: 'source', render: (row) => h('div', {}, [h('div', { class: 'row-title' }, row.source || 'local'), h('div', { class: 'row-subtitle' }, row.id)]) },
+                { title: '启用', key: 'enabled', width: 80, render: (row) => h(NSwitch, { value: row.enabled, onUpdateValue: (v) => { row.enabled = v; } }) },
+                { title: 'Activation', key: 'activationMode', render: (row) => h(NSelect, { value: row.activationMode, options: [{label:'default_enabled',value:'default_enabled'},{label:'explicit_only',value:'explicit_only'},{label:'disabled',value:'disabled'}], size: 'small', style: 'width:160px', onUpdateValue: (v) => { row.activationMode = v; } }) },
+                { title: 'Binding', key: 'binding', width: 80, render: (row) => h('span', { 'data-testid': `remove-skill-binding-${row.id}` }, [h(NButton, { size: 'small', quaternary: true, onClick: () => removeSkillBinding(row.id) }, { default: () => '移除' })]) },
+              ]"
+              :data="filteredSkills"
+              :row-key="(row) => row.id"
+              :bordered="false"
+              size="small"
+            />
           </div>
 
           <div class="section-card">
@@ -1106,62 +1062,21 @@ onBeforeUnmount(() => {
             </div>
             <div v-if="!(draft.mcps || []).length" class="empty-state">当前 profile 还没有挂载任何 MCP 条目，可从上方 catalog 添加。</div>
             <div v-else-if="!(filteredMcps || []).length" class="empty-state">当前筛选条件下没有匹配的 MCP。</div>
-            <table v-else class="config-table">
-              <thead>
-                <tr>
-                  <th>MCP</th>
-                  <th>Source</th>
-                  <th>Status</th>
-                  <th>Permission</th>
-                  <th>Explicit Approval</th>
-                  <th>Binding</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="item in filteredMcps" :key="item.id">
-                  <td>
-                    <div class="row-title">{{ item.name }}</div>
-                    <div class="row-subtitle">{{ item.type || item.id }}</div>
-                  </td>
-                  <td>
-                    <div class="row-title">{{ item.source || "local" }}</div>
-                    <div class="row-subtitle">{{ item.id }}</div>
-                  </td>
-                  <td>
-                    <span class="status-pill" :class="{ muted: !item.enabled }">{{ mcpStatusText(item) }}</span>
-                  </td>
-                  <td>
-                    <select v-model="item.permission" class="table-select">
-                      <option value="readonly">readonly</option>
-                      <option value="readwrite">readwrite</option>
-                    </select>
-                    <div class="row-subtitle">{{ mcpPermissionDescription(item.permission) }}</div>
-                  </td>
-                  <td>
-                    <div class="inline-stack">
-                      <label class="toggle-field compact">
-                        <input v-model="item.enabled" type="checkbox" />
-                        <span>启用</span>
-                      </label>
-                      <label class="toggle-field compact">
-                        <input v-model="item.requiresExplicitUserApproval" type="checkbox" />
-                        <span>显式确认</span>
-                      </label>
-                    </div>
-                  </td>
-                  <td>
-                    <button
-                      class="header-btn secondary table-action-btn"
-                      type="button"
-                      @click="removeMcpBinding(item.id)"
-                      :data-testid="`remove-mcp-binding-${item.id}`"
-                    >
-                      移除
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <n-data-table
+              v-if="filteredMcps.length"
+              :columns="[
+                { title: 'MCP', key: 'name', render: (row) => h('div', {}, [h('div', { class: 'row-title' }, row.name), h('div', { class: 'row-subtitle' }, row.type || row.id)]) },
+                { title: 'Source', key: 'source', render: (row) => h('div', {}, [h('div', { class: 'row-title' }, row.source || 'local'), h('div', { class: 'row-subtitle' }, row.id)]) },
+                { title: '启用', key: 'enabled', width: 80, render: (row) => h(NSwitch, { value: row.enabled, onUpdateValue: (v) => { row.enabled = v; } }) },
+                { title: 'Permission', key: 'permission', render: (row) => h(NSelect, { value: row.permission, options: [{label:'readonly',value:'readonly'},{label:'readwrite',value:'readwrite'}], size: 'small', style: 'width:140px', onUpdateValue: (v) => { row.permission = v; } }) },
+                { title: '显式确认', key: 'requiresExplicitUserApproval', width: 80, render: (row) => h(NSwitch, { value: row.requiresExplicitUserApproval, onUpdateValue: (v) => { row.requiresExplicitUserApproval = v; } }) },
+                { title: 'Binding', key: 'binding', width: 80, render: (row) => h('span', { 'data-testid': `remove-mcp-binding-${row.id}` }, [h(NButton, { size: 'small', quaternary: true, onClick: () => removeMcpBinding(row.id) }, { default: () => '移除' })]) },
+              ]"
+              :data="filteredMcps"
+              :row-key="(row) => row.id"
+              :bordered="false"
+              size="small"
+            />
           </div>
 
           <div class="section-card" data-testid="structured-read-interfaces">

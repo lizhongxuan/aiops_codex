@@ -61,6 +61,32 @@ type execSpec struct {
 	ToolName   string
 }
 
+func defaultRemoteExecCwd(host model.Host) string {
+	if strings.EqualFold(strings.TrimSpace(host.OS), "windows") {
+		return `C:\Windows\Temp`
+	}
+	return "/tmp"
+}
+
+func defaultRemoteExecShell(host model.Host) string {
+	if strings.EqualFold(strings.TrimSpace(host.OS), "windows") {
+		return ""
+	}
+	return "/bin/sh"
+}
+
+func normalizeRemoteExecSpec(host model.Host, spec execSpec) execSpec {
+	spec.Cwd = strings.TrimSpace(spec.Cwd)
+	spec.Shell = strings.TrimSpace(spec.Shell)
+	if spec.Cwd == "" {
+		spec.Cwd = defaultRemoteExecCwd(host)
+	}
+	if spec.Shell == "" {
+		spec.Shell = defaultRemoteExecShell(host)
+	}
+	return spec
+}
+
 func (e *remoteExecSession) appendOutput(stream, chunk string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -284,6 +310,7 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 	if host.Status != "online" || !host.Executable {
 		return remoteExecResult{}, errors.New("selected remote host is offline or not executable")
 	}
+	spec = normalizeRemoteExecSpec(host, spec)
 
 	now := model.NowString()
 	createdAt := now

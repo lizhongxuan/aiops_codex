@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ArrowLeftIcon } from "lucide-vue-next";
+import { NButton } from "naive-ui";
 
 const router = useRouter();
 
@@ -134,121 +135,101 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <nav class="tab-bar">
-      <button :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">类型总览</button>
-      <button :class="{ active: activeTab === 'list' }" @click="activeTab = 'list'">卡片列表</button>
-      <button :class="{ active: activeTab === 'detail' }" @click="activeTab = 'detail'" :disabled="!selectedCard">详情</button>
-      <button :class="{ active: activeTab === 'editor' }" @click="activeTab = 'editor'" :disabled="!editDraft">编辑器</button>
-      <button :class="{ active: activeTab === 'debugger' }" @click="activeTab = 'debugger'">触发调试器</button>
-    </nav>
-
-    <div v-if="loading" class="loading-hint">加载中…</div>
-
-    <!-- Overview Tab -->
-    <section v-if="activeTab === 'overview'" class="tab-content">
-      <div class="kind-grid">
-        <div v-for="g in kindGroups" :key="g.kind" class="kind-card" @click="activeTab = 'list'">
-          <div class="kind-label">{{ g.label }}</div>
-          <div class="kind-count">{{ g.count }}</div>
-          <div class="kind-id">{{ g.kind }}</div>
+    <n-tabs v-model:value="activeTab" type="line">
+      <n-tab-pane name="overview" tab="类型总览">
+        <div class="kind-grid">
+          <n-card v-for="g in kindGroups" :key="g.kind" hoverable @click="activeTab = 'list'">
+            <div class="kind-label">{{ g.label }}</div>
+            <div class="kind-count">{{ g.count }}</div>
+            <div class="kind-id">{{ g.kind }}</div>
+          </n-card>
         </div>
-      </div>
-      <p v-if="!kindGroups.length && !loading" class="empty-hint">暂无卡片定义。</p>
-    </section>
+        <n-empty v-if="!kindGroups.length && !loading" description="暂无卡片定义。" />
+      </n-tab-pane>
 
-    <!-- List Tab -->
-    <section v-if="activeTab === 'list'" class="tab-content">
-      <div class="section-card">
-        <h2>卡片定义列表</h2>
-        <table class="data-table" v-if="cards.length">
-          <thead>
-            <tr><th>ID</th><th>名称</th><th>类型</th><th>渲染器</th><th>状态</th><th>内置</th><th>操作</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in cards" :key="c.id">
-              <td>{{ c.id }}</td>
-              <td>{{ c.name }}</td>
-              <td>{{ kindLabels[c.kind] || c.kind }}</td>
-              <td><code>{{ c.renderer }}</code></td>
-              <td>{{ c.status }}</td>
-              <td>{{ c.builtIn ? '是' : '否' }}</td>
-              <td class="action-cell">
-                <button class="btn-sm" @click="selectCard(c)">详情</button>
-                <button class="btn-sm" @click="startEdit(c)">编辑</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-else class="empty-hint">暂无卡片定义。</p>
-      </div>
-    </section>
+      <n-tab-pane name="list" tab="卡片列表">
+        <n-card>
+          <template #header>卡片定义列表</template>
+          <n-data-table
+            v-if="cards.length"
+            :columns="[
+              { title: 'ID', key: 'id' },
+              { title: '名称', key: 'name' },
+              { title: '类型', key: 'kind', render: (row) => kindLabels[row.kind] || row.kind },
+              { title: '渲染器', key: 'renderer' },
+              { title: '状态', key: 'status' },
+              { title: '内置', key: 'builtIn', render: (row) => row.builtIn ? '是' : '否' },
+              { title: '操作', key: 'actions', render: (row) => h('div', { style: 'display:flex;gap:6px' }, [h(NButton, { size: 'small', quaternary: true, onClick: () => selectCard(row) }, { default: () => '详情' }), h(NButton, { size: 'small', quaternary: true, onClick: () => startEdit(row) }, { default: () => '编辑' })]) },
+            ]"
+            :data="cards"
+            :row-key="(row) => row.id"
+            :bordered="false"
+            size="small"
+          />
+          <n-empty v-else description="暂无卡片定义。" />
+        </n-card>
+      </n-tab-pane>
 
-    <!-- Detail Tab -->
-    <section v-if="activeTab === 'detail' && selectedCard" class="tab-content">
-      <div class="section-card">
-        <h2>{{ selectedCard.name }}</h2>
-        <div class="detail-grid">
-          <div class="detail-row"><span>ID</span><strong>{{ selectedCard.id }}</strong></div>
-          <div class="detail-row"><span>类型</span><strong>{{ kindLabels[selectedCard.kind] || selectedCard.kind }}</strong></div>
-          <div class="detail-row"><span>渲染器</span><strong>{{ selectedCard.renderer }}</strong></div>
-          <div class="detail-row"><span>状态</span><strong>{{ selectedCard.status }}</strong></div>
-          <div class="detail-row"><span>内置</span><strong>{{ selectedCard.builtIn ? '是' : '否' }}</strong></div>
-          <div class="detail-row"><span>版本</span><strong>{{ selectedCard.version }}</strong></div>
-          <div class="detail-row"><span>摘要</span><strong>{{ selectedCard.summary }}</strong></div>
-          <div class="detail-row"><span>能力</span><strong>{{ (selectedCard.capabilities || []).join(', ') || '-' }}</strong></div>
-          <div class="detail-row"><span>触发类型</span><strong>{{ (selectedCard.triggerTypes || []).join(', ') || '-' }}</strong></div>
-          <div class="detail-row"><span>可编辑字段</span><strong>{{ (selectedCard.editableFields || []).join(', ') || '-' }}</strong></div>
-        </div>
-        <div class="detail-actions">
-          <button class="btn-sm" @click="startEdit(selectedCard)">编辑</button>
-          <button class="btn-sm" @click="triggerPreview(selectedCard)">预览</button>
-        </div>
-        <pre v-if="previewResult" class="preview-output">{{ JSON.stringify(previewResult, null, 2) }}</pre>
-      </div>
-    </section>
+      <n-tab-pane name="detail" tab="详情" :disabled="!selectedCard">
+        <template v-if="selectedCard">
+          <n-card>
+            <template #header>{{ selectedCard.name }}</template>
+            <n-descriptions :column="1" label-placement="left" bordered size="small">
+              <n-descriptions-item label="ID">{{ selectedCard.id }}</n-descriptions-item>
+              <n-descriptions-item label="类型">{{ kindLabels[selectedCard.kind] || selectedCard.kind }}</n-descriptions-item>
+              <n-descriptions-item label="渲染器">{{ selectedCard.renderer }}</n-descriptions-item>
+              <n-descriptions-item label="状态">{{ selectedCard.status }}</n-descriptions-item>
+              <n-descriptions-item label="内置">{{ selectedCard.builtIn ? '是' : '否' }}</n-descriptions-item>
+              <n-descriptions-item label="版本">{{ selectedCard.version }}</n-descriptions-item>
+              <n-descriptions-item label="摘要">{{ selectedCard.summary }}</n-descriptions-item>
+            </n-descriptions>
+            <div style="margin-top:16px;display:flex;gap:8px;">
+              <n-button size="small" @click="startEdit(selectedCard)">编辑</n-button>
+              <n-button size="small" @click="triggerPreview(selectedCard)">预览</n-button>
+            </div>
+            <pre v-if="previewResult" class="preview-output">{{ JSON.stringify(previewResult, null, 2) }}</pre>
+          </n-card>
+        </template>
+      </n-tab-pane>
 
-    <!-- Editor Tab -->
-    <section v-if="activeTab === 'editor' && editDraft" class="tab-content">
-      <div class="section-card">
-        <h2>编辑卡片定义</h2>
-        <div class="form-grid">
-          <label>名称 <input v-model="editDraft.name" /></label>
-          <label>摘要 <input v-model="editDraft.summary" /></label>
-          <label>状态
-            <select v-model="editDraft.status">
-              <option value="active">active</option>
-              <option value="draft">draft</option>
-              <option value="disabled">disabled</option>
-            </select>
-          </label>
-        </div>
-        <div class="editor-actions">
-          <button class="btn-primary" @click="saveEdit">保存</button>
-          <button class="btn-sm" @click="editDraft = null; activeTab = 'list'">取消</button>
-        </div>
-      </div>
-    </section>
+      <n-tab-pane name="editor" tab="编辑器" :disabled="!editDraft">
+        <template v-if="editDraft">
+          <n-card>
+            <template #header>编辑卡片定义</template>
+            <n-form label-placement="top">
+              <n-form-item label="名称"><n-input v-model:value="editDraft.name" /></n-form-item>
+              <n-form-item label="摘要"><n-input v-model:value="editDraft.summary" /></n-form-item>
+              <n-form-item label="状态">
+                <n-select v-model:value="editDraft.status" :options="[{label:'active',value:'active'},{label:'draft',value:'draft'},{label:'disabled',value:'disabled'}]" />
+              </n-form-item>
+            </n-form>
+            <div style="margin-top:16px;display:flex;gap:8px;">
+              <n-button type="primary" @click="saveEdit">保存</n-button>
+              <n-button @click="editDraft = null; activeTab = 'list'">取消</n-button>
+            </div>
+          </n-card>
+        </template>
+      </n-tab-pane>
 
-    <!-- Debugger Tab -->
-    <section v-if="activeTab === 'debugger'" class="tab-content">
-      <div class="section-card">
-        <h2>触发调试器</h2>
-        <p class="debug-hint">选择一个卡片并发送模拟输入来预览渲染结果。</p>
-        <div class="debug-controls">
-          <select @change="e => { const c = cards.find(x => x.id === e.target.value); if (c) selectedCard = c; }">
-            <option value="">选择卡片…</option>
-            <option v-for="c in cards" :key="c.id" :value="c.id">{{ c.name }} ({{ c.id }})</option>
-          </select>
-          <label>输入 JSON
-            <textarea v-model="debugInput" rows="4" placeholder='{"key": "value"}'></textarea>
-          </label>
-          <button class="btn-primary" :disabled="!selectedCard || previewLoading" @click="triggerPreview(selectedCard)">
+      <n-tab-pane name="debugger" tab="触发调试器">
+        <n-card>
+          <template #header>触发调试器</template>
+          <p class="debug-hint">选择一个卡片并发送模拟输入来预览渲染结果。</p>
+          <n-form label-placement="top">
+            <n-form-item label="选择卡片">
+              <n-select :options="cards.map(c => ({label: `${c.name} (${c.id})`, value: c.id}))" @update:value="(v) => { const c = cards.find(x => x.id === v); if (c) selectedCard = c; }" placeholder="选择卡片…" />
+            </n-form-item>
+            <n-form-item label="输入 JSON">
+              <n-input v-model:value="debugInput" type="textarea" :rows="4" placeholder='{"key": "value"}' />
+            </n-form-item>
+          </n-form>
+          <n-button type="primary" :disabled="!selectedCard || previewLoading" @click="triggerPreview(selectedCard)">
             {{ previewLoading ? '请求中…' : '发送预览' }}
-          </button>
-        </div>
-        <pre v-if="previewResult" class="preview-output">{{ JSON.stringify(previewResult, null, 2) }}</pre>
-      </div>
-    </section>
+          </n-button>
+          <pre v-if="previewResult" class="preview-output">{{ JSON.stringify(previewResult, null, 2) }}</pre>
+        </n-card>
+      </n-tab-pane>
+    </n-tabs>
   </section>
 </template>
 

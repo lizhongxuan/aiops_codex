@@ -39,10 +39,14 @@ type Config struct {
 	OAuthUserInfoURL         string
 	OAuthAccountID           string
 	OAuthPlanType            string
-	CorootBaseURL            string
-	CorootToken              string
-	CorootTimeout            time.Duration
-	WorkspaceReActLoopEnabled bool
+	CorootBaseURL              string
+	CorootToken                string
+	CorootTimeout              time.Duration
+	CorootPriority             string
+	CorootFallbackEnabled      bool
+	CorootHealthCheckInterval  time.Duration
+	CorootRCAEnabled           bool
+	WorkspaceReActLoopEnabled  bool
 }
 
 func Load() Config {
@@ -87,9 +91,13 @@ func Load() Config {
 		OAuthUserInfoURL:         env("GPT_OAUTH_USERINFO_URL", ""),
 		OAuthAccountID:           env("GPT_OAUTH_ACCOUNT_ID", ""),
 		OAuthPlanType:            env("GPT_OAUTH_PLAN_TYPE", ""),
-		CorootBaseURL:            env("COROOT_BASE_URL", ""),
-		CorootToken:              env("COROOT_TOKEN", ""),
-		CorootTimeout:            envDuration("COROOT_TIMEOUT", 30*time.Second),
+		CorootBaseURL:             env("COROOT_BASE_URL", ""),
+		CorootToken:               env("COROOT_TOKEN", ""),
+		CorootTimeout:             envDuration("COROOT_TIMEOUT", 30*time.Second),
+		CorootPriority:            env("COROOT_PRIORITY", "coroot_first"),
+		CorootFallbackEnabled:     envBool("COROOT_FALLBACK_ENABLED", true),
+		CorootHealthCheckInterval: envDuration("COROOT_HEALTH_CHECK_INTERVAL", 30*time.Second),
+		CorootRCAEnabled:          envBool("COROOT_RCA_ENABLED", false),
 		WorkspaceReActLoopEnabled: envBool("WORKSPACE_REACT_LOOP_ENABLED", true),
 	}
 }
@@ -137,6 +145,12 @@ func (c Config) OAuthScopeList() []string {
 
 func (c Config) CorootConfigured() bool {
 	return c.CorootBaseURL != ""
+}
+
+// CorootFullConfigured returns true when all configuration items required
+// for the complete Coroot integration are present (base URL + token).
+func (c Config) CorootFullConfigured() bool {
+	return c.CorootBaseURL != "" && c.CorootToken != ""
 }
 
 func env(key, fallback string) string {

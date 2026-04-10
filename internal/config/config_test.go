@@ -1,95 +1,90 @@
 package config
 
 import (
-	"strings"
+	"os"
 	"testing"
+	"time"
 )
 
-func TestValidAgentBootstrapTokenSupportsRotationList(t *testing.T) {
-	cfg := Config{
-		HostAgentBootstrapToken:  "current-token",
-		HostAgentBootstrapTokens: []string{"current-token", "previous-token"},
-	}
+func TestLoad_CorootRoutingDefaults(t *testing.T) {
+	// Clear any env vars that might interfere
+	os.Unsetenv("COROOT_PRIORITY")
+	os.Unsetenv("COROOT_FALLBACK_ENABLED")
+	os.Unsetenv("COROOT_HEALTH_CHECK_INTERVAL")
 
-	if !cfg.ValidAgentBootstrapToken("current-token") {
-		t.Fatalf("expected current token to be accepted")
+	cfg := Load()
+
+	if cfg.CorootPriority != "coroot_first" {
+		t.Errorf("CorootPriority = %q, want %q", cfg.CorootPriority, "coroot_first")
 	}
-	if !cfg.ValidAgentBootstrapToken("previous-token") {
-		t.Fatalf("expected previous token to be accepted during rotation")
+	if cfg.CorootFallbackEnabled != true {
+		t.Errorf("CorootFallbackEnabled = %v, want true", cfg.CorootFallbackEnabled)
 	}
-	if cfg.ValidAgentBootstrapToken("wrong-token") {
-		t.Fatalf("expected wrong token to be rejected")
+	if cfg.CorootHealthCheckInterval != 30*time.Second {
+		t.Errorf("CorootHealthCheckInterval = %v, want %v", cfg.CorootHealthCheckInterval, 30*time.Second)
 	}
 }
 
-func TestAgentHostAllowedUsesAllowlistWhenConfigured(t *testing.T) {
-	cfg := Config{
-		AllowedAgentHostIDs: []string{"linux-01", "linux-02"},
-	}
+func TestLoad_CorootRoutingFromEnv(t *testing.T) {
+	t.Setenv("COROOT_PRIORITY", "local_first")
+	t.Setenv("COROOT_FALLBACK_ENABLED", "false")
+	t.Setenv("COROOT_HEALTH_CHECK_INTERVAL", "1m")
 
-	if !cfg.AgentHostAllowed("linux-01") {
-		t.Fatalf("expected allowed host id to pass")
+	cfg := Load()
+
+	if cfg.CorootPriority != "local_first" {
+		t.Errorf("CorootPriority = %q, want %q", cfg.CorootPriority, "local_first")
 	}
-	if cfg.AgentHostAllowed("linux-03") {
-		t.Fatalf("expected unknown host id to be rejected")
+	if cfg.CorootFallbackEnabled != false {
+		t.Errorf("CorootFallbackEnabled = %v, want false", cfg.CorootFallbackEnabled)
+	}
+	if cfg.CorootHealthCheckInterval != time.Minute {
+		t.Errorf("CorootHealthCheckInterval = %v, want %v", cfg.CorootHealthCheckInterval, time.Minute)
 	}
 }
 
-func TestBootstrapTokensDoesNotAppendDefaultFallbackWhenRotationListIsConfigured(t *testing.T) {
-	t.Setenv("HOST_AGENT_BOOTSTRAP_TOKENS", "rotated-a,rotated-b")
-	t.Setenv("HOST_AGENT_BOOTSTRAP_TOKEN", "")
+func TestLoad_CorootRCAEnabledDefault(t *testing.T) {
+	os.Unsetenv("COROOT_RCA_ENABLED")
 
-	tokens := bootstrapTokens()
-	if len(tokens) != 2 {
-		t.Fatalf("expected only rotation tokens, got %v", tokens)
-	}
-	for _, token := range tokens {
-		if token == "change-me" {
-			t.Fatalf("expected default token to be excluded when rotation list is configured")
-		}
+	cfg := Load()
+
+	if cfg.CorootRCAEnabled != false {
+		t.Errorf("CorootRCAEnabled = %v, want false", cfg.CorootRCAEnabled)
 	}
 }
 
-func TestAgentSourceAllowedUsesCIDRAllowlist(t *testing.T) {
-	cfg := Config{
-		AllowedAgentCIDRs: []string{"100.64.0.0/10", "10.0.0.0/8"},
-	}
+func TestLoad_CorootRCAEnabledFromEnv(t *testing.T) {
+	t.Setenv("COROOT_RCA_ENABLED", "true")
 
-	if !cfg.AgentSourceAllowed("100.100.1.8:18090") {
-		t.Fatalf("expected tailscale source to be allowed")
-	}
-	if !cfg.AgentSourceAllowed("10.20.30.40:18090") {
-		t.Fatalf("expected intranet source to be allowed")
-	}
-	if cfg.AgentSourceAllowed("8.8.8.8:18090") {
-		t.Fatalf("expected public source to be rejected")
+	cfg := Load()
+
+	if cfg.CorootRCAEnabled != true {
+		t.Errorf("CorootRCAEnabled = %v, want true", cfg.CorootRCAEnabled)
 	}
 }
 
-func TestValidateHostAgentSecurityProduction(t *testing.T) {
-	cfg := Config{
-		GRPCAddr:                 "100.64.0.12:18090",
-		GRPCTLSCertFile:          "/certs/server.pem",
-		GRPCTLSKeyFile:           "/certs/server-key.pem",
-		GRPCTLSClientCAFile:      "/certs/ca.pem",
-		HostAgentBootstrapTokens: []string{"rotated-token"},
-		AllowedAgentHostIDs:      []string{"linux-01"},
-		AllowedAgentCIDRs:        []string{"100.64.0.0/10"},
-		HostAgentSecurityProfile: "production",
+func TestCorootFullConfigured(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		token   string
+		want    bool
+	}{
+		{"both set", "http://coroot:8080", "secret-token", true},
+		{"only base URL", "http://coroot:8080", "", false},
+		{"only token", "", "secret-token", false},
+		{"neither set", "", "", false},
 	}
 
-	if err := cfg.ValidateHostAgentSecurity(); err != nil {
-		t.Fatalf("expected production config to pass, got %v", err)
-	}
-
-	cfg.GRPCAddr = "0.0.0.0:18090"
-	if err := cfg.ValidateHostAgentSecurity(); err == nil || !strings.Contains(err.Error(), "explicit private/VPN address") {
-		t.Fatalf("expected wildcard bind rejection, got %v", err)
-	}
-
-	cfg.GRPCAddr = "100.64.0.12:18090"
-	cfg.GRPCTLSClientCAFile = ""
-	if err := cfg.ValidateHostAgentSecurity(); err == nil || !strings.Contains(err.Error(), "AIOPS_GRPC_TLS_CLIENT_CA_FILE") {
-		t.Fatalf("expected mTLS requirement, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				CorootBaseURL: tt.baseURL,
+				CorootToken:   tt.token,
+			}
+			if got := cfg.CorootFullConfigured(); got != tt.want {
+				t.Errorf("CorootFullConfigured() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

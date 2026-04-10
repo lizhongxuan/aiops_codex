@@ -945,6 +945,68 @@ func TestHandleRemoteApprovalAcceptSessionContinuesExecution(t *testing.T) {
 	}
 }
 
+func TestRunRemoteExecDefaultsSafeCwdAndShellForRemoteHosts(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-remote-default-cwd-shell"
+	hostID := "linux-01"
+	cardID := "card-remote-default-cwd-shell"
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertHost(model.Host{
+		ID:         hostID,
+		Name:       hostID,
+		Kind:       "agent",
+		Status:     "online",
+		Executable: true,
+		OS:         "linux",
+	})
+
+	stream := &fakeAgentConnectServer{}
+	app.setAgentConnection(hostID, &agentConnection{hostID: hostID, stream: stream})
+
+	done := make(chan struct{})
+	go func() {
+		msg := stream.waitForKind(t, "exec/start", 2*time.Second)
+		if msg.ExecStart == nil {
+			t.Errorf("expected exec start payload")
+			close(done)
+			return
+		}
+		if got := msg.ExecStart.Cwd; got != "/tmp" {
+			t.Errorf("expected default cwd /tmp, got %q", got)
+		}
+		if got := msg.ExecStart.Shell; got != "/bin/sh" {
+			t.Errorf("expected default shell /bin/sh, got %q", got)
+		}
+		app.handleAgentExecExit(hostID, &agentrpc.ExecExit{
+			ExecID:   msg.ExecStart.ExecID,
+			ExitCode: 0,
+			Status:   "completed",
+		})
+		close(done)
+	}()
+
+	result, err := app.runRemoteExec(context.Background(), sessionID, hostID, cardID, execSpec{
+		Command:  "uptime",
+		Readonly: true,
+		ToolName: "readonly_host_inspect",
+	})
+	if err != nil {
+		t.Fatalf("runRemoteExec: %v", err)
+	}
+	<-done
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed status, got %#v", result)
+	}
+	card := app.cardByID(sessionID, cardID)
+	if card == nil {
+		t.Fatalf("expected command card to exist")
+	}
+	if card.Cwd != "/tmp" {
+		t.Fatalf("expected card cwd /tmp, got %q", card.Cwd)
+	}
+}
+
 func TestRemoteFileChangeAuditLifecycleIncludesStableFields(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	app := New(config.Config{AuditLogPath: auditPath})

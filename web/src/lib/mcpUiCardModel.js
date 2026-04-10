@@ -5,6 +5,7 @@ export const MCP_UI_KINDS = Object.freeze([
   "readonly_chart",
   "action_panel",
   "form_panel",
+  "topology_card",
 ]);
 
 export const MCP_UI_PLACEMENTS = Object.freeze([

@@ -15,6 +15,7 @@ import McpBundleHost from "../components/mcp/McpBundleHost.vue";
 import McpUiCardHost from "../components/mcp/McpUiCardHost.vue";
 import ThinkingCard from "../components/ThinkingCard.vue";
 import { BotIcon, WifiOffIcon, RefreshCwIcon, TerminalIcon } from "lucide-vue-next";
+import { NBadge, NDrawer, NDrawerContent } from "naive-ui";
 
 const store = useAppStore();
 const WorkspaceHostTerminal = defineAsyncComponent(() => import("../components/workspace/WorkspaceHostTerminal.vue"));
@@ -510,6 +511,18 @@ function handleTurnMcpAction(action) {
     openMcpSurfaceDrawer(action);
     return;
   }
+  if (action.bundleKind === "coroot_topology" || action.bundleKind === "coroot_host_overview") {
+    openMcpSurfaceDrawer(action);
+    return;
+  }
+  if (action.bundleKind === "coroot_service_monitor") {
+    void refreshMcpSurface(action);
+    return;
+  }
+  if (action.bundleKind === "coroot_incident_rca") {
+    openMcpSurfaceDrawer(action);
+    return;
+  }
   const intent = compactText(action.intent || action.key || action.action || "").toLowerCase();
   if (intent === "refresh" || intent === "reload" || intent === "open_detail" || intent === "open-detail") {
     void refreshMcpSurface(action);
@@ -850,6 +863,14 @@ function jumpToLatestAndSync() {
   jumpToLatest();
   nextTick(() => {
     virtualStream.syncViewport();
+    // Smooth scroll: after virtual list sync, ensure the last element is smoothly visible
+    const el = scrollContainer.value;
+    if (el) {
+      const lastChild = el.querySelector("[data-testid]:last-child, .chat-turn-group:last-child, .stream-row:last-child");
+      if (lastChild && typeof lastChild.scrollIntoView === "function") {
+        lastChild.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+    }
   });
 }
 
@@ -1533,6 +1554,7 @@ watch(
           <div class="auth-overlay-header">
             <div class="auth-overlay-title-group">
               <span class="auth-overlay-title">需要您的确认</span>
+              <n-badge v-if="activeApprovalCard && activeApprovalQueueCount > 0" :value="activeApprovalQueueCount" :max="99" />
               <span v-if="activeApprovalCard && activeApprovalQueueLabel" class="auth-overlay-queue-label">{{ activeApprovalQueueLabel }}</span>
               <span v-else-if="activeMcpApproval" class="auth-overlay-queue-label">MCP 变更待确认</span>
             </div>
@@ -1588,31 +1610,31 @@ watch(
 
         <button v-else class="auth-restore-btn" @click="authCardCollapsed = false">
            <span>当前审批工作台已折叠</span>
+           <n-badge v-if="activeApprovalQueueCount > 0" :value="activeApprovalQueueCount" :max="99" />
            <span v-if="activeApprovalQueueLabel" class="auth-restore-queue">{{ activeApprovalQueueLabel }}</span>
         </button>
       </div>
     </template>
   </ChatComposerDock>
 
-  <transition name="chat-mcp-drawer-fade">
-    <div
-      v-if="isMcpDrawerOpen && activeMcpSurface"
-      class="chat-mcp-surface-drawer"
-      data-testid="chat-mcp-surface-drawer"
-      @click.self="closeMcpSurfaceDrawer"
-    >
-      <aside class="chat-mcp-surface-panel" :data-surface-kind="activeMcpSurface.kind">
-        <header class="chat-mcp-surface-head">
-          <div class="chat-mcp-surface-copy">
-            <span class="chat-mcp-surface-kicker">MCP SURFACE</span>
-            <h3>{{ activeMcpSurface.title }}</h3>
-            <p v-if="activeMcpSurface.subtitle">{{ activeMcpSurface.subtitle }}</p>
-          </div>
-          <button type="button" class="chat-mcp-surface-close" data-testid="chat-mcp-surface-close" @click="closeMcpSurfaceDrawer">
-            关闭
-          </button>
-        </header>
+  <n-drawer
+    :show="isMcpDrawerOpen && !!activeMcpSurface"
+    placement="right"
+    :width="320"
+    :mask-closable="true"
+    data-testid="chat-mcp-surface-drawer"
+    @update:show="(val) => { if (!val) closeMcpSurfaceDrawer(); }"
+  >
+    <n-drawer-content :title="activeMcpSurface?.title || 'MCP SURFACE'" :native-scrollbar="false" closable>
+      <template #header>
+        <div class="chat-mcp-surface-copy">
+          <span class="chat-mcp-surface-kicker">MCP SURFACE</span>
+          <h3>{{ activeMcpSurface?.title }}</h3>
+          <p v-if="activeMcpSurface?.subtitle">{{ activeMcpSurface.subtitle }}</p>
+        </div>
+      </template>
 
+      <div v-if="activeMcpSurface" :data-surface-kind="activeMcpSurface.kind">
         <div class="chat-mcp-surface-toolbar">
           <button
             type="button"
@@ -1672,9 +1694,9 @@ watch(
             @refresh="handleMcpSurfaceRefresh"
           />
         </div>
-      </aside>
-    </div>
-  </transition>
+      </div>
+    </n-drawer-content>
+  </n-drawer>
 </template>
 
 <style scoped>
@@ -2108,36 +2130,7 @@ watch(
   color: #94a3b8;
 }
 
-.chat-mcp-surface-drawer {
-  position: fixed;
-  inset: 0;
-  z-index: 28;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(15, 23, 42, 0.26);
-  backdrop-filter: blur(8px);
-}
-
-.chat-mcp-surface-panel {
-  width: min(760px, calc(100vw - 32px));
-  height: calc(100vh - 28px);
-  margin: 14px 14px 14px 0;
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 24px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.99));
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
-  overflow: auto;
-}
-
-.chat-mcp-surface-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
+/* chat-mcp-surface-drawer styles removed — now using <n-drawer> */
 
 .chat-mcp-surface-copy {
   display: grid;
@@ -2165,7 +2158,6 @@ watch(
   color: #475569;
 }
 
-.chat-mcp-surface-close,
 .chat-mcp-surface-toolbar-btn,
 .chat-mcp-surface-pin-chip {
   border: none;
@@ -2175,10 +2167,6 @@ watch(
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-}
-
-.chat-mcp-surface-close {
-  padding: 8px 12px;
 }
 
 .chat-mcp-surface-toolbar {
@@ -2223,15 +2211,7 @@ watch(
   gap: 12px;
 }
 
-.chat-mcp-drawer-fade-enter-active,
-.chat-mcp-drawer-fade-leave-active {
-  transition: opacity 0.18s ease;
-}
-
-.chat-mcp-drawer-fade-enter-from,
-.chat-mcp-drawer-fade-leave-to {
-  opacity: 0;
-}
+/* chat-mcp-drawer-fade transition removed — n-drawer handles animation */
 
 .chat-mcp-approval {
   display: grid;

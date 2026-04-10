@@ -90,127 +90,66 @@ function handleKeydown(e) {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div class="monitor-ai-overlay" @click.self="emit('close')">
-      <aside class="monitor-ai-drawer" role="dialog" aria-label="Monitor AI 助手">
-        <!-- Header -->
-        <header class="drawer-header">
-          <div class="drawer-title">
-            <SparklesIcon :size="18" />
-            <span>Monitor AI 助手</span>
-          </div>
-          <button class="icon-btn" title="关闭" @click="emit('close')">
-            <XIcon :size="18" />
-          </button>
-        </header>
-
-        <!-- Quick Actions -->
-        <div class="quick-actions">
-          <button
-            v-for="action in quickActions"
-            :key="action.key"
-            class="action-btn"
-            :disabled="loading"
-            @click="handleQuickAction(action.key)"
-          >
-            <component :is="action.icon" :size="16" />
-            <span>{{ action.label }}</span>
-          </button>
-        </div>
-
-        <!-- Free Input -->
-        <div class="free-input-area">
-          <textarea
-            v-model="freeInput"
-            class="free-input"
-            placeholder="输入自定义问题…"
-            rows="2"
-            :disabled="loading"
-            @keydown="handleKeydown"
-          />
-          <button
-            class="send-btn"
-            :disabled="!canSend"
-            title="发送"
-            @click="handleFreeSubmit"
-          >
-            <SendIcon :size="16" />
-          </button>
-        </div>
-
-        <!-- Result Panel -->
-        <div class="result-panel">
-          <div v-if="loading" class="result-loading">
-            <LoaderCircleIcon :size="18" class="spin" />
-            <span>AI 正在分析…</span>
-          </div>
-          <div v-else-if="errorMsg" class="result-error">{{ errorMsg }}</div>
-          <div v-else-if="resultText" class="result-text">{{ resultText }}</div>
-          <div v-else class="result-empty">选择快捷动作或输入问题，AI 将结合监控上下文回答。</div>
-        </div>
-      </aside>
+  <div class="monitor-ai-drawer">
+    <!-- Quick Actions -->
+    <div class="quick-actions">
+      <button
+        v-for="action in quickActions"
+        :key="action.key"
+        class="action-btn"
+        :disabled="loading"
+        @click="handleQuickAction(action.key)"
+      >
+        <component :is="action.icon" :size="16" />
+        <span>{{ action.label }}</span>
+      </button>
     </div>
-  </Teleport>
+
+    <!-- Free Input -->
+    <div class="free-input-area">
+      <textarea
+        v-model="freeInput"
+        class="free-input"
+        placeholder="输入自定义问题…"
+        rows="2"
+        :disabled="loading"
+        @keydown="handleKeydown"
+      />
+      <button
+        class="send-btn"
+        :disabled="!canSend"
+        title="发送"
+        @click="handleFreeSubmit"
+      >
+        <SendIcon :size="16" />
+      </button>
+    </div>
+
+    <!-- Result Panel -->
+    <div class="result-panel">
+      <div v-if="loading" class="result-loading">
+        <LoaderCircleIcon :size="18" class="spin" />
+        <span>AI 正在分析…</span>
+      </div>
+      <div v-else-if="errorMsg" class="result-error">{{ errorMsg }}</div>
+      <div v-else-if="resultText" class="result-text">{{ resultText }}</div>
+      <div v-else class="result-empty">选择快捷动作或输入问题，AI 将结合监控上下文回答。</div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.monitor-ai-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.25);
-  z-index: 1000;
-  display: flex;
-  justify-content: flex-end;
-}
-
 .monitor-ai-drawer {
-  width: 400px;
-  max-width: 90vw;
-  height: 100%;
-  background: #f8fafc;
-  border-left: 1px solid #dbe3ee;
-  box-shadow: -8px 0 32px rgba(15, 23, 42, 0.1);
   display: flex;
   flex-direction: column;
+  height: 100%;
 }
-
-.drawer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 18px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  flex-shrink: 0;
-}
-
-.drawer-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 8px;
-  background: transparent;
-  color: #475569;
-  cursor: pointer;
-}
-.icon-btn:hover { background: #f1f5f9; }
 
 .quick-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
-  padding: 16px 18px;
+  padding: 16px 0;
   flex-shrink: 0;
 }
 
@@ -241,7 +180,7 @@ function handleKeydown(e) {
 .free-input-area {
   display: flex;
   gap: 8px;
-  padding: 0 18px 14px;
+  padding: 0 0 14px;
   flex-shrink: 0;
   align-items: flex-end;
 }
@@ -279,7 +218,6 @@ function handleKeydown(e) {
 .result-panel {
   flex: 1;
   overflow-y: auto;
-  padding: 18px;
 }
 
 .result-loading {
@@ -326,7 +264,6 @@ function handleKeydown(e) {
 }
 
 @media (max-width: 640px) {
-  .monitor-ai-drawer { width: 100vw; }
   .quick-actions { grid-template-columns: 1fr; }
 }
 </style>

@@ -18,7 +18,7 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 )
 
-const orchestratorRemoteWorkspaceRoot = ".aiops_codex/missions"
+const orchestratorRemoteWorkspaceRoot = "/tmp/.aiops_codex/missions"
 
 type sessionCreateRequest struct {
 	Kind string `json:"kind"`

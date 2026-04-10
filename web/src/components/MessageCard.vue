@@ -1,14 +1,62 @@
 <script setup>
-import { computed, ref } from "vue";
-import { UserIcon, BotIcon, CopyIcon, CheckIcon } from "lucide-vue-next";
-import { marked } from "marked";
+import { computed, ref, watch, onBeforeUnmount } from "vue";
+import { UserIcon, BotIcon, CopyIcon, CheckIcon, ChevronDownIcon } from "lucide-vue-next";
+import { NSkeleton } from "naive-ui";
+import MarkdownIt from "markdown-it";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import json from "highlight.js/lib/languages/json";
+import yaml from "highlight.js/lib/languages/yaml";
+import nginx from "highlight.js/lib/languages/nginx";
+import python from "highlight.js/lib/languages/python";
+import go from "highlight.js/lib/languages/go";
+import "highlight.js/styles/github.css";
 import Modal from "./Modal.vue";
 
-// Configure marked for safe rendering
-marked.setOptions({
+// Register highlight.js languages on-demand
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("yaml", yaml);
+hljs.registerLanguage("nginx", nginx);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("go", go);
+
+// Configure markdown-it with highlight.js
+const md = new MarkdownIt({
+  html: false,
   breaks: true,
-  gfm: true,
+  linkify: true,
+  highlight(str, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(str, { language: lang }).value;
+      } catch { /* fallback */ }
+    }
+    return ""; // use external default escaping
+  },
 });
+
+// --- LRU Cache for markdown rendering (max 80 entries) ---
+const MD_CACHE_MAX = 80;
+const mdCache = new Map();
+
+function renderMarkdownCached(text) {
+  if (mdCache.has(text)) {
+    // Move to end (most recently used)
+    const val = mdCache.get(text);
+    mdCache.delete(text);
+    mdCache.set(text, val);
+    return val;
+  }
+  const rendered = md.render(text);
+  if (mdCache.size >= MD_CACHE_MAX) {
+    // Evict oldest (first key)
+    const firstKey = mdCache.keys().next().value;
+    mdCache.delete(firstKey);
+  }
+  mdCache.set(text, rendered);
+  return rendered;
+}
 
 const props = defineProps({
   card: {
@@ -20,6 +68,7 @@ const props = defineProps({
 const isUser = computed(() => props.card.role === "user");
 const rawText = computed(() => props.card.text || props.card.title || "");
 const messageText = computed(() => isUser.value ? rawText.value : cleanDisplayText(rawText.value));
+const showSkeleton = computed(() => !isUser.value && props.card.status === "inProgress" && !rawText.value.trim());
 
 const avatarIcon = computed(() => {
   return isUser.value ? UserIcon : BotIcon;
@@ -31,7 +80,7 @@ const renderAsCode = computed(() => {
   return looksStructuredText(messageText.value);
 });
 
-// Always render assistant messages as Markdown — marked handles plain text fine
+// Always render assistant messages as Markdown — markdown-it handles plain text fine
 // and properly formats lists, paragraphs, bold, code blocks, etc.
 const renderAsMarkdown = computed(() => {
   if (isUser.value) return false;
@@ -39,54 +88,86 @@ const renderAsMarkdown = computed(() => {
   return true;
 });
 
-const renderedMarkdown = computed(() => {
-  if (!renderAsMarkdown.value) return "";
+// --- Auto-collapse for long messages (>8000 chars) ---
+const COLLAPSE_THRESHOLD = 8000;
+const COLLAPSE_PREVIEW_LEN = 2000;
+const isCollapsed = ref(true);
+
+const isLongMessage = computed(() => messageText.value.length > COLLAPSE_THRESHOLD);
+
+function toggleCollapse() {
+  isCollapsed.value = !isCollapsed.value;
+}
+
+const displayText = computed(() => {
+  if (isLongMessage.value && isCollapsed.value) {
+    return messageText.value.slice(0, COLLAPSE_PREVIEW_LEN);
+  }
+  return messageText.value;
+});
+
+// --- Streaming throttled rendering (80ms) ---
+const isStreaming = computed(() => props.card.status === "inProgress");
+const throttledHtml = ref("");
+let throttleTimer = null;
+
+function updateRenderedHtml() {
+  if (!renderAsMarkdown.value) {
+    throttledHtml.value = "";
+    return;
+  }
   try {
-    const preprocessed = preprocessForMarkdown(messageText.value);
-    return marked.parse(preprocessed, { breaks: true, gfm: true });
+    throttledHtml.value = renderMarkdownCached(displayText.value);
   } catch {
-    return "";
+    throttledHtml.value = "";
+  }
+}
+
+watch(
+  [displayText, renderAsMarkdown],
+  () => {
+    if (isStreaming.value) {
+      // Throttle during streaming: max once per 80ms
+      if (!throttleTimer) {
+        updateRenderedHtml();
+        throttleTimer = setTimeout(() => {
+          throttleTimer = null;
+          // Render again in case text changed during throttle window
+          updateRenderedHtml();
+        }, 80);
+      }
+    } else {
+      // Not streaming: render immediately
+      if (throttleTimer) {
+        clearTimeout(throttleTimer);
+        throttleTimer = null;
+      }
+      updateRenderedHtml();
+    }
+  },
+  { immediate: true },
+);
+
+// Clean up timer on unmount
+onBeforeUnmount(() => {
+  if (throttleTimer) {
+    clearTimeout(throttleTimer);
+    throttleTimer = null;
   }
 });
 
-/**
- * Preprocess text for better Markdown rendering:
- * - If text already has proper line breaks / markdown, leave it alone
- * - If text is a dense Chinese paragraph with no line breaks, add breaks
- *   at logical boundaries (after 。followed by a topic shift)
- */
-function preprocessForMarkdown(text) {
-  if (!text) return text;
-  // If text already has multiple lines, it's already formatted
-  if (text.split("\n").filter((l) => l.trim()).length > 2) return text;
-  // If text has markdown formatting, don't touch it
-  if (/^#{1,6}\s/m.test(text) || /^\s*[-*+]\s/m.test(text) || /^\s*\d+\.\s/m.test(text) || /^```/m.test(text)) return text;
+// When streaming ends, do a final render to ensure we have the latest
+watch(isStreaming, (val, oldVal) => {
+  if (oldVal && !val) {
+    if (throttleTimer) {
+      clearTimeout(throttleTimer);
+      throttleTimer = null;
+    }
+    updateRenderedHtml();
+  }
+});
 
-  // For dense single-paragraph Chinese text, add paragraph breaks
-  // at sentence boundaries where a new topic/section starts
-  let result = text;
-  // Break before "- " dash lists that are inline
-  result = result.replace(/([。！？])\s*-\s+/g, "$1\n\n- ");
-  // Break before Chinese dash lists "－"
-  result = result.replace(/([。！？])\s*[－—]\s*/g, "$1\n\n— ");
-  // Break at major topic transitions (after period + space + new sentence starter)
-  result = result.replace(/。\s*(?=[A-Z\u4e00-\u9fff])/g, "。\n\n");
-
-  return result;
-}
-
-function hasMarkdownFormatting(value) {
-  if (!value) return false;
-  // Detect common Markdown patterns
-  return /^#{1,6}\s/m.test(value) ||       // headings
-    /^\s*[-*+]\s/m.test(value) ||           // unordered lists
-    /^\s*\d+\.\s/m.test(value) ||           // ordered lists
-    /\*\*[^*]+\*\*/m.test(value) ||         // bold
-    /`[^`]+`/.test(value) ||                // inline code
-    /^```/m.test(value) ||                  // code blocks
-    /^>\s/m.test(value) ||                  // blockquotes
-    /\|.*\|.*\|/m.test(value);             // tables
-}
+const renderedMarkdown = computed(() => throttledHtml.value);
 
 function containsMarkdownLinks(value) {
   return /\[([^\]]+)\]\(([^)]+)\)/.test(value || "");
@@ -321,7 +402,21 @@ function closePreview() {
     <div class="message-content">
       <div class="content-block relative-block assistant-thread-block" v-if="!isUser">
         <pre v-if="renderAsCode" class="message-code">{{ messageText }}</pre>
-        <div v-else-if="renderAsMarkdown" class="message-text markdown-body" v-html="renderedMarkdown"></div>
+        <template v-else-if="renderAsMarkdown">
+          <div class="message-text markdown-body" :class="{ 'is-streaming': isStreaming }" v-html="renderedMarkdown"></div>
+          <div v-if="isLongMessage" class="collapse-toggle">
+            <button type="button" class="expand-btn" @click="toggleCollapse">
+              <template v-if="isCollapsed">
+                展开全部
+                <ChevronDownIcon size="14" />
+              </template>
+              <template v-else>
+                收起
+                <ChevronDownIcon size="14" class="chevron-up" />
+              </template>
+            </button>
+          </div>
+        </template>
         <div v-else class="message-text rich-message">
           <template v-for="(block, blockIdx) in messageBlocks" :key="blockIdx">
             <div v-if="block.type === 'text'" class="message-line">
@@ -378,9 +473,12 @@ function closePreview() {
           </template>
         </div>
       </template>
-      <div class="ghost-loader" v-if="card.status === 'inProgress'">
-        <span class="spinner-small"></span> 
-        <span class="ghost-text">Thinking...</span>
+      <div class="ghost-loader" v-if="showSkeleton">
+        <n-skeleton text :repeat="2" style="width: 60%" />
+        <n-skeleton text style="width: 40%" />
+      </div>
+      <div class="ghost-loader" v-else-if="card.status === 'inProgress' && !isUser">
+        <span class="streaming-cursor" />
       </div>
     </div>
     
@@ -515,30 +613,26 @@ function closePreview() {
 
 .ghost-loader {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
-  margin-top: 4px;
-  color: #94a3b8;
+  margin-top: 6px;
+  max-width: min(480px, 100%);
 }
 
-.ghost-text {
-  font-size: 12px;
-  font-style: italic;
-}
-
-
-.spinner-small {
+.streaming-cursor {
   display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 2px solid rgba(0,0,0,0.1);
-  border-radius: 50%;
-  border-top-color: currentColor;
-  animation: spin 1s linear infinite;
+  width: 2px;
+  height: 16px;
+  background: #3b82f6;
+  border-radius: 1px;
+  animation: blink-cursor 1s step-end infinite;
+  vertical-align: text-bottom;
+  margin-left: 1px;
 }
 
-@keyframes spin { 
-  to { transform: rotate(360deg); }
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 .relative-block {
@@ -604,6 +698,36 @@ function closePreview() {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Collapse / Expand toggle */
+.collapse-toggle {
+  margin-top: 6px;
+  text-align: center;
+}
+
+.expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #2563eb;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.expand-btn:hover {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.chevron-up {
+  transform: rotate(180deg);
 }
 
 .file-link-text {
@@ -695,6 +819,20 @@ function closePreview() {
   word-break: break-word;
 }
 
+.markdown-body.is-streaming :deep(p:last-child::after),
+.markdown-body.is-streaming :deep(li:last-child::after),
+.markdown-body.is-streaming :deep(code:last-child::after) {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 0.9em;
+  background: #3b82f6;
+  border-radius: 1px;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  animation: blink-cursor 1s step-end infinite;
+}
+
 .markdown-body :deep(h1),
 .markdown-body :deep(h2),
 .markdown-body :deep(h3),
@@ -746,9 +884,9 @@ function closePreview() {
 
 .markdown-body :deep(pre) {
   margin: 6px 0;
-  padding: 9px 12px;
-  border-radius: 10px;
-  background: #f8fafc;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fafafa;
   border: 1px solid #e2e8f0;
   overflow-x: auto;
 }
@@ -756,8 +894,10 @@ function closePreview() {
 .markdown-body :deep(pre code) {
   background: transparent;
   padding: 0;
-  font-size: 12px;
-  line-height: 1.48;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: inherit;
 }
 
 .markdown-body :deep(blockquote) {

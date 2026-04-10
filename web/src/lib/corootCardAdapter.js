@@ -5,6 +5,9 @@
  * Each function handles missing fields with safe defaults ("N/A" for strings, 0 for numbers).
  */
 
+// Re-export topology adapters so consumers can import from a single module
+export { adaptTopology, adaptServiceDependencies } from "./corootTopologyAdapter.js";
+
 /**
  * adaptServiceOverview(result) → McpSummaryCard
  * Converts a Coroot service overview result into a readonly_summary card.
@@ -105,6 +108,96 @@ export function adaptAlerts(alerts) {
       uiKind: "readonly_chart",
       title: "告警列表",
       visual: { kind: "status_table", columns: ["ID", "名称", "严重程度", "状态"], rows: [] },
+    };
+  }
+}
+
+/**
+ * adaptHostOverview(hostData) → McpSummaryCard
+ * Converts a Coroot host overview result into a readonly_summary card
+ * with KV rows for CPU, memory, disk, network, and other host info.
+ */
+export function adaptHostOverview(hostData) {
+  try {
+    const data = hostData && typeof hostData === "object" ? hostData : {};
+    const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+    const activeAlerts = alerts.filter(
+      (a) => a && typeof a === "object" && (a.status === "firing" || a.status === "active")
+    );
+
+    const rows = [
+      { label: "主机名", value: data.name || data.hostname || "N/A" },
+      { label: "状态", value: data.status || "N/A", highlight: true },
+      { label: "操作系统", value: data.os || "N/A" },
+      { label: "CPU 使用率", value: data.cpu != null ? String(data.cpu) : "N/A" },
+      { label: "内存使用率", value: data.memory != null ? String(data.memory) : "N/A" },
+      { label: "磁盘使用率", value: data.disk != null ? String(data.disk) : "N/A" },
+      { label: "网络流量", value: data.network != null ? String(data.network) : "N/A" },
+    ];
+
+    const card = {
+      uiKind: "readonly_summary",
+      title: `${data.name || data.hostname || "N/A"} 主机概览`,
+      status: data.status || "N/A",
+      rows,
+    };
+
+    if (activeAlerts.length > 0) {
+      card.alertSummary = `${activeAlerts.length} 个活跃告警`;
+    }
+
+    return card;
+  } catch {
+    return {
+      uiKind: "readonly_summary",
+      title: "N/A 主机概览",
+      status: "N/A",
+      rows: [],
+    };
+  }
+}
+
+/**
+ * adaptServiceDetail(serviceOverview) → McpSummaryCard
+ * Enhanced version of adaptServiceOverview that includes health score,
+ * key metrics (CPU, memory, latency, error rate), and alert summary.
+ */
+export function adaptServiceDetail(serviceOverview) {
+  try {
+    const data = serviceOverview && typeof serviceOverview === "object" ? serviceOverview : {};
+    const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+    const activeAlerts = alerts.filter(
+      (a) => a && typeof a === "object" && (a.status === "firing" || a.status === "active")
+    );
+
+    const rows = [
+      { label: "服务 ID", value: data.id || "N/A" },
+      { label: "状态", value: data.status || "N/A", highlight: true },
+      { label: "健康评分", value: data.healthScore != null ? String(data.healthScore) : "N/A" },
+      { label: "CPU", value: data.cpu != null ? String(data.cpu) : "N/A" },
+      { label: "内存", value: data.memory != null ? String(data.memory) : "N/A" },
+      { label: "请求延迟", value: data.latency != null ? String(data.latency) : "N/A" },
+      { label: "错误率", value: data.errorRate != null ? String(data.errorRate) : "N/A" },
+    ];
+
+    const card = {
+      uiKind: "readonly_summary",
+      title: `${data.name || "N/A"} 服务详情`,
+      status: data.status || "N/A",
+      rows,
+    };
+
+    if (activeAlerts.length > 0) {
+      card.alertSummary = `${activeAlerts.length} 个活跃告警`;
+    }
+
+    return card;
+  } catch {
+    return {
+      uiKind: "readonly_summary",
+      title: "N/A 服务详情",
+      status: "N/A",
+      rows: [],
     };
   }
 }

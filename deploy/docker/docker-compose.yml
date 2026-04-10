@@ -26,6 +26,14 @@ services:
       - HOST_AGENT_BOOTSTRAP_TOKEN=${HOST_AGENT_BOOTSTRAP_TOKEN:-change-me}
       - FRONTEND_REDIRECT_URL=http://127.0.0.1:18080/
       - CODEX_API_KEY=${CODEX_API_KEY:-}
+      # Coroot 集成配置
+      - COROOT_BASE_URL=${COROOT_BASE_URL:-}
+      - COROOT_TOKEN=${COROOT_TOKEN:-}
+      - COROOT_TIMEOUT=${COROOT_TIMEOUT:-30s}
+      - COROOT_PRIORITY=${COROOT_PRIORITY:-coroot_first}
+      - COROOT_FALLBACK_ENABLED=${COROOT_FALLBACK_ENABLED:-true}
+      - COROOT_HEALTH_CHECK_INTERVAL=${COROOT_HEALTH_CHECK_INTERVAL:-30s}
+      - COROOT_RCA_ENABLED=${COROOT_RCA_ENABLED:-false}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/api/v1/healthz"]
