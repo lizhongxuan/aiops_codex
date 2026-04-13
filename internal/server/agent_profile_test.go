@@ -727,40 +727,21 @@ func TestEnsureThreadUsesUpdatedMainAgentProfile(t *testing.T) {
 	}
 	app.store.UpsertAgentProfile(profile)
 
-	var captured map[string]any
-	app.codexRequestFunc = func(_ context.Context, method string, params any, result any) error {
-		switch method {
-		case "skills/list":
-			return json.Unmarshal([]byte(`{"data":[]}`), result)
-		case "thread/start":
-		default:
-			t.Fatalf("expected skills/list or thread/start, got %s", method)
-		}
-		var ok bool
-		captured, ok = params.(map[string]any)
-		if !ok {
-			t.Fatalf("expected params map, got %#v", params)
-		}
-		return json.Unmarshal([]byte(`{"thread":{"id":"thread-updated-main"}}`), result)
+	app.skillDiscoveryFunc = func(context.Context, string) ([]installedSkillMetadata, error) {
+		return nil, nil
 	}
 
-	threadID, err := app.ensureThread(context.Background(), sessionID)
-	if err != nil {
-		t.Fatalf("ensureThread: %v", err)
-	}
-	if threadID != "thread-updated-main" {
-		t.Fatalf("expected thread id to be returned, got %q", threadID)
-	}
-	if got := captured["model"]; got != "gpt-5.4-mini" {
+	spec := app.buildSingleHostReActThreadStartSpec(context.Background(), sessionID)
+	if got := spec.Model; got != "gpt-5.4-mini" {
 		t.Fatalf("expected updated model, got %#v", got)
 	}
-	if got := captured["approvalPolicy"]; got != "team-approved" {
+	if got := spec.ApprovalPolicy; got != "team-approved" {
 		t.Fatalf("expected updated approval policy, got %#v", got)
 	}
-	if got := captured["sandbox"]; got != "workspace-write" {
+	if got := spec.SandboxMode; got != "workspace-write" {
 		t.Fatalf("expected updated sandbox, got %#v", got)
 	}
-	instructions := stringValue(captured["developerInstructions"])
+	instructions := spec.DeveloperInstructions
 	if !strings.Contains(instructions, "Keep changes tight and explain impact clearly.") {
 		t.Fatalf("expected updated system prompt in developer instructions, got %q", instructions)
 	}
@@ -813,44 +794,27 @@ func TestRequestTurnUsesUpdatedMainAgentProfile(t *testing.T) {
 	}
 	app.store.UpsertAgentProfile(profile)
 
-	var captured map[string]any
-	app.codexRequestFunc = func(_ context.Context, method string, params any, result any) error {
-		switch method {
-		case "skills/list":
-			return json.Unmarshal([]byte(`{"data":[]}`), result)
-		case "turn/start":
-		default:
-			t.Fatalf("expected skills/list or turn/start, got %s", method)
-		}
-		var ok bool
-		captured, ok = params.(map[string]any)
-		if !ok {
-			t.Fatalf("expected params map, got %#v", params)
-		}
-		return json.Unmarshal([]byte(`{"turn":{"id":"turn-updated-main"}}`), result)
+	app.skillDiscoveryFunc = func(context.Context, string) ([]installedSkillMetadata, error) {
+		return nil, nil
 	}
 
-	err := app.requestTurn(context.Background(), sessionID, threadID, chatRequest{
+	spec := app.buildSingleHostReActTurnStartSpec(context.Background(), sessionID, chatRequest{
 		Message: "Show the updated turn prompt.",
 		HostID:  "linux-02",
 	})
-	if err != nil {
-		t.Fatalf("requestTurn: %v", err)
+	if got := strings.TrimSpace(threadID); got != "thread-main-agent-turn" {
+		t.Fatalf("expected fixed thread id fixture, got %#v", got)
 	}
-	if got := captured["threadId"]; got != threadID {
-		t.Fatalf("expected thread id to be forwarded, got %#v", got)
-	}
-	if got := captured["approvalPolicy"]; got != "strict" {
+	if got := spec.ApprovalPolicy; got != "strict" {
 		t.Fatalf("expected updated approval policy, got %#v", got)
 	}
-	if got := captured["reasoningEffort"]; got != "high" {
+	if got := spec.ReasoningEffort; got != "high" {
 		t.Fatalf("expected updated reasoning effort, got %#v", got)
 	}
-	sandbox := mapValue(captured["sandboxPolicy"])
-	if got := sandbox["type"]; got != "readOnly" {
+	if got := spec.SandboxMode; got != "read-only" {
 		t.Fatalf("expected updated sandbox type, got %#v", got)
 	}
-	instructions := stringValue(captured["developerInstructions"])
+	instructions := spec.DeveloperInstructions
 	if !strings.Contains(instructions, "Tune each turn for concise operational summaries.") {
 		t.Fatalf("expected updated system prompt in turn instructions, got %q", instructions)
 	}

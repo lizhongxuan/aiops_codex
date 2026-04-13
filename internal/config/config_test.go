@@ -2,9 +2,104 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"testing"
 	"time"
 )
+
+func clearLLMEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"USE_BIFROST",
+		"LLM_PROVIDER",
+		"LLM_MODEL",
+		"LLM_API_KEY",
+		"LLM_API_KEYS",
+		"LLM_BASE_URL",
+		"LLM_FALLBACK_PROVIDER",
+		"LLM_FALLBACK_MODEL",
+		"LLM_FALLBACK_API_KEY",
+		"LLM_COMPACT_MODEL",
+		"CODEX_API_KEY",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func TestLoad_BifrostDefaults(t *testing.T) {
+	clearLLMEnv(t)
+
+	cfg := Load()
+
+	if !cfg.UseBifrost {
+		t.Fatal("expected UseBifrost default true")
+	}
+	if cfg.LLMProvider != "openai" {
+		t.Fatalf("expected default LLMProvider openai, got %q", cfg.LLMProvider)
+	}
+	if cfg.LLMModel != "gpt-4o-mini" {
+		t.Fatalf("expected default LLMModel gpt-4o-mini, got %q", cfg.LLMModel)
+	}
+	if cfg.LLMCompactModel != "gpt-4o-mini" {
+		t.Fatalf("expected default LLMCompactModel gpt-4o-mini, got %q", cfg.LLMCompactModel)
+	}
+	if cfg.LLMAPIKey != "" {
+		t.Fatalf("expected empty default LLMAPIKey, got %q", cfg.LLMAPIKey)
+	}
+}
+
+func TestLoad_BifrostConfigFromEnv(t *testing.T) {
+	clearLLMEnv(t)
+	t.Setenv("USE_BIFROST", "false")
+	t.Setenv("LLM_PROVIDER", "anthropic")
+	t.Setenv("LLM_MODEL", "claude-sonnet-4-20250514")
+	t.Setenv("LLM_API_KEY", "primary-key")
+	t.Setenv("LLM_API_KEYS", "backup-1,backup-2")
+	t.Setenv("LLM_BASE_URL", "https://example.test/v1")
+	t.Setenv("LLM_FALLBACK_PROVIDER", "openai")
+	t.Setenv("LLM_FALLBACK_MODEL", "gpt-4.1-mini")
+	t.Setenv("LLM_FALLBACK_API_KEY", "fallback-key")
+	t.Setenv("LLM_COMPACT_MODEL", "claude-3-5-haiku")
+
+	cfg := Load()
+
+	if cfg.UseBifrost {
+		t.Fatal("expected UseBifrost=false from env")
+	}
+	if cfg.LLMProvider != "anthropic" || cfg.LLMModel != "claude-sonnet-4-20250514" {
+		t.Fatalf("unexpected provider/model: %s %s", cfg.LLMProvider, cfg.LLMModel)
+	}
+	if cfg.LLMAPIKey != "primary-key" {
+		t.Fatalf("expected primary key, got %q", cfg.LLMAPIKey)
+	}
+	if cfg.LLMBaseURL != "https://example.test/v1" {
+		t.Fatalf("unexpected LLMBaseURL %q", cfg.LLMBaseURL)
+	}
+	if cfg.LLMFallbackProvider != "openai" || cfg.LLMFallbackModel != "gpt-4.1-mini" || cfg.LLMFallbackAPIKey != "fallback-key" {
+		t.Fatalf("unexpected fallback config: %#v", cfg)
+	}
+	if cfg.LLMCompactModel != "claude-3-5-haiku" {
+		t.Fatalf("unexpected compact model %q", cfg.LLMCompactModel)
+	}
+	wantKeys := []string{"primary-key", "backup-1", "backup-2"}
+	if !reflect.DeepEqual(cfg.LLMAPIKeys, wantKeys) {
+		t.Fatalf("LLMAPIKeys = %#v, want %#v", cfg.LLMAPIKeys, wantKeys)
+	}
+}
+
+func TestLoad_LLMAPIKeyFallsBackToCodexAPIKey(t *testing.T) {
+	clearLLMEnv(t)
+	t.Setenv("CODEX_API_KEY", "legacy-codex-key")
+
+	cfg := Load()
+
+	if cfg.LLMAPIKey != "legacy-codex-key" {
+		t.Fatalf("expected LLMAPIKey to fall back to CODEX_API_KEY, got %q", cfg.LLMAPIKey)
+	}
+	if !reflect.DeepEqual(cfg.LLMAPIKeys, []string{"legacy-codex-key"}) {
+		t.Fatalf("expected primary key promoted into LLMAPIKeys, got %#v", cfg.LLMAPIKeys)
+	}
+}
 
 func TestLoad_CorootRoutingDefaults(t *testing.T) {
 	// Clear any env vars that might interfere

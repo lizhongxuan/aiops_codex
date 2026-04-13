@@ -233,12 +233,12 @@ function openMcpCatalog() {
 
 const authBadgeLabel = computed(() => {
   if (store.snapshot.auth.connected) {
-    return `GPT ${store.snapshot.auth.planType || "接入"}`;
+    return store.snapshot.config?.model || "AI 已接入";
   }
   if (store.snapshot.auth.pending) {
-    return "登录中";
+    return "连接中";
   }
-  return "未登录";
+  return "未连接";
 });
 
 async function createSession(kind = "single_host") {
@@ -489,7 +489,7 @@ const menuActiveKey = computed(() => {
   if (route.name === "chat") return "chat";
   if (route.name === "protocol") return "protocol";
   if (route.name === "coroot") return "coroot";
-  if (route.path.startsWith("/settings")) return "hosts";
+  if (route.name === "settings-hosts") return "hosts";
   return "";
 });
 
@@ -502,25 +502,21 @@ const menuOptions = computed(() => [
     label: "单机会话",
     key: "chat",
     icon: renderMenuIcon(AppWindowIcon),
-    extra: currentSessionStatus.value,
   },
   {
     label: "协作工作台",
     key: "protocol",
     icon: renderMenuIcon(PanelsTopLeftIcon),
-    extra: workspaceNavStatus.value,
   },
   {
     label: "Coroot 监控",
     key: "coroot",
     icon: renderMenuIcon(ActivityIcon),
-    extra: "Dashboard",
   },
   {
     label: "主机列表",
     key: "hosts",
     icon: renderMenuIcon(ServerIcon),
-    extra: "Hosts",
   },
 ]);
 
@@ -610,12 +606,12 @@ watch(
     >
       <div class="sidebar-top">
         <div class="sidebar-actions">
-          <n-button block @click="startNewThread" :quaternary="false" class="new-thread-btn">
+          <n-button block tertiary @click="startNewThread" class="new-thread-btn">
             <template #icon><MessageSquarePlusIcon size="18" /></template>
             <span v-if="!isSidebarCollapsed" class="nav-label">新建会话</span>
             <span v-if="!isSidebarCollapsed" class="shortcut">⌘ N</span>
           </n-button>
-          <n-button block quaternary @click="startWorkspaceSession" v-if="!isSidebarCollapsed">
+          <n-button block tertiary @click="startWorkspaceSession" v-if="!isSidebarCollapsed" class="new-thread-btn">
             <template #icon><PanelsTopLeftIcon size="18" /></template>
             <span class="nav-label">新建工作台</span>
           </n-button>
@@ -637,6 +633,10 @@ watch(
             <template #icon><SettingsIcon size="20" /></template>
           </n-button>
           <div v-if="isSettingsMenuOpen" class="settings-menu-popover" @click.stop>
+            <button class="settings-menu-item" @click="closeSettingsMenu(); router.push('/settings/llm')">
+              <span class="settings-menu-title">LLM 配置</span>
+              <span class="settings-menu-subtitle">Provider / API Key / Model</span>
+            </button>
             <button class="settings-menu-item" @click="openGeneralSettings">
               <span class="settings-menu-title">设置总览</span>
               <span class="settings-menu-subtitle">Hosts / Packs / Agent</span>
@@ -732,8 +732,8 @@ watch(
           <n-button
             tertiary
             size="small"
-            @click="isLoginModalOpen = true"
-            :type="store.snapshot.auth.connected ? 'success' : 'default'"
+            @click="router.push('/settings/llm')"
+            :type="store.snapshot.config?.codexAlive ? 'success' : 'default'"
           >
             <template #icon><UserCircleIcon size="16" /></template>
             {{ authBadgeLabel }}
@@ -912,17 +912,18 @@ watch(
 }
 
 .sidebar-top {
-  padding: 16px;
+  padding: 12px 12px 8px;
 }
 
 .sidebar-actions {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .new-thread-btn {
   justify-content: flex-start;
+  height: 36px;
 }
 
 .shortcut {

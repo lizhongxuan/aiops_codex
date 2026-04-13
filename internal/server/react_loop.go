@@ -29,7 +29,7 @@ const (
 
 const (
 	reActModeAnswer   = "answer"
-	reActModeReadonly  = "readonly"
+	reActModeReadonly = "readonly"
 	reActModePlan     = "plan"
 	reActModeExecute  = "execute"
 )
@@ -74,7 +74,7 @@ type reActLoopState struct {
 	TurnSpec           turnStartSpec
 	ThreadID           string
 	LastError          error
-	NeedsFollowUp     bool
+	NeedsFollowUp      bool
 	RecoveryCount      int
 	Checkpoints        []string
 	StopReason         string
@@ -282,9 +282,10 @@ type reActToolExecutionStage struct {
 func (reActToolExecutionStage) Name() string { return reActStageToolExecution }
 
 func (stage reActToolExecutionStage) Run(_ context.Context, state *reActLoopState) error {
-	// Codex app-server streams tool requests back through handleCodexServerRequest.
-	// This stage is kept explicit so the execution strategy can later be replaced
-	// with an in-process StreamingToolExecutor without changing callers.
+	// Legacy runtime streams tool requests back through the shared runtime
+	// request handler. This stage is kept explicit so the execution strategy can
+	// later be replaced with an in-process StreamingToolExecutor without
+	// changing callers.
 	return nil
 }
 

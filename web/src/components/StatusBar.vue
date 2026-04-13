@@ -15,10 +15,10 @@ const emit = defineEmits(["open-settings"]);
 
 const connectionLabel = computed(() => {
   switch (props.wsStatus) {
-    case "connected": return "Codex 已连接";
-    case "connecting": return "Codex 连接中...";
-    case "error": return "Codex 连接断开";
-    default: return "Codex 未连接";
+    case "connected": return "AI 已连接";
+    case "connecting": return "AI 连接中...";
+    case "error": return "AI 连接断开";
+    default: return "AI 未连接";
   }
 });
 

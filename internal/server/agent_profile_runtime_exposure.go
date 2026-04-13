@@ -7,27 +7,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"github.com/lizhongxuan/aiops-codex/internal/store"
 )
 
-type codexSkillsListResponse struct {
-	Data []codexSkillsListEntry `json:"data"`
-}
-
-type codexSkillsListEntry struct {
-	Cwd    string               `json:"cwd"`
-	Skills []codexSkillMetadata `json:"skills"`
-}
-
-type codexSkillMetadata struct {
+type installedSkillMetadata struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
 	Enabled bool   `json:"enabled"`
 }
+
+type discoverInstalledSkillsFunc func(context.Context, string) ([]installedSkillMetadata, error)
 
 func normalizeSkillLookupKey(value string) string {
 	return strings.TrimSpace(strings.ToLower(value))
@@ -57,22 +52,103 @@ func explicitSkillRequested(message string, item model.AgentSkill) bool {
 	return false
 }
 
-func (a *App) listCodexSkills(ctx context.Context) ([]codexSkillMetadata, error) {
-	var result codexSkillsListResponse
-	if err := a.codexRequest(ctx, "skills/list", map[string]any{
-		"cwds":        []string{a.cfg.DefaultWorkspace},
-		"forceReload": false,
-	}, &result); err != nil {
-		return nil, err
+func discoverInstalledSkills(_ context.Context, workspace string) ([]installedSkillMetadata, error) {
+	roots := candidateInstalledSkillRoots(workspace)
+	if len(roots) == 0 {
+		return nil, nil
 	}
-	items := make([]codexSkillMetadata, 0)
-	for _, entry := range result.Data {
-		items = append(items, entry.Skills...)
+	items := make([]installedSkillMetadata, 0)
+	seen := make(map[string]struct{})
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			skillPath := filepath.Join(root, entry.Name(), "SKILL.md")
+			info, err := os.Stat(skillPath)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			if _, ok := seen[skillPath]; ok {
+				continue
+			}
+			seen[skillPath] = struct{}{}
+			items = append(items, installedSkillMetadata{
+				Name:    readInstalledSkillName(skillPath, entry.Name()),
+				Path:    skillPath,
+				Enabled: true,
+			})
+		}
 	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Name == items[j].Name {
+			return items[i].Path < items[j].Path
+		}
+		return items[i].Name < items[j].Name
+	})
 	return items, nil
 }
 
-func buildManagedSkillPathMap(profile model.AgentProfile, discovered []codexSkillMetadata) map[string]string {
+func candidateInstalledSkillRoots(workspace string) []string {
+	roots := make([]string, 0, 3)
+	add := func(root string) {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			return
+		}
+		for _, existing := range roots {
+			if existing == root {
+				return
+			}
+		}
+		roots = append(roots, root)
+	}
+	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
+		add(filepath.Join(codexHome, "skills"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		add(filepath.Join(home, ".codex", "skills"))
+	}
+	if workspace = strings.TrimSpace(workspace); workspace != "" {
+		add(filepath.Join(workspace, ".codex", "skills"))
+	}
+	return roots
+}
+
+func readInstalledSkillName(path, fallback string) string {
+	content, err := os.ReadFile(path)
+	if err == nil {
+		for _, line := range strings.Split(string(content), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "# ") {
+				if title := strings.TrimSpace(strings.TrimPrefix(line, "# ")); title != "" {
+					return title
+				}
+			}
+		}
+	}
+	fallback = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(fallback, "-", " "), "_", " "))
+	if fallback == "" {
+		return filepath.Base(filepath.Dir(path))
+	}
+	return fallback
+}
+
+func (a *App) listInstalledSkills(ctx context.Context) ([]installedSkillMetadata, error) {
+	if a != nil && a.skillDiscoveryFunc != nil {
+		return a.skillDiscoveryFunc(ctx, a.cfg.DefaultWorkspace)
+	}
+	return discoverInstalledSkills(ctx, a.cfg.DefaultWorkspace)
+}
+
+func buildManagedSkillPathMap(profile model.AgentProfile, discovered []installedSkillMetadata) map[string]string {
 	managed := make(map[string]string)
 	allowed := make(map[string]struct{})
 	for _, item := range profile.Skills {
@@ -108,8 +184,8 @@ func (a *App) buildMainAgentThreadConfig(ctx context.Context, profile model.Agen
 		"apps._default.destructive_enabled": false,
 	}
 
-	if discovered, err := a.listCodexSkills(ctx); err != nil {
-		log.Printf("main-agent skills/list skipped while building thread config: %v", err)
+	if discovered, err := a.listInstalledSkills(ctx); err != nil {
+		log.Printf("main-agent skill discovery skipped while building thread config: %v", err)
 	} else {
 		enabledKeys := make(map[string]struct{})
 		for _, item := range profile.Skills {
@@ -217,9 +293,9 @@ func (a *App) buildMainAgentTurnInput(ctx context.Context, profile model.AgentPr
 	items := []map[string]any{
 		{"type": "text", "text": message},
 	}
-	discovered, err := a.listCodexSkills(ctx)
+	discovered, err := a.listInstalledSkills(ctx)
 	if err != nil {
-		log.Printf("main-agent skills/list skipped while building turn input: %v", err)
+		log.Printf("main-agent skill discovery skipped while building turn input: %v", err)
 		return items
 	}
 	pathMap := buildManagedSkillPathMap(profile, discovered)

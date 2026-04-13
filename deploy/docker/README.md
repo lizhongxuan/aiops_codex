@@ -8,13 +8,13 @@
                     │                                          │
  浏览器 ──HTTP──►  │  ai-server (Go)                          │
                     │      │                                   │
-                    │      │ exec + stdio pipe (JSON-RPC)      │
+                    │      │ Bifrost Gateway                   │
                     │      ▼                                   │
-                    │  codex app-server (Rust)                 │
+                    │  OpenAI / Anthropic / Ollama             │
                     │      │                                   │
-                    │      │ HTTPS                             │
+                    │      │ HTTPS / OpenAI-compatible         │
                     │      ▼                                   │
-                    │  OpenAI API                              │
+                    │  模型提供方 API                          │
                     ├──────────────────────────────────────────┤
                     │  端口:                                    │
                     │    8080  → HTTP + WebSocket + 前端        │
@@ -27,32 +27,30 @@
                     └──────────────────────────────────────────┘
 ```
 
-ai-server 和 codex app-server 打在同一个镜像里，原因是 ai-server
-通过 `exec.Command("codex", "app-server")` 把 codex 作为子进程拉起，
-两者通过 stdio pipe 通信，必须在同一个进程空间。
+当前运行时默认由 ai-server 内置的 Bifrost Gateway 对接模型提供方，
+通过 `LLM_PROVIDER`、`LLM_API_KEY`、`LLM_BASE_URL` 等环境变量选择 provider。
+不需要在宿主机额外安装任何 LLM 客户端二进制。
 
 ## 镜像里有什么
 
-ai-server.Dockerfile 是 4 阶段多阶段构建：
+ai-server.Dockerfile 是 3 阶段多阶段构建：
 
 ```
 Stage 1 (frontend)     : Node 22 → npm ci → npm run build → web/dist/
 Stage 2 (backend)      : Go 1.26 → go build → ai-server 二进制
-Stage 3 (codex)        : curl 下载 GitHub Release → codex 二进制
-Stage 4 (final)        : debian:bookworm-slim + 三个产物合并
+Stage 3 (final)        : debian:bookworm-slim + 产物合并
 ```
 
 最终镜像内容：
 
 ```
-/usr/local/bin/codex       ← Rust 静态二进制 (musl, ~50MB)
 /usr/local/bin/ai-server   ← Go 静态二进制 (~15MB)
 /app/web/dist/             ← Vue 3 前端构建产物
 /data/                     ← 运行时数据目录
 ```
 
 基础镜像是 `debian:bookworm-slim`，不需要 Node.js 运行时。
-codex 是 musl 静态链接，ai-server 是 CGO_ENABLED=0，都是零依赖。
+ai-server 是 `CGO_ENABLED=0` 构建，Bifrost 通过网络访问 provider 接口，不依赖本机安装额外的 LLM 客户端二进制。
 
 ## 快速开始
 
@@ -69,8 +67,11 @@ cp .env.example .env
 # 必填: host-agent 接入 token
 HOST_AGENT_BOOTSTRAP_TOKEN=your-secure-token-here
 
-# 必填: OpenAI 认证 (三选一，见下方"认证方式"章节)
-CODEX_API_KEY=sk-xxx
+# 必填: LLM provider 配置
+LLM_PROVIDER=openai
+LLM_API_KEY=sk-xxx
+# 可选: 兼容 OpenAI / 私有网关 / Ollama 的自定义地址
+LLM_BASE_URL=
 ```
 
 ### 2. 构建并启动
@@ -122,99 +123,60 @@ AIOPS_AGENT_BOOTSTRAP_TOKEN=replace-with-real-token
 - `AIOPS_AGENT_LABELS`: 如 `env=prod,role=web`，便于筛选和审计。
 - `AIOPS_AGENT_TLS_CA_FILE` / `AIOPS_AGENT_TLS_CERT_FILE` / `AIOPS_AGENT_TLS_KEY_FILE`: 生产态启用 TLS / mTLS 时必填。
 
-## 认证方式
+## Bifrost LLM 配置
 
-codex app-server 需要 OpenAI 认证才能工作。三种方式：
-
-### 方式 1: API Key（推荐服务器环境）
-
-最简单。在 `.env` 里设置：
+Bifrost 默认启用，当前代码支持的 provider 是 `openai`、`anthropic`、`ollama`。
+通用配置项如下：
 
 ```bash
-CODEX_API_KEY=sk-proj-xxxx
+USE_BIFROST=true
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+LLM_API_KEY=sk-xxx
+LLM_BASE_URL=
+LLM_API_KEYS=
+LLM_FALLBACK_PROVIDER=
+LLM_FALLBACK_MODEL=
+LLM_FALLBACK_API_KEY=
+LLM_COMPACT_MODEL=gpt-4o-mini
 ```
 
-或者在 docker-compose.yml 的 environment 里加：
-
-```yaml
-- CODEX_API_KEY=sk-proj-xxxx
-```
-
-codex 启动时会自动读取这个环境变量。
-
-### 方式 2: 挂载 auth.json
-
-先在本地机器上完成 codex 登录：
-
-```bash
-# 本地安装 codex
-npm install -g @openai/codex
-
-# 登录 (会打开浏览器)
-codex login
-
-# 登录成功后 auth.json 在这里:
-ls ~/.codex/auth.json
-```
-
-然后把 auth.json 挂载进容器：
+配置方式：
 
 ```yaml
 # docker-compose.yml
 services:
   ai-server:
-    volumes:
-      - ai-data:/data
-      - ~/.codex/auth.json:/data/codex-home/auth.json:ro
+    environment:
+      - USE_BIFROST=true
+      - LLM_PROVIDER=openai
+      - LLM_API_KEY=sk-xxx
+      - LLM_BASE_URL=
 ```
 
-### 方式 3: 前端 ChatGPT OAuth 登录
-
-需要配置 OAuth 参数（适合有 ChatGPT Team/Enterprise 的场景）：
-
-```yaml
-environment:
-  - GPT_OAUTH_CLIENT_ID=your-client-id
-  - GPT_OAUTH_CLIENT_SECRET=your-client-secret
-  - GPT_OAUTH_AUTH_URL=https://auth0.openai.com/authorize
-  - GPT_OAUTH_TOKEN_URL=https://auth0.openai.com/oauth/token
-  - GPT_OAUTH_REDIRECT_URL=http://your-server:18080/api/v1/auth/oauth/callback
-  - GPT_OAUTH_ACCOUNT_ID=your-account-id
-```
-
-启动后在前端页面点击登录，走 OAuth 流程。
-
-## codex 版本管理
-
-### 指定 codex 版本
-
-默认拉取 latest release。指定版本：
+常见 provider 示例：
 
 ```bash
-docker compose build --build-arg CODEX_VERSION=0.117.0-alpha.21
+# OpenAI
+LLM_PROVIDER=openai
+LLM_API_KEY=sk-xxx
+LLM_BASE_URL=https://api.openai.com/v1
+
+# Anthropic
+LLM_PROVIDER=anthropic
+LLM_API_KEY=ant-xxx
+LLM_BASE_URL=https://api.anthropic.com
+
+# Ollama
+LLM_PROVIDER=ollama
+LLM_BASE_URL=http://127.0.0.1:11434/v1
 ```
 
-### 升级 codex
+说明：
 
-```bash
-# 重新构建 (会拉取最新 release)
-docker compose build --no-cache ai-server
-
-# 重启
-docker compose up -d ai-server
-```
-
-### 锁定版本（生产推荐）
-
-在 docker-compose.yml 里固定版本：
-
-```yaml
-services:
-  ai-server:
-    build:
-      args:
-        CODEX_VERSION: "0.117.0-alpha.21"
-```
+- `LLM_BASE_URL` 可指向 OpenAI-compatible 服务，也可指向本地 Ollama。
+- `LLM_PROVIDER=ollama` 时通常不需要 API key。
+- 需要回退模型时，填 `LLM_FALLBACK_PROVIDER`、`LLM_FALLBACK_MODEL`、`LLM_FALLBACK_API_KEY`。
 
 ## 多架构支持
 
@@ -241,11 +203,7 @@ docker buildx build \
 
 ```
 /data/
-├── workspace/              ← codex 工作区 (agent 读写文件的地方)
-├── codex-home/             ← CODEX_HOME (auth.json, config.toml, memories/)
-│   ├── auth.json           ← 认证信息
-│   ├── config.toml         ← codex 配置
-│   └── memories/           ← agent 记忆
+├── workspace/              ← 运行时工作区 (agent 读写文件的地方)
 ├── ai-server-state.json    ← 会话/主机/认证状态持久化
 └── ai-audit.log            ← 审计日志 (JSONL)
 ```
@@ -455,25 +413,24 @@ HOST_AGENT_BOOTSTRAP_TOKENS=new-token-2026-04,old-token-2026-03
 
 ## 故障排查
 
-### codex app-server 没启动
+### Bifrost runtime 没起来
 
 ```bash
 # 查看日志
-docker compose logs ai-server | grep codex
+docker compose logs ai-server | grep -i bifrost
 
-# 进容器检查
-docker compose exec ai-server codex --version
-docker compose exec ai-server codex app-server --help
+# 检查环境变量
+docker compose exec ai-server env | grep -E '^(USE_BIFROST|LLM_)'
 
 # 检查健康
 curl http://127.0.0.1:18080/api/v1/healthz
-# 如果 codexAlive: false，说明 codex 子进程没跑起来
 ```
 
 常见原因：
-- 没有认证信息（设置 CODEX_API_KEY 或挂载 auth.json）
-- codex 版本太旧不支持 app-server 子命令
-- 网络不通（codex 需要访问 api.openai.com）
+- `LLM_PROVIDER` 拼错或不在支持列表里。
+- `LLM_API_KEY` 缺失，但当前 provider 需要认证。
+- `LLM_BASE_URL` 指向的 provider 不可达，或者不是对应 provider 的兼容接口。
+- `USE_BIFROST=false`，导致运行时没有走 Bifrost 网关。
 
 ### host-agent 连不上
 
@@ -514,7 +471,7 @@ env | grep '^AIOPS_'
 
 ```
 deploy/docker/
-├── ai-server.Dockerfile       ← ai-server + codex + 前端 (多阶段构建)
+├── ai-server.Dockerfile       ← ai-server + 前端 + Bifrost runtime (多阶段构建)
 ├── host-agent.Dockerfile      ← host-agent (独立镜像)
 ├── docker-compose.yml         ← 编排文件
 ├── .env.example               ← 环境变量模板

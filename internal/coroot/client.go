@@ -19,15 +19,26 @@ type Client struct {
 
 // NewClient creates a new Coroot API client.
 func NewClient(baseURL, token string, timeout time.Duration) *Client {
+	return NewClientWithHTTPClient(baseURL, token, timeout, nil)
+}
+
+// NewClientWithHTTPClient creates a Coroot API client with an injected HTTP client.
+// It is primarily useful for tests and controlled transports.
+func NewClientWithHTTPClient(baseURL, token string, timeout time.Duration, httpClient *http.Client) *Client {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: timeout}
+	} else if httpClient.Timeout <= 0 {
+		cloned := *httpClient
+		cloned.Timeout = timeout
+		httpClient = &cloned
+	}
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		auth:    NewTokenManager(token),
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		auth:       NewTokenManager(token),
+		httpClient: httpClient,
 	}
 }
 

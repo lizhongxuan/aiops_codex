@@ -6,6 +6,7 @@ import { resolveHostDisplay } from "../lib/hostDisplay";
 import {
   ArrowRightIcon,
   HistoryIcon,
+  KeyIcon,
   ServerIcon,
   SettingsIcon,
   UserCircleIcon,
@@ -30,6 +31,14 @@ const missionStatus = computed(() => {
 });
 
 const entryCards = [
+  {
+    key: "llm",
+    title: "LLM 配置",
+    subtitle: "Provider、API Key、模型选择",
+    description: "配置 LLM 提供商和 API Key，支持 OpenAI、Anthropic、Ollama 等。",
+    icon: KeyIcon,
+    href: "/settings/llm",
+  },
   {
     key: "hosts",
     title: "Hosts",
@@ -140,8 +149,8 @@ function openRoute(href) {
       </n-gi>
     </n-grid>
 
-    <n-grid :cols="3" :x-gap="14" :y-gap="14" responsive="screen" :item-responsive="true">
-      <n-gi v-for="card in entryCards" :key="card.key" span="3 m:1">
+    <n-grid :cols="4" :x-gap="14" :y-gap="14" responsive="screen" :item-responsive="true">
+      <n-gi v-for="card in entryCards" :key="card.key" span="4 m:2 l:1">
         <n-card hoverable class="settings-entry" @click="openRoute(card.href)">
           <div class="settings-entry-head">
             <component :is="card.icon" size="18" class="settings-entry-icon" />

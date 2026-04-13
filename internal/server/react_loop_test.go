@@ -324,9 +324,13 @@ func TestWorkspaceIntentGuardCreatesPlatformChoice(t *testing.T) {
 		WorkspaceSessionID: sessionID,
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, _ any) error {
-		t.Fatalf("intent guard must not call Codex before user clarification, got %s", method)
-		return nil
+	app.runtimeStartThreadFunc = func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+		t.Fatal("intent guard must not start runtime before user clarification")
+		return "", nil
+	}
+	app.runtimeStartTurnFunc = func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+		t.Fatal("intent guard must not start runtime turn before user clarification")
+		return "", nil
 	}
 
 	rec := httptest.NewRecorder()
@@ -366,9 +370,13 @@ func TestPlatformCapabilityChoiceAnswersDirectlyWithoutTools(t *testing.T) {
 		WorkspaceSessionID: sessionID,
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, _ any) error {
-		t.Fatalf("capability-only answer must not start Codex follow-up, got %s", method)
-		return nil
+	app.runtimeStartThreadFunc = func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+		t.Fatal("capability-only answer must not start runtime follow-up")
+		return "", nil
+	}
+	app.runtimeStartTurnFunc = func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+		t.Fatal("capability-only answer must not start runtime turn")
+		return "", nil
 	}
 
 	rec := httptest.NewRecorder()
@@ -563,11 +571,7 @@ func TestReActThreadRejectsBuiltinRequestUserInput(t *testing.T) {
 			},
 		},
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
-	}
-	app.handleCodexServerRequest(json.RawMessage(`"raw-request-user-input"`), "request_user_input", data)
+	app.handleBuiltinUserInputRequest("raw-request-user-input", payload)
 
 	session := app.store.Session(sessionID)
 	for _, card := range session.Cards {
@@ -1061,11 +1065,7 @@ func TestWorkspacePlanModeRejectsMutationApproval(t *testing.T) {
 		"reason":             "尝试在计划审批前修改系统状态",
 		"availableDecisions": []any{"accept", "decline"},
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal approval payload: %v", err)
-	}
-	app.handleCodexServerRequest(json.RawMessage(`"raw-plan-mode-mutation-approval"`), "item/commandExecution/requestApproval", data)
+	app.handleLocalCommandApprovalRequest("raw-plan-mode-mutation-approval", payload)
 
 	if strings.Trim(respondedRawID, `"`) != "raw-plan-mode-mutation-approval" || respondedPayload["decision"] != "decline" {
 		t.Fatalf("expected plan mode mutation approval to be declined, got rawID=%q payload=%#v", respondedRawID, respondedPayload)

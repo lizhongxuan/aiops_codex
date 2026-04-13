@@ -25,24 +25,20 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	var reqMu sync.Mutex
 	threadSeq := 0
 	turnSeq := 0
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		reqMu.Lock()
-		defer reqMu.Unlock()
-
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			reqMu.Lock()
+			defer reqMu.Unlock()
 			threadSeq++
-			payload = map[string]any{"thread": map[string]any{"id": fmt.Sprintf("thread-e2e-%02d", threadSeq)}}
-		case "turn/start":
+			return fmt.Sprintf("thread-e2e-%02d", threadSeq), nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			reqMu.Lock()
+			defer reqMu.Unlock()
 			turnSeq++
-			payload = map[string]any{"turnId": fmt.Sprintf("turn-e2e-%02d", turnSeq)}
-		case "turn/interrupt":
-			payload = map[string]any{"ok": true}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+			return fmt.Sprintf("turn-e2e-%02d", turnSeq), nil
+		},
+	}).install(app)
 
 	hostIDs := setupBudgetedFanoutHosts(t, app, 32)
 
@@ -291,29 +287,23 @@ func TestWorkspaceChatEndToEndUsesReActLoopAcrossMessages(t *testing.T) {
 	threadSeq := 0
 	turnSeq := 0
 	var turnInputs []string
-	app.codexRequestFunc = func(_ context.Context, method string, params any, result any) error {
-		reqMu.Lock()
-		defer reqMu.Unlock()
-
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			reqMu.Lock()
+			defer reqMu.Unlock()
 			threadSeq++
-			payload = map[string]any{"thread": map[string]any{"id": fmt.Sprintf("thread-chat-flow-%02d", threadSeq)}}
-		case "turn/start":
+			return fmt.Sprintf("thread-chat-flow-%02d", threadSeq), nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, spec turnStartSpec) (string, error) {
+			reqMu.Lock()
+			defer reqMu.Unlock()
 			turnSeq++
-			if rawParams, ok := params.(map[string]any); ok {
-				if inputItems, ok := rawParams["input"].([]map[string]any); ok && len(inputItems) > 0 {
-					turnInputs = append(turnInputs, getStringAny(inputItems[0], "text"))
-				}
+			if len(spec.Input) > 0 {
+				turnInputs = append(turnInputs, getStringAny(spec.Input[0], "text"))
 			}
-			payload = map[string]any{"turnId": fmt.Sprintf("turn-chat-flow-%02d", turnSeq)}
-		case "turn/interrupt":
-			payload = map[string]any{"ok": true}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+			return fmt.Sprintf("turn-chat-flow-%02d", turnSeq), nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",

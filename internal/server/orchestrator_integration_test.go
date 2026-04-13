@@ -235,17 +235,14 @@ func TestHandleChoiceAnswerRoutesToWorkerSessionMirror(t *testing.T) {
 func TestWorkspaceStateQueryAnswersFromAIServerProjection(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-state-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-state-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-state-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-state-1", nil
+		},
+	}).install(app)
 
 	workspaceSessionID := "workspace-state-query"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -293,17 +290,14 @@ func TestWorkspaceStateQueryAnswersFromAIServerProjection(t *testing.T) {
 func TestWorkspaceReadonlyQuestionUsesSelectedRemoteHostDirectly(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-readonly-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-readonly-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-readonly-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-readonly-1", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -356,21 +350,15 @@ func TestWorkspaceRouteCompletionStartsReadonlyTurnForTargetHost(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
 
-	var threadStartParams map[string]any
-	var turnStartParams map[string]any
-	app.codexRequestFunc = func(_ context.Context, method string, params any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			threadStartParams, _ = params.(map[string]any)
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-readonly-target"}}
-		case "turn/start":
-			turnStartParams, _ = params.(map[string]any)
-			payload = map[string]any{"turnId": "turn-workspace-readonly-target"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
+	runtimeStub := &runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-readonly-target", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-readonly-target", nil
+		},
 	}
+	runtimeStub.install(app)
 
 	workspaceSessionID := "workspace-route-host-readonly"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -421,17 +409,16 @@ func TestWorkspaceRouteCompletionStartsReadonlyTurnForTargetHost(t *testing.T) {
 	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceReadonlyThreadConfigHash("host-2") {
 		t.Fatalf("expected readonly thread config hash, got %q", got)
 	}
-	if threadStartParams == nil {
+	threadCalls := runtimeStub.threadStartCalls()
+	turnCalls := runtimeStub.turnStartCalls()
+	if len(threadCalls) == 0 {
 		t.Fatalf("expected readonly thread to start")
 	}
-	if turnStartParams == nil {
+	if len(turnCalls) == 0 {
 		t.Fatalf("expected readonly turn to start")
 	}
 
-	dynamicTools, ok := threadStartParams["dynamicTools"].([]map[string]any)
-	if !ok {
-		t.Fatalf("expected dynamicTools in thread start params, got %#v", threadStartParams["dynamicTools"])
-	}
+	dynamicTools := threadCalls[len(threadCalls)-1].Spec.DynamicTools
 	var threadToolNames []string
 	for _, tool := range dynamicTools {
 		threadToolNames = append(threadToolNames, strings.TrimSpace(getStringAny(tool, "name")))
@@ -445,7 +432,7 @@ func TestWorkspaceRouteCompletionStartsReadonlyTurnForTargetHost(t *testing.T) {
 	if containsStringValue(threadToolNames, "orchestrator_dispatch_tasks") {
 		t.Fatalf("did not expect readonly thread to expose orchestrator dispatch, got %#v", threadToolNames)
 	}
-	if got := getStringAny(turnStartParams, "threadId", "thread_id"); got != "thread-workspace-readonly-target" {
+	if got := turnCalls[len(turnCalls)-1].ThreadID; got != "thread-workspace-readonly-target" {
 		t.Fatalf("expected readonly turn to start on readonly thread, got %q", got)
 	}
 }
@@ -454,49 +441,30 @@ func TestWorkspaceRouteCompletionNotificationDoesNotBlockCodexReadLoop(t *testin
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
 
-	backgroundCleanCalled := make(chan struct{}, 1)
 	threadStartCalled := make(chan struct{}, 1)
 	turnStartCalled := make(chan struct{}, 1)
-	allowBackgroundClean := make(chan struct{})
 	allowThreadStart := make(chan struct{})
-	app.codexRequestFunc = func(ctx context.Context, method string, _ any, result any) error {
-		switch method {
-		case "skills/list":
-			return json.Unmarshal([]byte(`{"data":[]}`), result)
-		case "thread/backgroundTerminals/clean":
-			select {
-			case backgroundCleanCalled <- struct{}{}:
-			default:
-			}
-			select {
-			case <-allowBackgroundClean:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		case "thread/start":
+	(&runtimeStartStub{
+		startThread: func(ctx context.Context, _ string, _ threadStartSpec) (string, error) {
 			select {
 			case threadStartCalled <- struct{}{}:
 			default:
 			}
 			select {
 			case <-allowThreadStart:
-				content, _ := json.Marshal(map[string]any{"thread": map[string]any{"id": "thread-readonly-after-route"}})
-				return json.Unmarshal(content, result)
+				return "thread-readonly-after-route", nil
 			case <-ctx.Done():
-				return ctx.Err()
+				return "", ctx.Err()
 			}
-		case "turn/start":
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
 			select {
 			case turnStartCalled <- struct{}{}:
 			default:
 			}
-			content, _ := json.Marshal(map[string]any{"turnId": "turn-readonly-after-route"})
-			return json.Unmarshal(content, result)
-		default:
-			return fmt.Errorf("unexpected codex request method %s", method)
-		}
-	}
+			return "turn-readonly-after-route", nil
+		},
+	}).install(app)
 
 	workspaceSessionID := "workspace-route-notification-async"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -531,26 +499,12 @@ func TestWorkspaceRouteCompletionNotificationDoesNotBlockCodexReadLoop(t *testin
 	})
 	app.startRuntimeTurn(workspaceSessionID, model.ServerLocalHostID)
 
-	payload := map[string]any{
-		"threadId": "thread-workspace-route-async",
-		"turnId":   "turn-workspace-route-async",
-		"turn": map[string]any{
-			"id":     "turn-workspace-route-async",
-			"status": "completed",
-		},
-	}
-	params, _ := json.Marshal(payload)
 	handlerDone := make(chan struct{})
 	go func() {
-		app.handleCodexNotification("turn/completed", params)
+		app.handleMissionTurnCompletedAsync(workspaceSessionID, "completed", true)
 		close(handlerDone)
 	}()
 
-	select {
-	case <-backgroundCleanCalled:
-	case <-time.After(time.Second):
-		t.Fatal("expected background terminal cleanup request")
-	}
 	select {
 	case <-threadStartCalled:
 	case <-time.After(time.Second):
@@ -559,12 +513,10 @@ func TestWorkspaceRouteCompletionNotificationDoesNotBlockCodexReadLoop(t *testin
 	select {
 	case <-handlerDone:
 	case <-time.After(200 * time.Millisecond):
-		close(allowBackgroundClean)
 		close(allowThreadStart)
 		t.Fatal("turn/completed notification handler blocked on a nested codex request")
 	}
 
-	close(allowBackgroundClean)
 	close(allowThreadStart)
 	select {
 	case <-turnStartCalled:
@@ -585,17 +537,14 @@ func TestWorkspaceRouteCompletionNotificationDoesNotBlockCodexReadLoop(t *testin
 func TestWorkspaceRouteTurnResetsReadonlyThreadBinding(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-route-fresh"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-route-fresh"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-route-fresh", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-route-fresh", nil
+		},
+	}).install(app)
 
 	workspaceSessionID := "workspace-readonly-then-route"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -627,17 +576,14 @@ func TestWorkspaceRouteTurnResetsReadonlyThreadBinding(t *testing.T) {
 func TestWorkspaceSimpleConversationRepliesDirectlyWithoutMission(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-direct-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-direct-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-direct-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-direct-1", nil
+		},
+	}).install(app)
 
 	workspaceSessionID := "workspace-direct"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -683,18 +629,14 @@ func TestWorkspaceRouteConversationIgnoresPlanUpdatedEvents(t *testing.T) {
 	app.store.SetThread(workspaceSessionID, "thread-workspace-route-ignore")
 	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash(model.ServerLocalHostID))
 
-	params, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"threadId": "thread-workspace-route-ignore",
 		"turnId":   "turn-workspace-route-ignore",
 		"plan": []map[string]any{
 			{"step": "你好", "status": "completed"},
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
-
-	app.handleCodexNotification("turn/plan/updated", params)
+	app.applyTurnPlanUpdated(payload)
 
 	session := app.store.Session(workspaceSessionID)
 	if session == nil {
@@ -719,18 +661,14 @@ func TestWorkspaceReadonlyConversationIgnoresPlanUpdatedEvents(t *testing.T) {
 	app.store.SetThread(workspaceSessionID, "thread-workspace-readonly-ignore")
 	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceReadonlyThreadConfigHash("host-1"))
 
-	params, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"threadId": "thread-workspace-readonly-ignore",
 		"turnId":   "turn-workspace-readonly-ignore",
 		"plan": []map[string]any{
 			{"step": "检查 host-1", "status": "completed"},
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
-
-	app.handleCodexNotification("turn/plan/updated", params)
+	app.applyTurnPlanUpdated(payload)
 
 	session := app.store.Session(workspaceSessionID)
 	if session == nil {
@@ -790,17 +728,14 @@ func TestWorkspaceRouteCompletionSanitizesDirectReply(t *testing.T) {
 func TestWorkspaceRouteCompletionStartsPlanningForComplexTask(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-route-plan-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-route-plan-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-route-plan-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-route-plan-1", nil
+		},
+	}).install(app)
 
 	workspaceSessionID := "workspace-route-complex-complete"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -854,17 +789,14 @@ func TestWorkspaceRouteCompletionStartsPlanningForComplexTask(t *testing.T) {
 func TestWorkspacePlanReplyDispatchesTasks(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-plan-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-plan-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-plan-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-plan-1", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -947,17 +879,14 @@ func TestWorkspacePlanReplyDispatchesTasks(t *testing.T) {
 func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-worker-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-worker-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-worker-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-worker-1", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1129,17 +1058,14 @@ func TestWorkspaceTurnKeepsReplyAfterDispatch(t *testing.T) {
 func TestWorkspaceProjectionIncludesRichPlanAndWorkerReadModels(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-worker-rich"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-worker-rich"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-worker-rich", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-worker-rich", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1334,18 +1260,14 @@ func TestPlannerDispatchTasksRejectsOfflineHost(t *testing.T) {
 func TestPlannerDispatchTaskStartFailureFailsWorkerSession(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		switch method {
-		case "thread/start":
-			payload := map[string]any{"thread": map[string]any{"id": "thread-worker-start-fail"}}
-			content, _ := json.Marshal(payload)
-			return json.Unmarshal(content, result)
-		case "turn/start":
-			return errors.New("turn/start failed")
-		default:
-			return nil
-		}
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-worker-start-fail", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "", errors.New("turn/start failed")
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1425,17 +1347,14 @@ func TestPlannerDispatchTaskStartFailureFailsWorkerSession(t *testing.T) {
 func TestWorkspaceProjectionUpdatesAfterWorkerCompletion(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-worker-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-worker-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-worker-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-worker-1", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1569,19 +1488,16 @@ func TestStartWorkerTaskRefreshesExpiredIdleWorkerThread(t *testing.T) {
 
 	threadSeq := 0
 	turnSeq := 0
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
 			threadSeq++
-			payload = map[string]any{"thread": map[string]any{"id": fmt.Sprintf("thread-recycle-%02d", threadSeq)}}
-		case "turn/start":
+			return fmt.Sprintf("thread-recycle-%02d", threadSeq), nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
 			turnSeq++
-			payload = map[string]any{"turnId": fmt.Sprintf("turn-recycle-%02d", turnSeq)}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+			return fmt.Sprintf("turn-recycle-%02d", turnSeq), nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1804,14 +1720,6 @@ func TestReconcileOrchestratorHostUnavailableUpdatesWorkspaceProjection(t *testi
 
 func TestHandleWorkspaceStopCancelsMissionAndClearsWorkerQueue(t *testing.T) {
 	app := newOrchestratorTestApp(t)
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		if method == "turn/interrupt" {
-			payload := map[string]any{"ok": true}
-			content, _ := json.Marshal(payload)
-			return json.Unmarshal(content, result)
-		}
-		return nil
-	}
 
 	workspaceSessionID := "workspace-stop"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{

@@ -343,22 +343,29 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 		cancel()
 	}()
 
-	if err := a.runReActAgentLoop(ctx, reActLoopRequest{
-		SessionID:        sessionID,
-		Kind:             reActLoopKindWorkspace,
-		HostID:           hostID,
-		Message:          req.Message,
-		MonitorContext:   req.MonitorContext,
-		RequestID:        requestID,
-		RequestStartedAt: requestStartedAt,
-	}); err != nil {
+	var err error
+	if a.useBifrostForSession(sessionID) {
+		err = a.runBifrostTurn(ctx, sessionID, req)
+	} else {
+		err = a.runReActAgentLoop(ctx, reActLoopRequest{
+			SessionID:        sessionID,
+			Kind:             reActLoopKindWorkspace,
+			HostID:           hostID,
+			Message:          req.Message,
+			MonitorContext:   req.MonitorContext,
+			RequestID:        requestID,
+			RequestStartedAt: requestStartedAt,
+		})
+	}
+	if err != nil {
 		log.Printf(
-			"workspace react loop request failed session=%s request=%s kind=%s host=%s duration=%s err=%v",
+			"workspace request failed session=%s request=%s kind=%s host=%s duration=%s bifrost=%v err=%v",
 			sessionID,
 			requestID,
 			a.sessionKind(sessionID),
 			hostID,
 			time.Since(requestStartedAt),
+			a.useBifrostForSession(sessionID),
 			err,
 		)
 		if errors.Is(err, context.Canceled) && a.turnWasInterrupted(sessionID) {
@@ -372,7 +379,7 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 		a.store.UpsertCard(sessionID, model.Card{
 			ID:        model.NewID("error"),
 			Type:      "ErrorCard",
-			Title:     "主 Agent ReAct loop failed",
+			Title:     "Workspace turn failed",
 			Message:   err.Error(),
 			Text:      err.Error(),
 			Status:    "failed",
@@ -385,12 +392,13 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 	}
 
 	log.Printf(
-		"workspace react loop request accepted session=%s request=%s kind=%s host=%s duration=%s",
+		"workspace request accepted session=%s request=%s kind=%s host=%s duration=%s bifrost=%v",
 		sessionID,
 		requestID,
 		a.sessionKind(sessionID),
 		hostID,
 		time.Since(requestStartedAt),
+		a.useBifrostForSession(sessionID),
 	)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 }
@@ -702,29 +710,17 @@ func (a *App) reconcileOrchestratorHostUnavailable(hostID, reason string) {
 }
 
 func (a *App) interruptSessionTurn(ctx context.Context, sessionID string) error {
+	_ = ctx
 	session := a.store.Session(sessionID)
 	if session == nil {
 		return nil
 	}
-	threadID := session.ThreadID
 	turnID := session.TurnID
 	cancelledPending := a.cancelTurnStart(sessionID)
-	if threadID == "" && !cancelledPending {
+	if bifrostSession, ok := a.bifrostSession(sessionID); ok && bifrostSession != nil {
+		bifrostSession.Cancel()
+	} else if !cancelledPending {
 		return nil
-	}
-	if threadID != "" {
-		params := map[string]any{
-			"threadId":                   threadID,
-			"clean_background_terminals": true,
-		}
-		if turnID != "" {
-			params["turnId"] = turnID
-		}
-		var result map[string]any
-		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil && !cancelledPending {
-			return err
-		}
-		a.cleanBackgroundTerminals(threadID)
 	}
 	a.markTurnInterrupted(sessionID, turnID)
 	a.finishRuntimeTurn(sessionID, "aborted")
@@ -998,6 +994,25 @@ func (a *App) startWorkerTask(ctx context.Context, mission *orchestrator.Mission
 	if err := a.bootstrapWorkerRemoteWorkspace(ctx, mission, workerSessionID, hostID); err != nil {
 		return a.failWorkerStart(workerSessionID, hostID, err)
 	}
+	if a.useBifrostForSession(workerSessionID) {
+		workerReq := chatRequest{
+			Message: firstNonEmptyValue(
+				turnStartInputText(a.buildWorkerTurnStartSpec(mission, task, hostID)),
+				strings.TrimSpace(task.Instruction),
+			),
+			HostID: hostID,
+		}
+		if err := a.runBifrostTurn(context.Background(), workerSessionID, workerReq); err != nil {
+			return a.failWorkerStart(workerSessionID, hostID, err)
+		}
+		if !a.hasPendingApprovals(workerSessionID) && !a.hasPendingChoices(workerSessionID) {
+			a.handleMissionTurnCompleted(workerSessionID, "completed")
+		}
+		if currentMission, ok := a.orchestrator.MissionByWorkspaceSession(mission.WorkspaceSessionID); ok {
+			a.refreshWorkspaceProjection(currentMission)
+		}
+		return nil
+	}
 	threadID, err := a.ensureThreadWithSpec(ctx, workerSessionID, a.buildWorkerThreadStartSpec(mission, task, hostID))
 	if err != nil {
 		return a.failWorkerStart(workerSessionID, hostID, err)
@@ -1012,6 +1027,53 @@ func (a *App) startWorkerTask(ctx context.Context, mission *orchestrator.Mission
 		a.refreshWorkspaceProjection(currentMission)
 	}
 	return nil
+}
+
+func turnStartInputText(spec turnStartSpec) string {
+	for _, item := range spec.Input {
+		if text := strings.TrimSpace(getStringAny(item, "text", "content")); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func (a *App) completeWorkerTurnOutcome(sessionID, phase string) *orchestrator.WorkerTurnOutcome {
+	if a.orchestrator == nil {
+		return nil
+	}
+	reply := a.latestCompletedAssistantText(sessionID)
+	var (
+		outcome *orchestrator.WorkerTurnOutcome
+		err     error
+	)
+	if runtime, ok := a.bifrostWorkspaceRuntime(sessionID); ok && runtime != nil {
+		outcome, err = runtime.CompleteWorkerTurn(sessionID, phase, reply)
+	} else {
+		outcome, err = a.orchestrator.CompleteWorkerTurn(sessionID, phase, reply)
+	}
+	if err != nil {
+		log.Printf("worker turn completion sync failed session=%s err=%v", sessionID, err)
+		return nil
+	}
+	a.projectWorkerOutcome(outcome)
+	if outcome != nil && outcome.NextTask != nil {
+		go func(missionID, workspaceSessionID, workerSessionID, hostID string) {
+			nextCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			mission, ok := a.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
+			if !ok {
+				return
+			}
+			if err := a.startWorkerTask(nextCtx, mission, workerSessionID, hostID); err != nil {
+				log.Printf("queued worker task start failed mission=%s host=%s err=%v", missionID, hostID, err)
+			}
+		}(outcome.MissionID, outcome.WorkspaceSessionID, outcome.WorkerSessionID, outcome.WorkerHostID)
+	}
+	if outcome != nil {
+		a.activateQueuedMissionWorkers(outcome.WorkspaceSessionID)
+	}
+	return outcome
 }
 
 func (a *App) bootstrapWorkerRemoteWorkspace(ctx context.Context, mission *orchestrator.Mission, sessionID, hostID string) error {
@@ -1258,28 +1320,7 @@ func (a *App) handleMissionTurnCompleted(sessionID, phase string) {
 		a.refreshWorkspaceProjection(mission)
 		a.broadcastSnapshot(sessionID)
 	case model.SessionKindWorker:
-		outcome, err := a.orchestrator.CompleteWorkerTurn(sessionID, phase, a.latestCompletedAssistantText(sessionID))
-		if err != nil {
-			log.Printf("worker turn completion sync failed session=%s err=%v", sessionID, err)
-			return
-		}
-		a.projectWorkerOutcome(outcome)
-		if outcome != nil && outcome.NextTask != nil {
-			go func(missionID, workspaceSessionID, workerSessionID, hostID string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-				defer cancel()
-				mission, ok := a.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
-				if !ok {
-					return
-				}
-				if err := a.startWorkerTask(ctx, mission, workerSessionID, hostID); err != nil {
-					log.Printf("queued worker task start failed mission=%s host=%s err=%v", missionID, hostID, err)
-				}
-			}(outcome.MissionID, outcome.WorkspaceSessionID, outcome.WorkerSessionID, outcome.WorkerHostID)
-		}
-		if outcome != nil {
-			a.activateQueuedMissionWorkers(outcome.WorkspaceSessionID)
-		}
+		a.completeWorkerTurnOutcome(sessionID, phase)
 	}
 }
 

@@ -22,7 +22,7 @@
 
 AIOps Codex 是一个面向生产环境的 AI 运维平台，通过 Chat / Workspace / Runner 三种交互模式，让运维工程师以自然语言驱动服务器巡检、故障诊断、变更执行和监控分析。
 
-平台以 **OpenAI Codex** 作为推理引擎，通过 **Host Agent** 安全接入目标主机，所有变更操作经过统一审批审计，确保 AI 辅助运维的可控性和可追溯性。
+平台默认通过 **Bifrost LLM Gateway** 连接模型提供方，支持 **OpenAI、Anthropic、Ollama**，再通过 **Host Agent** 安全接入目标主机，所有变更操作经过统一审批审计，确保 AI 辅助运维的可控性和可追溯性。
 
 ## 核心特性
 
@@ -79,9 +79,6 @@ AIOps Codex 是一个面向生产环境的 AI 运维平台，通过 Chat / Works
 - **4 步流程** — Generate → Lint → Preview → Publish Draft
 - **草稿隔离** — 所有生成物默认 draft 状态，不自动上线
 
-</text>
-</invoke>
-
 ## 架构概览
 
 ```
@@ -103,11 +100,11 @@ AIOps Codex 是一个面向生产环境的 AI 运维平台，通过 Chat / Works
 │  │ Profile  │ │  Client  │ │  Store   │ │   Service     │  │
 │  └──────────┘ └──────────┘ └──────────┘ └───────────────┘  │
 │                         │                                    │
-│              exec + stdio (JSON-RPC)                         │
+│              Bifrost provider routing                        │
 │                         ▼                                    │
-│              Codex App-Server (Rust)                          │
+│               Bifrost LLM Gateway (Go)                        │
 │                         │                                    │
-│                    HTTPS → OpenAI API                         │
+│        OpenAI / Anthropic / Ollama / OpenAI-compatible       │
 ├──────────────────────────────────────────────────────────────┤
 │  HTTP :8080    gRPC :18090    Coroot Proxy :8080/coroot      │
 └────────────┬─────────────────────────┬───────────────────────┘
@@ -125,7 +122,7 @@ AIOps Codex 是一个面向生产环境的 AI 运维平台，通过 Chat / Works
 |------|------|
 | 前端 | Vue 3, Pinia, Vue Router, Lucide Icons, Monaco Editor, xterm.js |
 | 后端 | Go 1.26, gRPC, net/http |
-| AI 引擎 | OpenAI Codex App-Server (Rust), JSON-RPC over stdio |
+| AI 引擎 | Bifrost LLM Gateway, 支持 OpenAI / Anthropic / Ollama |
 | 监控集成 | Coroot (HTTP Client + Reverse Proxy) |
 | 持久化 | JSON 文件 (内存 + 异步写盘, sync.RWMutex) |
 | 测试 | Vitest, Playwright, Go testing |
@@ -139,6 +136,8 @@ aiops-codex/
 │   ├── ai-server/          # AI Server 主入口
 │   └── host-agent/         # Host Agent 主入口
 ├── internal/
+│   ├── bifrost/            # 多 provider LLM Gateway
+│   ├── agentloop/          # Bifrost ReAct loop / context / workspace runtime
 │   ├── server/             # HTTP/gRPC 服务、API 路由、审批流程
 │   ├── store/              # 内存存储 + JSON 持久化
 │   ├── model/              # 数据模型定义
@@ -146,7 +145,6 @@ aiops-codex/
 │   ├── coroot/             # Coroot HTTP 客户端
 │   ├── generator/          # Skill/Card/Bundle 自动生成服务
 │   ├── orchestrator/       # Workspace 编排引擎
-│   ├── codex/              # Codex App-Server 客户端
 │   └── agentrpc/           # gRPC 协议定义
 ├── web/
 │   ├── src/
@@ -170,7 +168,7 @@ aiops-codex/
 - Go 1.26+
 - Node.js 22+
 - Docker & Docker Compose (部署用)
-- OpenAI API Key 或 Codex 登录凭证
+- LLM provider 凭证或本地模型服务
 
 ### 本地开发
 
@@ -180,7 +178,8 @@ git clone https://github.com/lizhongxuan/aiops-codex.git
 cd aiops-codex
 
 # 启动后端
-export CODEX_API_KEY=sk-xxx
+export LLM_PROVIDER=openai
+export LLM_API_KEY=sk-xxx
 go run ./cmd/ai-server
 
 # 启动前端 (另一个终端)
@@ -196,7 +195,9 @@ npm run dev
 ```bash
 cd deploy/docker
 cp .env.example .env
-# 编辑 .env 填入 CODEX_API_KEY 和 HOST_AGENT_BOOTSTRAP_TOKEN
+# 编辑 .env 填入 LLM_PROVIDER / LLM_API_KEY / LLM_BASE_URL 和 HOST_AGENT_BOOTSTRAP_TOKEN
+
+# OpenAI-compatible 服务或 Ollama 可通过 LLM_BASE_URL 指定自定义地址
 
 docker compose build
 docker compose up -d

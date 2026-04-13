@@ -279,6 +279,7 @@ func (a *App) remoteDynamicTools() []map[string]any {
 	if !capabilityDisabled(commandState) || !capabilityDisabled(fileChangeState) {
 		tools = append(tools, controlledMutationToolDefinitions()...)
 	}
+	tools = append(tools, webSearchDynamicTools()...)
 	return tools
 }
 
@@ -692,8 +693,122 @@ func remoteTurnDeveloperInstructions(hostID string) string {
 	)
 }
 
+func localThreadDeveloperInstructions() string {
+	return strings.TrimSpace(`
+You are embedded inside a web AI ops console. The selected target host is server-local (the machine running this ai-server).
+
+You have the following tools available and MUST use them when appropriate:
+
+1. execute_readonly_query: Run read-only shell commands on server-local. Use for system inspection: uptime, df, ps, ss, systemctl status, cat, grep, tail, find, journalctl, top, sysctl, etc. Always set host="server-local".
+
+2. execute_system_mutation: Run state-changing commands on server-local. Requires user approval. Use for restarts, installs, config changes, etc. Always set host="server-local".
+
+3. web_search: Search the web using DuckDuckGo. Use this to find real-time information like stock prices, news, weather, documentation, etc. When the user asks about current data you don't have, ALWAYS use web_search first.
+
+4. open_page: Fetch and read the content of a web page by URL.
+
+5. find_in_page: Search within a previously fetched page's content.
+
+IMPORTANT RULES:
+- When the user asks for real-time data (stock prices, news, weather), ALWAYS use web_search. Never say you cannot access the internet.
+- When the user asks about the local machine (CPU, memory, disk, processes), ALWAYS use execute_readonly_query. Never say you cannot execute commands.
+- Always include host="server-local" in execute_readonly_query and execute_system_mutation calls.
+- Keep each tool call focused and explain what you are checking.
+- Summarize results clearly for the web UI.
+`)
+}
+
 func isRemoteHostID(hostID string) bool {
 	return strings.TrimSpace(hostID) != "" && hostID != model.ServerLocalHostID
+}
+
+// localDynamicTools returns the dynamic tool definitions for server-local execution.
+// These mirror the remote tools but target the local machine.
+func (a *App) localDynamicTools() []map[string]any {
+	tools := make([]map[string]any, 0, 4)
+	tools = append(tools, map[string]any{
+		"name":        "execute_readonly_query",
+		"description": "Run a read-only shell command on the local server (server-local). Use for inspection: uptime, df, ps, ss, systemctl status, cat, grep, tail, find, journalctl, top -bn1, etc. Never use for installs, restarts, file writes, deletes, or process signals.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"host":    map[string]any{"type": "string", "description": "Must be server-local."},
+				"command": map[string]any{"type": "string", "description": "Read-only shell command to run."},
+				"cwd":     map[string]any{"type": "string", "description": "Optional working directory."},
+				"timeout_sec": map[string]any{
+					"type": "integer", "minimum": 1, "maximum": 120,
+					"description": "Optional timeout in seconds.",
+				},
+				"reason": map[string]any{"type": "string", "description": "One-sentence explanation of what you are checking."},
+			},
+			"required":             []string{"host", "command", "reason"},
+			"additionalProperties": false,
+		},
+	})
+	tools = append(tools, map[string]any{
+		"name":        "execute_system_mutation",
+		"description": "Run a state-changing shell command on the local server (server-local). Always requires user approval. Use for restarts, installs, config changes, process signals, etc.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"host":    map[string]any{"type": "string", "description": "Must be server-local."},
+				"command": map[string]any{"type": "string", "description": "Shell command to run after user approval."},
+				"cwd":     map[string]any{"type": "string", "description": "Optional working directory."},
+				"timeout_sec": map[string]any{
+					"type": "integer", "minimum": 1, "maximum": 600,
+					"description": "Optional timeout in seconds.",
+				},
+				"reason": map[string]any{"type": "string", "description": "Short explanation of why this change is needed."},
+			},
+			"required":             []string{"host", "command", "reason"},
+			"additionalProperties": false,
+		},
+	})
+	tools = append(tools, webSearchDynamicTools()...)
+	return tools
+}
+
+// webSearchDynamicTools returns the dynamic tool definitions for web search tools.
+func webSearchDynamicTools() []map[string]any {
+	tools := make([]map[string]any, 0, 3)
+	tools = append(tools, map[string]any{
+		"name":        "web_search",
+		"description": "Search the web using DuckDuckGo and return ranked results with titles, URLs, and snippets.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string", "description": "Search query."},
+			},
+			"required":             []string{"query"},
+			"additionalProperties": false,
+		},
+	})
+	tools = append(tools, map[string]any{
+		"name":        "open_page",
+		"description": "Fetch a web page and return its text content.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{"type": "string", "description": "The URL to fetch."},
+			},
+			"required":             []string{"url"},
+			"additionalProperties": false,
+		},
+	})
+	tools = append(tools, map[string]any{
+		"name":        "find_in_page",
+		"description": "Search within a fetched page's content and return matching sections.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url":   map[string]any{"type": "string", "description": "The URL of the page to search in."},
+				"query": map[string]any{"type": "string", "description": "The text to search for within the page."},
+			},
+			"required":             []string{"url", "query"},
+			"additionalProperties": false,
+		},
+	})
+	return tools
 }
 
 func dynamicToolCardID(callID string) string {
@@ -724,14 +839,14 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 
 	sessionID := a.sessionIDFromPayload(payload)
 	if sessionID == "" {
-		_ = a.codex.RespondError(context.Background(), rawID, -32000, "session not found for dynamic tool call")
+		_ = a.respondToolError(context.Background(), rawID, -32000, "session not found for dynamic tool call")
 		return
 	}
 	a.bindTurnToSession(sessionID, payload)
 
 	session := a.store.Session(sessionID)
 	if session == nil {
-		_ = a.codex.RespondError(context.Background(), rawID, -32000, "session not found for dynamic tool call")
+		_ = a.respondToolError(context.Background(), rawID, -32000, "session not found for dynamic tool call")
 		return
 	}
 
@@ -766,8 +881,33 @@ func (a *App) handleDynamicToolCall(rawID string, payload map[string]any) {
 
 	hostID := defaultHostID(session.SelectedHostID)
 	if !isRemoteHostID(hostID) {
-		_ = a.respondCodex(context.Background(), rawID, toolResponse("The selected host is server-local. Use Codex built-in local tools instead of remote execute_* tools.", false))
-		return
+		switch params.Tool {
+		case "execute_readonly_query":
+			args, err := parseExecToolArgs(params.Arguments)
+			if err != nil {
+				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+				return
+			}
+			if err := validateReadonlyCommand(args.Command); err != nil {
+				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+				return
+			}
+			a.executeLocalReadonlyDynamicTool(sessionID, rawID, params, args)
+			return
+		case "execute_system_mutation":
+			args, err := parseExecToolArgs(params.Arguments)
+			if err != nil {
+				_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+				return
+			}
+			a.requestLocalCommandApproval(sessionID, rawID, params, args)
+			return
+		case "web_search", "open_page", "find_in_page":
+			// Web search tools work regardless of host — fall through to handle below.
+		default:
+			_ = a.respondCodex(context.Background(), rawID, toolResponse("The selected host is server-local. Use Codex built-in local tools instead of remote execute_* tools.", false))
+			return
+		}
 	}
 	if a.sessionKind(sessionID) == model.SessionKindWorkspace && !isWorkspaceReadonlyRemoteTool(params.Tool) && !isStructuredReadTool(params.Tool) {
 		_ = a.respondCodex(context.Background(), rawID, toolResponse("Workspace 主 Agent 只允许直接调用只读远程工具；任何变更都必须通过 worker 派发。", false))
@@ -1971,6 +2111,101 @@ func (a *App) handleWorkspaceDispatchTasks(rawID, sessionID string, arguments ma
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
+	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) executeLocalReadonlyDynamicTool(sessionID, rawID string, params dynamicToolCallParams, args execToolArgs) {
+	cardID := dynamicToolCardID(params.CallID)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(clampExecTimeout(args.TimeoutSec, true)+15)*time.Second)
+	defer cancel()
+
+	result, err := a.runLocalReadonlyExec(ctx, sessionID, cardID, execSpec{
+		Command:    args.Command,
+		Cwd:        args.Cwd,
+		TimeoutSec: args.TimeoutSec,
+		Readonly:   true,
+		ToolName:   "execute_readonly_query",
+	})
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+	if a.turnWasInterrupted(sessionID) {
+		return
+	}
+
+	success := execResultCardStatus(result) == "completed"
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(formatExecToolResult(args.Command, result), success))
+}
+
+func (a *App) requestLocalCommandApproval(sessionID, rawID string, params dynamicToolCallParams, args execToolArgs) {
+	cardID := dynamicToolCardID(params.CallID)
+	now := model.NowString()
+	host := a.findHost(model.ServerLocalHostID)
+	args.Cwd = strings.TrimSpace(args.Cwd)
+	if args.Cwd == "" {
+		args.Cwd = strings.TrimSpace(a.cfg.DefaultWorkspace)
+	}
+
+	a.store.RememberItem(sessionID, cardID, map[string]any{
+		"tool":       params.Tool,
+		"threadId":   params.ThreadID,
+		"turnId":     params.TurnID,
+		"callId":     params.CallID,
+		"command":    args.Command,
+		"cwd":        args.Cwd,
+		"reason":     args.Reason,
+		"timeoutSec": clampExecTimeout(args.TimeoutSec, false),
+		"mode":       "command",
+		"readonly":   false,
+	})
+
+	approval := model.ApprovalRequest{
+		ID:           model.NewID("approval"),
+		RequestIDRaw: rawID,
+		HostID:       model.ServerLocalHostID,
+		Fingerprint:  approvalFingerprintForCommand(model.ServerLocalHostID, args.Command, args.Cwd),
+		Type:         "remote_command",
+		Status:       "pending",
+		ThreadID:     params.ThreadID,
+		TurnID:       params.TurnID,
+		ItemID:       cardID,
+		Command:      args.Command,
+		Cwd:          args.Cwd,
+		Reason:       args.Reason,
+		Decisions:    []string{"accept", "accept_session", "decline"},
+		RequestedAt:  now,
+	}
+
+	if a.autoApproveRemoteOperationBySessionGrant(sessionID, approval) {
+		return
+	}
+
+	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
+	a.store.AddApproval(sessionID, approval)
+	card := model.Card{
+		ID:      cardID,
+		Type:    "CommandApprovalCard",
+		Title:   "Local command approval required",
+		Command: args.Command,
+		Cwd:     args.Cwd,
+		Text:    args.Reason,
+		Status:  "pending",
+		Approval: &model.ApprovalRef{
+			RequestID: approval.ID,
+			Type:      approval.Type,
+			Decisions: approval.Decisions,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	applyCardHost(&card, host)
+	a.store.UpsertCard(sessionID, card)
+	a.recordOrchestratorApprovalRequested(sessionID, approval)
+	if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
+		a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+	}
+	a.auditApprovalRequested(sessionID, approval, nil)
 	a.broadcastSnapshot(sessionID)
 }
 

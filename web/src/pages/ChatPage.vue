@@ -911,8 +911,8 @@ const reconnectHostLabel = computed(() => {
 
 const reconnectLabel = computed(() => {
   const c = store.runtime.codex;
-  if (c.status === "stopped") return `与本地 ai-server 的实时连接已断开，无法恢复 · ${reconnectHostLabel.value}`;
-  return `与本地 ai-server 的实时连接重连中 ${c.retryAttempt}/${c.retryMax} · ${reconnectHostLabel.value}`;
+  if (c.status === "stopped") return `与 ai-server 的实时连接已断开 · ${reconnectHostLabel.value}`;
+  return `与 ai-server 的实时连接重连中 ${c.retryAttempt}/${c.retryMax} · ${reconnectHostLabel.value}`;
 });
 
 const isStopped = computed(() => store.runtime.codex.status === "stopped");
@@ -928,7 +928,7 @@ const showCodexReconnectBanner = computed(() => {
 });
 
 const codexReconnectLabel = computed(() => {
-  return codexReconnectNotice.value?.message || codexReconnectNotice.value?.text || "与 GPT 的连接波动，正在自动恢复";
+  return codexReconnectNotice.value?.message || codexReconnectNotice.value?.text || "与 LLM 的连接波动，正在自动恢复";
 });
 
 const selectedHostAlert = computed(() => {
@@ -940,16 +940,16 @@ const selectedHostAlert = computed(() => {
 });
 
 const composerPlaceholder = computed(() => {
-  if (!store.snapshot.auth.connected) return "请先登录 GPT 账号后再开始对话";
-  if (!store.snapshot.config.codexAlive) return "Codex app-server 当前不可用";
+  if (!store.snapshot.auth.connected) return "请先登录后再开始对话";
+  if (!store.snapshot.config.codexAlive) return "LLM 未连接，请在 设置 → LLM 配置 中设置 API Key";
   if (allowFollowUpComposer.value) return "可以继续输入 follow-up，Cmd+Enter 发送";
   if (store.selectedHost.terminalCapable && !store.selectedHost.executable) {
-    return "当前主机已接入远程终端，Codex 自动执行链路还未开启";
+    return "当前主机已接入远程终端，自动执行链路还未开启";
   }
   if (!store.selectedHost.executable) return "当前主机仅展示，不支持执行";
   if (store.selectedHost.status !== "online") return "当前主机离线，暂时不可执行";
-  if (store.selectedHost.kind === "agent") return "Ask Codex to manage this host";
-  return "Ask Codex to build something";
+  if (store.selectedHost.kind === "agent") return "输入指令，让 AI 管理这台主机";
+  return "输入你的问题或任务";
 });
 
 function getRowClass(card) {

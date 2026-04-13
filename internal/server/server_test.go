@@ -1279,18 +1279,15 @@ func TestHandleCommandApprovalRequestBlocksLocalFallbackOnRemoteHost(t *testing.
 	app.store.SetThread(sessionID, "thread-local-approval-blocked")
 	app.store.UpsertHost(model.Host{ID: hostID, Name: hostID, Kind: "agent", Status: "online", Executable: true})
 
-	params, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"threadId": "thread-local-approval-blocked",
 		"turnId":   "turn-local-approval-blocked",
 		"itemId":   "cmd-local-approval-blocked",
 		"command":  "pwd",
 		"cwd":      "/tmp",
 		"reason":   "debug",
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
-	app.handleCodexServerRequest(json.RawMessage("1"), "item/commandExecution/requestApproval", params)
+	app.handleLocalCommandApprovalRequest("1", payload)
 
 	select {
 	case result := <-responded:
@@ -1329,7 +1326,6 @@ func TestHandleCommandApprovalRequestBlocksLocalFallbackOnRemoteHost(t *testing.
 
 func TestHandleItemStartedBlocksUnexpectedLocalCommandOnRemoteHost(t *testing.T) {
 	app := New(config.Config{})
-	app.codex = nil
 	sessionID := "sess-local-command-blocked"
 	hostID := "linux-01"
 
@@ -2049,20 +2045,6 @@ func TestFailStalledTurnMarksSessionFailed(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected stalled turn error card to be recorded")
-	}
-}
-
-func TestParseCodexReconnectProgress(t *testing.T) {
-	attempt, retryMax, ok := parseCodexReconnectProgress("Reconnecting... 2/5")
-	if !ok {
-		t.Fatalf("expected reconnect progress to be parsed")
-	}
-	if attempt != 2 || retryMax != 5 {
-		t.Fatalf("unexpected reconnect progress %d/%d", attempt, retryMax)
-	}
-
-	if _, _, ok := parseCodexReconnectProgress("connection closed"); ok {
-		t.Fatalf("expected non-reconnect message to be ignored")
 	}
 }
 

@@ -3,8 +3,10 @@ module github.com/lizhongxuan/aiops-codex
 go 1.26.0
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gorilla/websocket v1.5.3
 	google.golang.org/grpc v1.75.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

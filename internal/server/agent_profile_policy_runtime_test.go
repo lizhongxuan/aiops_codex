@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,19 +32,15 @@ func TestLocalCommandApprovalBlockedByDisabledCapability(t *testing.T) {
 		return nil
 	}
 
-	params, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"threadId": threadID,
 		"turnId":   "turn-profile-local-blocked",
 		"itemId":   "cmd-profile-local-blocked",
 		"command":  "uptime",
 		"cwd":      "/tmp",
 		"reason":   "check load",
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
-
-	app.handleCodexServerRequest(json.RawMessage("1"), "item/commandExecution/requestApproval", params)
+	app.handleLocalCommandApprovalRequest("1", payload)
 
 	select {
 	case got := <-responded:
@@ -93,19 +88,15 @@ func TestCapabilityDisabledOverridesAllowedCommandCategory(t *testing.T) {
 		return nil
 	}
 
-	params, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"threadId": threadID,
 		"turnId":   "turn-profile-local-disabled-priority",
 		"itemId":   "cmd-profile-local-disabled-priority",
 		"command":  "uptime",
 		"cwd":      "/tmp",
 		"reason":   "check load",
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
-
-	app.handleCodexServerRequest(json.RawMessage("1b"), "item/commandExecution/requestApproval", params)
+	app.handleLocalCommandApprovalRequest("1b", payload)
 
 	select {
 	case got := <-responded:
@@ -152,19 +143,15 @@ func TestLocalCommandApprovalAutoAcceptedWhenAllowedByProfile(t *testing.T) {
 		return nil
 	}
 
-	params, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"threadId": threadID,
 		"turnId":   "turn-profile-local-auto",
 		"itemId":   "cmd-profile-local-auto",
 		"command":  "uptime",
 		"cwd":      "/tmp",
 		"reason":   "check load",
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
-
-	app.handleCodexServerRequest(json.RawMessage("2"), "item/commandExecution/requestApproval", params)
+	app.handleLocalCommandApprovalRequest("2", payload)
 
 	select {
 	case got := <-responded:

@@ -1,6 +1,6 @@
 services:
   # ============================================================
-  # ai-server: 核心服务 (HTTP + gRPC + Codex app-server)
+  # ai-server: 核心服务 (HTTP + gRPC + Bifrost 原生模型运行)
   # ============================================================
   ai-server:
     build:
@@ -12,7 +12,6 @@ services:
     ports:
       - "18080:8080"      # HTTP + WebSocket + 前端
       - "18090:18090"     # gRPC (host-agent 接入)
-      - "1455:14550"      # 宿主机 1455 → 容器 14550 (socat) → 127.0.0.1:1455 (codex)
     volumes:
       - ai-data:/data
     environment:
@@ -21,11 +20,17 @@ services:
       - DEFAULT_WORKSPACE=/data/workspace
       - APP_STATE_PATH=/data/ai-server-state.json
       - APP_AUDIT_LOG_PATH=/data/ai-audit.log
-      - CODEX_HOME=/data/codex-home
-      - CODEX_APP_SERVER_PATH=/usr/local/bin/codex
       - HOST_AGENT_BOOTSTRAP_TOKEN=${HOST_AGENT_BOOTSTRAP_TOKEN:-change-me}
       - FRONTEND_REDIRECT_URL=http://127.0.0.1:18080/
-      - CODEX_API_KEY=${CODEX_API_KEY:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_KEYS=${LLM_API_KEYS:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_FALLBACK_PROVIDER=${LLM_FALLBACK_PROVIDER:-}
+      - LLM_FALLBACK_MODEL=${LLM_FALLBACK_MODEL:-}
+      - LLM_FALLBACK_API_KEY=${LLM_FALLBACK_API_KEY:-}
+      - LLM_COMPACT_MODEL=${LLM_COMPACT_MODEL:-gpt-4o-mini}
       # Coroot 集成配置
       - COROOT_BASE_URL=${COROOT_BASE_URL:-}
       - COROOT_TOKEN=${COROOT_TOKEN:-}

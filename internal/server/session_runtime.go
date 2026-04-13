@@ -51,6 +51,9 @@ func (a *App) buildSingleHostThreadStartSpec(ctx context.Context, sessionID stri
 	}
 	if isRemoteHostID(selectedHostID) {
 		spec.DynamicTools = a.remoteDynamicTools()
+	} else {
+		// server-local: add local execution tools so the agent can run commands locally.
+		spec.DynamicTools = a.localDynamicTools()
 	}
 	// Merge Coroot tools when configured.
 	if corootTools := a.corootDynamicTools(); len(corootTools) > 0 {

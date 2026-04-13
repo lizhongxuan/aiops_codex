@@ -13,6 +13,7 @@ const CapabilityCenterPage = () => import("./pages/CapabilityCenterPage.vue");
 const UICardManagementPage = () => import("./pages/UICardManagementPage.vue");
 const ScriptConfigPage = () => import("./pages/ScriptConfigPage.vue");
 const SettingsPage = () => import("./pages/SettingsPage.vue");
+const LLMConfigPage = () => import("./pages/LLMConfigPage.vue");
 const CorootOverviewPage = () => import("./pages/CorootOverviewPage.vue");
 const LabEnvironmentPage = () => import("./pages/LabEnvironmentPage.vue");
 const GeneratorWorkshopPage = () => import("./pages/GeneratorWorkshopPage.vue");
@@ -46,6 +47,11 @@ const routes = [
     path: "/settings",
     name: "settings",
     component: SettingsPage,
+  },
+  {
+    path: "/settings/llm",
+    name: "settings-llm",
+    component: LLMConfigPage,
   },
   {
     path: "/settings/hosts",

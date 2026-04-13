@@ -679,8 +679,10 @@ func NormalizeSessionMeta(meta SessionMeta) SessionMeta {
 }
 
 type UIConfig struct {
-	OAuthConfigured bool `json:"oauthConfigured"`
-	CodexAlive      bool `json:"codexAlive"`
+	OAuthConfigured bool   `json:"oauthConfigured"`
+	CodexAlive      bool   `json:"codexAlive"`
+	Provider        string `json:"provider,omitempty"`
+	Model           string `json:"model,omitempty"`
 }
 
 func DefaultAgentProfiles() []AgentProfile {
