@@ -48,6 +48,17 @@ func (p *AnthropicProvider) Name() string { return "anthropic" }
 // SupportsToolCalling indicates that Anthropic supports tool calling.
 func (p *AnthropicProvider) SupportsToolCalling() bool { return true }
 
+// Capabilities returns the feature set supported by the Anthropic provider.
+func (p *AnthropicProvider) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		SupportsNativeSearch:       true,
+		SupportsReasoningContent:   false,
+		SupportsStreamingToolCalls: true,
+		SupportsToolUseFormat:      true,
+		ToolCallingFormat:          "anthropic_tool_use",
+	}
+}
+
 // ---------- Anthropic API types ----------
 
 // anthropicRequest is the JSON body sent to the Anthropic Messages API.

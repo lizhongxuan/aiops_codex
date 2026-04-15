@@ -10,8 +10,9 @@ import (
 
 // StreamResult holds the accumulated output from consuming a streaming LLM response.
 type StreamResult struct {
-	Content   string
-	ToolCalls []bifrost.ToolCall
+	Content          string
+	ReasoningContent string // accumulated reasoning content from reasoning_delta events
+	ToolCalls        []bifrost.ToolCall
 }
 
 // StreamObserver receives incremental assistant deltas while a stream is consumed.
@@ -60,6 +61,9 @@ func (l *Loop) consumeStream(ctx context.Context, session *Session, stream <-cha
 				if err := l.streamObserver.OnAssistantDelta(ctx, session, event.Delta); err != nil {
 					return result, err
 				}
+
+			case "reasoning_delta":
+				result.ReasoningContent += event.ReasoningContent
 
 			case "tool_call_delta":
 				tc := mergeToolCallDelta(toolCallMap, event)

@@ -298,7 +298,7 @@ function summarizeTurnProcess({ processItems = [], activeTurn = false, liveHint 
 function summarizeProtocolTurnProcess({ processItems = [], missionPhase = "", activeTurn = false, liveHint = "" } = {}) {
   if (!activeTurn) {
     const itemCount = asArray(processItems).length;
-    if (!itemCount) return liveHint || "";
+    if (!itemCount) return liveHint || "已完成";
     if (itemCount === 1) return "已记录 1 条过程细项";
     return `已记录 ${itemCount} 条过程细项`;
   }
@@ -528,6 +528,7 @@ export function formatProtocolChatTurns({
     const assistantMessages = asArray(bucket.assistantMessages);
     const finalMessage = isActiveTurn ? null : assistantMessages[assistantMessages.length - 1] || null;
     const assistantProcessMessages = isActiveTurn ? assistantMessages : assistantMessages.slice(0, -1);
+    // Include process cards for the last turn even after completion so the fold persists.
     const activeProcessCards = isCurrentTurn ? asArray(processCards) : [];
     const activeCommandCards = isCurrentTurn ? asArray(commandCards) : [];
     const processItems = sortProcessDisplayItems([
@@ -629,7 +630,9 @@ export function formatMainChatTurns({
     const assistantMessages = asArray(bucket.assistantMessages);
     const finalMessage = isActiveTurn ? null : assistantMessages[assistantMessages.length - 1] || null;
     const assistantProcessMessages = isActiveTurn ? assistantMessages : assistantMessages.slice(0, -1);
-    const activityProcessItems = isActiveTurn
+    // Include activity process items for both active and completed turns
+    // so the "已处理" fold persists after the turn completes.
+    const activityProcessItems = (isActiveTurn || isCurrentTurn)
       ? asArray(activeProcess?.items).map((item, itemIndex) => ({
           id: compactText(item?.id || `activity-${itemIndex}`),
           kind: compactText(item?.kind || "activity"),
@@ -643,8 +646,23 @@ export function formatMainChatTurns({
           sortTimestamp: item?.updatedAt || item?.createdAt || "",
         })).filter((item) => item.text)
       : [];
+    // Include intermediate assistant messages with card property so ChatProcessFold
+    // can render them via MessageCard (model's thinking text inside the fold)
+    const messageProcessItems = assistantProcessMessages.map((msg, msgIndex) => ({
+      id: `msg-${msg.id || msgIndex}`,
+      kind: "assistant",
+      processKind: inferProcessKind(msg.card?.text || ""),
+      text: compactText(msg.card?.text || ""),
+      detail: "",
+      time: compactText(msg.time),
+      hostId: "",
+      tone: "neutral",
+      status: "",
+      sortTimestamp: msg.updatedAt || msg.createdAt || "",
+      card: msg.card,
+    }));
     const processItems = sortProcessDisplayItems([
-      ...buildAssistantProcessItems(assistantProcessMessages),
+      ...messageProcessItems,
       ...activityProcessItems,
     ]);
     const liveHint = isActiveTurn ? compactText(activeProcess?.liveHint || activeProcess?.hint || "") : "";

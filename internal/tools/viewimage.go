@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -36,13 +36,13 @@ func RegisterViewImageTool(reg *ToolRegistry) {
 // maxImageSize is the maximum allowed image file size (10MB).
 const maxImageSize = 10 * 1024 * 1024
 
-func handleViewImage(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleViewImage(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	imgPath, _ := args["path"].(string)
 	if imgPath == "" {
 		return "", fmt.Errorf("view_image requires a non-empty 'path' argument")
 	}
 
-	cwd := session.Cwd()
+	cwd := tc.Cwd()
 	if cwd == "" {
 		cwd = "."
 	}
@@ -63,13 +63,11 @@ func handleViewImage(ctx context.Context, session *Session, call bifrost.ToolCal
 		return "", fmt.Errorf("view_image: %w", err)
 	}
 
-	// Detect MIME type.
 	mimeType := http.DetectContentType(data)
 	if !strings.HasPrefix(mimeType, "image/") {
 		return "", fmt.Errorf("view_image: file is not a recognized image format (detected: %s)", mimeType)
 	}
 
-	// Encode as base64 data URI.
 	encoded := base64.StdEncoding.EncodeToString(data)
 	dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, encoded)
 

@@ -19,6 +19,9 @@ type mockProvider struct {
 
 func (m *mockProvider) Name() string { return m.name }
 func (m *mockProvider) SupportsToolCalling() bool { return true }
+func (m *mockProvider) Capabilities() bifrost.ProviderCapabilities {
+	return bifrost.ProviderCapabilities{ToolCallingFormat: "openai_function"}
+}
 func (m *mockProvider) StreamChatCompletion(ctx context.Context, req bifrost.ChatRequest) (<-chan bifrost.StreamEvent, error) {
 	return nil, nil
 }

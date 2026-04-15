@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -28,14 +28,8 @@ func RegisterJSReplTool(reg *ToolRegistry) {
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"code": map[string]interface{}{
-					"type":        "string",
-					"description": "JavaScript code to execute.",
-				},
-				"timeout_sec": map[string]interface{}{
-					"type":        "integer",
-					"description": "Execution timeout in seconds (default 10, max 60).",
-				},
+				"code":        map[string]interface{}{"type": "string", "description": "JavaScript code to execute."},
+				"timeout_sec": map[string]interface{}{"type": "integer", "description": "Execution timeout in seconds (default 10, max 60)."},
 			},
 			"required":             []string{"code"},
 			"additionalProperties": false,
@@ -64,7 +58,7 @@ type JSReplResult struct {
 	Duration string `json:"duration"`
 }
 
-func handleJSRepl(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleJSRepl(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	code, _ := args["code"].(string)
 	if strings.TrimSpace(code) == "" {
 		return "", fmt.Errorf("js_repl requires non-empty 'code' argument")
@@ -78,14 +72,12 @@ func handleJSRepl(ctx context.Context, session *Session, call bifrost.ToolCall, 
 		timeoutSec = 60
 	}
 
-	// Add to history.
 	globalJSRepl.mu.Lock()
 	globalJSRepl.history = append(globalJSRepl.history, code)
-	// Build full script from history for stateful execution.
 	fullCode := strings.Join(globalJSRepl.history, "\n")
 	globalJSRepl.mu.Unlock()
 
-	cwd := session.Cwd()
+	cwd := tc.Cwd()
 	if cwd == "" {
 		cwd = "."
 	}
@@ -114,7 +106,6 @@ func handleJSRepl(ctx context.Context, session *Session, call bifrost.ToolCall, 
 		if result.Error == "" {
 			result.Error = err.Error()
 		}
-		// Remove the failed code from history.
 		globalJSRepl.mu.Lock()
 		if len(globalJSRepl.history) > 0 {
 			globalJSRepl.history = globalJSRepl.history[:len(globalJSRepl.history)-1]
@@ -129,7 +120,7 @@ func handleJSRepl(ctx context.Context, session *Session, call bifrost.ToolCall, 
 	return string(out), nil
 }
 
-func handleJSReplReset(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleJSReplReset(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	globalJSRepl.mu.Lock()
 	globalJSRepl.history = nil
 	globalJSRepl.mu.Unlock()

@@ -23,6 +23,9 @@ func (p *testProvider) StreamChatCompletion(ctx context.Context, req bifrost.Cha
 	return p.streamFn(ctx, req)
 }
 func (p *testProvider) SupportsToolCalling() bool { return true }
+func (p *testProvider) Capabilities() bifrost.ProviderCapabilities {
+	return bifrost.ProviderCapabilities{ToolCallingFormat: "openai_function", SupportsStreamingToolCalls: true}
+}
 
 type approvalHandlerFunc func(context.Context, *Session, ApprovalRequest) (string, error)
 
@@ -183,7 +186,7 @@ func TestRunTurn_WithToolCall(t *testing.T) {
 	loop := newLoopWithProvider(tp, nil)
 	loop.toolReg.Register(ToolEntry{
 		Name: "echo",
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, args map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, args map[string]interface{}) (string, error) {
 			return "echoed: " + args["msg"].(string), nil
 		},
 	})
@@ -233,7 +236,7 @@ func TestRunTurn_ParallelReadonlyToolBatch(t *testing.T) {
 	loop := newLoopWithProvider(tp, nil)
 	var active atomic.Int32
 	var maxConcurrent atomic.Int32
-	handler := func(_ context.Context, _ *Session, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+	handler := func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
 		current := active.Add(1)
 		for {
 			prev := maxConcurrent.Load()
@@ -281,7 +284,7 @@ func TestRunTurn_ToolApprovalWaitsForDecision(t *testing.T) {
 	loop.toolReg.Register(ToolEntry{
 		Name:             "execute_command",
 		RequiresApproval: true,
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
 			executed.Store(true)
 			return "command executed", nil
 		},
@@ -332,7 +335,7 @@ func TestRunTurn_CompressesBeforeAndAfterToolExecution(t *testing.T) {
 	loop := newLoopWithProvider(tp, compressor)
 	loop.toolReg.Register(ToolEntry{
 		Name: "echo",
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
 			return "echoed", nil
 		},
 	})
@@ -385,7 +388,7 @@ func TestRunTurn_MaxIterations(t *testing.T) {
 	loop := newLoopWithProvider(tp, nil)
 	loop.toolReg.Register(ToolEntry{
 		Name: "noop",
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
 			return "ok", nil
 		},
 	})
@@ -426,6 +429,7 @@ func TestParseToolArgs(t *testing.T) {
 
 func TestBuildChatRequest(t *testing.T) {
 	gw := bifrost.NewGateway(bifrost.GatewayConfig{DefaultProvider: "test"})
+	gw.RegisterProvider("test", &testProvider{})
 	reg := NewToolRegistry()
 	reg.Register(ToolEntry{Name: "tool_a", Description: "A tool"})
 	reg.Register(ToolEntry{Name: "tool_b", Description: "B tool"})
@@ -453,5 +457,289 @@ func TestBuildChatRequest(t *testing.T) {
 	}
 	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "tool_a" {
 		t.Fatalf("expected only tool_a in request, got %#v", req.Tools)
+	}
+}
+
+
+// --- Mid-turn message injection tests ---
+
+func TestRunTurn_MidTurnInjection(t *testing.T) {
+	callCount := 0
+	tp := &testProvider{
+		streamFn: func(_ context.Context, _ bifrost.ChatRequest) (<-chan bifrost.StreamEvent, error) {
+			callCount++
+			if callCount == 1 {
+				// First call: return a tool call
+				return makeStreamCh([]bifrost.StreamEvent{
+					{Type: "tool_call_delta", ToolIndex: 0, ToolCallID: "call-1", FuncName: "slow_tool"},
+					{Type: "tool_call_delta", ToolIndex: 0, FuncArgs: `{}`},
+					{Type: "done"},
+				}), nil
+			}
+			// Second call: model sees the injected message and responds
+			return makeStreamCh([]bifrost.StreamEvent{
+				{Type: "content_delta", Delta: "Acknowledged interrupt"},
+				{Type: "done"},
+			}), nil
+		},
+	}
+
+	loop := newLoopWithProvider(tp, nil)
+	loop.toolReg.Register(ToolEntry{
+		Name: "slow_tool",
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+			return "tool done", nil
+		},
+	})
+
+	session := NewSession("inject-session", SessionSpec{Model: "test-model"})
+
+	// Inject a message before the second iteration picks it up.
+	// We inject before RunTurn so it's available on iteration 1.
+	session.InjectMessage("please stop what you're doing")
+
+	if err := loop.RunTurn(context.Background(), session, "start working"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
+	}
+
+	// Verify the injected message appears in the conversation.
+	msgs := session.ContextManager().Messages()
+	found := false
+	for _, m := range msgs {
+		if m.Role == "user" {
+			if s, ok := m.Content.(string); ok {
+				if s == "[User interrupt]: please stop what you're doing" {
+					found = true
+					break
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected injected interrupt message in conversation history")
+	}
+}
+
+func TestRunTurn_InterruptDuringToolBatch(t *testing.T) {
+	callCount := 0
+	tp := &testProvider{
+		streamFn: func(_ context.Context, _ bifrost.ChatRequest) (<-chan bifrost.StreamEvent, error) {
+			callCount++
+			if callCount == 1 {
+				// Return two sequential tool calls (non-parallel because one requires approval)
+				return makeStreamCh([]bifrost.StreamEvent{
+					{Type: "tool_call_delta", ToolIndex: 0, ToolCallID: "call-1", FuncName: "tool_a"},
+					{Type: "tool_call_delta", ToolIndex: 0, FuncArgs: `{}`},
+					{Type: "tool_call_delta", ToolIndex: 1, ToolCallID: "call-2", FuncName: "tool_b"},
+					{Type: "tool_call_delta", ToolIndex: 1, FuncArgs: `{}`},
+					{Type: "done"},
+				}), nil
+			}
+			return makeStreamCh([]bifrost.StreamEvent{
+				{Type: "content_delta", Delta: "done after interrupt"},
+				{Type: "done"},
+			}), nil
+		},
+	}
+
+	var toolACalled, toolBCalled atomic.Bool
+	loop := newLoopWithProvider(tp, nil)
+	loop.toolReg.Register(ToolEntry{
+		Name:             "tool_a",
+		RequiresApproval: true, // Forces sequential execution
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+			toolACalled.Store(true)
+			return "a done", nil
+		},
+	})
+	loop.toolReg.Register(ToolEntry{
+		Name: "tool_b",
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+			toolBCalled.Store(true)
+			return "b done", nil
+		},
+	})
+	loop.SetApprovalHandler(approvalHandlerFunc(func(_ context.Context, session *Session, _ ApprovalRequest) (string, error) {
+		// Auto-approve, but inject an interrupt before tool_b runs
+		session.InjectMessage("abort remaining tools")
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			session.ResolveApproval(ApprovalDecision{Decision: "approve"})
+		}()
+		return "", nil
+	}))
+
+	session := NewSession("interrupt-batch", SessionSpec{Model: "test-model"})
+	if err := loop.RunTurn(context.Background(), session, "run both tools"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
+	}
+
+	// tool_a should have been called, tool_b should have been skipped due to interrupt
+	if !toolACalled.Load() {
+		t.Fatal("expected tool_a to be called")
+	}
+	if toolBCalled.Load() {
+		t.Fatal("expected tool_b to be skipped due to interrupt")
+	}
+}
+
+// --- Proactive compression tests ---
+
+func TestIterationBudgetTracker_NoCompressBeforeThreshold(t *testing.T) {
+	tracker := &iterationBudgetTracker{}
+	for i := 0; i < ProactiveCompressIterationThreshold; i++ {
+		tracker.record(1000 + i*500)
+		if tracker.shouldForceCompress(i) {
+			t.Fatalf("should not force compress at iteration %d", i)
+		}
+	}
+}
+
+func TestIterationBudgetTracker_CompressOnHighIterationWithDiminishingReturns(t *testing.T) {
+	tracker := &iterationBudgetTracker{}
+
+	// Record growing content for first iterations
+	for i := 0; i < ProactiveCompressIterationThreshold; i++ {
+		tracker.record(1000 + i*1000)
+	}
+
+	// Now record diminishing returns (very small deltas)
+	lastLen := 1000 + (ProactiveCompressIterationThreshold-1)*1000
+	for i := 0; i < DiminishingReturnsCheckWindow; i++ {
+		lastLen += 10 // tiny delta, well below threshold
+		tracker.record(lastLen)
+	}
+
+	iteration := ProactiveCompressIterationThreshold + DiminishingReturnsCheckWindow
+	if !tracker.shouldForceCompress(iteration) {
+		t.Fatal("expected force compress with diminishing returns at high iteration count")
+	}
+}
+
+func TestIterationBudgetTracker_NoCompressWithGoodProgress(t *testing.T) {
+	tracker := &iterationBudgetTracker{}
+
+	// Record consistently growing content
+	for i := 0; i <= ProactiveCompressIterationThreshold+DiminishingReturnsCheckWindow; i++ {
+		tracker.record(1000 + i*1000) // 1000 chars per iteration — well above threshold
+	}
+
+	iteration := ProactiveCompressIterationThreshold + DiminishingReturnsCheckWindow
+	if tracker.shouldForceCompress(iteration) {
+		t.Fatal("should not force compress when progress is good")
+	}
+}
+
+func TestTotalContentLength(t *testing.T) {
+	msgs := []bifrost.Message{
+		{Role: "user", Content: "hello"},                                                                    // 5
+		{Role: "assistant", Content: "world", ToolCalls: []bifrost.ToolCall{{Function: bifrost.FunctionCall{Arguments: `{"a":1}`}}}}, // 5 + 7 = 12
+		{Role: "tool", Content: "result"},                                                                   // 6
+	}
+	total := totalContentLength(msgs)
+	expected := 5 + 5 + 7 + 6 // 23
+	if total != expected {
+		t.Fatalf("expected %d, got %d", expected, total)
+	}
+}
+
+func TestTruncateLog(t *testing.T) {
+	if truncateLog("short", 10) != "short" {
+		t.Fatal("short string should not be truncated")
+	}
+	result := truncateLog("this is a long string", 10)
+	if result != "this is a ..." {
+		t.Fatalf("expected truncation, got %q", result)
+	}
+}
+
+// --- Checkpoint integration with loop ---
+
+func TestRunTurn_WithCheckpointStore(t *testing.T) {
+	dir := t.TempDir()
+	store := NewCheckpointStore(dir)
+
+	callCount := 0
+	tp := &testProvider{
+		streamFn: func(_ context.Context, _ bifrost.ChatRequest) (<-chan bifrost.StreamEvent, error) {
+			callCount++
+			if callCount == 1 {
+				return makeStreamCh([]bifrost.StreamEvent{
+					{Type: "tool_call_delta", ToolIndex: 0, ToolCallID: "call-1", FuncName: "echo"},
+					{Type: "tool_call_delta", ToolIndex: 0, FuncArgs: `{"msg":"hi"}`},
+					{Type: "done"},
+				}), nil
+			}
+			return makeStreamCh([]bifrost.StreamEvent{
+				{Type: "content_delta", Delta: "Done!"},
+				{Type: "done"},
+			}), nil
+		},
+	}
+
+	loop := newLoopWithProvider(tp, nil).SetCheckpointStore(store)
+	loop.toolReg.Register(ToolEntry{
+		Name: "echo",
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, args map[string]interface{}) (string, error) {
+			return "echoed: " + args["msg"].(string), nil
+		},
+	})
+
+	session := NewSession("checkpoint-session", SessionSpec{Model: "test-model"})
+	if err := loop.RunTurn(context.Background(), session, "test checkpoint"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
+	}
+
+	// After successful completion, checkpoints should be cleared.
+	if store.LoadLatest("checkpoint-session") != nil {
+		t.Fatal("expected checkpoints to be cleared after successful turn")
+	}
+}
+
+func TestRunTurn_ProactiveCompressionTriggered(t *testing.T) {
+	// Create a provider that always returns tool calls to force many iterations.
+	iterCount := 0
+	tp := &testProvider{
+		streamFn: func(_ context.Context, _ bifrost.ChatRequest) (<-chan bifrost.StreamEvent, error) {
+			iterCount++
+			if iterCount <= ProactiveCompressIterationThreshold+DiminishingReturnsCheckWindow+1 {
+				return makeStreamCh([]bifrost.StreamEvent{
+					{Type: "tool_call_delta", ToolIndex: 0, ToolCallID: "call-x", FuncName: "noop"},
+					{Type: "tool_call_delta", ToolIndex: 0, FuncArgs: `{}`},
+					{Type: "done"},
+				}), nil
+			}
+			return makeStreamCh([]bifrost.StreamEvent{
+				{Type: "content_delta", Delta: "finally done"},
+				{Type: "done"},
+			}), nil
+		},
+	}
+
+	compressor := &fakeCompressor{}
+	loop := newLoopWithProvider(tp, compressor)
+	loop.toolReg.Register(ToolEntry{
+		Name: "noop",
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+			return "ok", nil
+		},
+	})
+
+	session := NewSession("proactive-session", SessionSpec{
+		Model:         "test-model",
+		MaxIterations: ProactiveCompressIterationThreshold + DiminishingReturnsCheckWindow + 5,
+	})
+	if err := loop.RunTurn(context.Background(), session, "keep going"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
+	}
+
+	// The proactive compression should have triggered Compact at least once
+	// (via shouldForceCompress path, which calls l.compressor.Compact directly).
+	// Note: the fakeCompressor.ShouldCompress returns false by default, so
+	// preSampleCompress won't trigger. But the proactive path calls Compact directly.
+	compressor.mu.Lock()
+	defer compressor.mu.Unlock()
+	if compressor.compactCalls < 1 {
+		t.Fatalf("expected at least 1 proactive compact call, got %d", compressor.compactCalls)
 	}
 }

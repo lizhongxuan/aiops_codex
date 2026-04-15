@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -34,9 +34,7 @@ func RegisterApplyPatchTool(reg *ToolRegistry) {
 }
 
 // handleApplyPatch is the ToolHandler for the apply_patch tool.
-// It parses the diff, assesses safety, records baselines for affected files,
-// and applies the patch.
-func handleApplyPatch(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleApplyPatch(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	patchStr, ok := args["patch"].(string)
 	if !ok || strings.TrimSpace(patchStr) == "" {
 		return "", fmt.Errorf("apply_patch requires a non-empty 'patch' argument")
@@ -49,7 +47,7 @@ func handleApplyPatch(ctx context.Context, session *Session, call bifrost.ToolCa
 	}
 
 	// Determine working directory from session.
-	cwd := session.Cwd()
+	cwd := tc.Cwd()
 	if cwd == "" {
 		cwd = "."
 	}
@@ -68,7 +66,7 @@ func handleApplyPatch(ctx context.Context, session *Session, call bifrost.ToolCa
 	}
 
 	// Record baselines for affected files before applying.
-	tracker := session.DiffTracker()
+	tracker := tc.DiffTracker()
 	if tracker != nil {
 		for _, change := range action.Changes {
 			paths := affectedAbsPaths(&change, cwd)

@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -23,18 +23,9 @@ func RegisterAgentJobsTool(reg *ToolRegistry) {
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"id": map[string]interface{}{
-								"type":        "string",
-								"description": "Unique job identifier.",
-							},
-							"command": map[string]interface{}{
-								"type":        "string",
-								"description": "Command or instruction to execute.",
-							},
-							"args": map[string]interface{}{
-								"type":        "object",
-								"description": "Additional arguments for the job.",
-							},
+							"id":      map[string]interface{}{"type": "string", "description": "Unique job identifier."},
+							"command": map[string]interface{}{"type": "string", "description": "Command or instruction to execute."},
+							"args":    map[string]interface{}{"type": "object", "description": "Additional arguments for the job."},
 						},
 						"required": []string{"id", "command"},
 					},
@@ -64,12 +55,12 @@ type JobSpec struct {
 // JobResult represents the result of a single job execution.
 type JobResult struct {
 	ID     string `json:"id"`
-	Status string `json:"status"` // "success" or "error"
+	Status string `json:"status"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
 
-func handleAgentJobs(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleAgentJobs(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	jobsRaw, ok := args["jobs"]
 	if !ok {
 		return "", fmt.Errorf("agent_jobs requires 'jobs' argument")
@@ -97,7 +88,6 @@ func handleAgentJobs(ctx context.Context, session *Session, call bifrost.ToolCal
 		concurrency = 10
 	}
 
-	// Execute jobs with bounded concurrency.
 	results := make([]JobResult, len(jobs))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
@@ -109,7 +99,7 @@ func handleAgentJobs(ctx context.Context, session *Session, call bifrost.ToolCal
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			result := executeJob(ctx, session, j)
+			result := executeJob(ctx, tc, j)
 			results[idx] = result
 		}(i, job)
 	}
@@ -123,9 +113,7 @@ func handleAgentJobs(ctx context.Context, session *Session, call bifrost.ToolCal
 	return string(out), nil
 }
 
-func executeJob(ctx context.Context, session *Session, job JobSpec) JobResult {
-	// Basic job execution — commands are treated as descriptions of work.
-	// In a full implementation this would dispatch to sub-agents or shell.
+func executeJob(ctx context.Context, tc ToolContext, job JobSpec) JobResult {
 	if strings.TrimSpace(job.Command) == "" {
 		return JobResult{
 			ID:     job.ID,

@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 // RegisterCorootTools registers the 7 Coroot MCP dynamic tool definitions into
 // the given ToolRegistry. Handlers are placeholder stubs — actual

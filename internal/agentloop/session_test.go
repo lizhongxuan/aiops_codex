@@ -209,7 +209,7 @@ func TestBuildSystemPromptIncludesInstructions(t *testing.T) {
 		t.Fatal("prompt should contain sandbox mode")
 	}
 	if !strings.Contains(prompt, "ReAct agent loop") {
-		t.Fatal("prompt should contain static identity section")
+		t.Fatal("prompt should contain ReAct agent loop description")
 	}
 }
 
@@ -221,14 +221,14 @@ func TestBuildSystemPromptMinimal(t *testing.T) {
 	prompt := BuildSystemPrompt(spec)
 
 	// Should still have the static identity section.
-	if !strings.Contains(prompt, "main agent") {
+	if !strings.Contains(prompt, "主 Agent") {
 		t.Fatal("prompt should contain static identity even with minimal spec")
 	}
 	// Should not contain approval or sandbox sections.
-	if strings.Contains(prompt, "Approval policy:") {
+	if strings.Contains(prompt, "当前审批策略") {
 		t.Fatal("prompt should not contain approval policy when not set")
 	}
-	if strings.Contains(prompt, "Sandbox mode:") {
+	if strings.Contains(prompt, "当前沙箱模式") {
 		t.Fatal("prompt should not contain sandbox mode when not set")
 	}
 }
@@ -260,5 +260,170 @@ func TestEnabledToolsReturnsCopy(t *testing.T) {
 	original := s.EnabledTools()
 	if original[0] != "tool_a" {
 		t.Fatal("EnabledTools should return a copy, not a reference")
+	}
+}
+
+
+// --- contextWindowForModel tests ---
+
+func TestContextWindowForModel_KnownModels(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{"gpt-5-turbo", 256000},
+		{"gpt-4o-mini", 128000},
+		{"gpt-4o", 128000},
+		{"gpt-4-turbo", 128000},
+		{"claude-sonnet-4-20250514", 200000},
+		{"claude-3-opus", 200000},
+		{"deepseek-chat", 64000},
+		{"deepseek-coder", 64000},
+		{"glm-4", 128000},
+		{"qwen-72b", 128000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := contextWindowForModel(tt.model)
+			if got != tt.want {
+				t.Errorf("contextWindowForModel(%q) = %d, want %d", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContextWindowForModel_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{"GPT-4o", 128000},
+		{"Claude-3-Opus", 200000},
+		{"DEEPSEEK-CHAT", 64000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := contextWindowForModel(tt.model)
+			if got != tt.want {
+				t.Errorf("contextWindowForModel(%q) = %d, want %d", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContextWindowForModel_UnknownModel(t *testing.T) {
+	got := contextWindowForModel("unknown-model-xyz")
+	if got != DefaultContextWindow {
+		t.Errorf("contextWindowForModel(unknown) = %d, want %d", got, DefaultContextWindow)
+	}
+}
+
+func TestContextWindowForModel_EmptyModel(t *testing.T) {
+	got := contextWindowForModel("")
+	if got != DefaultContextWindow {
+		t.Errorf("contextWindowForModel('') = %d, want %d", got, DefaultContextWindow)
+	}
+}
+
+func TestNewSession_DynamicContextWindow(t *testing.T) {
+	// When ContextWindow is not specified, it should use model-aware lookup.
+	spec := SessionSpec{
+		Model: "claude-sonnet-4-20250514",
+	}
+	s := NewSession("sess-dynamic", spec)
+
+	// The context manager should have been created with 200000 (claude's window).
+	// We can verify indirectly by checking that EstimateTokens works with the
+	// larger window (rough estimate stays below 70% threshold).
+	cm := s.ContextManager()
+	cm.AppendUser("test")
+	tokens := cm.EstimateTokens()
+	if tokens <= 0 {
+		t.Error("expected positive token count")
+	}
+}
+
+func TestNewSession_ExplicitContextWindowOverridesModel(t *testing.T) {
+	spec := SessionSpec{
+		Model:         "claude-sonnet-4-20250514",
+		ContextWindow: 50000,
+	}
+	s := NewSession("sess-explicit", spec)
+
+	// With explicit ContextWindow=50000, it should use that, not 200000.
+	cm := s.ContextManager()
+	if cm == nil {
+		t.Fatal("expected non-nil ContextManager")
+	}
+}
+
+
+// --- InjectMessage / DrainInterrupt tests ---
+
+func TestInjectMessage_DrainInterrupt(t *testing.T) {
+	s := NewSession("sess-inject", SessionSpec{Model: "test"})
+
+	// No message queued — drain returns empty.
+	if msg := s.DrainInterrupt(); msg != "" {
+		t.Fatalf("expected empty, got %q", msg)
+	}
+
+	// Inject a message.
+	s.InjectMessage("stop and reconsider")
+
+	// Drain should return it.
+	msg := s.DrainInterrupt()
+	if msg != "stop and reconsider" {
+		t.Fatalf("expected 'stop and reconsider', got %q", msg)
+	}
+
+	// Second drain should be empty.
+	if msg := s.DrainInterrupt(); msg != "" {
+		t.Fatalf("expected empty after drain, got %q", msg)
+	}
+}
+
+func TestInjectMessage_ReplacesWhenFull(t *testing.T) {
+	s := NewSession("sess-replace", SessionSpec{Model: "test"})
+
+	// Fill the channel.
+	s.InjectMessage("first")
+
+	// Inject again — should replace.
+	s.InjectMessage("second")
+
+	msg := s.DrainInterrupt()
+	if msg != "second" {
+		t.Fatalf("expected 'second' (replacement), got %q", msg)
+	}
+}
+
+func TestInjectMessage_NonBlocking(t *testing.T) {
+	s := NewSession("sess-nonblock", SessionSpec{Model: "test"})
+
+	// Should not block even when called multiple times rapidly.
+	for i := 0; i < 10; i++ {
+		s.InjectMessage("msg")
+	}
+
+	// Should have exactly one message.
+	msg := s.DrainInterrupt()
+	if msg != "msg" {
+		t.Fatalf("expected 'msg', got %q", msg)
+	}
+	if msg := s.DrainInterrupt(); msg != "" {
+		t.Fatalf("expected empty, got %q", msg)
+	}
+}
+
+func TestNewSession_InterruptChannelInitialized(t *testing.T) {
+	s := NewSession("sess-init-ch", SessionSpec{Model: "test"})
+
+	// interruptCh should be initialized (non-nil, buffered).
+	if s.interruptCh == nil {
+		t.Fatal("expected interruptCh to be initialized")
+	}
+	if cap(s.interruptCh) != 1 {
+		t.Fatalf("expected interruptCh capacity 1, got %d", cap(s.interruptCh))
 	}
 }

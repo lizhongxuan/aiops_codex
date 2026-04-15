@@ -24,6 +24,9 @@ func (p *mockProvider) StreamChatCompletion(_ context.Context, _ bifrost.ChatReq
 	return nil, nil
 }
 func (p *mockProvider) SupportsToolCalling() bool { return true }
+func (p *mockProvider) Capabilities() bifrost.ProviderCapabilities {
+	return bifrost.ProviderCapabilities{ToolCallingFormat: "openai_function"}
+}
 
 func newTestGateway(resp *bifrost.ChatResponse, err error) *bifrost.Gateway {
 	gw := bifrost.NewGateway(bifrost.GatewayConfig{

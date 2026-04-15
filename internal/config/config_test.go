@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"pgregory.net/rapid"
 )
 
 func clearLLMEnv(t *testing.T) {
@@ -182,4 +184,37 @@ func TestCorootFullConfigured(t *testing.T) {
 			}
 		})
 	}
+}
+
+// **Validates: Requirements 2.1**
+// Property 18: Config WEB_SEARCH_MODE loading — when WEB_SEARCH_MODE is set,
+// Load() returns that value; when unset, it defaults to "duckduckgo".
+func TestProperty_ConfigWebSearchModeLoading(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		// Clear env vars that might interfere.
+		for _, key := range []string{
+			"WEB_SEARCH_MODE",
+			"BRAVE_API_KEY",
+		} {
+			t.Setenv(key, "")
+		}
+
+		// Decide whether to set the env var or leave it unset.
+		setEnv := rapid.Bool().Draw(rt, "setEnv")
+
+		if setEnv {
+			value := rapid.SampledFrom([]string{"duckduckgo", "brave", "custom-engine"}).Draw(rt, "mode")
+			t.Setenv("WEB_SEARCH_MODE", value)
+
+			cfg := Load()
+			if cfg.WebSearchMode != value {
+				rt.Fatalf("WebSearchMode = %q, want %q", cfg.WebSearchMode, value)
+			}
+		} else {
+			cfg := Load()
+			if cfg.WebSearchMode != "duckduckgo" {
+				rt.Fatalf("WebSearchMode = %q, want default %q", cfg.WebSearchMode, "duckduckgo")
+			}
+		}
+	})
 }

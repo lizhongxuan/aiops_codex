@@ -31,6 +31,16 @@ const summaryText = computed(() => {
 
 const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台计划投影" : "计划"));
 
+const planTitle = computed(() => {
+  if (props.card.title && props.card.title !== "PlanCard") return props.card.title;
+  return null;
+});
+
+const planText = computed(() => {
+  if (props.card.text) return props.card.text;
+  return null;
+});
+
 function toggleExpand() {
   isExpanded.value = !isExpanded.value;
 }
@@ -64,14 +74,16 @@ const expandedStepNames = computed(() => {
         <ListTodoIcon size="16" class="plan-icon" />
         <div class="plan-title-group">
           <span class="plan-context">{{ contextLabel }}</span>
+          <span v-if="planTitle" class="plan-title">{{ planTitle }}</span>
           <span class="plan-summary">{{ summaryText }}</span>
         </div>
       </div>
       <component :is="isExpanded ? ChevronDownIcon : ChevronRightIcon" size="16" class="plan-toggle" />
     </div>
 
-    <div class="plan-body" v-if="isExpanded && card.items?.length">
-      <n-timeline>
+    <div class="plan-body" v-if="isExpanded && (card.items?.length || planText)">
+      <div v-if="planText && !card.items?.length" class="plan-goal">{{ planText }}</div>
+      <n-timeline v-if="card.items?.length">
         <n-timeline-item
           v-for="(item, index) in card.items"
           :key="index"
@@ -159,6 +171,23 @@ const expandedStepNames = computed(() => {
   font-size: 13px;
   font-weight: 600;
   color: #374151;
+}
+
+.plan-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.plan-goal {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+  border-left: 3px solid #3b82f6;
+  margin-bottom: 8px;
+  background: #f8fafc;
+  border-radius: 0 6px 6px 0;
 }
 
 .plan-toggle {

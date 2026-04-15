@@ -9,7 +9,7 @@ import HostModal from "./components/HostModal.vue";
 import SessionHistoryDrawer from "./components/SessionHistoryDrawer.vue";
 import McpBundleHost from "./components/mcp/McpBundleHost.vue";
 import McpUiCardHost from "./components/mcp/McpUiCardHost.vue";
-import StatusBar from "./components/StatusBar.vue";
+
 import {
   MessageSquarePlusIcon,
   AppWindowIcon,
@@ -747,16 +747,7 @@ watch(
 
       <router-view />
 
-      <!-- Status Bar (Task 4) -->
-      <StatusBar
-        :ws-status="store.wsStatus"
-        :selected-host="store.selectedHost"
-        :selected-host-label="selectedHostLabel"
-        :turn-phase="store.runtime.turn.phase"
-        :turn-active="store.runtime.turn.active"
-        :describe-turn-phase="describeTurnPhase"
-        @open-settings="openGeneralSettings"
-      />
+
     </main>
 
     <!-- Right Drawer: MCP & Core Panel (n-drawer) -->

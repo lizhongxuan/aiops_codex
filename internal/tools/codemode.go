@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -50,7 +50,7 @@ type CodeModeResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
-func handleCodeMode(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleCodeMode(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	language, _ := args["language"].(string)
 	code, _ := args["code"].(string)
 
@@ -69,7 +69,6 @@ func handleCodeMode(ctx context.Context, session *Session, call bifrost.ToolCall
 		timeoutSec = 120
 	}
 
-	// Determine interpreter.
 	var interpreter string
 	var interpreterArgs []string
 	switch language {
@@ -86,7 +85,7 @@ func handleCodeMode(ctx context.Context, session *Session, call bifrost.ToolCall
 		return "", fmt.Errorf("code_mode: unsupported language %q", language)
 	}
 
-	cwd := session.Cwd()
+	cwd := tc.Cwd()
 	if cwd == "" {
 		cwd = "."
 	}

@@ -36,6 +36,18 @@ type toolExecutionOutcome struct {
 	Result string
 }
 
+// ToolExecutionObserver receives callbacks before and after tool execution.
+// The server layer implements this to create ProcessLineCards and update activity.
+type ToolExecutionObserver interface {
+	OnToolStart(ctx context.Context, session *Session, toolName string, args map[string]interface{})
+	OnToolComplete(ctx context.Context, session *Session, toolName string, args map[string]interface{}, result string, err error)
+}
+
+type noopToolObserver struct{}
+
+func (noopToolObserver) OnToolStart(context.Context, *Session, string, map[string]interface{})              {}
+func (noopToolObserver) OnToolComplete(context.Context, *Session, string, map[string]interface{}, string, error) {}
+
 // Loop is the main agent loop that drives the ReAct cycle:
 // reason (LLM call) → act (tool execution) → observe (append result) → repeat.
 type Loop struct {
@@ -44,7 +56,10 @@ type Loop struct {
 	compressor      ContextCompressor
 	approvalHandler ApprovalHandler
 	streamObserver  StreamObserver
+	toolObserver    ToolExecutionObserver
 	hookRuntime     *hooks.Runtime
+	webSearchMode   string
+	checkpointStore *CheckpointStore
 }
 
 // NewLoop creates a new Loop with the given dependencies.
@@ -54,6 +69,7 @@ func NewLoop(gateway *bifrost.Gateway, toolReg *ToolRegistry, compressor Context
 		toolReg:        toolReg,
 		compressor:     compressor,
 		streamObserver: noopStreamObserver{},
+		toolObserver:   noopToolObserver{},
 	}
 }
 
@@ -73,9 +89,32 @@ func (l *Loop) SetStreamObserver(observer StreamObserver) *Loop {
 	return l
 }
 
+// SetToolObserver wires an optional tool execution observer into the loop.
+func (l *Loop) SetToolObserver(observer ToolExecutionObserver) *Loop {
+	if observer == nil {
+		l.toolObserver = noopToolObserver{}
+		return l
+	}
+	l.toolObserver = observer
+	return l
+}
+
 // SetHookRuntime wires an optional hook runtime into the loop.
 func (l *Loop) SetHookRuntime(rt *hooks.Runtime) *Loop {
 	l.hookRuntime = rt
+	return l
+}
+
+// SetWebSearchMode configures the web search mode for the loop.
+// Valid values: "duckduckgo", "brave", "native", "disabled".
+func (l *Loop) SetWebSearchMode(mode string) *Loop {
+	l.webSearchMode = mode
+	return l
+}
+
+// SetCheckpointStore wires an optional checkpoint store into the loop.
+func (l *Loop) SetCheckpointStore(store *CheckpointStore) *Loop {
+	l.checkpointStore = store
 	return l
 }
 
@@ -112,9 +151,31 @@ func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) 
 
 	session.ContextManager().AppendUser(userInput)
 
+	tracker := &iterationBudgetTracker{}
+	completed := false
+
 	for iteration := 0; iteration < session.MaxIterations(); iteration++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("agent loop cancelled: %w", err)
+		}
+
+		// Check for mid-turn injected messages (Claude Code-style interrupt)
+		if injected := session.DrainInterrupt(); injected != "" {
+			session.ContextManager().AppendUser("[User interrupt]: " + injected)
+			log.Printf("[loop] mid-turn message injected: %s", truncateLog(injected, 100))
+		}
+
+		// Track content length for diminishing returns detection
+		tracker.record(totalContentLength(session.ContextManager().Messages()))
+
+		// Proactive compression: force compress if iterations are high and progress is stalling
+		if tracker.shouldForceCompress(iteration) {
+			log.Printf("[loop] proactive compression triggered at iteration %d", iteration)
+			if l.compressor != nil {
+				if err := l.compressor.Compact(ctx, session.ContextManager()); err != nil {
+					log.Printf("[loop] proactive compression failed: %v", err)
+				}
+			}
 		}
 
 		if err := l.preSampleCompress(ctx, session); err != nil {
@@ -132,7 +193,19 @@ func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) 
 			return fmt.Errorf("consume stream failed: %w", err)
 		}
 
-		session.ContextManager().AppendAssistant(result.Content, result.ToolCalls)
+		session.ContextManager().AppendAssistant(result.Content, result.ToolCalls, result.ReasoningContent)
+
+		// Checkpoint after LLM response
+		if l.checkpointStore != nil {
+			l.checkpointStore.Save(IterationCheckpoint{
+				SessionID: session.ID,
+				Iteration: iteration,
+				Messages:  session.ContextManager().Messages(),
+				Phase:     "llm_call",
+				ToolCalls: result.ToolCalls,
+			})
+		}
+
 		if len(result.ToolCalls) == 0 {
 			// Auto-fallback: if model refused to search, do it automatically
 			if shouldAutoWebSearch(result.Content, userInput) {
@@ -143,7 +216,8 @@ func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) 
 					continue // Re-enter the ReAct loop with search results
 				}
 			}
-			return nil
+			completed = true
+			break // successful completion
 		}
 
 		outcomes, err := l.executeToolBatch(ctx, session, result.ToolCalls)
@@ -156,12 +230,41 @@ func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) 
 				log.Printf("[loop] post-tool compression error: %v", err)
 			}
 		}
+
+		// Checkpoint after tool execution
+		if l.checkpointStore != nil {
+			entries := make([]toolResultEntry, len(outcomes))
+			for i, o := range outcomes {
+				entries[i] = toolResultEntry{CallID: o.CallID, Result: o.Result}
+			}
+			l.checkpointStore.Save(IterationCheckpoint{
+				SessionID:   session.ID,
+				Iteration:   iteration,
+				Messages:    session.ContextManager().Messages(),
+				Phase:       "tool_exec",
+				ToolResults: entries,
+			})
+		}
+
 		if IsPauseTurn(err) {
+			// Clear checkpoints on pause (partial success)
+			if l.checkpointStore != nil {
+				l.checkpointStore.Clear(session.ID)
+			}
 			return nil
 		}
 	}
 
-	return fmt.Errorf("agent loop exceeded maximum iterations (%d)", session.MaxIterations())
+	// Clear checkpoints on turn completion
+	if l.checkpointStore != nil {
+		l.checkpointStore.Clear(session.ID)
+	}
+
+	if !completed {
+		return fmt.Errorf("agent loop exceeded maximum iterations (%d)", session.MaxIterations())
+	}
+
+	return nil
 }
 
 // buildChatRequest constructs a bifrost.ChatRequest from the current session state.
@@ -178,13 +281,44 @@ func (l *Loop) buildChatRequest(session *Session) bifrost.ChatRequest {
 		}
 	}
 
-	log.Printf("[bifrost-debug] buildChatRequest: model=%s tools=%d enabledTools=%v", session.Model(), len(l.toolReg.Definitions(session.EnabledTools())), session.EnabledTools())
-	return bifrost.ChatRequest{
+	tools := l.toolReg.Definitions(session.EnabledTools())
+	caps := l.gateway.ProviderCapabilities(session.Model())
+
+	req := bifrost.ChatRequest{
 		Model:    session.Model(),
 		Messages: messages,
-		Tools:    l.toolReg.Definitions(session.EnabledTools()),
+		Tools:    tools,
 		Stream:   true,
 	}
+
+	// If native search is supported and webSearchMode is "native", filter out
+	// the web_search function tool and enable native search on the request.
+	if l.webSearchMode == "native" && caps.SupportsNativeSearch {
+		req.Tools = filterOutTool(req.Tools, "web_search")
+		req.WebSearchEnabled = true
+		req.UseResponsesAPI = true
+	}
+
+	// If the provider doesn't support streaming tool calls and tools are present,
+	// disable streaming to avoid partial tool call issues.
+	if !caps.SupportsStreamingToolCalls && len(req.Tools) > 0 {
+		req.Stream = false
+	}
+
+	log.Printf("[bifrost-debug] buildChatRequest: model=%s tools=%d enabledTools=%v", session.Model(), len(req.Tools), session.EnabledTools())
+	return req
+}
+
+// filterOutTool returns a new slice of ToolDefinitions excluding the tool with
+// the given name. The original slice is never mutated.
+func filterOutTool(tools []bifrost.ToolDefinition, name string) []bifrost.ToolDefinition {
+	filtered := make([]bifrost.ToolDefinition, 0, len(tools))
+	for _, t := range tools {
+		if t.Function.Name != name {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 // preSampleCompress checks whether the context needs compression before the
@@ -216,6 +350,12 @@ func (l *Loop) executeToolBatch(ctx context.Context, session *Session, toolCalls
 	if !l.shouldParallelizeToolBatch(toolCalls) {
 		outcomes := make([]toolExecutionOutcome, 0, len(toolCalls))
 		for _, tc := range toolCalls {
+			// Check for mid-turn interrupt between sequential tool executions
+			if injected := session.DrainInterrupt(); injected != "" {
+				session.ContextManager().AppendUser("[User interrupt]: " + injected)
+				log.Printf("[loop] mid-turn interrupt during tool batch: %s", truncateLog(injected, 100))
+				break // Don't execute remaining tools — let the model re-evaluate
+			}
 			result, err := l.executeTool(ctx, session, tc)
 			if err != nil {
 				return outcomes, err
@@ -308,8 +448,11 @@ func (l *Loop) executeTool(ctx context.Context, session *Session, tc bifrost.Too
 		}
 	}
 
+	l.toolObserver.OnToolStart(ctx, session, tc.Function.Name, args)
+
 	result, err := l.toolReg.Dispatch(ctx, session, tc, tc.Function.Name, args)
 	if err != nil {
+		l.toolObserver.OnToolComplete(ctx, session, tc.Function.Name, args, "", err)
 		return fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, err), nil
 	}
 
@@ -325,6 +468,8 @@ func (l *Loop) executeTool(ctx context.Context, session *Session, tc bifrost.Too
 			session.ContextManager().AppendUser(ctx)
 		}
 	}
+
+	l.toolObserver.OnToolComplete(ctx, session, tc.Function.Name, args, result, nil)
 
 	return result, nil
 }
@@ -462,7 +607,36 @@ func shouldAutoWebSearch(response, userInput string) bool {
 }
 
 // autoWebSearch performs an automatic web search using the user's input.
+// It first tries the OpenAI Responses API for native high-quality search,
+// then falls back to the DuckDuckGo-based web_search tool handler.
 func (l *Loop) autoWebSearch(ctx context.Context, session *Session, query string) (string, error) {
+	// Try Responses API native search first (high quality, uses Bing).
+	if l.gateway != nil {
+		searchReq := bifrost.ChatRequest{
+			Model: session.Model(),
+			Messages: []bifrost.Message{
+				{Role: "user", Content: query},
+			},
+			Stream:           true,
+			UseResponsesAPI:  true,
+			WebSearchEnabled: true,
+		}
+		stream, err := l.gateway.StreamChatCompletion(ctx, searchReq)
+		if err == nil {
+			var result strings.Builder
+			for ev := range stream {
+				if ev.Type == "content_delta" {
+					result.WriteString(ev.Delta)
+				}
+			}
+			if result.Len() > 0 {
+				return result.String(), nil
+			}
+		}
+		log.Printf("[auto-web-search] Responses API failed, falling back to DuckDuckGo: %v", err)
+	}
+
+	// Fallback to DuckDuckGo-based search.
 	entry, ok := l.toolReg.Get("web_search")
 	if !ok || entry == nil || entry.Handler == nil {
 		return "", fmt.Errorf("web_search tool not available")
@@ -470,4 +644,72 @@ func (l *Loop) autoWebSearch(ctx context.Context, session *Session, query string
 	dummyCall := bifrost.ToolCall{ID: "auto-web-search", Function: bifrost.FunctionCall{Name: "web_search"}}
 	args := map[string]interface{}{"query": query}
 	return entry.Handler(ctx, session, dummyCall, args)
+}
+
+// ─── Proactive Compression (Optimization 3) ─────────────────────────────────
+
+const (
+	// ProactiveCompressIterationThreshold triggers forced compression after this many iterations.
+	ProactiveCompressIterationThreshold = 8
+
+	// DiminishingReturnsDeltaThreshold: if the last N iterations produced fewer than this many
+	// new content characters, force compression.
+	DiminishingReturnsDeltaThreshold = 200
+
+	// DiminishingReturnsCheckWindow: number of consecutive low-delta iterations before triggering.
+	DiminishingReturnsCheckWindow = 3
+)
+
+// iterationBudgetTracker monitors iteration progress and detects diminishing returns.
+type iterationBudgetTracker struct {
+	contentLengths []int // content length after each iteration
+}
+
+func (t *iterationBudgetTracker) record(contentLen int) {
+	t.contentLengths = append(t.contentLengths, contentLen)
+}
+
+// shouldForceCompress returns true if iterations are high and progress is diminishing.
+func (t *iterationBudgetTracker) shouldForceCompress(iteration int) bool {
+	if iteration < ProactiveCompressIterationThreshold {
+		return false
+	}
+
+	// Check for diminishing returns: last N iterations produced very little new content
+	n := len(t.contentLengths)
+	if n < DiminishingReturnsCheckWindow+1 {
+		return true // High iteration count but not enough data — compress anyway
+	}
+
+	lowDeltaCount := 0
+	for i := n - DiminishingReturnsCheckWindow; i < n; i++ {
+		delta := t.contentLengths[i] - t.contentLengths[i-1]
+		if delta < DiminishingReturnsDeltaThreshold {
+			lowDeltaCount++
+		}
+	}
+	return lowDeltaCount >= DiminishingReturnsCheckWindow
+}
+
+// totalContentLength sums the character length of all message content.
+func totalContentLength(msgs []bifrost.Message) int {
+	total := 0
+	for _, m := range msgs {
+		switch v := m.Content.(type) {
+		case string:
+			total += len(v)
+		}
+		for _, tc := range m.ToolCalls {
+			total += len(tc.Function.Arguments)
+		}
+	}
+	return total
+}
+
+// truncateLog truncates a string for log output.
+func truncateLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

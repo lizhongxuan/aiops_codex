@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -19,35 +19,13 @@ func RegisterUnifiedExecTool(reg *ToolRegistry) {
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"command": map[string]interface{}{
-					"type":        "string",
-					"description": "Command to execute.",
-				},
-				"args": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "Command arguments.",
-				},
-				"cwd": map[string]interface{}{
-					"type":        "string",
-					"description": "Working directory (defaults to session cwd).",
-				},
-				"stdin": map[string]interface{}{
-					"type":        "string",
-					"description": "Data to write to stdin.",
-				},
-				"tty": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Whether to allocate a pseudo-TTY (default false).",
-				},
-				"timeout_sec": map[string]interface{}{
-					"type":        "integer",
-					"description": "Execution timeout in seconds (default 30, max 300).",
-				},
-				"yield_ms": map[string]interface{}{
-					"type":        "integer",
-					"description": "Yield time in milliseconds before reading output (default 0).",
-				},
+				"command":     map[string]interface{}{"type": "string", "description": "Command to execute."},
+				"args":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Command arguments."},
+				"cwd":         map[string]interface{}{"type": "string", "description": "Working directory (defaults to session cwd)."},
+				"stdin":       map[string]interface{}{"type": "string", "description": "Data to write to stdin."},
+				"tty":         map[string]interface{}{"type": "boolean", "description": "Whether to allocate a pseudo-TTY (default false)."},
+				"timeout_sec": map[string]interface{}{"type": "integer", "description": "Execution timeout in seconds (default 30, max 300)."},
+				"yield_ms":    map[string]interface{}{"type": "integer", "description": "Yield time in milliseconds before reading output (default 0)."},
 			},
 			"required":             []string{"command"},
 			"additionalProperties": false,
@@ -66,21 +44,19 @@ type UnifiedExecResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
-func handleUnifiedExec(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleUnifiedExec(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	command, _ := args["command"].(string)
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("unified_exec requires a non-empty 'command' argument")
 	}
 
-	// Parse args array.
 	var cmdArgs []string
 	if argsRaw, ok := args["args"]; ok {
 		data, _ := json.Marshal(argsRaw)
 		_ = json.Unmarshal(data, &cmdArgs)
 	}
 
-	// Working directory.
-	cwd := session.Cwd()
+	cwd := tc.Cwd()
 	if cwdArg, ok := args["cwd"].(string); ok && cwdArg != "" {
 		cwd = cwdArg
 	}
@@ -88,7 +64,6 @@ func handleUnifiedExec(ctx context.Context, session *Session, call bifrost.ToolC
 		cwd = "."
 	}
 
-	// Timeout.
 	timeoutSec := 30
 	if t, ok := args["timeout_sec"].(float64); ok && t > 0 {
 		timeoutSec = int(t)
@@ -97,13 +72,11 @@ func handleUnifiedExec(ctx context.Context, session *Session, call bifrost.ToolC
 		timeoutSec = 300
 	}
 
-	// Yield time.
 	yieldMs := 0
 	if y, ok := args["yield_ms"].(float64); ok && y > 0 {
 		yieldMs = int(y)
 	}
 
-	// Stdin data.
 	stdinData, _ := args["stdin"].(string)
 
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
@@ -120,7 +93,6 @@ func handleUnifiedExec(ctx context.Context, session *Session, call bifrost.ToolC
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// Yield before execution if requested.
 	if yieldMs > 0 {
 		time.Sleep(time.Duration(yieldMs) * time.Millisecond)
 	}

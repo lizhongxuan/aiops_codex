@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -6,7 +6,32 @@ import (
 	"testing"
 
 	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
+	"github.com/lizhongxuan/aiops-codex/internal/filepatch"
 )
+
+// testToolContext is a minimal ToolContext for testing.
+type testToolContext struct {
+	cwd         string
+	id          string
+	model       string
+	tools       []string
+	diffTracker *filepatch.TurnDiffTracker
+}
+
+func newTestToolContext(cwd string) *testToolContext {
+	return &testToolContext{
+		cwd:         cwd,
+		id:          "test-session",
+		model:       "test",
+		diffTracker: filepatch.NewTurnDiffTracker(),
+	}
+}
+
+func (t *testToolContext) Cwd() string                            { return t.cwd }
+func (t *testToolContext) SessionID() string                      { return t.id }
+func (t *testToolContext) Model() string                          { return t.model }
+func (t *testToolContext) EnabledTools() []string                  { return t.tools }
+func (t *testToolContext) DiffTracker() *filepatch.TurnDiffTracker { return t.diffTracker }
 
 func TestRegisterAndGet(t *testing.T) {
 	reg := NewToolRegistry()
@@ -73,7 +98,7 @@ func TestDispatchCallsHandler(t *testing.T) {
 	called := false
 	reg.Register(ToolEntry{
 		Name: "my_tool",
-		Handler: func(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+		Handler: func(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 			called = true
 			v, _ := args["key"].(string)
 			return "result:" + v, nil
@@ -153,7 +178,6 @@ func TestRegisterRemoteHostTools(t *testing.T) {
 		}
 	}
 
-	// Verify approval flags.
 	for _, name := range []string{"execute_command", "write_file"} {
 		e, _ := reg.Get(name)
 		if !e.RequiresApproval {
@@ -221,7 +245,7 @@ func TestHandlerError(t *testing.T) {
 	reg := NewToolRegistry()
 	reg.Register(ToolEntry{
 		Name: "fail_tool",
-		Handler: func(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+		Handler: func(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 			return "", fmt.Errorf("something went wrong")
 		},
 	})

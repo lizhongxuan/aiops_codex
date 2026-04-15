@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -30,7 +30,7 @@ type WebSearchResult struct {
 }
 
 // WebSearchHandler executes a web search and returns ranked results with titles, URLs, and snippets.
-func WebSearchHandler(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func WebSearchHandler(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	query, _ := args["query"].(string)
 	if query == "" {
 		return "", fmt.Errorf("web_search: 'query' parameter is required")
@@ -46,7 +46,7 @@ func WebSearchHandler(ctx context.Context, session *Session, call bifrost.ToolCa
 }
 
 // OpenPageHandler fetches page content and returns text.
-func OpenPageHandler(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func OpenPageHandler(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	pageURL, _ := args["url"].(string)
 	if pageURL == "" {
 		return "", fmt.Errorf("open_page: 'url' parameter is required")
@@ -72,7 +72,7 @@ func OpenPageHandler(ctx context.Context, session *Session, call bifrost.ToolCal
 }
 
 // FindInPageHandler searches within fetched page content and returns matching sections.
-func FindInPageHandler(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func FindInPageHandler(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	pageURL, _ := args["url"].(string)
 	searchQuery, _ := args["query"].(string)
 	if pageURL == "" || searchQuery == "" {

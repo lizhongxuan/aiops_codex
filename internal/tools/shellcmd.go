@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -77,13 +77,13 @@ type ShellCommandResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
-func handleShellCommand(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleShellCommand(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	command, _ := args["command"].(string)
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("shell_command requires a non-empty 'command' argument")
 	}
 
-	cwd := session.Cwd()
+	cwd := tc.Cwd()
 	if cwdArg, ok := args["cwd"].(string); ok && cwdArg != "" {
 		cwd = cwdArg
 	}

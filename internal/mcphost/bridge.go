@@ -40,7 +40,7 @@ func RegisterMCPTools(reg *agentloop.ToolRegistry, mgr *Manager) {
 			Parameters:  params,
 			IsReadOnly:  isAutoApproved,
 			RequiresApproval: !isAutoApproved,
-			Handler: func(ctx context.Context, session *agentloop.Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+			Handler: func(ctx context.Context, tc agentloop.ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 				resp, err := mgr.CallTool(ctx, serverName, ToolCallRequest{
 					Name:      toolName,
 					Arguments: args,

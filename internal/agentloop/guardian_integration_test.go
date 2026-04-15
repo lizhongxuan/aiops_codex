@@ -35,7 +35,7 @@ func TestAwaitToolApproval_GuardianCacheHit(t *testing.T) {
 		Name:             "deploy",
 		Description:      "Deploy to environment",
 		RequiresApproval: true,
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
 			executed.Store(true)
 			return "deployed ok", nil
 		},
@@ -84,7 +84,7 @@ func TestAwaitToolApproval_GuardianCacheDeny(t *testing.T) {
 		Name:             "deploy",
 		Description:      "Deploy to environment",
 		RequiresApproval: true,
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
 			executed.Store(true)
 			return "deployed", nil
 		},
@@ -134,7 +134,7 @@ func TestAwaitToolApproval_FallsBackToHandler(t *testing.T) {
 		Name:             "rm_file",
 		Description:      "Remove a file",
 		RequiresApproval: true,
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
 			executed.Store(true)
 			return "removed", nil
 		},

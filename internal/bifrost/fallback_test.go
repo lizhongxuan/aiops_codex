@@ -308,6 +308,9 @@ type countingProvider struct {
 
 func (p *countingProvider) Name() string { return p.name }
 func (p *countingProvider) SupportsToolCalling() bool { return true }
+func (p *countingProvider) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{ToolCallingFormat: "openai_function"}
+}
 func (p *countingProvider) ChatCompletion(_ context.Context, _ ChatRequest) (*ChatResponse, error) {
 	return p.fn()
 }

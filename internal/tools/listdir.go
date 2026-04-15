@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -35,7 +35,7 @@ func RegisterListDirTool(reg *ToolRegistry) {
 	})
 }
 
-func handleListDir(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleListDir(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	dirPath, _ := args["path"].(string)
 	if dirPath == "" {
 		dirPath = "."
@@ -49,8 +49,7 @@ func handleListDir(ctx context.Context, session *Session, call bifrost.ToolCall,
 		maxDepth = 5
 	}
 
-	// Resolve relative to session cwd.
-	cwd := session.Cwd()
+	cwd := tc.Cwd()
 	if cwd == "" {
 		cwd = "."
 	}
@@ -78,7 +77,6 @@ func walkDir(sb *strings.Builder, root, prefix string, depth, maxDepth int) erro
 
 	for _, entry := range entries {
 		name := entry.Name()
-		// Skip hidden files at depth 0 for cleaner output.
 		if strings.HasPrefix(name, ".") && depth == 0 {
 			continue
 		}

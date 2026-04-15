@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -9,13 +9,6 @@ import (
 
 	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
 )
-
-func newTestSession(cwd string) *Session {
-	return NewSession("test-session", SessionSpec{
-		Model: "test",
-		Cwd:   cwd,
-	})
-}
 
 func TestRegisterToolSuggest(t *testing.T) {
 	reg := NewToolRegistry()
@@ -34,31 +27,30 @@ func TestHandleToolSuggest_EmptyQuery(t *testing.T) {
 	reg := NewToolRegistry()
 	RegisterToolSuggestTool(reg)
 
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{"query": ""}
 
-	_, err := handleToolSuggest(context.Background(), session, call, args)
+	_, err := handleToolSuggest(context.Background(), tc, call, args)
 	if err == nil {
 		t.Error("expected error for empty query")
 	}
 }
 
 func TestHandleListDir(t *testing.T) {
-	// Create a temp directory with some files.
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "file1.txt"), []byte("hello"), 0644)
 	os.Mkdir(filepath.Join(dir, "subdir"), 0755)
 	os.WriteFile(filepath.Join(dir, "subdir", "file2.txt"), []byte("world"), 0644)
 
-	session := newTestSession(dir)
+	tc := newTestToolContext(dir)
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"path":      ".",
 		"max_depth": float64(2),
 	}
 
-	result, err := handleListDir(context.Background(), session, call, args)
+	result, err := handleListDir(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,14 +66,14 @@ func TestHandleListDir(t *testing.T) {
 }
 
 func TestHandleListDir_MaxDepthLimit(t *testing.T) {
-	session := newTestSession(t.TempDir())
+	tc := newTestToolContext(t.TempDir())
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"path":      ".",
-		"max_depth": float64(100), // should be capped to 5
+		"max_depth": float64(100),
 	}
 
-	_, err := handleListDir(context.Background(), session, call, args)
+	_, err := handleListDir(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,29 +84,29 @@ func TestHandleViewImage_NotAnImage(t *testing.T) {
 	txtFile := filepath.Join(dir, "test.txt")
 	os.WriteFile(txtFile, []byte("not an image"), 0644)
 
-	session := newTestSession(dir)
+	tc := newTestToolContext(dir)
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{"path": "test.txt"}
 
-	_, err := handleViewImage(context.Background(), session, call, args)
+	_, err := handleViewImage(context.Background(), tc, call, args)
 	if err == nil {
 		t.Error("expected error for non-image file")
 	}
 }
 
 func TestHandleViewImage_EmptyPath(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{"path": ""}
 
-	_, err := handleViewImage(context.Background(), session, call, args)
+	_, err := handleViewImage(context.Background(), tc, call, args)
 	if err == nil {
 		t.Error("expected error for empty path")
 	}
 }
 
 func TestHandleRequestUserInput(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"title": "Test Form",
@@ -128,7 +120,7 @@ func TestHandleRequestUserInput(t *testing.T) {
 		},
 	}
 
-	result, err := handleRequestUserInput(context.Background(), session, call, args)
+	result, err := handleRequestUserInput(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,18 +141,18 @@ func TestHandleRequestUserInput(t *testing.T) {
 }
 
 func TestHandleRequestPermissions_Empty(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{}
 
-	_, err := handleRequestPermissions(context.Background(), session, call, args)
+	_, err := handleRequestPermissions(context.Background(), tc, call, args)
 	if err == nil {
 		t.Error("expected error for empty permissions")
 	}
 }
 
 func TestHandleRequestPermissions_Valid(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"filesystem": []interface{}{
@@ -173,7 +165,7 @@ func TestHandleRequestPermissions_Valid(t *testing.T) {
 		"reason": "testing",
 	}
 
-	result, err := handleRequestPermissions(context.Background(), session, call, args)
+	result, err := handleRequestPermissions(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,7 +193,6 @@ func TestDynamicToolRegistration(t *testing.T) {
 		t.Errorf("unexpected description: %s", entry.Description)
 	}
 
-	// Test unregister.
 	if !reg.UnregisterDynamic("my_dynamic_tool") {
 		t.Error("expected UnregisterDynamic to return true")
 	}
@@ -233,23 +224,17 @@ func TestDynamicToolRegistration_InvalidDescription(t *testing.T) {
 }
 
 func TestHandleAgentJobs(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"jobs": []interface{}{
-			map[string]interface{}{
-				"id":      "job1",
-				"command": "echo hello",
-			},
-			map[string]interface{}{
-				"id":      "job2",
-				"command": "echo world",
-			},
+			map[string]interface{}{"id": "job1", "command": "echo hello"},
+			map[string]interface{}{"id": "job2", "command": "echo world"},
 		},
 		"concurrency": float64(2),
 	}
 
-	result, err := handleAgentJobs(context.Background(), session, call, args)
+	result, err := handleAgentJobs(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,26 +254,26 @@ func TestHandleAgentJobs(t *testing.T) {
 }
 
 func TestHandleAgentJobs_EmptyJobs(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"jobs": []interface{}{},
 	}
 
-	_, err := handleAgentJobs(context.Background(), session, call, args)
+	_, err := handleAgentJobs(context.Background(), tc, call, args)
 	if err == nil {
 		t.Error("expected error for empty jobs")
 	}
 }
 
 func TestHandleShellCommand(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"command": "echo hello",
 	}
 
-	result, err := handleShellCommand(context.Background(), session, call, args)
+	result, err := handleShellCommand(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -306,25 +291,25 @@ func TestHandleShellCommand(t *testing.T) {
 }
 
 func TestHandleShellCommand_EmptyCommand(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{"command": ""}
 
-	_, err := handleShellCommand(context.Background(), session, call, args)
+	_, err := handleShellCommand(context.Background(), tc, call, args)
 	if err == nil {
 		t.Error("expected error for empty command")
 	}
 }
 
 func TestHandleUnifiedExec(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"command": "echo",
 		"args":    []interface{}{"unified", "exec"},
 	}
 
-	result, err := handleUnifiedExec(context.Background(), session, call, args)
+	result, err := handleUnifiedExec(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -342,14 +327,14 @@ func TestHandleUnifiedExec(t *testing.T) {
 }
 
 func TestHandleUnifiedExec_WithStdin(t *testing.T) {
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{
 		"command": "cat",
 		"stdin":   "hello from stdin",
 	}
 
-	result, err := handleUnifiedExec(context.Background(), session, call, args)
+	result, err := handleUnifiedExec(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -364,16 +349,15 @@ func TestHandleUnifiedExec_WithStdin(t *testing.T) {
 }
 
 func TestHandleJSReplReset(t *testing.T) {
-	// Add some history.
 	globalJSRepl.mu.Lock()
 	globalJSRepl.history = []string{"var x = 1;"}
 	globalJSRepl.mu.Unlock()
 
-	session := newTestSession(".")
+	tc := newTestToolContext(".")
 	call := bifrost.ToolCall{ID: "1"}
 	args := map[string]interface{}{}
 
-	result, err := handleJSReplReset(context.Background(), session, call, args)
+	result, err := handleJSReplReset(context.Background(), tc, call, args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -417,10 +401,6 @@ func TestRegisterAllEnhancedTools(t *testing.T) {
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
-}
-
-func containsStr(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
 			return true

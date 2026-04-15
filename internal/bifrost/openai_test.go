@@ -177,7 +177,9 @@ func TestOpenAIProvider_ChatCompletion_WithToolCalls(t *testing.T) {
 }
 
 func TestOpenAIProvider_ChatCompletion_APIError(t *testing.T) {
+	attempt := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
 		w.WriteHeader(http.StatusTooManyRequests)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": map[string]interface{}{
@@ -198,8 +200,12 @@ func TestOpenAIProvider_ChatCompletion_APIError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 429 response")
 	}
-	if got := err.Error(); !contains(got, "429") || !contains(got, "Rate limit exceeded") {
-		t.Errorf("error message: got %q, want to contain 429 and rate limit message", got)
+	// 429 is retryable, so retryWithBackoff retries up to 3 total attempts.
+	if attempt != 3 {
+		t.Errorf("expected 3 attempts (with retries), got %d", attempt)
+	}
+	if got := err.Error(); !contains(got, "429") {
+		t.Errorf("error message: got %q, want to contain 429", got)
 	}
 }
 
@@ -436,4 +442,201 @@ func containsSubstr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+
+// --- retryWithBackoff tests ---
+
+func TestRetryWithBackoff_SuccessOnFirstTry(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	resp, err := retryWithBackoff(context.Background(), func() (*http.Response, error) {
+		return http.Get(srv.URL)
+	}, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+	if attempt != 1 {
+		t.Errorf("expected 1 attempt, got %d", attempt)
+	}
+}
+
+func TestRetryWithBackoff_RetriesOn500(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "error")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	resp, err := retryWithBackoff(context.Background(), func() (*http.Response, error) {
+		return http.Get(srv.URL)
+	}, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+	if attempt != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempt)
+	}
+}
+
+func TestRetryWithBackoff_RetriesOn429(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, "rate limited")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	resp, err := retryWithBackoff(context.Background(), func() (*http.Response, error) {
+		return http.Get(srv.URL)
+	}, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+	if attempt != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempt)
+	}
+}
+
+func TestRetryWithBackoff_NoRetryOn400(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, "bad request")
+	}))
+	defer srv.Close()
+
+	resp, err := retryWithBackoff(context.Background(), func() (*http.Response, error) {
+		return http.Get(srv.URL)
+	}, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+	if attempt != 1 {
+		t.Errorf("expected 1 attempt (no retry on 400), got %d", attempt)
+	}
+}
+
+func TestRetryWithBackoff_NoRetryOn401(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, "unauthorized")
+	}))
+	defer srv.Close()
+
+	resp, err := retryWithBackoff(context.Background(), func() (*http.Response, error) {
+		return http.Get(srv.URL)
+	}, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+	if attempt != 1 {
+		t.Errorf("expected 1 attempt (no retry on 401), got %d", attempt)
+	}
+}
+
+func TestRetryWithBackoff_AllRetriesFail(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "unavailable")
+	}))
+	defer srv.Close()
+
+	_, err := retryWithBackoff(context.Background(), func() (*http.Response, error) {
+		return http.Get(srv.URL)
+	}, 2)
+	if err == nil {
+		t.Fatal("expected error after all retries fail")
+	}
+	if attempt != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempt)
+	}
+}
+
+func TestRetryWithBackoff_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, "error")
+	}))
+	defer srv.Close()
+
+	go func() {
+		cancel()
+	}()
+
+	_, err := retryWithBackoff(ctx, func() (*http.Response, error) {
+		return http.Get(srv.URL)
+	}, 5)
+	// Should fail due to context cancellation or after first attempt.
+	if err == nil {
+		t.Fatal("expected error on context cancellation")
+	}
+}
+
+func TestRetryWithBackoff_ChatCompletionRetries500(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt < 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "server error")
+			return
+		}
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": "ok"}},
+			},
+			"usage": map[string]interface{}{"prompt_tokens": 1, "completion_tokens": 1},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := NewOpenAIProvider("sk-test", srv.URL)
+	req := ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}
+
+	resp, err := p.ChatCompletion(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Message.Content != "ok" {
+		t.Errorf("content: got %v, want ok", resp.Message.Content)
+	}
+	if attempt != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempt)
+	}
 }

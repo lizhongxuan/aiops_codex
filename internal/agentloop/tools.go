@@ -2,122 +2,65 @@ package agentloop
 
 import (
 	"context"
-	"fmt"
-	"sort"
-	"sync"
 
 	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
+	"github.com/lizhongxuan/aiops-codex/internal/tools"
 )
 
-// ToolHandler is the function signature for tool execution handlers.
-type ToolHandler func(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error)
-
-// ToolEntry describes a single tool that can be registered in the ToolRegistry.
-type ToolEntry struct {
-	Name             string
-	Description      string
-	Parameters       map[string]interface{}
-	Handler          ToolHandler
-	RequiresApproval bool
-	IsReadOnly       bool
-}
-
-// ToolRegistry is a thread-safe registry of tool entries.
-type ToolRegistry struct {
-	tools map[string]*ToolEntry
-	mu    sync.RWMutex
-}
+// Re-export core types from internal/tools for backward compatibility.
+// Consumers should migrate to importing internal/tools directly.
+type ToolHandler = tools.ToolHandler
+type ToolEntry = tools.ToolEntry
+type ToolRegistry = tools.ToolRegistry
+type ToolContext = tools.ToolContext
 
 // NewToolRegistry creates an empty ToolRegistry.
-func NewToolRegistry() *ToolRegistry {
-	return &ToolRegistry{
-		tools: make(map[string]*ToolEntry),
+var NewToolRegistry = tools.NewToolRegistry
+
+// Re-export tool registration functions.
+var RegisterRemoteHostTools = tools.RegisterRemoteHostTools
+var RegisterWorkspaceTools = tools.RegisterWorkspaceTools
+var RegisterApplyPatchTool = tools.RegisterApplyPatchTool
+var RegisterWebSearchTools = tools.RegisterWebSearchTools
+var RegisterCorootTools = tools.RegisterCorootTools
+var RegisterShellCommandTool = tools.RegisterShellCommandTool
+var RegisterCodeModeTool = tools.RegisterCodeModeTool
+var RegisterListDirTool = tools.RegisterListDirTool
+var RegisterViewImageTool = tools.RegisterViewImageTool
+var RegisterToolSuggestTool = tools.RegisterToolSuggestTool
+var RegisterRequestUserInputTool = tools.RegisterRequestUserInputTool
+var RegisterRequestPermissionsTool = tools.RegisterRequestPermissionsTool
+var RegisterAgentJobsTool = tools.RegisterAgentJobsTool
+var RegisterJSReplTool = tools.RegisterJSReplTool
+var RegisterUnifiedExecTool = tools.RegisterUnifiedExecTool
+
+// Re-export types used by other packages.
+type WebSearchResult = tools.WebSearchResult
+type DynamicToolSpec = tools.DynamicToolSpec
+type ShellBackend = tools.ShellBackend
+
+var BraveSearchHandler = tools.BraveSearchHandler
+var RebuildToolSearchIndex = tools.RebuildToolSearchIndex
+var DefaultShellBackend = tools.DefaultShellBackend
+var SetShellBackend = tools.SetShellBackend
+
+// SessionToolHandler is a handler that takes *Session directly instead of ToolContext.
+// This is used by the server layer which needs full Session access.
+type SessionToolHandler func(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error)
+
+// WrapSessionHandler wraps a SessionToolHandler into a ToolHandler by type-asserting
+// the ToolContext back to *Session. Panics if the ToolContext is not a *Session.
+func WrapSessionHandler(fn SessionToolHandler) ToolHandler {
+	return func(ctx context.Context, tc tools.ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+		session := tc.(*Session)
+		return fn(ctx, session, call, args)
 	}
 }
 
-// Register adds a tool entry to the registry. If a tool with the same name
-// already exists it is silently overwritten.
-func (r *ToolRegistry) Register(entry ToolEntry) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	e := entry // copy
-	r.tools[entry.Name] = &e
-}
+// Ensure Session implements tools.ToolContext.
+var _ tools.ToolContext = (*Session)(nil)
 
-// Get returns the tool entry for the given name and a boolean indicating
-// whether it was found.
-func (r *ToolRegistry) Get(name string) (*ToolEntry, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	e, ok := r.tools[name]
-	return e, ok
-}
-
-// Names returns a sorted list of all registered tool names.
-func (r *ToolRegistry) Names() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.tools))
-	for n := range r.tools {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// Definitions returns bifrost.ToolDefinition entries for registered tools,
-// sorted by name to guarantee a stable ordering for cache keys.
-// When enabledSets is non-empty it is treated as an allowlist of tool names.
-func (r *ToolRegistry) Definitions(enabledSets []string) []bifrost.ToolDefinition {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	enabled := make(map[string]struct{}, len(enabledSets))
-	for _, name := range enabledSets {
-		if name == "" {
-			continue
-		}
-		enabled[name] = struct{}{}
-	}
-
-	entries := make([]*ToolEntry, 0, len(r.tools))
-	for _, e := range r.tools {
-		if len(enabled) > 0 {
-			if _, ok := enabled[e.Name]; !ok {
-				continue
-			}
-		}
-		entries = append(entries, e)
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name < entries[j].Name
-	})
-
-	defs := make([]bifrost.ToolDefinition, 0, len(entries))
-	for _, e := range entries {
-		defs = append(defs, bifrost.ToolDefinition{
-			Type: "function",
-			Function: bifrost.FunctionSpec{
-				Name:        e.Name,
-				Description: e.Description,
-				Parameters:  e.Parameters,
-			},
-		})
-	}
-	return defs
-}
-
-// Dispatch looks up the tool by name and invokes its handler.
-// Returns an error if the tool is not found or has no handler.
-func (r *ToolRegistry) Dispatch(ctx context.Context, session *Session, call bifrost.ToolCall, name string, args map[string]interface{}) (string, error) {
-	r.mu.RLock()
-	e, ok := r.tools[name]
-	r.mu.RUnlock()
-	if !ok {
-		return "", fmt.Errorf("tool %q not found", name)
-	}
-	if e.Handler == nil {
-		return "", fmt.Errorf("tool %q has no handler", name)
-	}
-	return e.Handler(ctx, session, call, args)
+// SessionID returns the session ID, implementing tools.ToolContext.
+func (s *Session) SessionID() string {
+	return s.ID
 }

@@ -57,6 +57,10 @@ type Config struct {
 	CorootRCAEnabled          bool
 	WorkspaceReActLoopEnabled bool
 
+	// Web search configuration
+	WebSearchMode string // "duckduckgo" (default) or "brave"
+	BraveAPIKey   string // Brave Search API key
+
 	// MCP configuration
 	MCPConfigPaths []string // Paths to mcp.json files (user + workspace)
 
@@ -132,6 +136,10 @@ func Load() Config {
 		CorootHealthCheckInterval: envDuration("COROOT_HEALTH_CHECK_INTERVAL", 30*time.Second),
 		CorootRCAEnabled:          envBool("COROOT_RCA_ENABLED", false),
 		WorkspaceReActLoopEnabled: envBool("WORKSPACE_REACT_LOOP_ENABLED", true),
+
+		// Web search
+		WebSearchMode: env("WEB_SEARCH_MODE", "native"),
+		BraveAPIKey:   env("BRAVE_API_KEY", ""),
 
 		// MCP
 		MCPConfigPaths: mcpConfigPaths(home, cwd),

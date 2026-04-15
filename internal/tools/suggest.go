@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -55,7 +55,7 @@ func RegisterToolSuggestTool(reg *ToolRegistry) {
 	})
 }
 
-func handleToolSuggest(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleToolSuggest(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	query, _ := args["query"].(string)
 	if strings.TrimSpace(query) == "" {
 		return "", fmt.Errorf("tool_suggest requires a non-empty 'query' argument")

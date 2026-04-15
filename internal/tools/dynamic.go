@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -42,9 +42,7 @@ func (r *ToolRegistry) RegisterDynamic(spec DynamicToolSpec) error {
 
 	handler := spec.Handler
 	if handler == nil {
-		// Default handler returns a placeholder response indicating the tool
-		// was called but has no implementation wired yet.
-		handler = func(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+		handler = func(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 			argsJSON, _ := json.Marshal(args)
 			return fmt.Sprintf("Dynamic tool %q called with args: %s (no handler wired)", name, string(argsJSON)), nil
 		}

@@ -30,6 +30,9 @@ func (p *workspaceFakeBifrostProvider) StreamChatCompletion(ctx context.Context,
 }
 
 func (p *workspaceFakeBifrostProvider) SupportsToolCalling() bool { return true }
+func (p *workspaceFakeBifrostProvider) Capabilities() bifrost.ProviderCapabilities {
+	return bifrost.ProviderCapabilities{ToolCallingFormat: "openai_function"}
+}
 
 func newBifrostWorkspaceTestApp(t *testing.T) *App {
 	t.Helper()

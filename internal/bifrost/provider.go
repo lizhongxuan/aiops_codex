@@ -6,12 +6,22 @@ import (
 	"fmt"
 )
 
+// ProviderCapabilities describes the feature set a Provider supports.
+type ProviderCapabilities struct {
+	SupportsNativeSearch       bool   `json:"supports_native_search"`
+	SupportsReasoningContent   bool   `json:"supports_reasoning_content"`
+	SupportsStreamingToolCalls bool   `json:"supports_streaming_tool_calls"`
+	SupportsToolUseFormat      bool   `json:"supports_tool_use_format"`
+	ToolCallingFormat          string `json:"tool_calling_format"` // "openai_function" or "anthropic_tool_use"
+}
+
 // Provider — all LLM vendors implement this interface.
 type Provider interface {
 	Name() string
 	ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 	StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error)
 	SupportsToolCalling() bool
+	Capabilities() ProviderCapabilities
 }
 
 // ChatRequest is the unified request format sent to any LLM provider.
@@ -22,6 +32,11 @@ type ChatRequest struct {
 	MaxTokens   int              `json:"max_tokens,omitempty"`
 	Temperature float64          `json:"temperature,omitempty"`
 	Stream      bool             `json:"stream,omitempty"`
+	// UseResponsesAPI switches to OpenAI Responses API (/v1/responses) for
+	// native web_search support instead of Chat Completions.
+	UseResponsesAPI bool `json:"-"`
+	// WebSearchEnabled adds {"type":"web_search"} to tools when using Responses API.
+	WebSearchEnabled bool `json:"-"`
 }
 
 // Validate checks that the ChatRequest satisfies basic constraints.
@@ -42,8 +57,9 @@ func (r ChatRequest) Validate() error {
 
 // ChatResponse is the unified response returned by any LLM provider.
 type ChatResponse struct {
-	Message Message `json:"message"`
-	Usage   Usage   `json:"usage"`
+	Message          Message `json:"message"`
+	Usage            Usage   `json:"usage"`
+	ReasoningContent string  `json:"reasoning_content,omitempty"`
 }
 
 // validRoles is the set of allowed message roles.
@@ -57,10 +73,11 @@ var validRoles = map[string]bool{
 // Message represents a single message in a conversation.
 // Content can be a plain string or a slice of ContentBlock for multi-modal input.
 type Message struct {
-	Role       string      `json:"role"`
-	Content    interface{} `json:"content"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
+	Role             string      `json:"role"`
+	Content          interface{} `json:"content"`
+	ReasoningContent string      `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID       string      `json:"tool_call_id,omitempty"`
 }
 
 // Validate checks that the Message has a valid role.
@@ -99,12 +116,13 @@ type FunctionSpec struct {
 
 // StreamEvent represents a single event in a streaming LLM response.
 type StreamEvent struct {
-	Type       string `json:"type"` // content_delta, tool_call_delta, done, error
-	Delta      string `json:"delta,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	ToolIndex  int    `json:"tool_index,omitempty"`
-	FuncName   string `json:"func_name,omitempty"`
-	FuncArgs   string `json:"func_args,omitempty"`
+	Type             string `json:"type"` // content_delta, reasoning_delta, tool_call_delta, done, error
+	Delta            string `json:"delta,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	ToolCallID       string `json:"tool_call_id,omitempty"`
+	ToolIndex        int    `json:"tool_index,omitempty"`
+	FuncName         string `json:"func_name,omitempty"`
+	FuncArgs         string `json:"func_args,omitempty"`
 }
 
 // Usage tracks token consumption for a single LLM call.

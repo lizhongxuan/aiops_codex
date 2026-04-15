@@ -113,7 +113,7 @@ func TestExecuteTool_PreToolUseHookBlocks(t *testing.T) {
 	loop := newLoopWithProvider(tp, nil).SetHookRuntime(rt)
 	loop.toolReg.Register(ToolEntry{
 		Name: "dangerous",
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, _ map[string]interface{}) (string, error) {
 			toolExecuted = true
 			return "executed", nil
 		},
@@ -162,7 +162,7 @@ func TestExecuteTool_PostToolUseHookAddsContext(t *testing.T) {
 	loop := newLoopWithProvider(tp, nil).SetHookRuntime(rt)
 	loop.toolReg.Register(ToolEntry{
 		Name: "echo",
-		Handler: func(_ context.Context, _ *Session, _ bifrost.ToolCall, args map[string]interface{}) (string, error) {
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, args map[string]interface{}) (string, error) {
 			return "echoed: " + args["msg"].(string), nil
 		},
 	})

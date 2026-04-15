@@ -2,24 +2,83 @@ package agentloop
 
 import (
 	"encoding/json"
+	"hash/fnv"
 	"sync"
 
 	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
 )
 
+// tokenEstimateCache caches token estimates for message content to avoid
+// redundant calculations. Key is an FNV hash of the content.
+type tokenEstimateCache struct {
+	mu    sync.RWMutex
+	cache map[uint64]int
+}
+
+func newTokenEstimateCache() *tokenEstimateCache {
+	return &tokenEstimateCache{cache: make(map[uint64]int)}
+}
+
+// get returns the cached estimate and true if found, or 0 and false otherwise.
+func (c *tokenEstimateCache) get(key uint64) (int, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.cache[key]
+	return v, ok
+}
+
+// set stores a token estimate in the cache.
+func (c *tokenEstimateCache) set(key uint64, tokens int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cache[key] = tokens
+}
+
+// invalidate clears the entire cache. Called when messages are replaced.
+func (c *tokenEstimateCache) invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cache = make(map[uint64]int)
+}
+
+// hashMessage returns an FNV-1a hash of a message's content for cache keying.
+func hashMessage(msg bifrost.Message) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(msg.Role))
+	switch v := msg.Content.(type) {
+	case string:
+		h.Write([]byte(v))
+	default:
+		if data, err := json.Marshal(v); err == nil {
+			h.Write(data)
+		}
+	}
+	if msg.ToolCallID != "" {
+		h.Write([]byte(msg.ToolCallID))
+	}
+	for _, tc := range msg.ToolCalls {
+		h.Write([]byte(tc.ID))
+		h.Write([]byte(tc.Function.Name))
+		h.Write([]byte(tc.Function.Arguments))
+	}
+	return h.Sum64()
+}
+
 // ContextManager manages the conversation message history for an agent loop session.
 // It provides thread-safe append/read operations, sanitization (ensuring tool_call/tool_result
-// pairing), and a lazy-precision token estimation strategy.
+// pairing), and a lazy-precision token estimation strategy with caching.
 type ContextManager struct {
 	messages      []bifrost.Message
 	contextWindow int // max context window size in tokens
 	mu            sync.Mutex
+	tokenCache    *tokenEstimateCache
 }
 
 // NewContextManager creates a ContextManager with the given context window size (in tokens).
 func NewContextManager(contextWindow int) *ContextManager {
 	return &ContextManager{
 		contextWindow: contextWindow,
+		tokenCache:    newTokenEstimateCache(),
 	}
 }
 
@@ -43,15 +102,19 @@ func (cm *ContextManager) AppendUser(content string) {
 	})
 }
 
-// AppendAssistant appends an assistant message with optional tool calls.
-func (cm *ContextManager) AppendAssistant(content string, toolCalls []bifrost.ToolCall) {
+// AppendAssistant appends an assistant message with optional tool calls and reasoning content.
+func (cm *ContextManager) AppendAssistant(content string, toolCalls []bifrost.ToolCall, reasoningContent ...string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	cm.messages = append(cm.messages, bifrost.Message{
+	msg := bifrost.Message{
 		Role:      "assistant",
 		Content:   content,
 		ToolCalls: toolCalls,
-	})
+	}
+	if len(reasoningContent) > 0 {
+		msg.ReasoningContent = reasoningContent[0]
+	}
+	cm.messages = append(cm.messages, msg)
 }
 
 // AppendToolResult appends a tool result message with the given call ID.
@@ -88,6 +151,7 @@ func (cm *ContextManager) ReplaceMessages(msgs []bifrost.Message) {
 	defer cm.mu.Unlock()
 	cm.messages = make([]bifrost.Message, len(msgs))
 	copy(cm.messages, msgs)
+	cm.tokenCache.invalidate()
 }
 
 // Len returns the number of messages.
@@ -191,15 +255,25 @@ func (cm *ContextManager) EstimateTokens() int {
 }
 
 // roughEstimate counts total characters across all messages / 4.
+// Uses the token cache to avoid recalculating unchanged messages.
 func (cm *ContextManager) roughEstimate() int {
 	total := 0
 	for _, msg := range cm.messages {
-		total += cm.messageCharLen(msg)
+		key := hashMessage(msg)
+		if cached, ok := cm.tokenCache.get(key); ok {
+			total += cached
+			continue
+		}
+		charLen := cm.messageCharLen(msg)
+		estimate := charLen / 4
+		cm.tokenCache.set(key, estimate)
+		total += estimate
 	}
-	return total / 4
+	return total
 }
 
 // preciseEstimate serializes messages to JSON and counts bytes / 4.
+// Caches the result keyed by a hash of the full serialized content.
 func (cm *ContextManager) preciseEstimate() int {
 	data, err := json.Marshal(cm.messages)
 	if err != nil {

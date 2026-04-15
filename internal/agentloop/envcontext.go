@@ -122,13 +122,24 @@ func (ec EnvironmentContext) SerializeToXML() string {
 	return "<environment_context>\n" + strings.Join(lines, "\n") + "\n</environment_context>"
 }
 
-// Diff compares two EnvironmentContexts and returns a new context containing
-// only the fields that changed. This minimizes token usage by only injecting
-// deltas between turns.
+// Diff returns a new EnvironmentContext containing only fields that differ
+// from prev. Empty fields in the result mean "unchanged".
 func (ec EnvironmentContext) Diff(prev EnvironmentContext) EnvironmentContext {
 	diff := EnvironmentContext{}
 	if ec.Cwd != prev.Cwd {
 		diff.Cwd = ec.Cwd
+	}
+	if ec.Shell != prev.Shell {
+		diff.Shell = ec.Shell
+	}
+	if ec.OS != prev.OS {
+		diff.OS = ec.OS
+	}
+	if ec.Hostname != prev.Hostname {
+		diff.Hostname = ec.Hostname
+	}
+	if ec.Username != prev.Username {
+		diff.Username = ec.Username
 	}
 	if ec.CurrentDate != prev.CurrentDate {
 		diff.CurrentDate = ec.CurrentDate
@@ -142,15 +153,51 @@ func (ec EnvironmentContext) Diff(prev EnvironmentContext) EnvironmentContext {
 	if ec.Subagents != prev.Subagents {
 		diff.Subagents = ec.Subagents
 	}
-	// Shell, OS, Hostname, Username rarely change — only include on first turn.
+	if !slicesEqual(ec.NetworkAllowed, prev.NetworkAllowed) {
+		diff.NetworkAllowed = ec.NetworkAllowed
+	}
+	if !slicesEqual(ec.NetworkDenied, prev.NetworkDenied) {
+		diff.NetworkDenied = ec.NetworkDenied
+	}
+	if !mapsEqual(ec.CustomContext, prev.CustomContext) {
+		diff.CustomContext = ec.CustomContext
+	}
 	return diff
+}
+
+// slicesEqual returns true if two string slices have identical contents.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mapsEqual returns true if two string maps have identical contents.
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || v != bv {
+			return false
+		}
+	}
+	return true
 }
 
 // IsEmpty returns true if the context has no meaningful fields set.
 func (ec EnvironmentContext) IsEmpty() bool {
 	return ec.Cwd == "" && ec.Shell == "" && ec.OS == "" &&
 		ec.Hostname == "" && ec.Username == "" && ec.CurrentDate == "" &&
-		ec.ActiveHost == "" && ec.Subagents == ""
+		ec.Timezone == "" && ec.ActiveHost == "" && ec.Subagents == "" &&
+		len(ec.NetworkAllowed) == 0 && len(ec.NetworkDenied) == 0 &&
+		len(ec.CustomContext) == 0
 }
 
 // ---------- Session integration ----------

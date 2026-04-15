@@ -240,3 +240,127 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Errorf("expected 50 messages after concurrent writes, got %d", cm.Len())
 	}
 }
+
+
+// --- Token Estimate Cache Tests ---
+
+func TestTokenEstimateCache_GetSet(t *testing.T) {
+	c := newTokenEstimateCache()
+
+	// Miss on empty cache.
+	if _, ok := c.get(42); ok {
+		t.Error("expected cache miss on empty cache")
+	}
+
+	// Set and get.
+	c.set(42, 100)
+	v, ok := c.get(42)
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	if v != 100 {
+		t.Errorf("got %d, want 100", v)
+	}
+}
+
+func TestTokenEstimateCache_Invalidate(t *testing.T) {
+	c := newTokenEstimateCache()
+	c.set(1, 10)
+	c.set(2, 20)
+
+	c.invalidate()
+
+	if _, ok := c.get(1); ok {
+		t.Error("expected cache miss after invalidate")
+	}
+	if _, ok := c.get(2); ok {
+		t.Error("expected cache miss after invalidate")
+	}
+}
+
+func TestTokenEstimateCache_ConcurrentAccess(t *testing.T) {
+	c := newTokenEstimateCache()
+	var wg sync.WaitGroup
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			c.set(uint64(n), n*10)
+			c.get(uint64(n))
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestHashMessage_DifferentMessages(t *testing.T) {
+	m1 := bifrost.Message{Role: "user", Content: "hello"}
+	m2 := bifrost.Message{Role: "user", Content: "world"}
+	m3 := bifrost.Message{Role: "assistant", Content: "hello"}
+
+	h1 := hashMessage(m1)
+	h2 := hashMessage(m2)
+	h3 := hashMessage(m3)
+
+	if h1 == h2 {
+		t.Error("different content should produce different hashes")
+	}
+	if h1 == h3 {
+		t.Error("different roles should produce different hashes")
+	}
+}
+
+func TestHashMessage_SameMessage(t *testing.T) {
+	m := bifrost.Message{Role: "user", Content: "hello"}
+	if hashMessage(m) != hashMessage(m) {
+		t.Error("same message should produce same hash")
+	}
+}
+
+func TestHashMessage_WithToolCalls(t *testing.T) {
+	m1 := bifrost.Message{
+		Role: "assistant",
+		ToolCalls: []bifrost.ToolCall{
+			{ID: "tc-1", Function: bifrost.FunctionCall{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		},
+	}
+	m2 := bifrost.Message{
+		Role: "assistant",
+		ToolCalls: []bifrost.ToolCall{
+			{ID: "tc-2", Function: bifrost.FunctionCall{Name: "read_file", Arguments: `{"path":"b.txt"}`}},
+		},
+	}
+
+	if hashMessage(m1) == hashMessage(m2) {
+		t.Error("messages with different tool calls should have different hashes")
+	}
+}
+
+func TestEstimateTokens_UsesCacheOnRepeatCalls(t *testing.T) {
+	cm := NewContextManager(100000)
+	cm.AppendUser("hello world this is a test message")
+
+	// First call populates cache.
+	tokens1 := cm.EstimateTokens()
+	// Second call should use cache and return same result.
+	tokens2 := cm.EstimateTokens()
+
+	if tokens1 != tokens2 {
+		t.Errorf("cached estimate should match: %d vs %d", tokens1, tokens2)
+	}
+}
+
+func TestReplaceMessages_InvalidatesCache(t *testing.T) {
+	cm := NewContextManager(100000)
+	cm.AppendUser("short")
+	_ = cm.EstimateTokens() // populate cache
+
+	cm.ReplaceMessages([]bifrost.Message{
+		{Role: "user", Content: "this is a much longer message that should produce a different token estimate"},
+	})
+
+	tokens := cm.EstimateTokens()
+	if tokens <= 0 {
+		t.Error("expected positive token count after replace")
+	}
+}

@@ -37,6 +37,9 @@ func (p *bifrostRuntimeStubProvider) StreamChatCompletion(ctx context.Context, r
 }
 
 func (p *bifrostRuntimeStubProvider) SupportsToolCalling() bool { return true }
+func (p *bifrostRuntimeStubProvider) Capabilities() bifrost.ProviderCapabilities {
+	return bifrost.ProviderCapabilities{ToolCallingFormat: "openai_function"}
+}
 
 func TestBifrostToolNamesFromDynamicToolsMapsCorootTools(t *testing.T) {
 	names := bifrostToolNamesFromDynamicTools([]map[string]any{

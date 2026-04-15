@@ -199,6 +199,18 @@ func is429Error(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "429")
 }
 
+// ProviderCapabilities resolves the provider for the given model string and
+// returns its capabilities. If the provider cannot be resolved, a zero-value
+// ProviderCapabilities is returned.
+func (g *Gateway) ProviderCapabilities(model string) ProviderCapabilities {
+	req := ChatRequest{Model: model}
+	provider, err := g.resolveProvider(&req)
+	if err != nil {
+		return ProviderCapabilities{}
+	}
+	return provider.Capabilities()
+}
+
 // StreamChatCompletion performs a streaming LLM call and returns a channel of events.
 func (g *Gateway) StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) {
 	if err := req.Validate(); err != nil {

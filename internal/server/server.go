@@ -106,6 +106,7 @@ type App struct {
 	httpServer             *http.Server
 	grpcServer             *grpc.Server
 	commandRunner          commandRunner
+	bifrostToolCards       sync.Map // tracks active ProcessLineCard IDs per tool call (key: sessionID+":"+toolName)
 }
 
 type authLoginRequest struct {

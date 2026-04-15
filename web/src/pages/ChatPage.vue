@@ -1,5 +1,5 @@
 <script setup>
-import { computed, defineAsyncComponent, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { computed, defineAsyncComponent, ref, watch, nextTick, onMounted, onBeforeUnmount, shallowRef } from "vue";
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
 import { formatMainChatTurns, isChatConversationCard } from "../lib/chatTurnFormatter";
@@ -14,7 +14,7 @@ import ChatComposerDock from "../components/chat/ChatComposerDock.vue";
 import McpBundleHost from "../components/mcp/McpBundleHost.vue";
 import McpUiCardHost from "../components/mcp/McpUiCardHost.vue";
 import ThinkingCard from "../components/ThinkingCard.vue";
-import { BotIcon, WifiOffIcon, RefreshCwIcon, TerminalIcon } from "lucide-vue-next";
+import { BotIcon, WifiOffIcon, RefreshCwIcon, TerminalIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-vue-next";
 import { NBadge, NDrawer, NDrawerContent } from "naive-ui";
 
 const store = useAppStore();
@@ -259,6 +259,182 @@ watch(
 
 /* ---- Activity summary ---- */
 const activity = computed(() => store.runtime.activity);
+
+/* ---- Codex-style activity status lines (Change 1 & 2) ---- */
+let elapsedTimerHandle = null;
+const elapsedNow = ref(Date.now());
+
+function startElapsedTimer() {
+  stopElapsedTimer();
+  elapsedNow.value = Date.now();
+  elapsedTimerHandle = window.setInterval(() => {
+    elapsedNow.value = Date.now();
+  }, 1000);
+}
+
+function stopElapsedTimer() {
+  if (elapsedTimerHandle) {
+    window.clearInterval(elapsedTimerHandle);
+    elapsedTimerHandle = null;
+  }
+}
+
+const elapsedLabel = computed(() => {
+  const startedAt = store.runtime.turn.startedAt;
+  if (!startedAt) return "";
+  const start = typeof startedAt === "number" ? startedAt : new Date(startedAt).getTime();
+  if (!start || isNaN(start)) return "";
+  const diff = Math.max(0, Math.floor((elapsedNow.value - start) / 1000));
+  if (diff < 60) return `${diff}s`;
+  const m = Math.floor(diff / 60);
+  const s = diff % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+});
+
+const codexActivityLines = computed(() => {
+  const lines = [];
+  const a = store.runtime.activity;
+  const invocations = store.snapshot.toolInvocations || [];
+
+  // Show individual tool invocations like Codex does
+  for (const inv of invocations) {
+    const name = inv.name || inv.toolName || "";
+    const summary = inv.inputSummary || inv.outputSummary || "";
+    const status = inv.status || "";
+    if (!name) continue;
+
+    let text = "";
+    switch (name) {
+      case "web_search":
+        text = `已搜索网页（${summary || "web"}）`;
+        break;
+      case "open_page":
+        text = `已浏览网页（${summary || inv.url || "page"}）`;
+        break;
+      case "find_in_page":
+        text = `已在页面中搜索（${summary || "content"}）`;
+        break;
+      case "shell_command":
+      case "execute_command":
+      case "execute_readonly_query":
+      case "code_mode":
+        text = `已运行 ${summary || name}`;
+        break;
+      case "list_dir":
+      case "list_files":
+        text = `已浏览目录（${summary || "dir"}）`;
+        break;
+      case "read_file":
+        text = `已读取文件（${summary || "file"}）`;
+        break;
+      case "write_file":
+      case "apply_patch":
+        text = `已修改文件（${summary || "file"}）`;
+        break;
+      case "search_files":
+        text = `已搜索文件（${summary || "query"}）`;
+        break;
+      default:
+        text = `已执行 ${name}${summary ? "（" + summary + "）" : ""}`;
+    }
+    lines.push({ id: `inv-${inv.id || lines.length}`, text });
+  }
+
+  // If no invocations yet, fall back to activity counters
+  if (lines.length === 0) {
+    // Completed web searches
+    for (const q of (a.searchedWebQueries || [])) {
+      lines.push({ id: `ws-${q.query || q.label || q}`, text: `已搜索网页（${q.query || q.label || q}）` });
+    }
+    for (const q of (a.searchedContentQueries || [])) {
+      lines.push({ id: `cs-${q.query || q.label || q}`, text: `已搜索文件（${q.query || q.label || q}）` });
+    }
+    if (a.currentSearchQuery) {
+      const kind = (a.currentSearchKind === "web" || a.currentWebSearchQuery) ? "网页" : "文件";
+      lines.push({ id: "active-search", text: `已搜索${kind}（${a.currentSearchQuery || a.currentWebSearchQuery}）` });
+    }
+    for (const f of (a.viewedFiles || [])) {
+      const label = f.path || f.url || f.label || f;
+      lines.push({ id: `vf-${label}`, text: `已浏览（${label}）` });
+    }
+    if (a.currentReadingFile) {
+      lines.push({ id: "active-read", text: `已浏览（${a.currentReadingFile}）` });
+    }
+    if (a.commandsRun > 0) {
+      lines.push({ id: "cmds", text: `已运行 ${a.commandsRun} 条命令` });
+    }
+  }
+
+  return lines;
+});
+
+const isThinking = computed(() => {
+  const phase = compactText(store.runtime.turn.phase).toLowerCase();
+  return phase === "thinking" || phase === "planning" || phase === "finalizing";
+});
+
+const showCodexActivity = computed(() => {
+  return store.runtime.turn.active && !isWorkspaceSession.value;
+});
+
+// Accumulate activity lines during the turn so they survive the backend clearing current fields
+const accumulatedActivityLines = shallowRef([]);
+
+watch(codexActivityLines, (newLines) => {
+  if (!store.runtime.turn.active) return;
+  // Merge new lines into accumulated, deduplicating by id
+  const existing = new Map(accumulatedActivityLines.value.map(l => [l.id, l]));
+  for (const line of newLines) {
+    existing.set(line.id, line);
+  }
+  accumulatedActivityLines.value = [...existing.values()];
+}, { deep: true, immediate: true });
+
+watch(
+  () => store.runtime.turn.active,
+  (active, wasActive) => {
+    if (active && wasActive === false) {
+      // Turn just started (not initial mount)
+      startElapsedTimer();
+      accumulatedActivityLines.value = [];
+    }
+    if (active && wasActive === undefined) {
+      // Initial mount with active turn — start timer but keep accumulated lines
+      startElapsedTimer();
+    }
+    if (!active && wasActive) {
+      // Turn just completed
+      stopElapsedTimer();
+    }
+  },
+  { immediate: true },
+);
+
+// Approval inline mode (Change 3)
+const hasCodexApproval = computed(() => {
+  return store.runtime.turn.phase === "waiting_approval" && activeApprovalCard.value && !isWorkspaceSession.value;
+});
+
+const approvalQuestion = computed(() => {
+  const card = activeApprovalCard.value;
+  if (!card) return "是否允许执行此操作？";
+  if (card.type === "CommandApprovalCard") return "是否允许执行以下命令？";
+  if (card.type === "FileChangeApprovalCard") return "是否允许修改以下文件？";
+  return "是否允许执行此操作？";
+});
+
+const approvalCommand = computed(() => {
+  const card = activeApprovalCard.value;
+  if (!card) return "";
+  return compactText(card.command || card.title || card.summary || "");
+});
+
+function resolveCodexApproval(decision) {
+  const card = activeApprovalCard.value;
+  if (!card) return;
+  const approvalId = card.approval?.requestId || card.id;
+  decideApproval({ approvalId, decision });
+}
 
 function truncateLabel(value, max = 88) {
   if (!value || value.length <= max) return value;
@@ -595,19 +771,18 @@ const streamCards = computed(() =>
 );
 
 const mainChatActiveProcess = computed(() => {
-  if (!showThinkingCard.value && !hasTopFeedback.value) return null;
   const items = [
-    ...viewedFileDetails.value.map((entry, index) => ({
-      id: `viewed-file-${index}`,
-      kind: "file",
-      text: entry.label || entry.path || "",
-    })),
-    ...searchedQueryDetails.value.map((entry, index) => ({
-      id: `searched-query-${index}`,
-      kind: "search",
-      text: entry.label || entry.query || "",
+    // Include accumulated activity lines as search/activity items
+    ...accumulatedActivityLines.value.map((line, index) => ({
+      id: line.id || `activity-line-${index}`,
+      kind: line.text.startsWith("已搜索") ? "search" : "activity",
+      text: line.text,
     })),
   ].filter((item) => item.text);
+
+  // Return process data when turn is active OR when there are accumulated items
+  // so the "已处理" fold persists after the turn completes.
+  if (!showThinkingCard.value && !hasTopFeedback.value && items.length === 0) return null;
 
   return {
     phase: thinkingDisplayPhase.value,
@@ -970,7 +1145,9 @@ async function sendMessage() {
   store.sending = true;
   store.errorMessage = "";
   showThinking.value = true;
-  queueThinkingPrelude(message);
+  if (isWorkspaceSession.value) {
+    queueThinkingPrelude(message);
+  }
   store.markTurnPendingStart("thinking");
   store.resetActivity();
 
@@ -1237,6 +1414,7 @@ watch(
 
 onBeforeUnmount(() => {
   clearThinkingPrelude();
+  stopElapsedTimer();
   window.removeEventListener("keydown", handleTerminalDockToggleKeydown);
   if (terminalDockDragState?.handleMove) {
     window.removeEventListener("mousemove", terminalDockDragState.handleMove);
@@ -1457,7 +1635,23 @@ watch(
           </div>
 
           <div v-else-if="entry.kind === 'thinking'" class="stream-row row-assistant" data-testid="chat-live-status-card">
-            <ThinkingCard :card="thinkingCard" />
+            <!-- Workspace mode: use ThinkingCard -->
+            <ThinkingCard v-if="isWorkspaceSession" :card="thinkingCard" />
+            <!-- Single-host mode: Codex-style clean activity -->
+            <div v-else class="codex-activity-section" data-testid="codex-activity-section">
+              <div class="codex-activity-header">
+                <span class="codex-working-label">Working for {{ elapsedLabel || '0s' }}</span>
+                <hr class="codex-activity-divider" />
+              </div>
+              <div class="codex-activity-lines">
+                <div v-for="line in accumulatedActivityLines" :key="line.id" class="codex-activity-line">
+                  {{ line.text }}
+                </div>
+                <div v-if="isThinking" class="codex-activity-line codex-thinking">
+                  正在思考
+                </div>
+              </div>
+            </div>
           </div>
         </template>
 
@@ -1468,6 +1662,8 @@ watch(
           :style="{ height: `${virtualBottomSpacerHeight}px` }"
           aria-hidden="true"
         />
+
+        <!-- Codex completed fold — now handled by ChatProcessFold inside ChatTurnGroup -->
       </div>
     </div>
   </div>
@@ -1490,66 +1686,42 @@ watch(
     :plan-card="activePlanCard"
     :session-kind="store.snapshot.kind"
     :status-hint="composerStatusHint"
-    :show-composer="!hasActiveApprovalOverlay || authCardCollapsed"
+    :show-composer="(!hasActiveApprovalOverlay || authCardCollapsed) && !hasCodexApproval"
     :is-docked-bottom="!!activePlanCard || hasActiveApprovalOverlay"
     @send="sendMessage"
     @stop="stopMessage"
   >
-    <template #terminal>
-      <div class="chat-terminal-dock-wrap">
-        <div class="chat-terminal-toolbar">
-          <button
-            data-testid="chat-terminal-toggle"
-            class="chat-terminal-toggle"
-            :class="{ active: terminalDockVisible }"
-            :disabled="isWorkspaceSession"
-            @click="toggleTerminalDock()"
-          >
-            <TerminalIcon size="14" />
-            <span>{{ terminalDockVisible ? "隐藏终端" : "显示终端" }}</span>
-          </button>
-          <span class="chat-terminal-toolbar-label">{{ terminalDockToolbarLabel }}</span>
-          <span class="chat-terminal-shortcut">Ctrl + `</span>
-        </div>
-
-        <div
-          v-if="terminalDockVisible"
-          data-testid="chat-terminal-dock"
-          class="chat-terminal-dock"
-          :class="{ dragging: terminalDockDragging }"
-          :style="{ height: `${terminalDockHeight}px` }"
-        >
-          <button
-            data-testid="chat-terminal-resizer"
-            class="chat-terminal-resizer"
-            title="拖拽调整终端高度"
-            @mousedown="handleTerminalDockResizeStart"
-          >
-            拖拽调整高度
-          </button>
-          <div class="chat-terminal-frame">
-            <WorkspaceHostTerminal
-              :key="terminalDockHost.id || store.snapshot.selectedHostId"
-              ref="terminalDockRef"
-              :host-id="terminalDockHost.id || store.snapshot.selectedHostId"
-              :host-name="terminalDockHostLabel"
-              :title="terminalDockTitle"
-              :subtitle="terminalDockSubtitle"
-              :output="terminalDockOutput"
-              :allow-takeover="terminalDockCanTakeover"
-              :auto-takeover="terminalDockCanTakeover"
-              :panel-height="terminalDockPanelHeight"
-              @connected="handleTerminalDockConnected"
-              @disconnected="handleTerminalDockDisconnected"
-              @error="handleTerminalDockError"
-            />
-          </div>
-        </div>
-      </div>
-    </template>
+    <!-- Terminal dock removed for cleaner UI -->
 
     <template #approval>
-      <div v-if="activeApprovalCard || activeMcpApproval" class="auth-overlay-dock">
+      <!-- Codex-style inline approval (Change 3) for single-host mode -->
+      <div v-if="hasCodexApproval && !authCardCollapsed" class="codex-approval-inline" data-testid="codex-approval-inline">
+        <div class="codex-approval-question">{{ approvalQuestion }}</div>
+        <div v-if="approvalCommand" class="codex-approval-command">
+          <code>{{ approvalCommand }}</code>
+        </div>
+        <div class="codex-approval-options">
+          <button class="codex-approval-option" @click="resolveCodexApproval('accept')">
+            <span class="option-number">1.</span> 是
+          </button>
+          <button class="codex-approval-option" @click="resolveCodexApproval('accept_session')">
+            <span class="option-number">2.</span> 是，且对于后续类似命令不再询问
+          </button>
+          <button class="codex-approval-option" @click="resolveCodexApproval('reject')">
+            <span class="option-number">3.</span> 否，请告知如何调整
+          </button>
+        </div>
+        <div class="codex-approval-actions">
+          <button class="codex-skip-btn" @click="resolveCodexApproval('reject')">跳过</button>
+          <button class="codex-submit-btn" @click="resolveCodexApproval('accept')">提交 ⏎</button>
+        </div>
+        <div v-if="activeApprovalQueueCount > 1" class="codex-approval-queue-note">
+          {{ activeApprovalQueueLabel }}
+        </div>
+      </div>
+
+      <!-- Fallback: original approval overlay for workspace mode or collapsed state -->
+      <div v-else-if="(activeApprovalCard || activeMcpApproval) && (isWorkspaceSession || !hasCodexApproval)" class="auth-overlay-dock">
         <div v-if="!authCardCollapsed" class="auth-overlay-container">
           <div class="auth-overlay-header">
             <div class="auth-overlay-title-group">
@@ -2309,5 +2481,161 @@ watch(
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- Codex Activity Section (Change 1) ---- */
+.codex-activity-section {
+  margin: 16px 0;
+  padding: 0 36px;
+  animation: fadeInUp 0.2s ease-out;
+}
+
+.codex-activity-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.codex-working-label {
+  font-size: 13px;
+  color: #6b7280;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.codex-activity-divider {
+  flex: 1;
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 0;
+}
+
+.codex-activity-lines {
+  display: flex;
+  flex-direction: column;
+}
+
+.codex-activity-line {
+  font-size: 13px;
+  color: #9ca3af;
+  padding: 2px 0;
+  line-height: 1.6;
+}
+
+.codex-thinking {
+  color: #6b7280;
+}
+
+/* ---- Codex Inline Approval (Change 3) ---- */
+.codex-approval-inline {
+  width: 100%;
+  padding: 16px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+}
+
+.codex-approval-question {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+
+.codex-approval-command {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.codex-approval-command code {
+  font-size: 13px;
+  color: #334155;
+  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.codex-approval-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.codex-approval-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.codex-approval-option:hover {
+  background: #f9fafb;
+  border-color: #d1d5db;
+}
+
+.codex-approval-option .option-number {
+  color: #9ca3af;
+  font-weight: 600;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.codex-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.codex-skip-btn {
+  padding: 7px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.codex-skip-btn:hover {
+  background: #f9fafb;
+}
+
+.codex-submit-btn {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.codex-submit-btn:hover {
+  background: #1e293b;
+}
+
+.codex-approval-queue-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: center;
 }
 </style>

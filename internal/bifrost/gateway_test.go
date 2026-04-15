@@ -18,6 +18,9 @@ type stubProvider struct {
 
 func (s *stubProvider) Name() string { return s.name }
 func (s *stubProvider) SupportsToolCalling() bool { return true }
+func (s *stubProvider) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{ToolCallingFormat: "openai_function"}
+}
 
 func (s *stubProvider) ChatCompletion(_ context.Context, _ ChatRequest) (*ChatResponse, error) {
 	return s.resp, s.err

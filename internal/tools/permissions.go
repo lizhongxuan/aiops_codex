@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -94,7 +94,7 @@ type NetworkPermission struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-func handleRequestPermissions(ctx context.Context, session *Session, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
+func handleRequestPermissions(ctx context.Context, tc ToolContext, call bifrost.ToolCall, args map[string]interface{}) (string, error) {
 	req := PermissionRequest{}
 
 	if reason, ok := args["reason"].(string); ok {

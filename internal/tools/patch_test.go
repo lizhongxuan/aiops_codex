@@ -1,4 +1,4 @@
-package agentloop
+package tools
 
 import (
 	"context"
@@ -35,10 +35,10 @@ func TestHandleApplyPatch_EmptyPatch(t *testing.T) {
 	reg := NewToolRegistry()
 	RegisterApplyPatchTool(reg)
 
-	session := NewSession("test-patch", SessionSpec{Model: "test", Cwd: t.TempDir()})
+	tc := newTestToolContext(t.TempDir())
 	call := bifrost.ToolCall{ID: "call-1", Function: bifrost.FunctionCall{Name: "apply_patch"}}
 
-	_, err := reg.Dispatch(context.Background(), session, call, "apply_patch", map[string]interface{}{
+	_, err := reg.Dispatch(context.Background(), tc, call, "apply_patch", map[string]interface{}{
 		"patch": "",
 	})
 	if err == nil {
@@ -48,7 +48,7 @@ func TestHandleApplyPatch_EmptyPatch(t *testing.T) {
 
 func TestHandleApplyPatch_CreateFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	session := NewSession("test-patch-create", SessionSpec{Model: "test", Cwd: tmpDir})
+	tc := newTestToolContext(tmpDir)
 
 	patch := `diff --git a/hello.txt b/hello.txt
 new file mode 100644
@@ -59,7 +59,7 @@ new file mode 100644
 +Second line.
 `
 	call := bifrost.ToolCall{ID: "call-2", Function: bifrost.FunctionCall{Name: "apply_patch"}}
-	result, err := handleApplyPatch(context.Background(), session, call, map[string]interface{}{
+	result, err := handleApplyPatch(context.Background(), tc, call, map[string]interface{}{
 		"patch": patch,
 	})
 	if err != nil {
@@ -69,7 +69,6 @@ new file mode 100644
 		t.Fatal("expected non-empty result")
 	}
 
-	// Verify file was created.
 	content, err := os.ReadFile(filepath.Join(tmpDir, "hello.txt"))
 	if err != nil {
 		t.Fatalf("failed to read created file: %v", err)
@@ -82,13 +81,12 @@ new file mode 100644
 
 func TestHandleApplyPatch_ModifyFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	// Create an existing file to modify.
 	original := "line1\nline2\nline3\n"
 	if err := os.WriteFile(filepath.Join(tmpDir, "existing.txt"), []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	session := NewSession("test-patch-modify", SessionSpec{Model: "test", Cwd: tmpDir})
+	tc := newTestToolContext(tmpDir)
 
 	patch := `diff --git a/existing.txt b/existing.txt
 --- a/existing.txt
@@ -100,7 +98,7 @@ func TestHandleApplyPatch_ModifyFile(t *testing.T) {
  line3
 `
 	call := bifrost.ToolCall{ID: "call-3", Function: bifrost.FunctionCall{Name: "apply_patch"}}
-	result, err := handleApplyPatch(context.Background(), session, call, map[string]interface{}{
+	result, err := handleApplyPatch(context.Background(), tc, call, map[string]interface{}{
 		"patch": patch,
 	})
 	if err != nil {
@@ -127,8 +125,8 @@ func TestHandleApplyPatch_DiffTrackerRecordsBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	session := NewSession("test-patch-tracker", SessionSpec{Model: "test", Cwd: tmpDir})
-	tracker := session.DiffTracker()
+	tc := newTestToolContext(tmpDir)
+	tracker := tc.DiffTracker()
 	if tracker == nil {
 		t.Fatal("expected non-nil diff tracker")
 	}
@@ -141,33 +139,18 @@ func TestHandleApplyPatch_DiffTrackerRecordsBaseline(t *testing.T) {
 +modified content
 `
 	call := bifrost.ToolCall{ID: "call-4", Function: bifrost.FunctionCall{Name: "apply_patch"}}
-	_, err := handleApplyPatch(context.Background(), session, call, map[string]interface{}{
+	_, err := handleApplyPatch(context.Background(), tc, call, map[string]interface{}{
 		"patch": patch,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Generate diff from tracker — should show the change.
 	diffs, err := tracker.GenerateDiff()
 	if err != nil {
 		t.Fatalf("GenerateDiff error: %v", err)
 	}
 	if len(diffs) == 0 {
 		t.Fatal("expected at least one diff from tracker")
-	}
-}
-
-func TestSessionCwdAccessor(t *testing.T) {
-	s := NewSession("test-cwd", SessionSpec{Model: "test", Cwd: "/workspace/project"})
-	if s.Cwd() != "/workspace/project" {
-		t.Fatalf("expected Cwd '/workspace/project', got %q", s.Cwd())
-	}
-}
-
-func TestSessionDiffTrackerInitialized(t *testing.T) {
-	s := NewSession("test-tracker-init", SessionSpec{Model: "test"})
-	if s.DiffTracker() == nil {
-		t.Fatal("expected DiffTracker to be initialized")
 	}
 }

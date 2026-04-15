@@ -62,7 +62,44 @@ func (a *App) initBifrostRuntime() error {
 	agentloop.RegisterRemoteHostTools(reg)
 	agentloop.RegisterWorkspaceTools(reg)
 	agentloop.RegisterApplyPatchTool(reg)
-	agentloop.RegisterWebSearchTools(reg)
+
+	// Web search handler selection based on WebSearchMode config.
+	webSearchMode := strings.ToLower(strings.TrimSpace(a.cfg.WebSearchMode))
+	switch webSearchMode {
+	case "disabled":
+		// Skip web_search tool registration entirely.
+		log.Printf("[bifrost] web search disabled by configuration")
+	case "native":
+		// Register the tool (it may be filtered out at request time if provider supports native search).
+		// Check if the default provider supports native search; if not, fall back to DuckDuckGo.
+		caps := gateway.ProviderCapabilities(strings.TrimSpace(a.cfg.LLMModel))
+		if caps.SupportsNativeSearch {
+			agentloop.RegisterWebSearchTools(reg)
+			log.Printf("[bifrost] web search mode: native (provider supports native search)")
+		} else {
+			agentloop.RegisterWebSearchTools(reg)
+			log.Printf("[bifrost] warning: web search mode is 'native' but provider does not support native search; falling back to DuckDuckGo")
+			webSearchMode = "duckduckgo"
+		}
+	case "brave":
+		if strings.TrimSpace(a.cfg.BraveAPIKey) != "" {
+			agentloop.RegisterWebSearchTools(reg)
+			// Override the web_search handler with BraveSearchHandler.
+			if entry, ok := reg.Get("web_search"); ok && entry != nil {
+				entry.Handler = agentloop.BraveSearchHandler(strings.TrimSpace(a.cfg.BraveAPIKey))
+			}
+			log.Printf("[bifrost] web search mode: brave")
+		} else {
+			agentloop.RegisterWebSearchTools(reg)
+			log.Printf("[bifrost] warning: web search mode is 'brave' but BRAVE_API_KEY is not set; falling back to DuckDuckGo")
+			webSearchMode = "duckduckgo"
+		}
+	default:
+		// "duckduckgo" or any unrecognized value — use default DuckDuckGo handler.
+		agentloop.RegisterWebSearchTools(reg)
+		webSearchMode = "duckduckgo"
+	}
+
 	if a.corootClient != nil {
 		agentloop.RegisterCorootTools(reg)
 	}
@@ -70,8 +107,10 @@ func (a *App) initBifrostRuntime() error {
 
 	a.bifrostGateway = gateway
 	a.agentLoop = agentloop.NewLoop(gateway, reg, nil).
+		SetWebSearchMode(webSearchMode).
 		SetApprovalHandler(a).
-		SetStreamObserver(a)
+		SetStreamObserver(a).
+		SetToolObserver(a)
 	return nil
 }
 
@@ -420,19 +459,23 @@ func (a *App) runBifrostTurn(ctx context.Context, sessionID string, req chatRequ
 }
 
 func (a *App) wireBifrostToolHandlers(reg *agentloop.ToolRegistry) {
-	mustSet := func(name string, handler agentloop.ToolHandler) {
+	mustSet := func(name string, handler agentloop.SessionToolHandler) {
 		entry, ok := reg.Get(name)
 		if !ok || entry == nil {
 			panic("missing bifrost tool registration: " + name)
 		}
-		entry.Handler = handler
+		entry.Handler = agentloop.WrapSessionHandler(handler)
 	}
-	setIfPresent := func(name string, handler agentloop.ToolHandler) {
+	setIfPresent := func(name string, handler agentloop.SessionToolHandler) {
 		entry, ok := reg.Get(name)
 		if !ok || entry == nil {
 			return
 		}
-		entry.Handler = handler
+		if handler == nil {
+			entry.Handler = nil
+			return
+		}
+		entry.Handler = agentloop.WrapSessionHandler(handler)
 	}
 
 	mustSet("ask_user_question", a.bifrostAskUserQuestion)
@@ -461,7 +504,7 @@ func (a *App) wireBifrostToolHandlers(reg *agentloop.ToolRegistry) {
 	setIfPresent("find_in_page", nil)
 }
 
-func (a *App) bifrostExecuteCorootTool(toolName string) agentloop.ToolHandler {
+func (a *App) bifrostExecuteCorootTool(toolName string) agentloop.SessionToolHandler {
 	return func(ctx context.Context, session *agentloop.Session, call bifrost.ToolCall, arguments map[string]any) (string, error) {
 		toolText, err := a.runCorootTool(ctx, toolName, arguments)
 		if err != nil {
@@ -1495,4 +1538,162 @@ func (a *App) resolveBifrostApproval(targetSessionID string, approval model.Appr
 		Decision:   decision,
 	})
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// ToolExecutionObserver implementation — creates ProcessLineCards and updates
+// runtime.Activity so the frontend shows real-time tool status.
+// ---------------------------------------------------------------------------
+
+func (a *App) OnToolStart(_ context.Context, session *agentloop.Session, toolName string, args map[string]interface{}) {
+	sessionID := session.ID
+
+	// For single_host sessions, only set the phase (for ThinkingCard "正在思考").
+	// Don't create ProcessLineCards or update activity — keep the UI simple.
+	kind := a.sessionKind(sessionID)
+	if kind == "" || kind == "single_host" {
+		a.setRuntimeTurnPhase(sessionID, "thinking")
+		a.broadcastSnapshot(sessionID)
+		return
+	}
+
+	// Workspace / worker sessions get full activity tracking.
+	phase, label := toolPhaseAndLabel(toolName, args)
+	a.setRuntimeTurnPhase(sessionID, phase)
+
+	// Update activity tracking.
+	a.store.UpdateRuntime(sessionID, func(rt *model.RuntimeState) {
+		switch toolName {
+		case "web_search":
+			query, _ := args["query"].(string)
+			rt.Activity.CurrentSearchKind = "web"
+			rt.Activity.CurrentSearchQuery = query
+			rt.Activity.CurrentWebSearchQuery = query
+		case "open_page", "find_in_page":
+			url, _ := args["url"].(string)
+			rt.Activity.CurrentReadingFile = url
+		case "list_files", "list_dir":
+			path, _ := args["path"].(string)
+			rt.Activity.CurrentListingPath = path
+		case "read_file":
+			path, _ := args["path"].(string)
+			rt.Activity.CurrentReadingFile = path
+		case "search_files":
+			query, _ := args["query"].(string)
+			rt.Activity.CurrentSearchKind = "content"
+			rt.Activity.CurrentSearchQuery = query
+		}
+	})
+
+	// Create a ProcessLineCard for this tool execution.
+	cardID := model.NewID("proc")
+	a.beginToolProcess(sessionID, cardID, phase, label)
+	a.bifrostToolCards.Store(sessionID+":"+toolName, cardID)
+}
+
+func (a *App) OnToolComplete(_ context.Context, session *agentloop.Session, toolName string, args map[string]interface{}, result string, err error) {
+	sessionID := session.ID
+
+	// For single_host sessions, just reset phase to thinking.
+	kind := a.sessionKind(sessionID)
+	if kind == "" || kind == "single_host" {
+		a.setRuntimeTurnPhase(sessionID, "thinking")
+		a.broadcastSnapshot(sessionID)
+		return
+	}
+
+	// Workspace / worker sessions: complete the ProcessLineCard.
+	if raw, ok := a.bifrostToolCards.LoadAndDelete(sessionID + ":" + toolName); ok {
+		cardID, _ := raw.(string)
+		if cardID != "" {
+			if err != nil {
+				a.failToolProcess(sessionID, cardID, fmt.Sprintf("工具 %s 执行失败", toolName))
+			} else {
+				_, label := toolPhaseAndLabel(toolName, args)
+				a.completeToolProcess(sessionID, cardID, label)
+			}
+		}
+	}
+
+	// Update activity counts.
+	a.store.UpdateRuntime(sessionID, func(rt *model.RuntimeState) {
+		switch toolName {
+		case "web_search":
+			query, _ := args["query"].(string)
+			rt.Activity.CurrentSearchKind = ""
+			rt.Activity.CurrentSearchQuery = ""
+			rt.Activity.CurrentWebSearchQuery = ""
+			rt.Activity.SearchedWebQueries = append(rt.Activity.SearchedWebQueries, model.ActivityEntry{Query: query})
+			rt.Activity.SearchCount = len(rt.Activity.SearchedWebQueries) + len(rt.Activity.SearchedContentQueries)
+		case "open_page", "find_in_page":
+			rt.Activity.CurrentReadingFile = ""
+			rt.Activity.FilesViewed++
+		case "list_files", "list_dir":
+			rt.Activity.CurrentListingPath = ""
+			rt.Activity.ListCount++
+		case "read_file":
+			rt.Activity.CurrentReadingFile = ""
+			rt.Activity.FilesViewed++
+		case "search_files":
+			query, _ := args["query"].(string)
+			rt.Activity.CurrentSearchKind = ""
+			rt.Activity.CurrentSearchQuery = ""
+			rt.Activity.SearchedContentQueries = append(rt.Activity.SearchedContentQueries, model.ActivityEntry{Query: query})
+			rt.Activity.SearchCount = len(rt.Activity.SearchedWebQueries) + len(rt.Activity.SearchedContentQueries)
+		case "execute_command", "readonly_host_inspect", "shell_command":
+			rt.Activity.CommandsRun++
+		case "write_file", "apply_patch":
+			rt.Activity.FilesChanged++
+		}
+	})
+
+	a.setRuntimeTurnPhase(sessionID, "thinking")
+	a.broadcastSnapshot(sessionID)
+}
+
+// toolPhaseAndLabel maps a tool name to a UI phase and a human-readable label.
+func toolPhaseAndLabel(toolName string, args map[string]interface{}) (phase, label string) {
+	switch toolName {
+	case "web_search":
+		query, _ := args["query"].(string)
+		return "searching", fmt.Sprintf("搜索网页：%s", truncateLabel(query, 60))
+	case "open_page":
+		url, _ := args["url"].(string)
+		return "browsing", fmt.Sprintf("浏览网页：%s", truncateLabel(url, 60))
+	case "find_in_page":
+		query, _ := args["query"].(string)
+		return "searching", fmt.Sprintf("在页面中搜索：%s", truncateLabel(query, 60))
+	case "execute_command", "readonly_host_inspect":
+		cmd, _ := args["command"].(string)
+		return "executing", fmt.Sprintf("执行命令：%s", truncateLabel(cmd, 60))
+	case "list_files", "list_dir":
+		path, _ := args["path"].(string)
+		return "browsing", fmt.Sprintf("浏览目录：%s", truncateLabel(path, 60))
+	case "read_file":
+		path, _ := args["path"].(string)
+		return "browsing", fmt.Sprintf("读取文件：%s", truncateLabel(path, 60))
+	case "search_files":
+		query, _ := args["query"].(string)
+		return "searching", fmt.Sprintf("搜索文件：%s", truncateLabel(query, 60))
+	case "write_file":
+		path, _ := args["path"].(string)
+		return "editing", fmt.Sprintf("写入文件：%s", truncateLabel(path, 60))
+	case "apply_patch":
+		return "editing", "应用代码补丁"
+	case "ask_user_question":
+		return "waiting_input", "等待用户输入"
+	case "enter_plan_mode", "update_plan", "exit_plan_mode":
+		return "planning", "规划中"
+	default:
+		return "executing", fmt.Sprintf("执行工具：%s", toolName)
+	}
+}
+
+// truncateLabel truncates a string to maxLen runes, appending "..." if needed.
+func truncateLabel(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-3]) + "..."
 }

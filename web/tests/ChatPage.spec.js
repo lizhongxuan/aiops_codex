@@ -278,8 +278,10 @@ describe("ChatPage terminal dock", () => {
     expect(wrapper.get('[data-testid="chat-turn-turn-user-1"]').exists()).toBe(true);
     expect(wrapper.get('[data-testid="chat-process-fold-turn-user-1"]').text()).toContain("正在思考");
     expect(wrapper.text()).toContain("现在搜索网页");
-    expect(wrapper.get('[data-testid="chat-live-status-card"]').text()).toContain("thinking");
-    expect(wrapper.get('[data-testid="chat-live-status-card"]').text()).toContain("现在搜索网页");
+    expect(wrapper.get('[data-testid="codex-activity-section"]').text()).toContain("已搜索网页");
+    expect(wrapper.get('[data-testid="codex-activity-section"]').text()).toContain("Working for");
+
+
   });
 
   it("keeps the live status card visible while the turn is finalizing", async () => {
@@ -327,7 +329,7 @@ describe("ChatPage terminal dock", () => {
     const wrapper = mountChatPage();
     await flushPromises();
 
-    expect(wrapper.get('[data-testid="chat-live-status-card"]').text()).toContain("finalizing");
+    expect(wrapper.get('[data-testid="codex-activity-section"]').text()).toContain("正在思考");
   });
 
   it("opens the MCP surface drawer from bundle detail, pin and refresh actions", async () => {
@@ -499,7 +501,6 @@ describe("ChatPage terminal dock", () => {
     const processFold = wrapper.get('[data-testid="chat-process-fold-turn-user-1"]');
 
     expect(processFold.text()).toContain("已处理");
-    expect(processFold.text()).toContain("已记录 1 条过程细项");
     expect(processFold.find(".chat-process-body").exists()).toBe(false);
     expect(wrapper.text()).toContain("已经确认 nginx 本体正常，异常集中在 service-a upstream timeout。");
     expect(wrapper.text()).not.toContain("我先检查日志和 upstream 指标。");
@@ -839,10 +840,10 @@ describe("ChatPage terminal dock", () => {
       await flushPromises();
 
       expect(wrapper.find(".chat-stream").text()).not.toContain("approval-pending-1");
-      expect(wrapper.get(".auth-overlay-dock .card-item-stub").attributes("data-card-id")).toBe("approval-pending-1");
+      expect(wrapper.get('[data-testid="codex-approval-inline"]').text()).toContain("systemctl reload nginx");
       expect(wrapper.find(".omnibar-stub").exists()).toBe(false);
 
-      await wrapper.get(".auth-overlay-dock .card-item-approval-action").trigger("click");
+      await wrapper.get('[data-testid="codex-approval-inline"] .codex-submit-btn').trigger("click");
       await flushPromises();
 
       expect(mocks.store.setTurnPhase).toHaveBeenCalledWith("executing");

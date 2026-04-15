@@ -417,12 +417,7 @@ function tryExecuteSlashSwitch(text) {
   return true;
 }
 
-// Bottom info bar
-const bottomHostLabel = computed(() => resolveHostDisplay(store.selectedHost) || "server-local");
-const bottomModelLabel = computed(() => {
-  const profile = store.activeAgentProfile || store.agentProfile;
-  return profile?.runtime?.model || "gpt-5.4";
-});
+
 </script>
 
 <template>
@@ -474,7 +469,7 @@ const bottomModelLabel = computed(() => {
       @keydown="onKeydown"
       @focus="onFocus"
       @blur="onBlur"
-      rows="3"
+      rows="1"
       class="omnibar-input"
       :placeholder="placeholder"
       :disabled="inputDisabled"
@@ -482,7 +477,7 @@ const bottomModelLabel = computed(() => {
     ></textarea>
     
     <div class="omnibar-tools">
-      <div class="tools-left" v-if="showToolTags">
+      <div class="tools-left">
          <span v-for="mention in activeMentions" :key="mention" class="pill-tag"><span class="pill-icon">@</span> {{ mention }}</span>
          <span
            v-for="artifact in artifactPills"
@@ -490,8 +485,6 @@ const bottomModelLabel = computed(() => {
            class="pill-tag artifact-pill"
            data-testid="omnibar-artifact-pill"
          >{{ artifact.label }}</span>
-      </div>
-      <div class="tools-right">
          <span
            class="hint-text"
            :class="{
@@ -510,6 +503,8 @@ const bottomModelLabel = computed(() => {
          >
            清除
          </button>
+      </div>
+      <div class="tools-right">
          <div class="action-group">
            <n-button
              circle
@@ -528,12 +523,7 @@ const bottomModelLabel = computed(() => {
       </div>
     </div>
 
-    <!-- Bottom info: current host + model (read-only) -->
-    <div class="omnibar-bottom-info" data-testid="omnibar-bottom-info">
-      <span class="bottom-info-item">{{ bottomHostLabel }}</span>
-      <span class="bottom-info-sep">·</span>
-      <span class="bottom-info-item">{{ bottomModelLabel }}</span>
-    </div>
+
   </div>
 </template>
 
@@ -544,9 +534,9 @@ const bottomModelLabel = computed(() => {
   margin: 0 auto;
   background: var(--omnibar-bg);
   border: 1px solid var(--border-color);
-  border-radius: 20px;
-  padding: 12px 14px 12px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  padding: 8px 14px 8px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -572,7 +562,7 @@ const bottomModelLabel = computed(() => {
   background: transparent;
   resize: none;
   outline: none;
-  min-height: 64px;
+  min-height: 36px;
   font-size: 14px;
   line-height: 1.6;
   padding: 4px 6px 0;
@@ -599,6 +589,9 @@ const bottomModelLabel = computed(() => {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
 }
 
 .pill-tag {
@@ -617,6 +610,8 @@ const bottomModelLabel = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .action-group {
@@ -781,21 +776,5 @@ const bottomModelLabel = computed(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* Bottom info bar */
-.omnibar-bottom-info {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 6px 0;
-}
 
-.bottom-info-item {
-  font-size: 11px;
-  color: #94a3b8;
-}
-
-.bottom-info-sep {
-  font-size: 11px;
-  color: #cbd5e1;
-}
 </style>

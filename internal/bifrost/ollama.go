@@ -30,6 +30,17 @@ func (p *OllamaProvider) Name() string { return "ollama" }
 // SupportsToolCalling returns true — most modern Ollama models support tool calling.
 func (p *OllamaProvider) SupportsToolCalling() bool { return true }
 
+// Capabilities returns the feature set supported by the Ollama provider.
+func (p *OllamaProvider) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		SupportsNativeSearch:       false,
+		SupportsReasoningContent:   false,
+		SupportsStreamingToolCalls: true,
+		SupportsToolUseFormat:      false,
+		ToolCallingFormat:          "openai_function",
+	}
+}
+
 // ChatCompletion delegates to the embedded OpenAI-compatible provider.
 func (p *OllamaProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	return p.openai.ChatCompletion(ctx, req)
