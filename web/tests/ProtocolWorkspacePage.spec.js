@@ -172,6 +172,17 @@ function createApprovalCards() {
         requestId: "approval-1",
         decisions: ["accept", "accept_session", "decline"],
       },
+      detail: {
+        riskLevel: "high",
+        targetSummary: "web-02 / service nginx",
+        targetEnvironment: "prod / cn-prod-a",
+        blastRadius: "web-02 / ingress",
+        dryRunSupported: true,
+        dryRunSummary: "systemctl reload nginx --test",
+        rollbackHint: "如 reload 后异常，立即恢复上一个 nginx 配置并重启。",
+        verifyStrategies: ["service_health", "log_check"],
+        verificationSources: ["coroot_health", "metric_check", "health_probe", "log_check"],
+      },
       createdAt: "2026-03-31T02:20:00Z",
       updatedAt: "2026-03-31T02:20:00Z",
     },
@@ -188,6 +199,88 @@ function createApprovalCards() {
       },
       createdAt: "2026-03-31T02:21:00Z",
       updatedAt: "2026-03-31T02:21:00Z",
+    },
+  ];
+}
+
+function createVerificationRecords() {
+  return [
+    {
+      id: "verify-approval-card-1",
+      actionEventId: "approval-card-1",
+      status: "passed",
+      strategy: "service_health",
+      successCriteria: ["执行 nginx -t", "确认 5xx 与 upstream error rate 稳定"],
+      findings: ["reload 后服务健康检查通过。"],
+      rollbackHint: "如异常，恢复上一个 nginx 配置并重新加载服务。",
+      metadata: {
+        approvalId: "approval-1",
+        cardId: "approval-card-1",
+        hostId: "web-02",
+        hostName: "web-02",
+        targetSummary: "web-02 / service nginx",
+        verificationSources: ["coroot_health", "metric_check", "health_probe", "log_check"],
+        endedAt: "2026-03-31T02:21:30Z",
+      },
+      createdAt: "2026-03-31T02:21:30Z",
+    },
+  ];
+}
+
+function createFailedVerificationRecords() {
+  return [
+    {
+      id: "verify-approval-card-failed",
+      actionEventId: "approval-card-failed",
+      status: "failed",
+      strategy: "health_probe",
+      successCriteria: ["服务健康探针恢复", "错误日志不再新增"],
+      findings: ["reload 后健康探针仍然失败。"],
+      rollbackHint: "建议先恢复上一个 nginx 配置并重新加载服务。",
+      metadata: {
+        approvalId: "approval-failed",
+        cardId: "approval-card-failed",
+        hostId: "web-02",
+        hostName: "web-02",
+        targetSummary: "web-02 / service nginx",
+        verificationSources: ["coroot_health", "metric_check", "health_probe", "log_check"],
+        nextStepSuggestion: "先复核健康探针和错误日志，再决定是否立即回滚。",
+        endedAt: "2026-03-31T02:23:30Z",
+      },
+      createdAt: "2026-03-31T02:23:30Z",
+    },
+  ];
+}
+
+function createVerificationSummaryCards() {
+  return [
+    {
+      id: "verification-card-failed",
+      type: "VerificationCard",
+      title: "自动验证失败",
+      text: "web-02 / service nginx 自动验证失败。\n\n结论：reload 后健康探针仍然失败。",
+      summary: "web-02 / service nginx 自动验证失败。",
+      status: "failed",
+      hostId: "web-02",
+      detail: {
+        verificationId: "verify-approval-card-failed",
+      },
+      createdAt: "2026-03-31T02:23:30Z",
+      updatedAt: "2026-03-31T02:23:30Z",
+    },
+    {
+      id: "rollback-card-failed",
+      type: "RollbackCard",
+      title: "回滚建议",
+      text: "建议先恢复上一个 nginx 配置并重新加载服务。\n\n下一步建议：先复核健康探针和错误日志，再决定是否立即回滚。",
+      summary: "web-02 / service nginx",
+      status: "warning",
+      hostId: "web-02",
+      detail: {
+        verificationId: "verify-approval-card-failed",
+      },
+      createdAt: "2026-03-31T02:23:31Z",
+      updatedAt: "2026-03-31T02:23:31Z",
     },
   ];
 }
@@ -382,6 +475,7 @@ function createStoreFixture(overrides = {}) {
         { id: "approval-1", status: "pending", itemId: "approval-card-1" },
         { id: "approval-2", status: "pending", itemId: "approval-card-2" },
       ],
+      verificationRecords: [],
       cards: [
         {
           id: "user-1",
@@ -559,6 +653,157 @@ describe("ProtocolWorkspacePage", () => {
     expect(wrapper.text()).toContain("web-02");
   });
 
+  it("renders lane-first runtime policy state and final-gate gaps in the workspace shell", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        currentMode: "analysis",
+        currentStage: "planning",
+        currentLane: "plan",
+        requiredNextTool: "update_plan",
+        finalGateStatus: "blocked",
+        missingRequirements: ["缺少计划产物", "缺少 assumptions"],
+        turnPolicy: {
+          intentClass: "design",
+          lane: "plan",
+          requiredTools: ["update_plan"],
+          requiredNextTool: "update_plan",
+          finalGateStatus: "blocked",
+          missingRequirements: ["缺少计划产物", "缺少 assumptions"],
+          classificationReason: "检测到方案/设计类请求，直接进入 plan lane",
+        },
+        cards: [
+          {
+            id: "user-design-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "给我一个订单服务延迟排障方案，要求有回滚和 10 分钟窗口。",
+            createdAt: "2026-04-16T05:00:00Z",
+            updatedAt: "2026-04-16T05:00:00Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "thinking",
+          pendingStart: false,
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const policyCard = wrapper.get('[data-testid="protocol-runtime-policy"]');
+    expect(policyCard.text()).toContain("方案规划中");
+    expect(policyCard.text()).toContain("缺少计划产物");
+    expect(policyCard.text()).toContain("缺少 assumptions");
+    expect(policyCard.text()).toContain("计划更新");
+    expect(wrapper.get('[data-testid="protocol-runtime-pill"]').text()).toContain("方案规划中");
+  });
+
+  it("opens the prompt debug drawer with tool visibility and prompt envelope details", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        currentMode: "analysis",
+        currentStage: "collecting_evidence",
+        currentLane: "readonly",
+        requiredNextTool: "web_search",
+        finalGateStatus: "blocked",
+        missingRequirements: ["缺少外部实时证据"],
+        turnPolicy: {
+          intentClass: "factual",
+          lane: "readonly",
+          requiredTools: ["web_search"],
+          requiredNextTool: "web_search",
+          finalGateStatus: "blocked",
+          missingRequirements: ["缺少外部实时证据"],
+          classificationReason: "检测到实时/外部事实请求，必须先搜索证据",
+        },
+        promptEnvelope: {
+          staticSections: [{ name: "System", content: "你是协作工作台 AI。" }],
+          laneSections: [{ name: "Lane", content: "当前处于 readonly lane。" }],
+          runtimePolicy: { name: "RuntimePolicy", content: "intentClass=factual\nlane=readonly" },
+          contextAttachments: [{ name: "RequiredNextTool", content: "web_search" }],
+          visibleTools: [{ name: "web_search", reason: "本轮 policy 必需工具" }],
+          hiddenTools: [{ name: "orchestrator_dispatch_tasks", reason: "当前 lane=readonly，工具未对模型暴露" }],
+          compressionState: "summary_only",
+          tokenEstimate: 512,
+          currentLane: "readonly",
+          intentClass: "factual",
+          finalGateStatus: "blocked",
+          missingRequirements: ["缺少外部实时证据"],
+        },
+        cards: [
+          {
+            id: "user-factual-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "最新 BTC 价格是多少？",
+            createdAt: "2026-04-16T05:10:00Z",
+            updatedAt: "2026-04-16T05:10:00Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "thinking",
+          pendingStart: false,
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="protocol-prompt-debug-button"]').trigger("click");
+    await flushPromises();
+
+    const drawer = wrapper.get('[data-testid="protocol-prompt-debug-drawer"]');
+    expect(drawer.text()).toContain("Prompt Debug");
+    expect(drawer.text()).toContain("Runtime Policy");
+    expect(drawer.text()).toContain("外部搜索");
+    expect(drawer.text()).toContain("缺少外部实时证据");
+
+    const promptContextTab = wrapper.findAll(".drawer-tab").find((button) => button.text().includes("Prompt Context"));
+    expect(promptContextTab).toBeTruthy();
+    await promptContextTab.trigger("click");
+    await flushPromises();
+
+    expect(drawer.text()).toContain("summary_only");
+
+    const toolVisibilityTab = wrapper.findAll(".drawer-tab").find((button) => button.text().includes("Tool Visibility"));
+    expect(toolVisibilityTab).toBeTruthy();
+    await toolVisibilityTab.trigger("click");
+    await flushPromises();
+
+    expect(drawer.text()).toContain("orchestrator_dispatch_tasks");
+  });
+
+  it("does not render the incident summary module even when incident metadata exists", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        currentMode: "analysis",
+        currentStage: "waiting_plan_approval",
+        incidentEvents: [
+          {
+            id: "incident-stage-1",
+            type: "stage.changed",
+            stage: "waiting_plan_approval",
+            summary: "planning -> waiting_plan_approval",
+            createdAt: "2026-03-31T02:16:30Z",
+          },
+        ],
+      },
+    });
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="incident-summary-card"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Incident 协同状态");
+  });
+
   it("dismisses the workspace failure banner without removing the error card", async () => {
     mocks.store = createStoreFixture({
       snapshot: {
@@ -621,6 +866,140 @@ describe("ProtocolWorkspacePage", () => {
     expect(processFold.text()).not.toContain("正在分析 nginx 错误日志");
     expect(processFold.text()).not.toContain("等待 reload 审批");
     expect(processFold.text()).not.toContain("执行 systemctl reload nginx");
+  });
+
+  it("renders evidence citation chips under final conclusions and opens evidence detail", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [],
+        evidenceSummaries: [
+          {
+            id: "evidence-nginx-timeout",
+            citationKey: "E-EVIDENCE-NGINX-TIMEOUT",
+            kind: "command_result",
+            sourceKind: "command",
+            sourceRef: "cmd-nginx-timeout",
+            title: "nginx timeout 摘要",
+            summary: "最近 5 分钟 service-a upstream timeout 抬升。",
+            content: "error.log 中持续出现 upstream timed out while reading response header from upstream",
+            createdAt: "2026-03-31T02:17:10Z",
+          },
+        ],
+        cards: [
+          {
+            id: "user-evidence-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "给我一个带证据引用的结论。",
+            createdAt: "2026-03-31T02:17:00Z",
+            updatedAt: "2026-03-31T02:17:00Z",
+          },
+          {
+            id: "assistant-evidence-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "结论：nginx upstream timeout 来自 service-a。证据见 [E-EVIDENCE-NGINX-TIMEOUT]。",
+            detail: {
+              evidenceId: "evidence-nginx-timeout",
+            },
+            createdAt: "2026-03-31T02:17:20Z",
+            updatedAt: "2026-03-31T02:17:20Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "completed",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const evidenceStrip = wrapper.get('[data-testid="protocol-turn-evidence-turn-user-evidence-1"]');
+    expect(evidenceStrip.text()).toContain("引用证据");
+
+    const evidenceButton = wrapper.findAll("button").find((button) => button.text().includes("E-EVIDENCE-NGINX-TIMEOUT"));
+    expect(evidenceButton).toBeTruthy();
+
+    await evidenceButton.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("证据摘要 · E-EVIDENCE-NGINX-TIMEOUT");
+    expect(modal.text()).toContain("nginx timeout 摘要");
+    expect(modal.text()).toContain("最近 5 分钟 service-a upstream timeout 抬升");
+    expect(modal.text()).toContain("error.log 中持续出现 upstream timed out");
+  });
+
+  it("can pin evidence detail into the drawer without changing the main thread body", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [],
+        evidenceSummaries: [
+          {
+            id: "evidence-nginx-timeout",
+            citationKey: "E-EVIDENCE-NGINX-TIMEOUT",
+            kind: "command_result",
+            sourceKind: "command",
+            sourceRef: "cmd-nginx-timeout",
+            title: "nginx timeout 摘要",
+            summary: "最近 5 分钟 service-a upstream timeout 抬升。",
+            content: "error.log 中持续出现 upstream timed out while reading response header from upstream",
+            createdAt: "2026-03-31T02:17:10Z",
+          },
+        ],
+        cards: [
+          {
+            id: "user-evidence-pin",
+            type: "UserMessageCard",
+            role: "user",
+            text: "把证据固定到侧栏里。",
+            createdAt: "2026-03-31T02:17:00Z",
+            updatedAt: "2026-03-31T02:17:00Z",
+          },
+          {
+            id: "assistant-evidence-pin",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "结论：nginx upstream timeout 来自 service-a。证据见 [E-EVIDENCE-NGINX-TIMEOUT]。",
+            detail: {
+              evidenceId: "evidence-nginx-timeout",
+            },
+            createdAt: "2026-03-31T02:17:20Z",
+            updatedAt: "2026-03-31T02:17:20Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "completed",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const evidenceButton = wrapper.findAll("button").find((button) => button.text().includes("E-EVIDENCE-NGINX-TIMEOUT"));
+    await evidenceButton.trigger("click");
+    await flushPromises();
+
+    await wrapper.get('[data-testid="protocol-evidence-pin"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".protocol-evidence-modal").exists()).toBe(false);
+    const drawer = wrapper.get('[data-testid="protocol-evidence-drawer"]');
+    expect(drawer.text()).toContain("证据摘要 · E-EVIDENCE-NGINX-TIMEOUT");
+    expect(drawer.text()).toContain("nginx timeout 摘要");
+    expect(drawer.text()).toContain("error.log 中持续出现 upstream timed out");
+    expect(wrapper.text()).toContain("已固定到证据抽屉");
   });
 
   it("keeps background agents in the composer widget instead of repeating them inside the thread", async () => {
@@ -1458,7 +1837,7 @@ describe("ProtocolWorkspacePage", () => {
 
     expect(wrapper.text()).not.toContain("采集 nginx 错误日志");
     expect(wrapper.find('[data-testid="protocol-approval-approval-card-1"]').exists()).toBe(false);
-    expect(wrapper.text()).toContain("idle | 等待主 Agent 生成计划");
+    expect(wrapper.text()).toContain("分析中 | 等待主 Agent 生成计划");
   });
 
   it("shows the latest fatal reason and restart hint after a stopped mission", async () => {
@@ -1641,6 +2020,99 @@ describe("ProtocolWorkspacePage", () => {
     expect(wrapper.text()).toContain("过程详情");
     expect(wrapper.text()).toContain("我先整理刚才收集到的证据。");
     expect(wrapper.text()).not.toContain("当前还没有可用的计划摘要。");
+  });
+
+  it("keeps approval, evidence and timeline detail blocks out of the main thread body", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [{ id: "approval-1", status: "pending", itemId: "approval-card-1" }],
+        evidenceSummaries: [
+          {
+            id: "evidence-approval-1",
+            citationKey: "E-EVIDENCE-APPROVAL-1",
+            title: "reload 审批证据",
+            summary: "reload 风险与验证策略摘要",
+          },
+        ],
+        incidentEvents: [
+          {
+            id: "evt-approval-queued",
+            type: "approval.requested",
+            status: "warning",
+            title: "reload 已进入审批队列",
+            summary: "web-02 reload nginx 正等待人工确认",
+            targetId: "approval-1",
+            hostId: "web-02",
+            createdAt: "2026-03-31T02:20:30Z",
+          },
+        ],
+        cards: [
+          {
+            id: "user-surface-copy",
+            type: "UserMessageCard",
+            role: "user",
+            text: "给我这轮变更的最终判断",
+            createdAt: "2026-03-31T02:20:00Z",
+            updatedAt: "2026-03-31T02:20:00Z",
+          },
+          {
+            id: "assistant-surface-copy",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: [
+              "审批上下文：",
+              "- 审批ID：approval-1",
+              "- 风险级别：high",
+              "- 目标环境：prod / cn-prod-a",
+              "- 回滚建议：恢复上一个 nginx 配置",
+              "",
+              "证据摘要：",
+              "- Evidence ID：evidence-approval-1",
+              "- Citation：E-EVIDENCE-APPROVAL-1",
+              "",
+              "时间线：",
+              "- reload 已进入审批队列",
+            ].join("\n"),
+            detail: {
+              approvalId: "approval-1",
+              evidenceId: "evidence-approval-1",
+              citationKey: "E-EVIDENCE-APPROVAL-1",
+            },
+            createdAt: "2026-03-31T02:20:05Z",
+            updatedAt: "2026-03-31T02:20:05Z",
+          },
+          {
+            id: "assistant-final-copy",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "结论：先执行 nginx -t，再决定是否 reload。",
+            createdAt: "2026-03-31T02:20:20Z",
+            updatedAt: "2026-03-31T02:20:20Z",
+          },
+          createApprovalCards()[0],
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "completed",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("结论：先执行 nginx -t，再决定是否 reload。");
+    expect(wrapper.text()).not.toContain("审批上下文：");
+    expect(wrapper.text()).not.toContain("风险级别：high");
+    expect(wrapper.text()).not.toContain("Evidence ID：evidence-approval-1");
+    expect(wrapper.text()).toContain("web-02 等待审批");
+    expect(wrapper.text()).toContain("systemctl reload nginx");
+    expect(wrapper.get('[data-testid="protocol-approval-approval-card-1"]').exists()).toBe(true);
   });
 
   it("shows command names in the event stream and opens terminal output from command details", async () => {
@@ -1940,6 +2412,36 @@ describe("ProtocolWorkspacePage", () => {
     expect(modal.text()).toContain("只读执行 / 不要重启 PostgreSQL");
   });
 
+  it("focuses the matching approval card when the timeline event targets an approval id", async () => {
+    const store = createStoreFixture();
+    const planCard = store.snapshot.cards.find((card) => card.id === "workspace-plan-1");
+    planCard.detail.dispatch_events = [
+      {
+        id: "dispatch-approval-2",
+        createdAt: "2026-03-31T02:21:30Z",
+        summary: "切主脚本已进入审批队列",
+        detail: "等待 db-04 审批",
+        hostId: "db-04",
+        approvalId: "approval-2",
+      },
+    ];
+    mocks.store = store;
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const timelineEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("切主脚本已进入审批队列"));
+    expect(timelineEvent).toBeTruthy();
+
+    await timelineEvent.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="protocol-approval-approval-card-2"]').classes()).toContain("active");
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("failover-master.sh");
+    expect(modal.text()).toContain("approval-2");
+  });
+
   it("renders plan approval cards in the approval rail without session authorization", async () => {
     mocks.store = createStoreFixture({
       snapshot: {
@@ -2073,6 +2575,11 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("审批上下文 · web-02");
     expect(wrapper.text()).toContain("审批上下文");
+    expect(wrapper.text()).toContain("风险级别");
+    expect(wrapper.text()).toContain("目标范围");
+    expect(wrapper.text()).toContain("Dry-run 摘要");
+    expect(wrapper.text()).toContain("验证策略");
+    expect(wrapper.text()).toContain("验证来源");
     expect(wrapper.text()).toContain("Host Terminal");
 
     await acceptButton.trigger("click");
@@ -2084,6 +2591,422 @@ describe("ProtocolWorkspacePage", () => {
         method: "POST",
       }),
     );
+  });
+
+  it("keeps the mission waiting for approval when a high-risk action is rejected for insufficient permission", async () => {
+    const store = createStoreFixture({
+      runtime: {
+        turn: {
+          active: false,
+          phase: "waiting_approval",
+          pendingStart: false,
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+    mocks.store = store;
+    global.fetch = vi.fn((url) => {
+      if (url === "/api/v1/approvals/approval-1/decision") {
+        return Promise.resolve({
+          ok: false,
+          json: async () => ({ error: "权限不足：当前用户不能批准高风险动作" }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+      });
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const approvalCard = wrapper.get('[data-testid="protocol-approval-approval-card-1"]');
+    const acceptButton = approvalCard.findAll("button").find((button) => button.text().includes("同意执行"));
+    expect(acceptButton).toBeTruthy();
+
+    await acceptButton.trigger("click");
+    await flushPromises();
+
+    expect(store.fetchState).not.toHaveBeenCalled();
+    expect(store.runtime.turn.phase).toBe("waiting_approval");
+    expect(wrapper.text()).toContain("权限不足：当前用户不能批准高风险动作");
+    expect(wrapper.get('[data-testid="protocol-approval-approval-card-1"]').exists()).toBe(true);
+
+    const detailButton = wrapper
+      .get('[data-testid="protocol-approval-approval-card-1"]')
+      .findAll("button")
+      .find((button) => button.text().includes("详情"));
+    expect(detailButton).toBeTruthy();
+
+    await detailButton.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("审批上下文");
+    expect(modal.text()).toContain("风险级别");
+    expect(modal.text()).toContain("回滚提示");
+  });
+
+  it("shows related verification results inside approval evidence", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        verificationRecords: createVerificationRecords(),
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const approvalCard = wrapper.get('[data-testid="protocol-approval-approval-card-1"]');
+    const detailButton = approvalCard.findAll("button").find((button) => button.text().includes("详情"));
+    expect(detailButton).toBeTruthy();
+
+    await detailButton.trigger("click");
+    await flushPromises();
+
+    const verificationTab = wrapper.findAll(".modal-tab").find((button) => button.text().includes("验证结果"));
+    expect(verificationTab).toBeTruthy();
+
+    await verificationTab.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("验证结果");
+    expect(modal.text()).toContain("验证通过");
+    expect(modal.text()).toContain("service_health");
+    expect(modal.text()).toContain("coroot_health");
+    expect(modal.text()).toContain("reload 后服务健康检查通过");
+    expect(modal.text()).toContain("恢复上一个 nginx 配置并重新加载服务");
+  });
+
+  it("allows jumping between approval evidence, verification evidence and timeline", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        verificationRecords: createVerificationRecords(),
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const approvalCard = wrapper.get('[data-testid="protocol-approval-approval-card-1"]');
+    const detailButton = approvalCard.findAll("button").find((button) => button.text().includes("详情"));
+    expect(detailButton).toBeTruthy();
+
+    await detailButton.trigger("click");
+    await flushPromises();
+
+    let modal = wrapper.get(".protocol-evidence-modal");
+    const openVerificationButton = modal.findAll("button").find((button) => button.text().includes("查看验证结果"));
+    expect(openVerificationButton).toBeTruthy();
+
+    await openVerificationButton.trigger("click");
+    await flushPromises();
+
+    modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("验证结果 · web-02");
+    expect(modal.text()).toContain("service_health");
+
+    const focusTimelineButton = modal.findAll("button").find((button) => button.text().includes("定位时间线事件"));
+    expect(focusTimelineButton).toBeTruthy();
+
+    await focusTimelineButton.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".protocol-evidence-modal").exists()).toBe(false);
+    expect(wrapper.get('[data-testid="protocol-event-verification-verify-approval-card-1"]').classes()).toContain("active");
+  });
+
+  it("opens verification evidence directly from the timeline", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        verificationRecords: createVerificationRecords(),
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const verificationEvent = wrapper.get('[data-testid="protocol-event-verification-verify-approval-card-1"]');
+    await verificationEvent.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("验证结果 · web-02");
+    expect(wrapper.get(".modal-tab.active").text()).toContain("验证结果");
+    expect(wrapper.text()).toContain("reload 后服务健康检查通过");
+  });
+
+  it("replays readonly -> plan approval -> execution -> verification success while keeping rollback hints in plan-preview state", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [],
+        hosts: [
+          { id: "web-01", name: "web-01", address: "10.0.0.1", status: "online", executable: true },
+        ],
+        toolInvocations: [
+          {
+            id: "inv-readonly-success",
+            name: "readonly_host_inspect",
+            status: "completed",
+            hostId: "web-01",
+            inputSummary: "pg_isready",
+            outputSummary: "未发现 replication lag",
+            evidenceId: "evidence-readonly-success",
+            startedAt: "2026-04-09T10:01:00Z",
+            completedAt: "2026-04-09T10:01:30Z",
+          },
+        ],
+        evidenceSummaries: [
+          {
+            id: "evidence-readonly-success",
+            invocationId: "inv-readonly-success",
+            citationKey: "E-EVIDENCE-READONLY-SUCCESS",
+            kind: "readonly_host_inspect",
+            title: "PG 只读巡检结果",
+            summary: "pg_isready 通过，未发现 replication lag。",
+            content: "pg_isready: accepting connections\nreplication lag: 0s",
+            createdAt: "2026-04-09T10:01:30Z",
+          },
+        ],
+        verificationRecords: [
+          {
+            id: "verify-success-1",
+            actionEventId: "cmd-exec-success",
+            status: "passed",
+            strategy: "service_health",
+            successCriteria: ["执行 nginx -t", "确认健康探针恢复正常"],
+            findings: ["reload 后服务健康检查通过。"],
+            metadata: {
+              cardId: "cmd-exec-success",
+              hostId: "web-01",
+              hostName: "web-01",
+              targetSummary: "web-01 / service nginx",
+              verificationSources: ["coroot_health", "metric_check", "health_probe", "log_check"],
+              endedAt: "2026-04-09T10:04:30Z",
+            },
+            createdAt: "2026-04-09T10:04:30Z",
+          },
+        ],
+        cards: [
+          {
+            id: "user-success-path",
+            type: "UserMessageCard",
+            role: "user",
+            text: "先只读检查，再审批执行 nginx 修复动作。",
+            createdAt: "2026-04-09T10:00:00Z",
+            updatedAt: "2026-04-09T10:00:00Z",
+          },
+          {
+            id: "cmd-readonly-success",
+            type: "CommandCard",
+            title: "readonly_host_inspect",
+            command: "pg_isready",
+            summary: "Exit code: 0",
+            status: "completed",
+            hostId: "web-01",
+            detail: {
+              tool: "readonly_host_inspect",
+              readonly: true,
+              evidenceId: "evidence-readonly-success",
+            },
+            createdAt: "2026-04-09T10:01:00Z",
+            updatedAt: "2026-04-09T10:01:30Z",
+          },
+          {
+            id: "plan-success",
+            type: "PlanCard",
+            title: "PG 修复计划",
+            text: "先只读确认复制状态，再审批进入执行。",
+            summary: "计划包含只读确认、审批和 nginx reload。",
+            items: [
+              { step: "web-01 [task-1] 只读确认复制状态", status: "completed" },
+              { step: "web-01 [task-2] 执行 nginx -t && systemctl reload nginx", status: "completed" },
+            ],
+            detail: {
+              goal: "确认 PG 与 nginx 状态，再安全执行 reload。",
+              validation: "确认健康探针恢复正常且 5xx 没有升高。",
+              rollback: "如 reload 后异常，恢复上一个 nginx 配置。",
+              dispatch_events: [
+                {
+                  id: "evt-plan-approved",
+                  createdAt: "2026-04-09T10:02:40Z",
+                  summary: "计划已审批通过",
+                  detail: "进入执行模式并派发 reload 任务",
+                  hostId: "web-01",
+                },
+                {
+                  id: "evt-dispatch-success",
+                  createdAt: "2026-04-09T10:03:00Z",
+                  summary: "Dispatcher 下发任务",
+                  detail: "已派发 nginx reload 到 web-01",
+                  hostId: "web-01",
+                  taskId: "task-2",
+                },
+              ],
+            },
+            createdAt: "2026-04-09T10:02:00Z",
+            updatedAt: "2026-04-09T10:03:00Z",
+          },
+          {
+            id: "assistant-dispatch-success",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "计划已审批通过，正在派发 1 个任务到 web-01 执行修复。",
+            createdAt: "2026-04-09T10:03:05Z",
+            updatedAt: "2026-04-09T10:03:05Z",
+          },
+          {
+            id: "cmd-exec-success",
+            type: "CommandCard",
+            title: "Command execution",
+            command: "nginx -t && systemctl reload nginx",
+            text: "syntax is ok",
+            output: "nginx: configuration file /etc/nginx/nginx.conf test is successful",
+            stdout: "nginx: configuration file /etc/nginx/nginx.conf test is successful",
+            status: "completed",
+            hostId: "web-01",
+            cwd: "/etc/nginx",
+            exitCode: 0,
+            durationMs: 420,
+            createdAt: "2026-04-09T10:03:20Z",
+            updatedAt: "2026-04-09T10:03:40Z",
+          },
+          {
+            id: "verification-card-passed",
+            type: "VerificationCard",
+            title: "自动验证通过",
+            text: "web-01 / service nginx 自动验证通过。\n\n结论：reload 后服务健康检查通过。",
+            summary: "web-01 / service nginx 自动验证通过。",
+            status: "completed",
+            hostId: "web-01",
+            detail: {
+              verificationId: "verify-success-1",
+            },
+            createdAt: "2026-04-09T10:04:30Z",
+            updatedAt: "2026-04-09T10:04:30Z",
+          },
+          {
+            id: "assistant-final-success",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "结论：只读检查未发现异常，计划审批后执行成功，自动验证通过。",
+            createdAt: "2026-04-09T10:04:40Z",
+            updatedAt: "2026-04-09T10:04:40Z",
+          },
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "completed",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("结论：只读检查未发现异常，计划审批后执行成功，自动验证通过。");
+    expect(wrapper.find('[data-testid="protocol-incident-insights"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("验证失败");
+    expect(wrapper.get('[data-testid="protocol-approval-rail"]').text()).toContain("当前没有待处理的审批");
+
+    const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
+    expect(timeline.text()).toContain("只读主机检查");
+    expect(timeline.text()).toContain("计划已审批通过");
+    expect(timeline.text()).toContain("验证通过");
+
+    await wrapper.get('[data-testid="protocol-event-tool-invocation-inv-readonly-success"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".protocol-evidence-modal").text()).toContain("只读主机检查");
+    const outputTab = wrapper.findAll(".modal-tab").find((button) => button.text().includes("输出"));
+    expect(outputTab).toBeTruthy();
+    await outputTab.trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".protocol-evidence-modal").text()).toContain("未发现 replication lag");
+
+    await wrapper.get(".protocol-evidence-modal .close-btn").trigger("click");
+    await flushPromises();
+
+    await wrapper.get('[data-testid="protocol-event-verification-verify-success-1"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".protocol-evidence-modal").text()).toContain("验证通过");
+    expect(wrapper.get(".protocol-evidence-modal").text()).toContain("coroot_health");
+    expect(wrapper.get(".protocol-evidence-modal").text()).not.toContain("恢复上一个 nginx 配置");
+  });
+
+  it("renders verification and rollback cards in the main thread after a failed verification", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        approvals: [],
+        verificationRecords: createFailedVerificationRecords(),
+        cards: [
+          {
+            id: "user-verify-failed",
+            type: "UserMessageCard",
+            role: "user",
+            text: "执行 nginx reload 并确认状态。",
+            createdAt: "2026-03-31T02:22:00Z",
+            updatedAt: "2026-03-31T02:22:00Z",
+          },
+          ...createVerificationSummaryCards(),
+        ],
+      },
+      runtime: {
+        turn: {
+          active: false,
+          phase: "completed",
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("自动验证失败");
+    expect(wrapper.text()).toContain("健康探针仍然失败");
+    expect(wrapper.text()).toContain("回滚建议");
+    expect(wrapper.text()).toContain("先复核健康探针和错误日志，再决定是否立即回滚");
+
+    const verificationEvent = wrapper.get('[data-testid="protocol-event-verification-verify-approval-card-failed"]');
+    await verificationEvent.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("验证结果 · web-02");
+    expect(wrapper.text()).toContain("验证来源");
+    expect(wrapper.text()).toContain("下一步建议");
+    expect(wrapper.text()).toContain("建议先恢复上一个 nginx 配置并重新加载服务");
+  });
+
+  it("can jump from verification evidence back to the approval rail", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        verificationRecords: createVerificationRecords(),
+      },
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const verificationEvent = wrapper.get('[data-testid="protocol-event-verification-verify-approval-card-1"]');
+    await verificationEvent.trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    const focusApprovalButton = modal.findAll("button").find((button) => button.text().includes("定位审批卡"));
+    expect(focusApprovalButton).toBeTruthy();
+
+    await focusApprovalButton.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".protocol-evidence-modal").exists()).toBe(false);
+    expect(wrapper.get('[data-testid="protocol-approval-approval-card-1"]').classes()).toContain("active");
   });
 
   it("projects synthetic MCP approval rail and timeline updates from action surfaces", async () => {
@@ -2197,6 +3120,157 @@ describe("ProtocolWorkspacePage", () => {
       json: async () => ({ accepted: true }),
     });
     await flushPromises();
+  });
+
+  it("projects cancel failure incident events into the timeline after stopping the workspace turn", async () => {
+    const activeCommand = {
+      id: "cmd-cancel-1",
+      type: "CommandCard",
+      title: "Command execution",
+      command: "systemctl reload nginx",
+      output: "reloading...",
+      status: "inProgress",
+      hostId: "web-02",
+      cwd: "/etc/nginx",
+      createdAt: "2026-04-10T06:00:00Z",
+      updatedAt: "2026-04-10T06:00:00Z",
+    };
+    const cancelledCommand = {
+      ...activeCommand,
+      output: "reloading...\n任务已中断\ncommand cancelled",
+      stderr: "command cancelled",
+      status: "cancelled",
+      cancelled: true,
+      exitCode: 130,
+      updatedAt: "2026-04-10T06:00:05Z",
+    };
+    const stopNotice = {
+      id: "turn-aborted-turn-stop-1",
+      type: "NoticeCard",
+      title: "Mission stopped",
+      text: "当前工作台 mission 已停止，相关主 Agent / worker 会话已收到取消信号。",
+      status: "notice",
+      createdAt: "2026-04-10T06:00:05Z",
+      updatedAt: "2026-04-10T06:00:05Z",
+    };
+    const cancelEvents = [
+      {
+        id: "cancel-signal-failed-1",
+        type: "cancel.signal_failed",
+        status: "warning",
+        title: "取消信号发送失败",
+        summary: "未能向 web-02 发送取消信号，步骤 cmd-cancel-1 可能仍在执行",
+        hostId: "web-02",
+        metadata: {
+          cardId: "cmd-cancel-1",
+          hostId: "web-02",
+        },
+        createdAt: "2026-04-10T06:00:05Z",
+      },
+      {
+        id: "cancel-partial-failure-1",
+        type: "cancel.partial_failure",
+        status: "warning",
+        title: "取消未获远端确认",
+        summary: "步骤 cmd-cancel-1 未返回取消确认，已在本地强制标记为 cancelled",
+        hostId: "web-02",
+        metadata: {
+          cardId: "cmd-cancel-1",
+          hostId: "web-02",
+        },
+        createdAt: "2026-04-10T06:00:08Z",
+      },
+    ];
+
+    const store = createStoreFixture({
+      snapshot: {
+        selectedHostId: "web-02",
+        hosts: [{ id: "web-02", name: "web-02", address: "10.0.0.2", status: "online", executable: true }],
+        approvals: [],
+        incidentEvents: [],
+        cards: [
+          {
+            id: "user-stop-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "停止当前 reload 任务",
+            createdAt: "2026-04-10T05:59:30Z",
+            updatedAt: "2026-04-10T05:59:30Z",
+          },
+          activeCommand,
+        ],
+      },
+      runtime: {
+        turn: {
+          active: true,
+          phase: "executing",
+          pendingStart: false,
+        },
+        codex: {
+          status: "connected",
+        },
+      },
+    });
+    store.fetchState = vi.fn(async () => {
+      store.snapshot = reactive({
+        ...store.snapshot,
+        incidentEvents: cancelEvents,
+        cards: [
+          {
+            id: "user-stop-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "停止当前 reload 任务",
+            createdAt: "2026-04-10T05:59:30Z",
+            updatedAt: "2026-04-10T05:59:30Z",
+          },
+          cancelledCommand,
+          stopNotice,
+        ],
+      });
+      store.runtime.turn.active = false;
+      store.runtime.turn.phase = "aborted";
+      store.runtime.turn.pendingStart = false;
+      return true;
+    });
+    store.fetchSessions = vi.fn(async () => true);
+    mocks.store = store;
+
+    global.fetch = vi.fn((url) => {
+      if (url === "/api/v1/chat/stop") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ accepted: true }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+      });
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="omnibar-primary-action"]').trigger("click");
+    await flushPromises();
+    await nextTick();
+
+    expect(store.fetchState).toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="incident-summary-card"]').exists()).toBe(false);
+
+    const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
+    expect(timeline.text()).toContain("取消信号发送失败");
+    expect(timeline.text()).toContain("取消未获远端确认");
+
+    await wrapper.get('[data-testid="protocol-event-incident-cancel-partial-failure-1"]').trigger("click");
+    await flushPromises();
+
+    const modal = wrapper.get(".protocol-evidence-modal");
+    expect(modal.text()).toContain("命令执行详情");
+    expect(modal.text()).toContain("systemctl reload nginx");
+    expect(modal.text()).toContain("command cancelled");
+    expect(modal.text()).not.toContain("暂无终端输出");
   });
 
   it("focuses the next approval card after the current one is accepted", async () => {

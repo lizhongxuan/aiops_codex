@@ -64,6 +64,7 @@ type ToolDefinition struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
+	Meta        map[string]interface{} `json:"_meta,omitempty"`
 	ServerName  string                 `json:"serverName"`
 }
 
@@ -75,14 +76,22 @@ type ToolCallRequest struct {
 
 // ToolCallResponse is the result of an MCP tool invocation.
 type ToolCallResponse struct {
-	Content []ContentBlock `json:"content,omitempty"`
-	IsError bool           `json:"isError,omitempty"`
+	Content  []ContentBlock    `json:"content,omitempty"`
+	Contents []ResourceContent `json:"contents,omitempty"`
+	IsError  bool              `json:"isError,omitempty"`
 }
 
 // ContentBlock is a piece of content returned by an MCP tool.
 type ContentBlock struct {
 	Type string `json:"type"` // "text", "image", "resource"
 	Text string `json:"text,omitempty"`
+}
+
+// ResourceContent is a piece of content returned by resources/read.
+type ResourceContent struct {
+	URI      string `json:"uri,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
 }
 
 // Resource describes an MCP resource.
@@ -105,12 +114,12 @@ const (
 
 // ServerInfo holds runtime information about a managed MCP server.
 type ServerInfo struct {
-	Name      string       `json:"name"`
-	Transport Transport    `json:"transport"`
-	Status    ServerStatus `json:"status"`
+	Name      string           `json:"name"`
+	Transport Transport        `json:"transport"`
+	Status    ServerStatus     `json:"status"`
 	Tools     []ToolDefinition `json:"tools,omitempty"`
-	Resources []Resource   `json:"resources,omitempty"`
-	Error     string       `json:"error,omitempty"`
+	Resources []Resource       `json:"resources,omitempty"`
+	Error     string           `json:"error,omitempty"`
 }
 
 // Connection is the interface for an active MCP server connection.

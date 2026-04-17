@@ -103,6 +103,8 @@ type App struct {
 	corootClient           *coroot.Client
 	dataSourceRouter       *coroot.DataSourceRouter
 	rcaEngine              coroot.RCAEngine
+	mcpManager             mcpRuntime
+	mcpToolBindings        map[string]mcpToolBinding
 	httpServer             *http.Server
 	grpcServer             *grpc.Server
 	commandRunner          commandRunner
@@ -778,6 +780,8 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/agent-skills/", a.withSession(a.handleAgentSkillByID))
 	httpMux.HandleFunc("/api/v1/agent-mcps", a.withSession(a.handleAgentMCPs))
 	httpMux.HandleFunc("/api/v1/agent-mcps/", a.withSession(a.handleAgentMCPByID))
+	httpMux.HandleFunc("/api/v1/mcp/servers", a.withSession(a.handleMCPServers))
+	httpMux.HandleFunc("/api/v1/mcp/servers/", a.withSession(a.handleMCPServerByName))
 	httpMux.HandleFunc("/api/v1/agent-profile", a.withSession(a.handleAgentProfile))
 	httpMux.HandleFunc("/api/v1/agent-profile/reset", a.withSession(a.handleAgentProfileReset))
 	httpMux.HandleFunc("/api/v1/agent-profile/preview", a.withSession(a.handleAgentProfilePreview))
@@ -804,6 +808,7 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/script-configs/", a.withSession(a.handleScriptConfigByID))
 	httpMux.HandleFunc("/api/v1/lab-environments", a.withSession(a.handleLabEnvironments))
 	httpMux.HandleFunc("/api/v1/lab-environments/", a.withSession(a.handleLabEnvironmentByID))
+	a.registerEvidenceRoutes(httpMux)
 	httpMux.HandleFunc("/api/v1/generator/", a.withSession(a.handleGenerator))
 	httpMux.HandleFunc("/api/v1/llm-config", a.withSession(a.handleLLMConfig))
 	httpMux.HandleFunc("/api/v1/coroot/config", a.withSession(a.handleCorootConfig))
@@ -864,6 +869,9 @@ func (a *App) Run(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		a.stopAllTerminals(shutdownCtx)
+		if a.mcpManager != nil {
+			a.mcpManager.DisconnectAll()
+		}
 		_ = a.httpServer.Shutdown(shutdownCtx)
 		a.grpcServer.GracefulStop()
 		return ctx.Err()
@@ -2101,8 +2109,14 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		}
 
 		createdAt := now
-		if existing := a.cardByID(sessionID, approval.ItemID); existing != nil && existing.CreatedAt != "" {
-			createdAt = existing.CreatedAt
+		detail := a.approvalCardDetail(targetSessionID, approval, nil)
+		if existing := a.cardByID(targetSessionID, approval.ItemID); existing != nil {
+			if existing.CreatedAt != "" {
+				createdAt = existing.CreatedAt
+			}
+			if len(existing.Detail) > 0 {
+				detail = cloneAnyMap(existing.Detail)
+			}
 		}
 		if approval.Type == "remote_file_change" {
 			card := model.Card{
@@ -2111,6 +2125,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				Title:     "Remote file change",
 				Status:    "inProgress",
 				Changes:   approval.Changes,
+				Detail:    detail,
 				CreatedAt: createdAt,
 				UpdatedAt: now,
 			}
@@ -2124,6 +2139,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				Command:   approval.Command,
 				Cwd:       approval.Cwd,
 				Status:    "inProgress",
+				Detail:    detail,
 				CreatedAt: createdAt,
 				UpdatedAt: now,
 			}
@@ -2597,7 +2613,6 @@ func (a *App) handleLocalCommandApprovalRequest(rawID string, payload map[string
 		return
 	}
 	a.bindTurnToSession(sessionID, payload)
-	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
 	hostID := model.ServerLocalHostID
 	if session := a.store.Session(sessionID); session != nil && session.SelectedHostID != "" {
 		hostID = session.SelectedHostID
@@ -2653,6 +2668,7 @@ func (a *App) handleLocalCommandApprovalRequest(rawID string, payload map[string
 			return
 		}
 	}
+	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
 	log.Printf("approval requested type=command session=%s item=%s command=%q", sessionID, approval.ItemID, approval.Command)
 	a.auditApprovalRequested(sessionID, approval, nil)
 	a.store.AddApproval(sessionID, approval)
@@ -2908,6 +2924,30 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			}
 			card.UpdatedAt = now
 		})
+		if card := a.cardByID(sessionID, itemID); card != nil {
+			a.bindCardEvidence(sessionID, itemID, evidenceArtifactInput{
+				Kind:       "command_execution",
+				SourceKind: "command",
+				SourceRef:  firstNonEmptyValue(strings.TrimSpace(card.HostID), strings.TrimSpace(card.Command), itemID),
+				Title:      firstNonEmptyValue(strings.TrimSpace(card.Title), "Command execution"),
+				Summary:    strings.TrimSpace(card.Summary),
+				Content: firstNonEmptyValue(
+					card.Output,
+					strings.TrimSpace(strings.Join([]string{card.Stdout, card.Stderr}, "\n")),
+					card.Error,
+				),
+				Raw: item,
+				Metadata: map[string]any{
+					"command":  card.Command,
+					"cwd":      card.Cwd,
+					"status":   card.Status,
+					"exitCode": card.ExitCode,
+				},
+			})
+			if card = a.cardByID(sessionID, itemID); card != nil {
+				a.syncActionVerification(sessionID, *card)
+			}
+		}
 		a.resumeThinkingAfterExecution(sessionID)
 	case "fileChange":
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
@@ -2916,6 +2956,39 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			card.DurationMS = durationMS
 			card.UpdatedAt = now
 		})
+		if card := a.cardByID(sessionID, itemID); card != nil {
+			target := itemID
+			paths := changePaths(card.Changes)
+			if len(paths) > 0 {
+				target = paths[0]
+			}
+			summary := strings.TrimSpace(card.Summary)
+			if summary == "" {
+				summary = truncate(strings.Join(paths, ", "), 120)
+			}
+			if summary == "" {
+				summary = firstNonEmptyValue(strings.TrimSpace(card.Status), strings.TrimSpace(card.Title))
+			}
+			a.bindCardEvidence(sessionID, itemID, evidenceArtifactInput{
+				Kind:       "file_change",
+				SourceKind: "config_diff",
+				SourceRef:  target,
+				Title:      firstNonEmptyValue(strings.TrimSpace(card.Title), "File change"),
+				Summary:    summary,
+				Content: stableCardJSON(map[string]any{
+					"changes": card.Changes,
+					"status":  card.Status,
+				}),
+				Raw: item,
+				Metadata: map[string]any{
+					"status": card.Status,
+					"paths":  paths,
+				},
+			})
+			if card = a.cardByID(sessionID, itemID); card != nil {
+				a.syncActionVerification(sessionID, *card)
+			}
+		}
 		a.resumeThinkingAfterExecution(sessionID)
 	}
 	if itemType == "agentMessage" {
@@ -3024,6 +3097,7 @@ func hostGrantAutoApprovalNoticeText(approval model.ApprovalRequest) string {
 }
 
 func (a *App) startRuntimeTurn(sessionID, hostID string) {
+	previousSnapshot := a.snapshot(sessionID)
 	startedAt := model.NowString()
 	a.store.ClearTurn(sessionID)
 	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
@@ -3038,10 +3112,12 @@ func (a *App) startRuntimeTurn(sessionID, hostID string) {
 		}
 	})
 	a.markTurnTraceRuntimeStart(sessionID, hostID)
+	a.syncIncidentStageTransition(sessionID, previousSnapshot, "thinking")
 }
 
 func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
 	phase = normalizeRuntimeTurnPhase(phase)
+	previousSnapshot := a.snapshot(sessionID)
 	session := a.store.Session(sessionID)
 	if session != nil && session.Runtime.Turn.Phase == phase {
 		currentActive := phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
@@ -3061,6 +3137,7 @@ func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
 		}
 	})
 	a.recordOrchestratorTurnPhase(sessionID, phase)
+	a.syncIncidentStageTransition(sessionID, previousSnapshot, phase)
 }
 
 func normalizeRuntimeTurnPhase(phase string) string {
@@ -3076,6 +3153,7 @@ func normalizeRuntimeTurnPhase(phase string) string {
 }
 
 func (a *App) finishRuntimeTurn(sessionID, phase string) {
+	previousSnapshot := a.snapshot(sessionID)
 	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
 		runtime.Turn.Active = false
 		runtime.Turn.Phase = phase
@@ -3087,6 +3165,7 @@ func (a *App) finishRuntimeTurn(sessionID, phase string) {
 		runtime.Activity.CurrentWebSearchQuery = ""
 	})
 	a.completeTurnTrace(sessionID, phase)
+	a.syncIncidentStageTransition(sessionID, previousSnapshot, phase)
 }
 
 func (a *App) beginTurnTraceRequest(sessionID, hostID string) string {
@@ -3951,8 +4030,12 @@ func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any,
 
 func (a *App) markTurnInterrupted(sessionID, turnID string) {
 	now := model.NowString()
+	a.finalizeInterruptedStreamingAssistantCard(sessionID, now)
 	a.cancelRemoteExecsForSession(sessionID, "任务已中断")
 	a.finishRuntimeTurn(sessionID, "aborted")
+	a.appendIncidentEvent(sessionID, "cancel.requested", "completed", "任务已中断", "用户停止了当前任务", map[string]any{
+		"turnId": emptyToNil(strings.TrimSpace(turnID)),
+	})
 	a.finalizeOpenTurnCards(sessionID, "failed")
 	a.resolvePendingTurnRequests(sessionID, now)
 	a.resolveMirroredPendingTurnRequests(sessionID, "cancelled", "任务已中断")
@@ -3969,6 +4052,41 @@ func (a *App) markTurnInterrupted(sessionID, turnID string) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
+}
+
+func (a *App) finalizeInterruptedStreamingAssistantCard(sessionID, now string) {
+	if strings.TrimSpace(now) == "" {
+		now = model.NowString()
+	}
+	if bifrostSession, ok := a.bifrostSession(sessionID); ok && bifrostSession != nil {
+		if cardID := strings.TrimSpace(bifrostSession.CurrentCardID()); cardID != "" {
+			a.store.UpdateCard(sessionID, cardID, func(card *model.Card) {
+				if card.Type != "AssistantMessageCard" || normalizeCardStatus(card.Status) != "inProgress" {
+					return
+				}
+				card.Status = "cancelled"
+				card.UpdatedAt = now
+			})
+			bifrostSession.SetCurrentCardID("")
+		}
+	}
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return
+	}
+	for _, existing := range session.Cards {
+		if existing.Type != "AssistantMessageCard" || normalizeCardStatus(existing.Status) != "inProgress" {
+			continue
+		}
+		cardID := existing.ID
+		a.store.UpdateCard(sessionID, cardID, func(card *model.Card) {
+			if card.Type != "AssistantMessageCard" || normalizeCardStatus(card.Status) != "inProgress" {
+				return
+			}
+			card.Status = "cancelled"
+			card.UpdatedAt = now
+		})
+	}
 }
 
 func (a *App) cleanBackgroundTerminals(threadID string) {
@@ -4213,7 +4331,8 @@ func (a *App) auditApprovalLifecycleEvent(event, sessionID string, approval mode
 	hostID := defaultHostID(strings.TrimSpace(approval.HostID))
 	hostName := hostNameOrID(a.findHost(approval.HostID))
 	operator := a.auditOperator(sessionID)
-	toolName := approvalAuditToolName(approval)
+	toolName := a.approvalResolvedToolName(sessionID, approval)
+	meta := a.approvalLifecycleMetadata(sessionID, approval, fields)
 
 	payload := map[string]any{
 		"sessionId":        sessionID,
@@ -4278,11 +4397,13 @@ func (a *App) auditApprovalLifecycleEvent(event, sessionID string, approval mode
 			Fingerprint:  strings.TrimSpace(approval.Fingerprint),
 			StartedAt:    strings.TrimSpace(startedAt),
 			EndedAt:      strings.TrimSpace(endedAt),
+			Meta:         meta,
 		}
 		if err := a.approvalAuditStore.Add(record); err != nil {
 			log.Printf("approval audit store add failed event=%s approval=%s err=%s", event, approval.ID, truncate(err.Error(), 200))
 		}
 	}
+	a.recordApprovalIncidentEvent(sessionID, event, approval, approvalDecision, status, startedAt, endedAt, meta)
 }
 
 func (a *App) sessionThreadID(sessionID string) string {
@@ -4450,7 +4571,7 @@ func commandPolicyDecisionIsMutation(decision commandPolicyDecision) bool {
 	return strings.HasSuffix(strings.TrimSpace(decision.Category), "_mutation")
 }
 
-func (a *App) rejectApprovalByPlanMode(sessionID, rawID string, approval model.ApprovalRequest, message string) {
+func (a *App) blockApprovalByPlanMode(sessionID string, approval model.ApprovalRequest, message string) {
 	now := model.NowString()
 	approval.Status = "blocked_by_plan_mode"
 	approval.ResolvedAt = now
@@ -4472,6 +4593,10 @@ func (a *App) rejectApprovalByPlanMode(sessionID, rawID string, approval model.A
 		UpdatedAt: now,
 	})
 	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) rejectApprovalByPlanMode(sessionID, rawID string, approval model.ApprovalRequest, message string) {
+	a.blockApprovalByPlanMode(sessionID, approval, message)
 	_ = a.respondCodex(context.Background(), rawID, map[string]any{
 		"decision": "decline",
 	})

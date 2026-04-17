@@ -312,7 +312,8 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 	})
 	hostID := a.workspaceDirectTargetHost(sessionID, req)
 	a.store.SetSelectedHost(sessionID, hostID)
-	if workspaceMessageNeedsIntentClarification(req.Message) {
+	policy := a.buildWorkspaceTurnPolicy(sessionID, hostID, req.Message)
+	if policy.NeedsDisambiguation {
 		log.Printf(
 			"workspace intent guard waiting for clarification session=%s host=%s text=%q",
 			sessionID,
@@ -320,6 +321,7 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 			truncate(req.Message, 120),
 		)
 		a.startRuntimeTurn(sessionID, hostID)
+		a.previewWorkspaceTurnPolicy(sessionID, hostID, req.Message, "waiting_input")
 		a.createChoiceRequest("", sessionID, map[string]any{}, workspaceIntentClarificationQuestions(req.Message))
 		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 		return
@@ -1836,7 +1838,7 @@ func conversationExcerptText(card model.Card) string {
 		return firstNonEmptyValue(card.Text, card.Summary, card.Command, card.Stdout, card.Stderr, card.Output)
 	case "FileChangeCard":
 		return firstNonEmptyValue(card.Text, card.Summary, card.Title)
-	case "NoticeCard", "ResultSummaryCard":
+	case "NoticeCard", "ResultSummaryCard", "VerificationCard", "RollbackCard":
 		return firstNonEmptyValue(card.Text, card.Summary, card.Title, card.Message)
 	default:
 		return ""
@@ -1880,7 +1882,7 @@ func workerConversationExcerpts(sessionID string, cards []model.Card, limit int)
 			continue
 		}
 		switch card.Type {
-		case "AssistantMessageCard", "CommandCard", "FileChangeCard", "NoticeCard", "ErrorCard", "ResultSummaryCard":
+		case "AssistantMessageCard", "CommandCard", "FileChangeCard", "NoticeCard", "ErrorCard", "ResultSummaryCard", "VerificationCard", "RollbackCard":
 		default:
 			continue
 		}

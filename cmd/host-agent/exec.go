@@ -258,16 +258,17 @@ func (m *agentExecManager) waitExit(session *agentExecSession) {
 	if err := m.sender.send(&agentrpc.Envelope{
 		Kind: "exec/exit",
 		ExecExit: &agentrpc.ExecExit{
-			ExecID:    session.id,
-			Code:      exitCode,
-			ExitCode:  exitCode,
-			Status:    status,
-			Message:   message,
-			Stdout:    stdout,
-			Stderr:    stderr,
-			Timeout:   status == "timeout",
-			Cancelled: status == "cancelled",
-			Error:     errorText,
+			ExecID:     session.id,
+			Code:       exitCode,
+			ExitCode:   exitCode,
+			Status:     status,
+			Message:    message,
+			Stdout:     stdout,
+			Stderr:     stderr,
+			Timeout:    status == "timeout",
+			Cancelled:  status == "cancelled",
+			Cancelable: true,
+			Error:      errorText,
 		},
 	}); err != nil {
 		log.Printf("send exec exit failed: %v", err)

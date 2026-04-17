@@ -1,8 +1,10 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -398,14 +400,29 @@ func TestSnapshotProjectsAgentLoopToolInvocationsAndEvidence(t *testing.T) {
 		CreatedAt: "2026-04-08T10:00:01Z",
 		UpdatedAt: "2026-04-08T10:00:01Z",
 	})
+	longOutput := strings.Repeat("postgres replication lag detected\n", 120)
 	st.UpsertCard(sessionID, model.Card{
-		ID:        "command-card",
-		Type:      "CommandCard",
-		Command:   "uptime",
-		Output:    "10:00 up 1 day",
-		Status:    "completed",
+		ID:      "command-card",
+		Type:    "CommandCard",
+		Command: "uptime",
+		Output:  longOutput,
+		Status:  "completed",
+		Detail: map[string]any{
+			"evidenceId":         "ev-command-card",
+			"relatedEvidenceIds": []string{"ev-plan-1"},
+		},
 		CreatedAt: "2026-04-08T10:00:02Z",
 		UpdatedAt: "2026-04-08T10:00:03Z",
+	})
+	st.RememberItem(sessionID, "ev-command-card", map[string]any{
+		"kind":               "command_output",
+		"sourceKind":         "command",
+		"sourceRef":          "server-local",
+		"citationKey":        "E-EV-COMMAND-CARD",
+		"title":              "主机诊断输出",
+		"summary":            "复制延迟持续上升，需要继续排查 WAL 发送进程。",
+		"content":            longOutput,
+		"relatedEvidenceIds": []string{"ev-plan-1"},
 	})
 	st.UpsertCard(sessionID, model.Card{
 		ID:        "plan-approval-card",
@@ -425,6 +442,15 @@ func TestSnapshotProjectsAgentLoopToolInvocationsAndEvidence(t *testing.T) {
 	if snapshot.AgentLoop.Status != "waiting_user" || snapshot.AgentLoop.ActiveIterationID != "iter-turn-loop-projection" {
 		t.Fatalf("unexpected loop projection: %#v", snapshot.AgentLoop)
 	}
+	if snapshot.AgentLoop.IncidentID != "incident-"+sessionID || snapshot.AgentLoop.Stage != "analyzing" {
+		t.Fatalf("expected incident metadata on loop projection, got %#v", snapshot.AgentLoop)
+	}
+	if snapshot.AgentLoop.PlanApprovalStatus != "pending" || snapshot.AgentLoop.ExecutionEnabled {
+		t.Fatalf("expected plan approval metadata on loop projection, got %#v", snapshot.AgentLoop)
+	}
+	if snapshot.CurrentMode != "analysis" || snapshot.CurrentStage != "analyzing" {
+		t.Fatalf("unexpected snapshot mode/stage: mode=%q stage=%q", snapshot.CurrentMode, snapshot.CurrentStage)
+	}
 	if len(snapshot.AgentLoopIterations) != 1 || snapshot.AgentLoopIterations[0].StopReason != "waiting_user" {
 		t.Fatalf("unexpected iterations: %#v", snapshot.AgentLoopIterations)
 	}
@@ -436,14 +462,241 @@ func TestSnapshotProjectsAgentLoopToolInvocationsAndEvidence(t *testing.T) {
 	if got := toolByName["ask_user_question"]; got.Status != "waiting_user" || got.EvidenceID == "" {
 		t.Fatalf("expected ask_user_question waiting invocation, got %#v", got)
 	}
-	if got := toolByName["command"]; got.InputSummary != "uptime" || got.OutputSummary == "" {
+	if got := toolByName["command"]; got.InputSummary != "uptime" || got.OutputSummary == "" || got.TargetSummary == "" || got.RiskLevel == "" {
 		t.Fatalf("expected command invocation summary, got %#v", got)
 	}
-	if got := toolByName["exit_plan_mode"]; got.Status != "waiting_approval" || got.InputSummary != "计划审批" {
+	if got := toolByName["command"]; got.EvidenceID != "ev-command-card" || !strings.Contains(got.OutputSummary, "复制延迟持续上升") {
+		t.Fatalf("expected command invocation to use bound evidence artifact, got %#v", got)
+	}
+	if got := toolByName["exit_plan_mode"]; got.Status != "waiting_approval" || got.InputSummary != "计划审批" || !got.RequiresApproval {
 		t.Fatalf("expected exit_plan_mode waiting invocation, got %#v", got)
 	}
 	if len(snapshot.EvidenceSummaries) != len(snapshot.ToolInvocations) {
 		t.Fatalf("expected evidence for each invocation, got evidence=%d tools=%d", len(snapshot.EvidenceSummaries), len(snapshot.ToolInvocations))
+	}
+	for _, evidence := range snapshot.EvidenceSummaries {
+		if evidence.SourceKind == "" || evidence.CitationKey == "" {
+			t.Fatalf("expected evidence projection metadata, got %#v", evidence)
+		}
+	}
+	var commandEvidence *model.EvidenceRecord
+	for i := range snapshot.EvidenceSummaries {
+		if snapshot.EvidenceSummaries[i].ID == "ev-command-card" {
+			commandEvidence = &snapshot.EvidenceSummaries[i]
+			break
+		}
+	}
+	if commandEvidence == nil {
+		t.Fatalf("expected command evidence record to exist, got %#v", snapshot.EvidenceSummaries)
+	}
+	if commandEvidence.CitationKey != "E-EV-COMMAND-CARD" || commandEvidence.SourceRef != "server-local" {
+		t.Fatalf("expected artifact metadata to be projected, got %#v", commandEvidence)
+	}
+	if !strings.Contains(commandEvidence.Content, "full detail in evidence ev-command-card") {
+		t.Fatalf("expected long evidence content to be summarized with evidence reference, got %q", commandEvidence.Content)
+	}
+	if len(commandEvidence.RelatedEvidenceIDs) != 1 || commandEvidence.RelatedEvidenceIDs[0] != "ev-plan-1" {
+		t.Fatalf("expected related evidence IDs to be preserved, got %#v", commandEvidence.RelatedEvidenceIDs)
+	}
+}
+
+func TestSnapshotProjectsIncidentEventsAndVerificationRecords(t *testing.T) {
+	st := New()
+	sessionID := "sess-incident-projection"
+	st.EnsureSessionWithMeta(sessionID, model.SessionMeta{
+		Kind:    model.SessionKindWorkspace,
+		Visible: true,
+	})
+	st.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.Turn.Phase = "executing"
+		runtime.Turn.Active = true
+	})
+	st.UpsertIncidentEvent(sessionID, model.IncidentEvent{
+		ID:        "evt-1",
+		Type:      "plan.approved",
+		Status:    "completed",
+		Stage:     "waiting_plan_approval",
+		Summary:   "计划已批准",
+		CreatedAt: "2026-04-15T10:00:00Z",
+	})
+	st.UpsertVerificationRecord(sessionID, model.VerificationRecord{
+		ID:        "verify-1",
+		RunID:     "loop-" + sessionID,
+		Status:    "running",
+		Strategy:  "service_restart",
+		CreatedAt: "2026-04-15T10:00:10Z",
+	})
+
+	snapshot := st.Snapshot(sessionID, model.UIConfig{})
+	if len(snapshot.IncidentEvents) != 1 {
+		t.Fatalf("expected 1 incident event, got %d", len(snapshot.IncidentEvents))
+	}
+	if len(snapshot.VerificationRecords) != 1 {
+		t.Fatalf("expected 1 verification record, got %d", len(snapshot.VerificationRecords))
+	}
+	if snapshot.CurrentMode != "execute" {
+		t.Fatalf("expected execute mode while runtime phase is executing, got %q", snapshot.CurrentMode)
+	}
+	if snapshot.CurrentStage != "verifying" {
+		t.Fatalf("expected verifying stage when verification is running, got %q", snapshot.CurrentStage)
+	}
+}
+
+func TestTranscriptPersistsIncidentEventsAndVerificationRecords(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	st := New()
+	st.SetStatePath(statePath)
+	session := st.CreateSessionWithMeta("browser-a", model.SessionMeta{
+		Kind:    model.SessionKindWorkspace,
+		Visible: true,
+	}, true)
+	sessionID := session.ID
+
+	st.UpsertIncidentEvent(sessionID, model.IncidentEvent{
+		ID:        "evt-store-1",
+		Type:      "tool.completed",
+		Status:    "completed",
+		Summary:   "取证完成",
+		CreatedAt: "2026-04-15T11:00:00Z",
+	})
+	st.UpsertVerificationRecord(sessionID, model.VerificationRecord{
+		ID:           "verify-store-1",
+		RunID:        "loop-" + sessionID,
+		Status:       "passed",
+		Strategy:     "health_probe",
+		RollbackHint: "无需回滚",
+		CreatedAt:    "2026-04-15T11:01:00Z",
+	})
+	if err := st.SaveSessionTranscript(sessionID); err != nil {
+		t.Fatalf("save session transcript: %v", err)
+	}
+	if err := st.SaveStableState(""); err != nil {
+		t.Fatalf("save stable state: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStatePath(statePath)
+	if err := reloaded.LoadStableState(""); err != nil {
+		t.Fatalf("load stable state: %v", err)
+	}
+
+	snapshot := reloaded.Snapshot(sessionID, model.UIConfig{})
+	if len(snapshot.IncidentEvents) != 1 || snapshot.IncidentEvents[0].ID != "evt-store-1" {
+		t.Fatalf("expected incident events to persist, got %#v", snapshot.IncidentEvents)
+	}
+	if len(snapshot.VerificationRecords) != 1 || snapshot.VerificationRecords[0].ID != "verify-store-1" {
+		t.Fatalf("expected verification records to persist, got %#v", snapshot.VerificationRecords)
+	}
+}
+
+func TestLoadLegacyTranscriptWithoutIncidentFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	st := New()
+	st.SetStatePath(statePath)
+	session := st.CreateSessionWithMeta("browser-legacy", model.SessionMeta{
+		Kind:    model.SessionKindWorkspace,
+		Visible: true,
+	}, true)
+	sessionID := session.ID
+
+	legacy := sessionTranscript{
+		Version:   1,
+		SessionID: sessionID,
+		Cards: []model.Card{{
+			ID:        "legacy-card",
+			Type:      "NoticeCard",
+			Text:      "legacy transcript",
+			CreatedAt: "2026-04-15T12:00:00Z",
+			UpdatedAt: "2026-04-15T12:00:00Z",
+		}},
+	}
+	content, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal legacy transcript: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(transcriptPath(statePath, sessionID)), 0o755); err != nil {
+		t.Fatalf("mkdir transcript dir: %v", err)
+	}
+	if err := os.WriteFile(transcriptPath(statePath, sessionID), content, 0o600); err != nil {
+		t.Fatalf("write legacy transcript: %v", err)
+	}
+	if err := st.SaveStableState(""); err != nil {
+		t.Fatalf("save stable state: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStatePath(statePath)
+	if err := reloaded.LoadStableState(""); err != nil {
+		t.Fatalf("load legacy stable state: %v", err)
+	}
+
+	snapshot := reloaded.Snapshot(sessionID, model.UIConfig{})
+	if len(snapshot.Cards) != 1 || snapshot.Cards[0].ID != "legacy-card" {
+		t.Fatalf("expected legacy cards to load, got %#v", snapshot.Cards)
+	}
+	if len(snapshot.IncidentEvents) != 0 || len(snapshot.VerificationRecords) != 0 {
+		t.Fatalf("expected legacy transcript to default missing incident fields, got events=%d verifications=%d", len(snapshot.IncidentEvents), len(snapshot.VerificationRecords))
+	}
+}
+
+func TestTranscriptPersistsTurnPolicyAndPromptEnvelope(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	st := New()
+	st.SetStatePath(statePath)
+	session := st.CreateSessionWithMeta("browser-policy", model.SessionMeta{
+		Kind:    model.SessionKindWorkspace,
+		Visible: true,
+	}, true)
+	sessionID := session.ID
+	st.UpdateRuntime(sessionID, func(rt *model.RuntimeState) {
+		rt.TurnPolicy = model.TurnPolicy{
+			IntentClass:         string(model.TurnIntentDesign),
+			Lane:                string(model.TurnLanePlan),
+			RequiredTools:       []string{"update_plan"},
+			RequiredNextTool:    "update_plan",
+			FinalGateStatus:     "blocked",
+			MissingRequirements: []string{"缺少计划产物"},
+		}
+		rt.PromptEnvelope = &model.PromptEnvelope{
+			IntentClass:         string(model.TurnIntentDesign),
+			CurrentLane:         string(model.TurnLanePlan),
+			FinalGateStatus:     "blocked",
+			MissingRequirements: []string{"缺少计划产物"},
+			StaticSections: []model.PromptEnvelopeSection{{
+				Name:    "System",
+				Content: "system prompt",
+			}},
+			VisibleTools: []model.PromptEnvelopeTool{{
+				Name:   "update_plan",
+				Reason: "本轮必需",
+			}},
+		}
+	})
+	if err := st.SaveSessionTranscript(sessionID); err != nil {
+		t.Fatalf("save session transcript: %v", err)
+	}
+	if err := st.SaveStableState(""); err != nil {
+		t.Fatalf("save stable state: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStatePath(statePath)
+	if err := reloaded.LoadStableState(""); err != nil {
+		t.Fatalf("load stable state: %v", err)
+	}
+
+	snapshot := reloaded.Snapshot(sessionID, model.UIConfig{})
+	if snapshot.TurnPolicy == nil || snapshot.TurnPolicy.RequiredNextTool != "update_plan" {
+		t.Fatalf("expected turn policy to persist, got %#v", snapshot.TurnPolicy)
+	}
+	if snapshot.PromptEnvelope == nil || snapshot.PromptEnvelope.CurrentLane != "plan" {
+		t.Fatalf("expected prompt envelope to persist, got %#v", snapshot.PromptEnvelope)
 	}
 }
 

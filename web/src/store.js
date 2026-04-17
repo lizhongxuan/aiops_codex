@@ -1221,6 +1221,16 @@ export const useAppStore = defineStore("app", {
       approvals: [],
       agentLoop: null,
       agentLoopIterations: [],
+      incidentEvents: [],
+      verificationRecords: [],
+      currentStage: "",
+      currentMode: "",
+      currentLane: "",
+      requiredNextTool: "",
+      finalGateStatus: "",
+      missingRequirements: [],
+      turnPolicy: null,
+      promptEnvelope: null,
       toolInvocations: [],
       evidenceSummaries: [],
       config: {
@@ -1489,6 +1499,16 @@ export const useAppStore = defineStore("app", {
       this.snapshot.approvals = data.approvals || [];
       this.snapshot.agentLoop = data.agentLoop || null;
       this.snapshot.agentLoopIterations = Array.isArray(data.agentLoopIterations) ? data.agentLoopIterations : [];
+      this.snapshot.incidentEvents = Array.isArray(data.incidentEvents) ? data.incidentEvents : [];
+      this.snapshot.verificationRecords = Array.isArray(data.verificationRecords) ? data.verificationRecords : [];
+      this.snapshot.currentStage = compactText(data.currentStage || "");
+      this.snapshot.currentMode = compactText(data.currentMode || "");
+      this.snapshot.currentLane = compactText(data.currentLane || "");
+      this.snapshot.requiredNextTool = compactText(data.requiredNextTool || "");
+      this.snapshot.finalGateStatus = compactText(data.finalGateStatus || "");
+      this.snapshot.missingRequirements = Array.isArray(data.missingRequirements) ? data.missingRequirements : [];
+      this.snapshot.turnPolicy = data.turnPolicy || null;
+      this.snapshot.promptEnvelope = data.promptEnvelope || null;
       this.snapshot.toolInvocations = Array.isArray(data.toolInvocations) ? data.toolInvocations : [];
       this.snapshot.evidenceSummaries = Array.isArray(data.evidenceSummaries) ? data.evidenceSummaries : [];
       this.snapshot.config = data.config || this.snapshot.config;

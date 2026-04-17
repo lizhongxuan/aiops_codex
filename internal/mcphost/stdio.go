@@ -164,6 +164,7 @@ func (c *stdioConnection) ListTools(ctx context.Context) ([]ToolDefinition, erro
 			Name        string                 `json:"name"`
 			Description string                 `json:"description,omitempty"`
 			InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
+			Meta        map[string]interface{} `json:"_meta,omitempty"`
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
@@ -175,6 +176,7 @@ func (c *stdioConnection) ListTools(ctx context.Context) ([]ToolDefinition, erro
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.InputSchema,
+			Meta:        t.Meta,
 		}
 	}
 	return tools, nil

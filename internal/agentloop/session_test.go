@@ -211,6 +211,9 @@ func TestBuildSystemPromptIncludesInstructions(t *testing.T) {
 	if !strings.Contains(prompt, "ReAct agent loop") {
 		t.Fatal("prompt should contain ReAct agent loop description")
 	}
+	if !strings.Contains(prompt, "紧凑快照格式") {
+		t.Fatal("prompt should contain compact snapshot guidance for market-style queries")
+	}
 }
 
 func TestBuildSystemPromptMinimal(t *testing.T) {

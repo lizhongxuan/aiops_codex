@@ -301,22 +301,96 @@ type SessionMeta struct {
 }
 
 type RuntimeState struct {
-	Turn     TurnRuntime     `json:"turn"`
-	Codex    CodexRuntime    `json:"codex"`
-	Activity ActivityRuntime `json:"activity"`
-	PlanMode bool            `json:"planMode,omitempty"`
+	Turn           TurnRuntime      `json:"turn"`
+	Codex          CodexRuntime     `json:"codex"`
+	Activity       ActivityRuntime  `json:"activity"`
+	PlanMode       bool             `json:"planMode,omitempty"`
+	TurnPolicy     TurnPolicy       `json:"turnPolicy,omitempty"`
+	PromptEnvelope *PromptEnvelope  `json:"promptEnvelope,omitempty"`
+}
+
+type TurnIntentClass string
+
+const (
+	TurnIntentSnapshot       TurnIntentClass = "snapshot"
+	TurnIntentFactual        TurnIntentClass = "factual"
+	TurnIntentResearch       TurnIntentClass = "research"
+	TurnIntentDesign         TurnIntentClass = "design"
+	TurnIntentImplementation TurnIntentClass = "implementation"
+	TurnIntentRiskyExec      TurnIntentClass = "risky_exec"
+	TurnIntentAmbiguous      TurnIntentClass = "ambiguous"
+)
+
+type TurnLane string
+
+const (
+	TurnLaneAnswer   TurnLane = "answer"
+	TurnLaneReadonly TurnLane = "readonly"
+	TurnLanePlan     TurnLane = "plan"
+	TurnLaneExecute  TurnLane = "execute"
+	TurnLaneVerify   TurnLane = "verify"
+)
+
+type TurnPolicy struct {
+	IntentClass           string   `json:"intentClass,omitempty"`
+	Lane                  string   `json:"lane,omitempty"`
+	RequiredTools         []string `json:"requiredTools,omitempty"`
+	RequiredEvidenceKinds []string `json:"requiredEvidenceKinds,omitempty"`
+	NeedsPlanArtifact     bool     `json:"needsPlanArtifact,omitempty"`
+	NeedsApproval         bool     `json:"needsApproval,omitempty"`
+	NeedsAssumptions      bool     `json:"needsAssumptions,omitempty"`
+	NeedsDisambiguation   bool     `json:"needsDisambiguation,omitempty"`
+	RequiresExternalFacts bool     `json:"requiresExternalFacts,omitempty"`
+	RequiresRealtimeData  bool     `json:"requiresRealtimeData,omitempty"`
+	MinimumEvidenceCount  int      `json:"minimumEvidenceCount,omitempty"`
+	RequiredNextTool      string   `json:"requiredNextTool,omitempty"`
+	FinalGateStatus       string   `json:"finalGateStatus,omitempty"`
+	MissingRequirements   []string `json:"missingRequirements,omitempty"`
+	ClassificationReason  string   `json:"classificationReason,omitempty"`
+	UpdatedAt             string   `json:"updatedAt,omitempty"`
+}
+
+type PromptEnvelope struct {
+	StaticSections      []PromptEnvelopeSection `json:"staticSections,omitempty"`
+	LaneSections        []PromptEnvelopeSection `json:"laneSections,omitempty"`
+	RuntimePolicy       *PromptEnvelopeSection  `json:"runtimePolicy,omitempty"`
+	ContextAttachments  []PromptEnvelopeSection `json:"contextAttachments,omitempty"`
+	VisibleTools        []PromptEnvelopeTool    `json:"visibleTools,omitempty"`
+	HiddenTools         []PromptEnvelopeTool    `json:"hiddenTools,omitempty"`
+	TokenEstimate       int                     `json:"tokenEstimate,omitempty"`
+	CompressionState    string                  `json:"compressionState,omitempty"`
+	CurrentLane         string                  `json:"currentLane,omitempty"`
+	IntentClass         string                  `json:"intentClass,omitempty"`
+	FinalGateStatus     string                  `json:"finalGateStatus,omitempty"`
+	MissingRequirements []string                `json:"missingRequirements,omitempty"`
+	UpdatedAt           string                  `json:"updatedAt,omitempty"`
+}
+
+type PromptEnvelopeSection struct {
+	Name    string `json:"name,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+type PromptEnvelopeTool struct {
+	Name   string `json:"name,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 type AgentLoopRun struct {
-	ID                string `json:"id"`
-	SessionID         string `json:"sessionId"`
-	Status            string `json:"status"`
-	Mode              string `json:"mode"`
-	Kind              string `json:"kind,omitempty"`
-	ActiveIterationID string `json:"activeIterationId,omitempty"`
-	LastError         string `json:"lastError,omitempty"`
-	CreatedAt         string `json:"createdAt,omitempty"`
-	UpdatedAt         string `json:"updatedAt,omitempty"`
+	IncidentID         string `json:"incidentId,omitempty"`
+	ID                 string `json:"id"`
+	SessionID          string `json:"sessionId"`
+	Status             string `json:"status"`
+	Mode               string `json:"mode"`
+	Stage              string `json:"stage,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	PlanApprovalStatus string `json:"planApprovalStatus,omitempty"`
+	ExecutionEnabled   bool   `json:"executionEnabled,omitempty"`
+	VerificationStatus string `json:"verificationStatus,omitempty"`
+	ActiveIterationID  string `json:"activeIterationId,omitempty"`
+	LastError          string `json:"lastError,omitempty"`
+	CreatedAt          string `json:"createdAt,omitempty"`
+	UpdatedAt          string `json:"updatedAt,omitempty"`
 }
 
 type AgentLoopIteration struct {
@@ -332,30 +406,71 @@ type AgentLoopIteration struct {
 }
 
 type ToolInvocation struct {
-	ID            string `json:"id"`
-	RunID         string `json:"runId,omitempty"`
-	IterationID   string `json:"iterationId,omitempty"`
-	Name          string `json:"name"`
-	Status        string `json:"status"`
-	InputJSON     string `json:"inputJson,omitempty"`
-	OutputJSON    string `json:"outputJson,omitempty"`
-	InputSummary  string `json:"inputSummary,omitempty"`
-	OutputSummary string `json:"outputSummary,omitempty"`
-	EvidenceID    string `json:"evidenceId,omitempty"`
-	StartedAt     string `json:"startedAt,omitempty"`
-	CompletedAt   string `json:"completedAt,omitempty"`
+	ID               string `json:"id"`
+	RunID            string `json:"runId,omitempty"`
+	IterationID      string `json:"iterationId,omitempty"`
+	Name             string `json:"name"`
+	Status           string `json:"status"`
+	RiskLevel        string `json:"riskLevel,omitempty"`
+	RequiresApproval bool   `json:"requiresApproval,omitempty"`
+	DryRunSupported  bool   `json:"dryRunSupported,omitempty"`
+	TargetSummary    string `json:"targetSummary,omitempty"`
+	InputJSON        string `json:"inputJson,omitempty"`
+	OutputJSON       string `json:"outputJson,omitempty"`
+	InputSummary     string `json:"inputSummary,omitempty"`
+	OutputSummary    string `json:"outputSummary,omitempty"`
+	EvidenceID       string `json:"evidenceId,omitempty"`
+	StartedAt        string `json:"startedAt,omitempty"`
+	CompletedAt      string `json:"completedAt,omitempty"`
 }
 
 type EvidenceRecord struct {
+	ID                 string         `json:"id"`
+	RunID              string         `json:"runId,omitempty"`
+	InvocationID       string         `json:"invocationId,omitempty"`
+	Kind               string         `json:"kind"`
+	SourceKind         string         `json:"sourceKind,omitempty"`
+	SourceRef          string         `json:"sourceRef,omitempty"`
+	CitationKey        string         `json:"citationKey,omitempty"`
+	RelatedEvidenceIDs []string       `json:"relatedEvidenceIds,omitempty"`
+	Title              string         `json:"title,omitempty"`
+	Summary            string         `json:"summary,omitempty"`
+	Content            string         `json:"content,omitempty"`
+	Metadata           map[string]any `json:"metadata,omitempty"`
+	CreatedAt          string         `json:"createdAt,omitempty"`
+}
+
+type IncidentEvent struct {
 	ID           string         `json:"id"`
+	SessionID    string         `json:"sessionId"`
 	RunID        string         `json:"runId,omitempty"`
-	InvocationID string         `json:"invocationId,omitempty"`
-	Kind         string         `json:"kind"`
+	IterationID  string         `json:"iterationId,omitempty"`
+	Stage        string         `json:"stage,omitempty"`
+	Type         string         `json:"type"`
+	Status       string         `json:"status,omitempty"`
 	Title        string         `json:"title,omitempty"`
 	Summary      string         `json:"summary,omitempty"`
-	Content      string         `json:"content,omitempty"`
+	HostID       string         `json:"hostId,omitempty"`
+	ToolName     string         `json:"toolName,omitempty"`
+	EvidenceID   string         `json:"evidenceId,omitempty"`
+	ApprovalID   string         `json:"approvalId,omitempty"`
+	Verification string         `json:"verification,omitempty"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
 	CreatedAt    string         `json:"createdAt,omitempty"`
+}
+
+type VerificationRecord struct {
+	ID              string         `json:"id"`
+	RunID           string         `json:"runId"`
+	ActionEventID   string         `json:"actionEventId,omitempty"`
+	Status          string         `json:"status"`
+	Strategy        string         `json:"strategy,omitempty"`
+	SuccessCriteria []string       `json:"successCriteria,omitempty"`
+	Findings        []string       `json:"findings,omitempty"`
+	EvidenceIDs     []string       `json:"evidenceIds,omitempty"`
+	RollbackHint    string         `json:"rollbackHint,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	CreatedAt       string         `json:"createdAt,omitempty"`
 }
 
 type Card struct {
@@ -443,15 +558,25 @@ type Snapshot struct {
 	SessionID           string               `json:"sessionId"`
 	Kind                string               `json:"kind,omitempty"`
 	SelectedHostID      string               `json:"selectedHostId"`
+	CurrentMode         string               `json:"currentMode,omitempty"`
+	CurrentStage        string               `json:"currentStage,omitempty"`
+	CurrentLane         string               `json:"currentLane,omitempty"`
+	RequiredNextTool    string               `json:"requiredNextTool,omitempty"`
+	FinalGateStatus     string               `json:"finalGateStatus,omitempty"`
+	MissingRequirements []string             `json:"missingRequirements,omitempty"`
 	Auth                AuthState            `json:"auth"`
 	Hosts               []Host               `json:"hosts"`
 	Cards               []Card               `json:"cards"`
 	Approvals           []ApprovalRequest    `json:"approvals"`
 	Runtime             RuntimeState         `json:"runtime"`
+	TurnPolicy          *TurnPolicy          `json:"turnPolicy,omitempty"`
+	PromptEnvelope      *PromptEnvelope      `json:"promptEnvelope,omitempty"`
 	AgentLoop           *AgentLoopRun        `json:"agentLoop,omitempty"`
 	AgentLoopIterations []AgentLoopIteration `json:"agentLoopIterations,omitempty"`
 	ToolInvocations     []ToolInvocation     `json:"toolInvocations,omitempty"`
 	EvidenceSummaries   []EvidenceRecord     `json:"evidenceSummaries,omitempty"`
+	IncidentEvents      []IncidentEvent      `json:"incidentEvents,omitempty"`
+	VerificationRecords []VerificationRecord `json:"verificationRecords,omitempty"`
 	LastActivityAt      string               `json:"lastActivityAt,omitempty"`
 	Config              UIConfig             `json:"config"`
 }

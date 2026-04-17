@@ -21,16 +21,86 @@ import { resolveMcpBundlePreset } from "./mcpBundleResolver";
 const ACTIVE_PHASES = new Set(["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"]);
 const WAITING_PHASES = new Set(["waiting_approval", "waiting_input"]);
 const PROTOCOL_SURFACE_OWNED_PATTERN = /审批|批准|授权|approval|派发|dispatch|host-agent|worker|时间线|timeline|step\s*->\s*host|host-agent 映射|编排执行计划|接管任务|执行位/i;
+const PROTOCOL_SURFACE_DETAIL_PATTERN = /审批ID|风险级别|目标环境|目标范围|影响面|blast\s*radius|dry-?run|验证策略|验证来源|审批上下文|证据摘要|原始 evidence|evidence id|citation|关联证据|时间线事件|事件时间线|timeline event/i;
+const STRUCTURED_LIST_PATTERN = /(?:^|\n)\s*(?:[-*]|[0-9]+\.)\s+/m;
+const USER_FACING_CONCLUSION_PATTERN = /(?:结论[:：]|结论是|根因[:：]|原因[:：]|建议[:：]|建议先|下一步[:：]|推荐[:：]|因此|意味着)/i;
+const MAIN_CHAT_PRELUDE_PATTERN = /^(?:我先|我会先|让我先|先帮你|先查|先看|先抓取|先交叉核对|我先交叉核对|我先整理|我先快速|我正在|先快速|先浏览|先读取)/u;
+const MAIN_CHAT_RESULT_PATTERN = /(截至|现价|24h|24小时|CoinGecko|CoinMarketCap|Binance|Crypto\.com|The Block|BTC|比特币|A股|上证|深证|创业板|指数|市值|成交额|支撑|压力|来源[:：]|一句话判断|短判断[:：]|简判断[:：])/i;
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function buildEvidenceIndex(evidenceSummaries = []) {
+  const byId = new Map();
+  const byCitationKey = new Map();
+  for (const record of asArray(evidenceSummaries)) {
+    const evidenceId = compactText(record?.id);
+    const citationKey = compactText(record?.citationKey);
+    if (evidenceId) byId.set(evidenceId, record);
+    if (citationKey) byCitationKey.set(citationKey, record);
+  }
+  return { byId, byCitationKey };
+}
+
+function extractCitationKeys(text = "") {
+  const matches = String(text || "").match(/\bE-[A-Z0-9-]+\b/g);
+  if (!matches) return [];
+  return [...new Set(matches.map((item) => compactText(item)).filter(Boolean))];
+}
+
+function normalizeMessageEvidenceRef(record = {}) {
+  const evidenceId = compactText(record?.id);
+  if (!evidenceId) return null;
+  const citationKey = compactText(record?.citationKey || evidenceId);
+  return {
+    evidenceId,
+    citationKey,
+    title: compactText(record?.title),
+    summary: compactText(record?.summary),
+    label: citationKey || evidenceId,
+  };
+}
+
+function buildMessageEvidenceRefs(sourceCard = {}, evidenceIndex = null) {
+  const indexes = evidenceIndex || { byId: new Map(), byCitationKey: new Map() };
+  const detail = asObject(sourceCard?.detail);
+  const candidateIds = [
+    compactText(detail.evidenceId),
+    ...asArray(detail.relatedEvidenceIds).map((item) => compactText(item)),
+  ].filter(Boolean);
+  const candidateCitationKeys = [
+    compactText(detail.citationKey),
+    ...extractCitationKeys(sourceCard?.text || sourceCard?.message || sourceCard?.summary || ""),
+  ].filter(Boolean);
+
+  const refs = [];
+  const seen = new Set();
+  const pushRecord = (record) => {
+    const ref = normalizeMessageEvidenceRef(record);
+    if (!ref) return;
+    if (seen.has(ref.evidenceId)) return;
+    seen.add(ref.evidenceId);
+    refs.push(ref);
+  };
+
+  candidateIds.forEach((evidenceId) => pushRecord(indexes.byId.get(evidenceId)));
+  candidateCitationKeys.forEach((citationKey) => pushRecord(indexes.byCitationKey.get(citationKey)));
+
+  return refs;
 }
 
 function messageCardFromConversationItem(item = {}, rawCard = null) {
   const role = compactText(item.role).toLowerCase() === "user" ? "user" : "assistant";
   const id = compactText(item.id || rawCard?.id || `${role}-message`);
   const text = cleanAssistantDisplayText(String(item.text || "").trim(), role);
-  if (!text) return null;
+  const detail = rawCard?.detail || null;
+  const hasMcpApp = !!detail?.mcpApp?.html;
+  if (!text && !hasMcpApp) return null;
   return {
     id,
     role,
@@ -44,6 +114,7 @@ function messageCardFromConversationItem(item = {}, rawCard = null) {
       role,
       text,
       status: compactText(rawCard?.status || ""),
+      detail,
     },
   };
 }
@@ -52,7 +123,9 @@ function messageCardFromRawCard(card = {}) {
   const role = isUserMessageCard(card) ? "user" : "assistant";
   const id = compactText(card?.id || `${role}-message`);
   const text = cleanAssistantDisplayText(String(card?.text || card?.message || card?.summary || card?.title || "").trim(), role);
-  if (!text) return null;
+  const detail = card?.detail || null;
+  const hasMcpApp = !!detail?.mcpApp?.html;
+  if (!text && !hasMcpApp) return null;
   return {
     id,
     role,
@@ -66,8 +139,13 @@ function messageCardFromRawCard(card = {}) {
       role,
       text,
       status: compactText(card?.status || ""),
+      detail,
     },
   };
+}
+
+function hasRenderableMessageBody(message = null) {
+  return Boolean(compactText(message?.card?.text) || message?.card?.detail?.mcpApp?.html);
 }
 
 function processToneFromStatus(status) {
@@ -201,11 +279,21 @@ function buildCommandProcessItems(commandCards = []) {
     .filter((card) => compactText(card?.command))
     .map((card, index) => {
       const command = displayCommand(card.command);
+      const status = compactText(card?.status).toLowerCase();
+      const running = status.includes("run") || status.includes("progress");
+      const failed = status.includes("fail") || status.includes("error");
+      const denied = status.includes("permission") || status.includes("denied");
+      const cancelled = status.includes("cancel");
+      let text = `已运行 ${command}`;
+      if (running) text = `正在运行 ${command}`;
+      else if (denied) text = `权限不足 ${command}`;
+      else if (cancelled) text = `已停止 ${command}`;
+      else if (failed) text = `运行失败 ${command}`;
       return {
         id: `command-${compactText(card?.id || index)}`,
         kind: "command",
         processKind: "command",
-        text: `${commandStatusLabel(card?.status)} · ${command}`,
+        text,
         detail: compactText(card?.output || card?.stdout || card?.stderr || card?.text || card?.summary),
         time: formatShortTime(card?.updatedAt || card?.createdAt),
         hostId: compactText(card?.hostId),
@@ -213,6 +301,7 @@ function buildCommandProcessItems(commandCards = []) {
         status: compactText(card?.status),
         sortTimestamp: card?.updatedAt || card?.createdAt || "",
         command,
+        output: compactText(card?.output || card?.stdout || card?.stderr || card?.text || card?.summary),
         commandCard: card,
       };
     });
@@ -265,8 +354,156 @@ function looksLikeProtocolSurfaceOwnedCopy(value = "") {
   return PROTOCOL_SURFACE_OWNED_PATTERN.test(compactText(value));
 }
 
+function inferProtocolSurfaceDetailKinds(value = "", detail = {}) {
+  const text = String(value || "");
+  const normalized = compactText(text);
+  const detailObject = asObject(detail);
+  const kinds = new Set();
+
+  if (
+    compactText(detailObject.approvalId) ||
+    /审批ID|风险级别|目标环境|目标范围|影响面|dry-?run|验证策略|验证来源|审批上下文|approval/i.test(text)
+  ) {
+    kinds.add("approval");
+  }
+  if (
+    compactText(detailObject.evidenceId) ||
+    compactText(detailObject.citationKey) ||
+    asArray(detailObject.relatedEvidenceIds).length ||
+    /证据摘要|原始 evidence|evidence id|citation|关联证据|evidence/i.test(text)
+  ) {
+    kinds.add("evidence");
+  }
+  if (/时间线|timeline|事件流|timeline event|incident event/i.test(text)) {
+    kinds.add("timeline");
+  }
+
+  if (!kinds.size && looksLikeProtocolSurfaceOwnedCopy(normalized)) {
+    kinds.add("approval");
+  }
+  return [...kinds];
+}
+
+function looksLikeProtocolSurfaceDetailCopy(value = "", detail = {}) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  if (USER_FACING_CONCLUSION_PATTERN.test(raw)) return false;
+
+  const compact = compactText(raw);
+  const lineCount = raw.split(/\n+/).filter(Boolean).length;
+  const structuredFields = PROTOCOL_SURFACE_DETAIL_PATTERN.test(raw);
+  const structuredList = STRUCTURED_LIST_PATTERN.test(raw) || (raw.match(/[：:]/g) || []).length >= 3;
+  const kinds = inferProtocolSurfaceDetailKinds(raw, detail);
+
+  if (!kinds.length) return false;
+  return (structuredFields || structuredList) && (compact.length >= 72 || lineCount >= 3 || kinds.length > 1);
+}
+
+function compactProtocolSurfaceMessageText(value = "", detail = {}) {
+  const kinds = inferProtocolSurfaceDetailKinds(value, detail);
+  if (!kinds.length) return "";
+
+  const labels = kinds.map((kind) => {
+    switch (kind) {
+      case "approval":
+        return "审批";
+      case "evidence":
+        return "证据";
+      case "timeline":
+        return "时间线";
+      default:
+        return "详情";
+    }
+  });
+
+  if (labels.length === 1) {
+    return `${labels[0]}详情已收进对应面板，可在详情里继续查看。`;
+  }
+  return `${labels.join("、")}详情已收进对应面板，可在详情里继续查看。`;
+}
+
+function compactProtocolFinalMessage(message = null) {
+  if (!message?.sourceCard || message.sourceCard.type !== "AssistantMessageCard") return message;
+  if (message?.card?.detail?.mcpApp?.html) return message;
+
+  const rawText = String(
+    message.sourceCard?.text ||
+    message.sourceCard?.summary ||
+    message.sourceCard?.message ||
+    message.sourceCard?.title ||
+    message.card?.text ||
+    "",
+  ).trim();
+  if (!looksLikeProtocolSurfaceDetailCopy(rawText, message.sourceCard?.detail)) return message;
+
+  const compactedText = compactProtocolSurfaceMessageText(rawText, message.sourceCard?.detail);
+  if (!compactedText) return message;
+
+  return {
+    ...message,
+    card: {
+      ...message.card,
+      text: compactedText,
+    },
+  };
+}
+
+function normalizeComparableMessageText(value = "") {
+  return compactText(String(value || "").replace(/\*\*/g, "")).replace(/\s+/g, "");
+}
+
+function looksLikeMainChatPrelude(text = "") {
+  const value = compactText(text);
+  if (!value) return false;
+  return (
+    MAIN_CHAT_PRELUDE_PATTERN.test(value) &&
+    !STRUCTURED_LIST_PATTERN.test(value) &&
+    !/\n/.test(value)
+  );
+}
+
+function looksLikeMainChatResult(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  return (
+    MAIN_CHAT_RESULT_PATTERN.test(value) ||
+    (STRUCTURED_LIST_PATTERN.test(value) && value.trim().length >= 48) ||
+    /(?:^|\n)(?:来源[:：]|https?:\/\/|\[[^\]]+\]\([^)]+\))/m.test(value)
+  );
+}
+
+function shouldExposeActiveFinalMessage(message = null) {
+  const text = compactText(message?.card?.text || message?.text);
+  if (!text) return false;
+  if (looksLikeMainChatPrelude(text)) return false;
+
+  const status = compactText(message?.card?.status || message?.sourceCard?.status).toLowerCase();
+  if (status === "inprogress" || status === "streaming") {
+    return looksLikeMainChatResult(text) || text.length >= 24;
+  }
+  return looksLikeMainChatResult(text) || text.length >= 96;
+}
+
+function isDuplicateAssistantDraft(text = "", finalText = "") {
+  const left = normalizeComparableMessageText(text);
+  const right = normalizeComparableMessageText(finalText);
+  return Boolean(left) && Boolean(right) && (left === right || right.includes(left) || left.includes(right));
+}
+
+function isMainChatAssistantProcessRedundant(message = {}, finalMessageText = "") {
+  const text = compactText(message?.card?.text || message?.text);
+  if (!text) return true;
+  if (looksLikeMainChatPrelude(text)) return false;
+  if (looksLikeMainChatResult(text)) return true;
+  if (finalMessageText && isDuplicateAssistantDraft(text, finalMessageText)) return true;
+  return USER_FACING_CONCLUSION_PATTERN.test(text);
+}
+
 function isProtocolAssistantProcessRedundant(item = {}) {
   const text = [item.text, item.detail].filter(Boolean).join(" ");
+  if (looksLikeProtocolSurfaceDetailCopy(text)) {
+    return true;
+  }
   return looksLikeProtocolSurfaceOwnedCopy(text);
 }
 
@@ -276,6 +513,9 @@ function isProtocolProcessCardRedundant(item = {}, card = {}) {
     return true;
   }
   if (looksLikeProtocolSurfaceOwnedCopy(text)) {
+    return true;
+  }
+  if (looksLikeProtocolSurfaceDetailCopy(text, card?.detail)) {
     return true;
   }
   const status = compactText(card?.status || item.status).toLowerCase();
@@ -494,6 +734,7 @@ export function formatProtocolChatTurns({
   conversationCards = [],
   processCards = [],
   commandCards = [],
+  evidenceSummaries = [],
   missionPhase = "idle",
   turnActive = false,
   statusCard = null,
@@ -501,9 +742,10 @@ export function formatProtocolChatTurns({
 } = {}) {
   const conversationItems = buildProtocolConversationItems(conversationCards);
   const rawCardById = new Map(asArray(conversationCards).map((card) => [compactText(card?.id), card]));
+  const evidenceIndex = buildEvidenceIndex(evidenceSummaries);
   const normalizedMessages = conversationItems
     .map((item) => messageCardFromConversationItem(item, rawCardById.get(compactText(item.id))))
-    .filter((item) => compactText(item.card?.text));
+    .filter((item) => hasRenderableMessageBody(item));
 
   const buckets = [];
   let currentBucket = null;
@@ -526,7 +768,13 @@ export function formatProtocolChatTurns({
     const isCurrentTurn = index === buckets.length - 1;
     const isActiveTurn = isCurrentTurn && Boolean(turnActive) && ACTIVE_PHASES.has(compactText(missionPhase).toLowerCase());
     const assistantMessages = asArray(bucket.assistantMessages);
-    const finalMessage = isActiveTurn ? null : assistantMessages[assistantMessages.length - 1] || null;
+    const rawFinalMessage = isActiveTurn ? null : assistantMessages[assistantMessages.length - 1] || null;
+    const finalMessage = rawFinalMessage
+      ? compactProtocolFinalMessage({
+          ...rawFinalMessage,
+          evidenceRefs: buildMessageEvidenceRefs(rawFinalMessage.sourceCard, evidenceIndex),
+        })
+      : null;
     const assistantProcessMessages = isActiveTurn ? assistantMessages : assistantMessages.slice(0, -1);
     // Include process cards for the last turn even after completion so the fold persists.
     const activeProcessCards = isCurrentTurn ? asArray(processCards) : [];
@@ -600,12 +848,14 @@ export function isChatConversationCard(card = {}) {
 
 export function formatMainChatTurns({
   conversationCards = [],
+  commandCards = [],
   turnActive = false,
   activeProcess = null,
+  hideLiveProcessDetails = false,
 } = {}) {
   const normalizedMessages = asArray(conversationCards)
     .map((card) => messageCardFromRawCard(card))
-    .filter((message) => compactText(message.card?.text));
+    .filter((message) => hasRenderableMessageBody(message));
 
   const buckets = [];
   let currentBucket = null;
@@ -627,12 +877,38 @@ export function formatMainChatTurns({
   return buckets.map((bucket, index) => {
     const isCurrentTurn = index === buckets.length - 1;
     const isActiveTurn = isCurrentTurn && Boolean(turnActive);
+    const suppressLiveProcessDetails = Boolean(hideLiveProcessDetails) && isActiveTurn;
     const assistantMessages = asArray(bucket.assistantMessages);
-    const finalMessage = isActiveTurn ? null : assistantMessages[assistantMessages.length - 1] || null;
-    const assistantProcessMessages = isActiveTurn ? assistantMessages : assistantMessages.slice(0, -1);
+    const lastAssistantMessage = assistantMessages[assistantMessages.length - 1] || null;
+    const activeFinalMessage = isActiveTurn && shouldExposeActiveFinalMessage(lastAssistantMessage)
+      ? lastAssistantMessage
+      : null;
+    const finalMessage = isActiveTurn ? activeFinalMessage : lastAssistantMessage;
+    const rawAssistantProcessMessages = isActiveTurn
+      ? (activeFinalMessage ? assistantMessages.slice(0, -1) : assistantMessages)
+      : assistantMessages.slice(0, -1);
+    const bucketStart = parseTimestamp(
+      bucket.userMessage?.createdAt || bucket.userMessage?.updatedAt || assistantMessages[0]?.createdAt || assistantMessages[0]?.updatedAt,
+    );
+    const nextBucketStart = parseTimestamp(
+      buckets[index + 1]?.userMessage?.createdAt ||
+      buckets[index + 1]?.userMessage?.updatedAt ||
+      buckets[index + 1]?.assistantMessages?.[0]?.createdAt ||
+      buckets[index + 1]?.assistantMessages?.[0]?.updatedAt,
+    );
+    const bucketCommandCards = asArray(commandCards).filter((card) => {
+      const compareAt = parseTimestamp(card?.startedAt || card?.updatedAt || card?.createdAt || card?.completedAt);
+      if (!bucketStart && !nextBucketStart) return isCurrentTurn;
+      if (!compareAt) return isCurrentTurn;
+      if (bucketStart && compareAt < bucketStart) return false;
+      if (nextBucketStart && compareAt >= nextBucketStart) return false;
+      return true;
+    });
+    const finalMessageText = compactText(finalMessage?.card?.text || "");
+    const assistantProcessMessages = rawAssistantProcessMessages.filter((message) => !isMainChatAssistantProcessRedundant(message, finalMessageText));
     // Include activity process items for both active and completed turns
     // so the "已处理" fold persists after the turn completes.
-    const activityProcessItems = (isActiveTurn || isCurrentTurn)
+    const activityProcessItems = !suppressLiveProcessDetails && (isActiveTurn || isCurrentTurn)
       ? asArray(activeProcess?.items).map((item, itemIndex) => ({
           id: compactText(item?.id || `activity-${itemIndex}`),
           kind: compactText(item?.kind || "activity"),
@@ -648,7 +924,10 @@ export function formatMainChatTurns({
       : [];
     // Include intermediate assistant messages with card property so ChatProcessFold
     // can render them via MessageCard (model's thinking text inside the fold)
-    const messageProcessItems = assistantProcessMessages.map((msg, msgIndex) => ({
+    const messageProcessItems = suppressLiveProcessDetails
+      ? []
+      : assistantProcessMessages
+      .map((msg, msgIndex) => ({
       id: `msg-${msg.id || msgIndex}`,
       kind: "assistant",
       processKind: inferProcessKind(msg.card?.text || ""),
@@ -661,22 +940,39 @@ export function formatMainChatTurns({
       sortTimestamp: msg.updatedAt || msg.createdAt || "",
       card: msg.card,
     }));
+    const commandProcessItems = suppressLiveProcessDetails ? [] : buildCommandProcessItems(bucketCommandCards);
+    const filteredActivityProcessItems = activityProcessItems.filter((item) => {
+      if (item.processKind !== "command") return true;
+      if (!commandProcessItems.length) return true;
+      return !commandProcessItems.some((commandItem) => {
+        const command = compactText(commandItem.command || "");
+        return command && compactText(item.text).includes(command);
+      });
+    });
     const processItems = sortProcessDisplayItems([
       ...messageProcessItems,
-      ...activityProcessItems,
+      ...filteredActivityProcessItems,
+      ...commandProcessItems,
     ]);
-    const liveHint = isActiveTurn ? compactText(activeProcess?.liveHint || activeProcess?.hint || "") : "";
-    const summary = summarizeMainChatProcess({
-      processItems,
-      activeProcess,
-      liveHint,
-    });
+    const liveHint = suppressLiveProcessDetails
+      ? ""
+      : isActiveTurn
+        ? compactText(activeProcess?.liveHint || activeProcess?.hint || "")
+        : "";
+    const summary = suppressLiveProcessDetails
+      ? ""
+      : summarizeMainChatProcess({
+          processItems,
+          activeProcess,
+          liveHint,
+        });
     const timestamps = [
       bucket.userMessage?.updatedAt,
       bucket.userMessage?.createdAt,
       finalMessage?.updatedAt,
       finalMessage?.createdAt,
       ...assistantProcessMessages.flatMap((message) => [message.updatedAt, message.createdAt]),
+      ...bucketCommandCards.flatMap((card) => [card?.updatedAt, card?.createdAt, card?.startedAt, card?.completedAt]),
     ];
     const firstTimestamp = parseTimestamp(bucket.userMessage?.createdAt || bucket.userMessage?.updatedAt || assistantMessages[0]?.createdAt);
     const lastTimestamp = latestTimestamp(timestamps);
@@ -694,10 +990,10 @@ export function formatMainChatTurns({
       finalMessage,
       processItems,
       processLabel: [isActiveTurn ? activeProcessLabel(phase) : "已处理", elapsedLabel].filter(Boolean).join(" "),
-      finalLabel: finalMessage && (processItems.length || liveHint) ? "最终消息" : "",
+      finalLabel: "",
       liveHint,
       summary,
-      collapsedByDefault: !isActiveTurn && Boolean(processItems.length),
+      collapsedByDefault: !isActiveTurn && Boolean(processItems.length || summary || liveHint),
       active: isActiveTurn,
       phase,
       resultAttachments: turnSurfaces.resultAttachments,

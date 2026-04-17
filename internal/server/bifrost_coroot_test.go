@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lizhongxuan/aiops-codex/internal/agentloop"
 	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
 	"github.com/lizhongxuan/aiops-codex/internal/config"
 	"github.com/lizhongxuan/aiops-codex/internal/coroot"
@@ -172,6 +173,27 @@ func TestSingleHostBifrostCorootToolCallCreatesResultCard(t *testing.T) {
 	}
 	if session := app.store.Session(sessionID); session == nil || session.Runtime.Turn.Phase != "completed" {
 		t.Fatalf("expected completed runtime turn, got %#v", session)
+	}
+}
+
+func TestWireBifrostToolHandlersKeepsWebSearchHandlers(t *testing.T) {
+	app := New(config.Config{})
+	reg := agentloop.NewToolRegistry()
+	agentloop.RegisterRemoteHostTools(reg)
+	agentloop.RegisterWorkspaceTools(reg)
+	agentloop.RegisterApplyPatchTool(reg)
+	agentloop.RegisterWebSearchTools(reg)
+
+	app.wireBifrostToolHandlers(reg)
+
+	for _, name := range []string{"web_search", "open_page", "find_in_page"} {
+		entry, ok := reg.Get(name)
+		if !ok || entry == nil {
+			t.Fatalf("expected %s to stay registered", name)
+		}
+		if entry.Handler == nil {
+			t.Fatalf("expected %s handler to stay wired", name)
+		}
 	}
 }
 

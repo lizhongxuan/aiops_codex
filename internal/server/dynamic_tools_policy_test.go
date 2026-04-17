@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -212,6 +213,65 @@ func TestRemoteDynamicToolMutationCommandCreatesPendingApproval(t *testing.T) {
 	}
 	if card.Status != "pending" {
 		t.Fatalf("expected pending card, got %#v", card.Status)
+	}
+}
+
+func TestWorkspaceRiskGateRejectsMutationBeforePlanApproval(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	sessionID := "sess-risk-gate-plan"
+	app.store.EnsureSessionWithMeta(sessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: sessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetThread(sessionID, "thread-"+sessionID)
+	app.store.SetTurn(sessionID, "turn-"+sessionID)
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        "plan-card-risk-gate",
+		Type:      "PlanCard",
+		Status:    "inProgress",
+		CreatedAt: "2026-04-15T12:00:00Z",
+		UpdatedAt: "2026-04-15T12:00:00Z",
+		Detail: map[string]any{
+			"tool": "update_plan",
+		},
+	})
+
+	var respondedPayload map[string]any
+	app.codexRespondFunc = func(_ context.Context, rawID string, result any) error {
+		if rawID != "raw-risk-gate-plan" {
+			t.Fatalf("unexpected raw id %q", rawID)
+		}
+		respondedPayload, _ = result.(map[string]any)
+		return nil
+	}
+
+	app.handleDynamicToolCall("raw-risk-gate-plan", map[string]any{
+		"threadId": "thread-" + sessionID,
+		"turnId":   "turn-" + sessionID,
+		"callId":   "call-risk-gate-plan",
+		"tool":     "execute_system_mutation",
+		"arguments": map[string]any{
+			"host":    model.ServerLocalHostID,
+			"mode":    "command",
+			"command": "systemctl restart nginx",
+			"reason":  "restart nginx",
+		},
+	})
+
+	if respondedPayload["success"] != false {
+		t.Fatalf("expected mutation to be rejected before plan approval, got %#v", respondedPayload)
+	}
+	if text := toolResponseText(t, respondedPayload); !strings.Contains(text, "计划审批通过前不能执行变更命令") {
+		t.Fatalf("expected explainable risk gate error, got %q", text)
+	}
+	session := app.store.Session(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to exist")
+	}
+	if len(session.Approvals) != 0 {
+		t.Fatalf("expected no approvals to be created before plan approval, got %#v", session.Approvals)
 	}
 }
 

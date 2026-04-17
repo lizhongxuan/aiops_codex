@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -43,10 +44,20 @@ type ToolExecutionObserver interface {
 	OnToolComplete(ctx context.Context, session *Session, toolName string, args map[string]interface{}, result string, err error)
 }
 
+type TurnCompletionDecision struct {
+	Action        string
+	RepairMessage string
+}
+
+type TurnCompletionValidator interface {
+	ValidateTurnCompletion(ctx context.Context, session *Session, userInput, assistantContent string) TurnCompletionDecision
+}
+
 type noopToolObserver struct{}
 
-func (noopToolObserver) OnToolStart(context.Context, *Session, string, map[string]interface{})              {}
-func (noopToolObserver) OnToolComplete(context.Context, *Session, string, map[string]interface{}, string, error) {}
+func (noopToolObserver) OnToolStart(context.Context, *Session, string, map[string]interface{}) {}
+func (noopToolObserver) OnToolComplete(context.Context, *Session, string, map[string]interface{}, string, error) {
+}
 
 // Loop is the main agent loop that drives the ReAct cycle:
 // reason (LLM call) → act (tool execution) → observe (append result) → repeat.
@@ -57,6 +68,7 @@ type Loop struct {
 	approvalHandler ApprovalHandler
 	streamObserver  StreamObserver
 	toolObserver    ToolExecutionObserver
+	completionGate  TurnCompletionValidator
 	hookRuntime     *hooks.Runtime
 	webSearchMode   string
 	checkpointStore *CheckpointStore
@@ -99,6 +111,12 @@ func (l *Loop) SetToolObserver(observer ToolExecutionObserver) *Loop {
 	return l
 }
 
+// SetTurnCompletionValidator wires an optional turn completion validator into the loop.
+func (l *Loop) SetTurnCompletionValidator(validator TurnCompletionValidator) *Loop {
+	l.completionGate = validator
+	return l
+}
+
 // SetHookRuntime wires an optional hook runtime into the loop.
 func (l *Loop) SetHookRuntime(rt *hooks.Runtime) *Loop {
 	l.hookRuntime = rt
@@ -136,6 +154,13 @@ func (l *Loop) InitSession(session *Session) {
 // model produces a final response with no tool calls or the iteration budget
 // is exhausted.
 func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) error {
+	if session.Metadata == nil {
+		session.Metadata = make(map[string]string)
+	}
+	delete(session.Metadata, "market_snapshot_answer_nudged")
+	delete(session.Metadata, "completion_gate_repairs")
+	session.Metadata["market_snapshot_tool_base"] = strconv.Itoa(sessionToolResultCount(session))
+
 	// Execute prompt_submit hooks before processing user input.
 	if l.hookRuntime != nil {
 		psResult := l.hookRuntime.ExecutePromptSubmit(userInput)
@@ -207,13 +232,47 @@ func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) 
 		}
 
 		if len(result.ToolCalls) == 0 {
-			// Auto-fallback: if model refused to search, do it automatically
-			if shouldAutoWebSearch(result.Content, userInput) {
+			// Auto-fallback: if this is a time-sensitive search-style query and the
+			// model answered without any tool call, force one explicit web search so
+			// the UI can stream visible progress lines instead of silently waiting.
+			if shouldAutoWebSearch(
+				result.Content,
+				userInput,
+				sessionPrefersExplicitWebSearch(session),
+				sessionHasAutoWebSearchResults(session),
+			) {
 				searchResult, searchErr := l.autoWebSearch(ctx, session, userInput)
 				if searchErr == nil && searchResult != "" {
 					// Inject search results and continue the loop
 					session.ContextManager().AppendUser("[System: web_search was executed automatically. Results below]\n" + searchResult)
 					continue // Re-enter the ReAct loop with search results
+				}
+			}
+			if l.completionGate != nil {
+				decision := l.completionGate.ValidateTurnCompletion(ctx, session, userInput, result.Content)
+				switch strings.TrimSpace(decision.Action) {
+				case "continue":
+					repairCount := 0
+					if session.Metadata != nil {
+						if raw := strings.TrimSpace(session.Metadata["completion_gate_repairs"]); raw != "" {
+							if parsed, err := strconv.Atoi(raw); err == nil {
+								repairCount = parsed
+							}
+						}
+						session.Metadata["completion_gate_repairs"] = strconv.Itoa(repairCount + 1)
+					}
+					if repairCount >= 2 {
+						completed = true
+						break
+					}
+					if message := strings.TrimSpace(decision.RepairMessage); message != "" {
+						session.ContextManager().AppendUser("[Runtime policy repair]\n" + message)
+					}
+					continue
+				case "abstain":
+					if message := strings.TrimSpace(decision.RepairMessage); message != "" {
+						session.ContextManager().AppendAssistant(message, nil)
+					}
 				}
 			}
 			completed = true
@@ -229,6 +288,10 @@ func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) 
 			if err := l.postToolCompress(ctx, session); err != nil {
 				log.Printf("[loop] post-tool compression error: %v", err)
 			}
+		}
+		if shouldNudgeCompactSnapshotAnswer(session, userInput) {
+			session.ContextManager().AppendUser(compactSnapshotAnswerNudge)
+			session.Metadata["market_snapshot_answer_nudged"] = "true"
 		}
 
 		// Checkpoint after tool execution
@@ -293,7 +356,7 @@ func (l *Loop) buildChatRequest(session *Session) bifrost.ChatRequest {
 
 	// If native search is supported and webSearchMode is "native", filter out
 	// the web_search function tool and enable native search on the request.
-	if l.webSearchMode == "native" && caps.SupportsNativeSearch {
+	if l.webSearchMode == "native" && caps.SupportsNativeSearch && !sessionPrefersExplicitWebSearch(session) {
 		req.Tools = filterOutTool(req.Tools, "web_search")
 		req.WebSearchEnabled = true
 		req.UseResponsesAPI = true
@@ -565,8 +628,126 @@ func parseToolArgs(raw string) map[string]interface{} {
 	return args
 }
 
-// shouldAutoWebSearch checks if the model refused to search and the user's query needs web search.
-func shouldAutoWebSearch(response, userInput string) bool {
+func sessionPrefersExplicitWebSearch(session *Session) bool {
+	if session == nil || session.Metadata == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(session.Metadata["prefer_explicit_web_search"])) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func queryNeedsWebSearch(userInput string) bool {
+	searchKeywords := []string{
+		"行情", "指数", "股票", "新闻", "天气", "搜索", "查询", "价格",
+		"实时", "最新", "今天", "今日", "查看", "帮我查", "帮我搜",
+		"a股", "美股", "港股", "btc", "eth", "比特币", "以太坊", "加密",
+		"search", "find", "look up", "what is", "how to", "price", "news", "market", "bitcoin", "crypto",
+	}
+	inputLower := strings.ToLower(strings.TrimSpace(userInput))
+	for _, kw := range searchKeywords {
+		if strings.Contains(inputLower, strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return len([]rune(inputLower)) > 0 && len([]rune(inputLower)) <= 20
+}
+
+const compactSnapshotAnswerNudge = "[System: You already have enough market snapshot data to answer. Stop calling more tools unless there is a material conflict you cannot resolve with a price range or a brief timing-difference note. Answer now in compact snapshot format: time boundary + current price/index + 2-4 bullets + 1 short judgment + 1-2 sources.]"
+
+func queryNeedsCompactSnapshotAnswer(userInput string) bool {
+	keywords := []string{
+		"行情", "指数", "价格", "报价", "最新", "实时", "今日", "今天",
+		"btc", "eth", "比特币", "以太坊", "crypto", "bitcoin", "market", "price",
+		"a股", "美股", "港股", "上证", "深证", "创业板",
+	}
+	inputLower := strings.ToLower(strings.TrimSpace(userInput))
+	for _, kw := range keywords {
+		if strings.Contains(inputLower, strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionToolResultCount(session *Session) int {
+	if session == nil {
+		return 0
+	}
+	count := 0
+	for _, msg := range session.ContextManager().Messages() {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "tool") {
+			count++
+		}
+	}
+	return count
+}
+
+func sessionMarketSnapshotToolBase(session *Session) int {
+	if session == nil || session.Metadata == nil {
+		return 0
+	}
+	base, err := strconv.Atoi(strings.TrimSpace(session.Metadata["market_snapshot_tool_base"]))
+	if err != nil || base < 0 {
+		return 0
+	}
+	return base
+}
+
+func sessionHasCompactSnapshotAnswerNudge(session *Session) bool {
+	if session == nil || session.Metadata == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(session.Metadata["market_snapshot_answer_nudged"])) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldNudgeCompactSnapshotAnswer(session *Session, userInput string) bool {
+	if !queryNeedsCompactSnapshotAnswer(userInput) || session == nil {
+		return false
+	}
+	if sessionHasCompactSnapshotAnswerNudge(session) {
+		return false
+	}
+	if strings.TrimSpace(session.CurrentCardID()) != "" {
+		return false
+	}
+	base := sessionMarketSnapshotToolBase(session)
+	return sessionToolResultCount(session)-base >= 1
+}
+
+func sessionHasAutoWebSearchResults(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	for _, msg := range session.ContextManager().Messages() {
+		if msg.Role != "user" {
+			continue
+		}
+		content, _ := msg.Content.(string)
+		if strings.Contains(content, "[System: web_search was executed automatically. Results below]") {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldAutoWebSearch checks if the loop should force a web search for a
+// time-sensitive query when the model returned plain text without any tool calls.
+func shouldAutoWebSearch(response, userInput string, preferExplicit bool, alreadySearched bool) bool {
+	if alreadySearched || !queryNeedsWebSearch(userInput) {
+		return false
+	}
+	if preferExplicit {
+		return true
+	}
 	refusalPhrases := []string{
 		"不能联网", "无法搜索", "不能直接获取", "无法获取实时",
 		"联网查询工具", "不可用", "没法替你", "不能直接联网",
@@ -585,31 +766,23 @@ func shouldAutoWebSearch(response, userInput string) bool {
 	if !hasRefusal {
 		return false
 	}
-
-	// Check if user input looks like a search query
-	searchKeywords := []string{
-		"行情", "指数", "股票", "新闻", "天气", "搜索", "查询", "价格",
-		"实时", "最新", "今天", "今日", "查看", "帮我查", "帮我搜",
-		"search", "find", "look up", "what is", "how to",
-	}
-	inputLower := strings.ToLower(userInput)
-	for _, kw := range searchKeywords {
-		if strings.Contains(inputLower, strings.ToLower(kw)) {
-			return true
-		}
-	}
-
-	// If the input is short (likely a search query), also trigger
-	if len([]rune(userInput)) <= 20 {
-		return true
-	}
-	return false
+	return true
 }
 
 // autoWebSearch performs an automatic web search using the user's input.
 // It first tries the OpenAI Responses API for native high-quality search,
 // then falls back to the DuckDuckGo-based web_search tool handler.
 func (l *Loop) autoWebSearch(ctx context.Context, session *Session, query string) (string, error) {
+	if sessionPrefersExplicitWebSearch(session) {
+		entry, ok := l.toolReg.Get("web_search")
+		if !ok || entry == nil || entry.Handler == nil {
+			return "", fmt.Errorf("web_search tool not available")
+		}
+		dummyCall := bifrost.ToolCall{ID: "auto-web-search", Function: bifrost.FunctionCall{Name: "web_search"}}
+		args := map[string]interface{}{"query": query}
+		return entry.Handler(ctx, session, dummyCall, args)
+	}
+
 	// Try Responses API native search first (high quality, uses Bing).
 	if l.gateway != nil {
 		searchReq := bifrost.ChatRequest{

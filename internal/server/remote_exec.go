@@ -183,12 +183,19 @@ func (a *App) cancelRemoteExecsForSession(sessionID, message string) {
 	a.execMu.Unlock()
 
 	for _, exec := range sessions {
-		_ = a.sendAgentEnvelope(exec.HostID, &agentrpc.Envelope{
+		if err := a.sendAgentEnvelope(exec.HostID, &agentrpc.Envelope{
 			Kind: "exec/cancel",
 			ExecCancel: &agentrpc.ExecCancel{
 				ExecID: exec.ID,
 			},
-		})
+		}); err != nil {
+			a.appendIncidentEvent(exec.SessionID, "cancel.signal_failed", "warning", "取消信号发送失败", fmt.Sprintf("未能向 %s 发送取消信号，步骤 %s 可能仍在执行", exec.HostID, exec.CardID), map[string]any{
+				"execId": exec.ID,
+				"cardId": exec.CardID,
+				"hostId": exec.HostID,
+				"error":  err.Error(),
+			})
+		}
 		if !exec.requestCancel(message) {
 			continue
 		}
@@ -224,6 +231,12 @@ func (a *App) forceCancelRemoteExec(execID string, delay time.Duration) {
 	result.ExitCode = 130
 	result.Status = "cancelled"
 	result.Cancelled = true
+	a.appendIncidentEvent(exec.SessionID, "cancel.partial_failure", "warning", "取消未获远端确认", fmt.Sprintf("步骤 %s 未返回取消确认，已在本地强制标记为 cancelled", exec.CardID), map[string]any{
+		"execId":  exec.ID,
+		"cardId":  exec.CardID,
+		"hostId":  exec.HostID,
+		"message": result.Message,
+	})
 	exec.finish(result)
 }
 
@@ -314,15 +327,20 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 
 	now := model.NowString()
 	createdAt := now
-	if existing := a.cardByID(sessionID, cardID); existing != nil && existing.CreatedAt != "" {
-		createdAt = existing.CreatedAt
+	cardDetail := map[string]any{}
+	if existing := a.cardByID(sessionID, cardID); existing != nil {
+		if existing.CreatedAt != "" {
+			createdAt = existing.CreatedAt
+		}
+		if len(existing.Detail) > 0 {
+			cardDetail = cloneAnyMap(existing.Detail)
+		}
 	}
 
 	a.setRuntimeTurnPhase(sessionID, "executing")
 	a.incrementCommandCount(sessionID)
-	cardDetail := map[string]any{
-		"readonly": spec.Readonly,
-	}
+	cardDetail["readonly"] = spec.Readonly
+	cardDetail["cancelable"] = true
 	if toolName := strings.TrimSpace(spec.ToolName); toolName != "" {
 		cardDetail["tool"] = toolName
 	}
@@ -377,6 +395,7 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 			Shell:      spec.Shell,
 			TimeoutSec: clampExecTimeout(spec.TimeoutSec, spec.Readonly),
 			Readonly:   spec.Readonly,
+			Cancelable: true,
 		},
 	}); err != nil {
 		a.clearExecSession(exec.ID)
@@ -481,8 +500,9 @@ func (a *App) runLocalReadonlyExec(ctx context.Context, sessionID, cardID string
 		Cwd:     cwd,
 		Status:  "inProgress",
 		Detail: map[string]any{
-			"tool":     execSpecToolName(spec),
-			"readonly": true,
+			"tool":       execSpecToolName(spec),
+			"readonly":   true,
+			"cancelable": true,
 		},
 		CreatedAt: createdAt,
 		UpdatedAt: now,
@@ -609,6 +629,32 @@ func (a *App) finalizeExecCard(exec *remoteExecSession, createdAt string, result
 		card.DurationMS = durationBetween(createdAt, now)
 		card.UpdatedAt = now
 	})
+	a.bindCardEvidence(exec.SessionID, exec.CardID, evidenceArtifactInput{
+		Kind:       exec.ToolName,
+		SourceKind: "command",
+		SourceRef:  firstNonEmptyValue(exec.HostID, exec.Command),
+		Title:      "Command execution",
+		Summary:    summary,
+		Content:    firstNonEmptyValue(result.Output, strings.TrimSpace(strings.Join([]string{result.Stdout, result.Stderr}, "\n")), result.Error, result.Message),
+		Raw: map[string]any{
+			"command":    exec.Command,
+			"cwd":        exec.Cwd,
+			"hostId":     exec.HostID,
+			"status":     finalStatus,
+			"exitCode":   result.ExitCode,
+			"stdout":     result.Stdout,
+			"stderr":     result.Stderr,
+			"output":     result.Output,
+			"error":      result.Error,
+			"message":    result.Message,
+			"timeout":    result.Timeout,
+			"cancelled":  result.Cancelled,
+			"durationMs": durationBetween(createdAt, now),
+		},
+	})
+	if card := a.cardByID(exec.SessionID, exec.CardID); card != nil {
+		a.syncActionVerification(exec.SessionID, *card)
+	}
 	a.resumeThinkingAfterExecution(exec.SessionID)
 	a.broadcastSnapshot(exec.SessionID)
 	a.auditRemoteToolEvent("remote.exec.finished", exec.SessionID, exec.HostID, exec.ToolName, map[string]any{

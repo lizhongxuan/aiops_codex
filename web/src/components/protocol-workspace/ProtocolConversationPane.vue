@@ -127,7 +127,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["update:draft", "send", "stop", "choice", "select-message", "process-item-select", "plan-action", "agent-select", "open-history", "action", "detail", "pin", "refresh"]);
+const emit = defineEmits(["update:draft", "send", "stop", "choice", "select-message", "process-item-select", "evidence-select", "plan-action", "agent-select", "open-history", "action", "detail", "pin", "refresh"]);
 
 const draftModel = computed({
   get: () => props.draft,
@@ -252,6 +252,10 @@ function selectMessage(message, event) {
 
 function selectProcessItem(payload) {
   emit("process-item-select", payload);
+}
+
+function selectEvidence(payload) {
+  emit("evidence-select", payload);
 }
 
 function forwardAction(payload) {
@@ -460,6 +464,7 @@ function handlePaneScroll(event) {
               :turn="entry.turn"
               @select-message="selectMessage"
               @select-process-item="selectProcessItem"
+              @evidence-select="selectEvidence"
               @action="forwardAction"
               @detail="forwardDetail"
               @pin="forwardPin"
@@ -648,20 +653,20 @@ function handlePaneScroll(event) {
 .protocol-chat-inner {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
-  max-width: 780px;
+  max-width: 1080px;
   margin: 0 auto;
 }
 
 .protocol-chat-stream {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .protocol-turn-stream {
-  gap: 12px;
+  gap: 8px;
 }
 
 .protocol-turn-spacer {
@@ -702,17 +707,17 @@ function handlePaneScroll(event) {
 }
 
 .protocol-agent-section {
-  margin-left: 36px;
-  max-width: 720px;
+  width: min(980px, 100%);
+  margin: 0 auto;
 }
 
 .protocol-composer-widgets {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  max-width: 780px;
-  margin: 0 auto 8px;
+  max-width: 1080px;
+  margin: 0 auto 6px;
 }
 
 .protocol-composer-choice-stack {
@@ -728,8 +733,8 @@ function handlePaneScroll(event) {
 
 .protocol-omnibar-dock {
   padding-bottom: 20px;
-  padding-left: 28px;
-  padding-right: 28px;
+  padding-left: 20px;
+  padding-right: 20px;
 }
 
 .protocol-unread-pill {
@@ -758,32 +763,37 @@ function handlePaneScroll(event) {
   align-items: flex-start;
 }
 
+.protocol-conversation-pane :deep(.stream-row) {
+  width: min(980px, 100%);
+  margin-inline: auto;
+}
+
 .protocol-conversation-pane :deep(.message-content) {
-  max-width: min(680px, calc(100% - 34px)) !important;
+  max-width: min(100ch, calc(100% - 24px)) !important;
 }
 
 .protocol-conversation-pane :deep(.message-text) {
-  font-size: 13.5px !important;
-  line-height: 1.55 !important;
+  font-size: 13.25px !important;
+  line-height: 1.5 !important;
   letter-spacing: 0;
   color: #0f172a;
 }
 
 .protocol-conversation-pane :deep(.message-line) {
-  line-height: 1.55 !important;
+  line-height: 1.5 !important;
 }
 
 .protocol-conversation-pane :deep(.rich-message) {
-  gap: 4px;
+  gap: 2px;
 }
 
 .protocol-conversation-pane :deep(.message-spacer) {
-  height: 5px;
+  height: 2px;
 }
 
 /* Markdown body spacing in protocol pane */
 .protocol-conversation-pane :deep(.markdown-body p) {
-  margin: 0 0 2px;
+  margin: 0 0 1px;
 }
 
 .protocol-conversation-pane :deep(.markdown-body ul),
@@ -792,7 +802,7 @@ function handlePaneScroll(event) {
 }
 
 .protocol-conversation-pane :deep(.markdown-body li) {
-  margin: 0;
+  margin: 0 0 1px;
 }
 
 .protocol-conversation-pane :deep(.avatar),
@@ -806,32 +816,32 @@ function handlePaneScroll(event) {
 }
 
 .protocol-conversation-pane :deep(.message-content) {
-  max-width: min(700px, 100%) !important;
+  max-width: min(100ch, 100%) !important;
 }
 
 .protocol-conversation-pane :deep(.relative-block) {
-  max-width: min(700px, calc(100vw - 420px)) !important;
+  max-width: min(100ch, calc(100vw - 320px)) !important;
 }
 
 .protocol-conversation-pane :deep(.copy-btn) {
-  bottom: 6px;
-  right: -4px;
+  bottom: 4px;
+  right: -2px;
   border-radius: 6px;
 }
 
 .protocol-conversation-pane :deep(.is-user .message-content) {
-  max-width: min(440px, 68%) !important;
+  max-width: min(46ch, 64%) !important;
 }
 
 .protocol-conversation-pane :deep(.is-user .message-text) {
   background: #f3f4f6 !important;
-  padding: 9px 14px !important;
+  padding: 7px 12px !important;
   border-radius: 14px !important;
   color: #0f172a;
   display: inline-block;
-  font-size: 13.5px !important;
+  font-size: 13.25px !important;
   font-weight: 400;
-  line-height: 1.55 !important;
+  line-height: 1.5 !important;
 }
 
 .protocol-conversation-pane :deep(.thinking-wrapper) {
@@ -847,7 +857,7 @@ function handlePaneScroll(event) {
   background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
   color: #475569;
-  max-width: min(640px, calc(100vw - 400px));
+  max-width: min(88ch, calc(100vw - 300px));
 }
 
 .protocol-conversation-pane :deep(.thinking-text) {
@@ -920,10 +930,10 @@ function handlePaneScroll(event) {
 .protocol-starter-thread {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  max-width: 720px;
-  margin: 12px 0 0 36px;
+  max-width: 1020px;
+  margin: 8px auto 0;
   padding-bottom: 6px;
 }
 
@@ -977,8 +987,8 @@ function handlePaneScroll(event) {
 
 @media (max-width: 900px) {
   .protocol-agent-section {
-    margin-left: 0;
-    max-width: 100%;
+    width: 100%;
+    margin-inline: auto;
   }
 
   .protocol-chat-container,

@@ -25,8 +25,9 @@ func handleAgentFileList(runtime *hostAgentRuntime, sender *agentStreamSender, r
 
 	resolved, err := resolveAgentFilePath(req.Path)
 	result := &agentrpc.FileListResult{
-		RequestID: safeFileRequestID(req.RequestID),
-		Path:      resolved,
+		RequestID:  safeFileRequestID(req.RequestID),
+		Path:       resolved,
+		Cancelable: false,
 	}
 	if err != nil {
 		result.Message = err.Error()
@@ -62,8 +63,9 @@ func handleAgentFileRead(runtime *hostAgentRuntime, sender *agentStreamSender, r
 
 	resolved, err := resolveAgentFilePath(req.Path)
 	result := &agentrpc.FileReadResult{
-		RequestID: safeFileRequestID(req.RequestID),
-		Path:      resolved,
+		RequestID:  safeFileRequestID(req.RequestID),
+		Path:       resolved,
+		Cancelable: false,
 	}
 	if err != nil {
 		result.Message = err.Error()
@@ -102,9 +104,10 @@ func handleAgentFileSearch(runtime *hostAgentRuntime, sender *agentStreamSender,
 
 	resolved, err := resolveAgentFilePath(req.Path)
 	result := &agentrpc.FileSearchResult{
-		RequestID: safeFileRequestID(req.RequestID),
-		Path:      resolved,
-		Query:     strings.TrimSpace(req.Query),
+		RequestID:  safeFileRequestID(req.RequestID),
+		Path:       resolved,
+		Query:      strings.TrimSpace(req.Query),
+		Cancelable: false,
 	}
 	if err != nil {
 		result.Message = err.Error()
@@ -140,8 +143,9 @@ func handleAgentFileWrite(runtime *hostAgentRuntime, sender *agentStreamSender, 
 
 	resolved, err := resolveAgentFilePath(req.Path)
 	result := &agentrpc.FileWriteResult{
-		RequestID: safeFileRequestID(req.RequestID),
-		Path:      resolved,
+		RequestID:  safeFileRequestID(req.RequestID),
+		Path:       resolved,
+		Cancelable: false,
 	}
 	if err != nil {
 		result.Message = err.Error()

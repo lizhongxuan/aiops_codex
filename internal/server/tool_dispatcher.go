@@ -34,24 +34,12 @@ type toolDispatchResult struct {
 	Blocking bool // true if the tool paused the loop
 }
 
-// categorizeToolForDispatch determines the dispatch category of a tool.
 func categorizeToolForDispatch(toolName string) toolDispatchCategory {
-	switch toolName {
-	case "ask_user_question":
-		return toolCategoryBlocking
-	case "exit_plan_mode", "request_approval":
-		return toolCategoryApproval
-	case "query_ai_server_state", "readonly_host_inspect",
-		"execute_readonly_query", "list_remote_files",
-		"read_remote_file", "search_remote_files":
-		return toolCategoryReadonly
-	case "orchestrator_dispatch_tasks", "execute_system_mutation":
+	meta := lookupToolRiskMetadata(toolName)
+	if meta.DispatchCategory == "" {
 		return toolCategoryMutation
-	case "enter_plan_mode", "update_plan":
-		return toolCategoryReadonly // plan tools are non-destructive
-	default:
-		return toolCategoryMutation // default to mutation for safety
 	}
+	return meta.DispatchCategory
 }
 
 // toolDispatcher manages the execution of tool batches.
@@ -211,9 +199,13 @@ func buildDispatchRequests(toolCalls []map[string]any) []toolDispatchRequest {
 
 // validateToolPermission checks if a tool is allowed given the current permission mode.
 func validateToolPermission(toolName, permissionMode string, planMode bool) error {
-	category := categorizeToolForDispatch(toolName)
+	meta := lookupToolRiskMetadata(toolName)
+	category := meta.DispatchCategory
+	if category == "" {
+		category = toolCategoryMutation
+	}
 
-	if planMode && category == toolCategoryMutation {
+	if planMode && !meta.AllowedInPlanMode {
 		return fmt.Errorf("tool %q is not allowed in plan mode", toolName)
 	}
 

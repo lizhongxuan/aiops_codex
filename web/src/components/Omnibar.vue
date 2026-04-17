@@ -127,6 +127,18 @@ const sendDisabled = computed(
     !props.modelValue.trim(),
 );
 const showSecondaryStop = computed(() => false);
+const showHintText = computed(() => Boolean(hintText.value));
+const showToolsLeft = computed(() => showToolTags.value || showHintText.value || pasteAssist.hasPendingArtifact.value);
+const compactStopMode = computed(() => {
+  return (
+    primaryAction.value === "stop" &&
+    !props.modelValue.trim() &&
+    !showToolsLeft.value &&
+    !slashResultVisible.value &&
+    !slashCommandVisible.value &&
+    !mentionPopover.value.visible
+  );
+});
 const hintTestId = computed(() => {
   if (!pasteAssist.indicator.value) return "omnibar-hint";
   if (pasteAssist.indicator.value.kind === "focus") return "omnibar-focus-hint";
@@ -135,8 +147,7 @@ const hintTestId = computed(() => {
 });
 const hintText = computed(() => {
   if (pasteAssist.indicator.value) return pasteAssist.indicator.value.text;
-  if (turnPendingStart.value) return "消息已发送，等待任务开始";
-  if (primaryAction.value === "stop") return "停止当前任务";
+  if (primaryAction.value === "stop" || turnPendingStart.value) return "";
   return "⌘ ↵ 发送";
 });
 
@@ -421,7 +432,14 @@ function tryExecuteSlashSwitch(text) {
 </script>
 
 <template>
-  <div class="omnibar-wrapper" :class="{ 'is-docked-bottom': isDockedBottom }">
+  <div
+    class="omnibar-wrapper"
+    :class="{
+      'is-docked-bottom': isDockedBottom,
+      'is-stop-mode': primaryAction === 'stop',
+      'is-compact-stop': compactStopMode,
+    }"
+  >
     <!-- Slash command auto-complete -->
     <div v-if="slashCommandVisible && slashOptions.length" class="slash-popover">
       <div class="popover-header">Slash 命令</div>
@@ -471,13 +489,14 @@ function tryExecuteSlashSwitch(text) {
       @blur="onBlur"
       rows="1"
       class="omnibar-input"
+      :class="{ 'is-compact-stop': compactStopMode }"
       :placeholder="placeholder"
       :disabled="inputDisabled"
       data-testid="omnibar-input"
     ></textarea>
     
-    <div class="omnibar-tools">
-      <div class="tools-left">
+    <div class="omnibar-tools" :class="{ 'is-compact-stop': compactStopMode }">
+      <div v-if="showToolsLeft" class="tools-left">
          <span v-for="mention in activeMentions" :key="mention" class="pill-tag"><span class="pill-icon">@</span> {{ mention }}</span>
          <span
            v-for="artifact in artifactPills"
@@ -486,6 +505,7 @@ function tryExecuteSlashSwitch(text) {
            data-testid="omnibar-artifact-pill"
          >{{ artifact.label }}</span>
          <span
+           v-if="showHintText"
            class="hint-text"
            :class="{
              'is-paste-indicator': pasteAssist.indicator.value?.kind === 'buffering' || pasteAssist.indicator.value?.kind === 'ready',
@@ -504,11 +524,12 @@ function tryExecuteSlashSwitch(text) {
            清除
          </button>
       </div>
-      <div class="tools-right">
+      <div class="tools-right" :class="{ 'is-compact-stop': compactStopMode, 'is-alone': !showToolsLeft }">
          <div class="action-group">
            <n-button
              circle
              :type="primaryAction === 'stop' ? 'error' : 'primary'"
+             :size="compactStopMode ? 'small' : 'medium'"
              :disabled="primaryAction === 'stop' ? busy : sendDisabled"
              data-testid="omnibar-primary-action"
              @click="primaryAction === 'stop' ? emit('stop') : emitSend()"
@@ -544,6 +565,17 @@ function tryExecuteSlashSwitch(text) {
   position: relative;
 }
 
+.omnibar-wrapper.is-stop-mode {
+  background: rgba(241, 245, 249, 0.9);
+}
+
+.omnibar-wrapper.is-compact-stop {
+  padding: 6px 12px;
+  gap: 4px;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05);
+}
+
 .omnibar-wrapper.is-docked-bottom {
   border-top-left-radius: 0;
   border-top-right-radius: 0;
@@ -570,6 +602,12 @@ function tryExecuteSlashSwitch(text) {
   font-family: inherit;
 }
 
+.omnibar-input.is-compact-stop {
+  min-height: 24px;
+  line-height: 1.45;
+  padding: 2px 2px 0;
+}
+
 .omnibar-input::placeholder {
   color: #94a3b8;
 }
@@ -583,6 +621,11 @@ function tryExecuteSlashSwitch(text) {
   align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
+}
+
+.omnibar-tools.is-compact-stop {
+  align-items: center;
+  gap: 8px;
 }
 
 .tools-left {
@@ -614,10 +657,23 @@ function tryExecuteSlashSwitch(text) {
   margin-left: auto;
 }
 
+.tools-right.is-alone {
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.tools-right.is-compact-stop {
+  gap: 0;
+}
+
 .action-group {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+}
+
+.tools-right.is-compact-stop .action-group {
+  gap: 0;
 }
 
 .hint-text {

@@ -2,6 +2,7 @@ package agentloop
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,6 +32,12 @@ type approvalHandlerFunc func(context.Context, *Session, ApprovalRequest) (strin
 
 func (f approvalHandlerFunc) RequestToolApproval(ctx context.Context, session *Session, req ApprovalRequest) (string, error) {
 	return f(ctx, session, req)
+}
+
+type completionValidatorFunc func(context.Context, *Session, string, string) TurnCompletionDecision
+
+func (f completionValidatorFunc) ValidateTurnCompletion(ctx context.Context, session *Session, userInput, assistantContent string) TurnCompletionDecision {
+	return f(ctx, session, userInput, assistantContent)
 }
 
 type fakeCompressor struct {
@@ -209,6 +216,91 @@ func TestRunTurn_WithToolCall(t *testing.T) {
 	}
 	if msgs[3].Role != "assistant" || msgs[3].Content != "Done!" {
 		t.Errorf("msg[3] should be final assistant, got role=%s content=%v", msgs[3].Role, msgs[3].Content)
+	}
+}
+
+func TestRunTurn_ProactivelyAutoSearchesTimeSensitiveSingleHostQuery(t *testing.T) {
+	callCount := 0
+	var requests []bifrost.ChatRequest
+	searchCalls := 0
+
+	tp := &testProvider{
+		streamFn: func(_ context.Context, req bifrost.ChatRequest) (<-chan bifrost.StreamEvent, error) {
+			requests = append(requests, req)
+			callCount++
+			if callCount == 1 {
+				return makeStreamCh([]bifrost.StreamEvent{
+					{Type: "content_delta", Delta: "BTC 当前约 74648 美元。"},
+					{Type: "done"},
+				}), nil
+			}
+			return makeStreamCh([]bifrost.StreamEvent{
+				{Type: "content_delta", Delta: "已根据搜索结果整理。"},
+				{Type: "done"},
+			}), nil
+		},
+	}
+
+	loop := newLoopWithProvider(tp, nil)
+	loop.SetWebSearchMode("native")
+	loop.toolReg.Register(ToolEntry{
+		Name: "web_search",
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, args map[string]interface{}) (string, error) {
+			searchCalls++
+			return "search results for " + args["query"].(string), nil
+		},
+	})
+
+	session := NewSession("test-session", SessionSpec{
+		Model:        "test-model",
+		DynamicTools: []string{"web_search"},
+	})
+	session.Metadata = map[string]string{
+		"prefer_explicit_web_search": "true",
+	}
+
+	if err := loop.RunTurn(context.Background(), session, "看下BTC行情"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
+	}
+
+	if searchCalls != 1 {
+		t.Fatalf("expected one explicit web_search fallback, got %d", searchCalls)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected two model passes (initial + post-search), got %d", callCount)
+	}
+	if len(requests) == 0 {
+		t.Fatal("expected at least one captured chat request")
+	}
+	if requests[0].UseResponsesAPI {
+		t.Fatal("single-host explicit web search should not switch to Responses API")
+	}
+	foundWebSearch := false
+	for _, tool := range requests[0].Tools {
+		if tool.Function.Name == "web_search" {
+			foundWebSearch = true
+			break
+		}
+	}
+	if !foundWebSearch {
+		t.Fatal("initial request should keep web_search as an explicit tool")
+	}
+
+	msgs := session.ContextManager().Messages()
+	foundAutoSearchInjection := false
+	for _, msg := range msgs {
+		content, _ := msg.Content.(string)
+		if strings.Contains(content, "[System: web_search was executed automatically. Results below]") {
+			foundAutoSearchInjection = true
+			break
+		}
+	}
+	if !foundAutoSearchInjection {
+		t.Fatal("expected auto web search results to be injected back into the loop")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != "assistant" || last.Content != "已根据搜索结果整理。" {
+		t.Fatalf("unexpected final assistant message: role=%s content=%v", last.Role, last.Content)
 	}
 }
 
@@ -457,6 +549,80 @@ func TestBuildChatRequest(t *testing.T) {
 	}
 	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "tool_a" {
 		t.Fatalf("expected only tool_a in request, got %#v", req.Tools)
+	}
+}
+
+func TestRunTurn_CompletionValidatorContinuesLoop(t *testing.T) {
+	callCount := 0
+	tp := &testProvider{
+		streamFn: func(_ context.Context, _ bifrost.ChatRequest) (<-chan bifrost.StreamEvent, error) {
+			callCount++
+			if callCount == 1 {
+				return makeStreamCh([]bifrost.StreamEvent{
+					{Type: "content_delta", Delta: "这里先直接回答。"},
+					{Type: "done"},
+				}), nil
+			}
+			if callCount == 2 {
+				return makeStreamCh([]bifrost.StreamEvent{
+					{Type: "tool_call_delta", ToolIndex: 0, ToolCallID: "call-search", FuncName: "web_search"},
+					{Type: "tool_call_delta", ToolIndex: 0, FuncArgs: `{"query":"btc latest price"}`},
+					{Type: "done"},
+				}), nil
+			}
+			return makeStreamCh([]bifrost.StreamEvent{
+				{Type: "content_delta", Delta: "已根据搜索结果补全答案。"},
+				{Type: "done"},
+			}), nil
+		},
+	}
+
+	loop := newLoopWithProvider(tp, nil)
+	loop.toolReg.Register(ToolEntry{
+		Name: "web_search",
+		Handler: func(_ context.Context, _ ToolContext, _ bifrost.ToolCall, args map[string]interface{}) (string, error) {
+			return "search results for " + args["query"].(string), nil
+		},
+	})
+	var validations int
+	loop.SetTurnCompletionValidator(completionValidatorFunc(func(_ context.Context, _ *Session, _ string, _ string) TurnCompletionDecision {
+		validations++
+		if validations == 1 {
+			return TurnCompletionDecision{
+				Action:        "continue",
+				RepairMessage: "next_required_tool=web_search\nCall web_search next.",
+			}
+		}
+		return TurnCompletionDecision{Action: "pass"}
+	}))
+
+	session := NewSession("completion-validator-session", SessionSpec{
+		Model:        "test-model",
+		DynamicTools: []string{"web_search"},
+	})
+	if err := loop.RunTurn(context.Background(), session, "最新 BTC 价格"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
+	}
+	if callCount != 3 {
+		t.Fatalf("expected completion validator to trigger repair + post-tool model pass, got %d", callCount)
+	}
+	msgs := session.ContextManager().Messages()
+	foundRepair := false
+	foundToolResult := false
+	for _, msg := range msgs {
+		content, _ := msg.Content.(string)
+		if strings.Contains(content, "[Runtime policy repair]") {
+			foundRepair = true
+		}
+		if msg.Role == "tool" && strings.Contains(content, "search results for btc latest price") {
+			foundToolResult = true
+		}
+	}
+	if !foundRepair {
+		t.Fatalf("expected runtime policy repair message in context, got %#v", msgs)
+	}
+	if !foundToolResult {
+		t.Fatalf("expected repaired loop to execute required tool, got %#v", msgs)
 	}
 }
 

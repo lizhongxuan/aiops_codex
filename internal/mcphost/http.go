@@ -21,8 +21,8 @@ type httpConnection struct {
 	nextID     uint64
 	mu         sync.Mutex
 	// OAuth token cache.
-	oauthToken    string
-	oauthExpiry   time.Time
+	oauthToken  string
+	oauthExpiry time.Time
 }
 
 func newHTTPConnection(_ context.Context, cfg ServerConfig) (Connection, error) {
@@ -167,6 +167,7 @@ func (c *httpConnection) ListTools(ctx context.Context) ([]ToolDefinition, error
 			Name        string                 `json:"name"`
 			Description string                 `json:"description,omitempty"`
 			InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
+			Meta        map[string]interface{} `json:"_meta,omitempty"`
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
@@ -178,6 +179,7 @@ func (c *httpConnection) ListTools(ctx context.Context) ([]ToolDefinition, error
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.InputSchema,
+			Meta:        t.Meta,
 		}
 	}
 	return tools, nil

@@ -8,6 +8,7 @@ const TerminalPage = () => import("./pages/TerminalPage.vue");
 const AgentProfilePage = () => import("./pages/AgentProfilePage.vue");
 const SkillCatalogPage = () => import("./pages/SkillCatalogPage.vue");
 const McpCatalogPage = () => import("./pages/McpCatalogPage.vue");
+const McpServersPage = () => import("./pages/McpServersPage.vue");
 const ApprovalManagementPage = () => import("./pages/ApprovalManagementPage.vue");
 const CapabilityCenterPage = () => import("./pages/CapabilityCenterPage.vue");
 const UICardManagementPage = () => import("./pages/UICardManagementPage.vue");
@@ -77,6 +78,11 @@ const routes = [
     path: "/settings/mcp",
     name: "settings-mcp",
     component: McpCatalogPage,
+  },
+  {
+    path: "/mcp",
+    name: "mcp",
+    component: McpServersPage,
   },
   {
     path: "/approval-management",

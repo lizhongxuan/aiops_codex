@@ -47,7 +47,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["close", "update:open", "update:activeTab", "switch"]);
+const emit = defineEmits(["close", "update:open", "update:activeTab", "switch", "action", "pin"]);
 const bodyOverflow = ref("");
 
 const normalizedTabs = computed(() =>
@@ -100,6 +100,7 @@ function normalizePanel(panel) {
     items: Array.isArray(panel.items) ? panel.items : [],
     lines: Array.isArray(panel.lines) ? panel.lines : [],
     sections: Array.isArray(panel.sections) ? panel.sections : [],
+    actions: Array.isArray(panel.actions) ? panel.actions : [],
   };
 }
 
@@ -164,6 +165,17 @@ function requestClose() {
   emit("update:open", false);
 }
 
+function triggerAction(action) {
+  if (!action || typeof action !== "object") return;
+  emit("action", action);
+}
+
+function requestPin() {
+  emit("pin", {
+    activeTab: displayTab.value,
+  });
+}
+
 function onBackdropClick() {
   requestClose();
 }
@@ -197,9 +209,14 @@ onBeforeUnmount(() => {
               <h3>{{ title }}</h3>
               <p>{{ subtitle }}</p>
             </div>
-            <button class="close-btn" type="button" @click="requestClose">
-              <XIcon size="18" />
-            </button>
+            <div class="modal-head-actions">
+              <button class="pin-btn" type="button" data-testid="protocol-evidence-pin" @click="requestPin">
+                固定到证据抽屉
+              </button>
+              <button class="close-btn" type="button" @click="requestClose">
+                <XIcon size="18" />
+              </button>
+            </div>
           </header>
 
           <nav class="modal-tabs" aria-label="证据分区">
@@ -222,6 +239,17 @@ onBeforeUnmount(() => {
                 <div v-if="activePanel?.title || activePanel?.summary" class="panel-hero">
                   <h4 v-if="activePanel?.title">{{ activePanel.title }}</h4>
                   <p v-if="activePanel?.summary">{{ activePanel.summary }}</p>
+                  <div v-if="activePanel.actions?.length" class="panel-actions">
+                    <button
+                      v-for="action in activePanel.actions"
+                      :key="action.id || action.kind || action.label"
+                      type="button"
+                      class="panel-action"
+                      @click="triggerAction(action)"
+                    >
+                      {{ action.label || action.title || action.kind }}
+                    </button>
+                  </div>
                 </div>
 
                 <div v-if="activePanelListItems.length" class="panel-list">
@@ -305,6 +333,32 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.modal-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  background: rgba(255, 255, 255, 0.96);
+  color: #0369a1;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pin-btn:hover {
+  background: rgba(240, 249, 255, 0.98);
+}
+
 .close-btn {
   display: inline-flex;
   align-items: center;
@@ -317,6 +371,27 @@ onBeforeUnmount(() => {
   color: #0f172a;
   cursor: pointer;
   transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.panel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(191, 219, 254, 0.95);
+  background: rgba(239, 246, 255, 0.92);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .close-btn:hover {
@@ -473,7 +548,13 @@ onBeforeUnmount(() => {
   }
 
   .modal-head {
+    flex-direction: column;
     padding: 18px 16px 14px;
+  }
+
+  .modal-head-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 </style>

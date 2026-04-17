@@ -38,10 +38,13 @@ func buildFileReadCard(cardID, hostID string, result *agentrpc.FileReadResult, c
 		highlights = append(highlights, "文件内容已截断，仅展示前一部分。")
 	}
 	return model.Card{
-		ID:      cardID,
-		Type:    "ResultSummaryCard",
-		Title:   "远程文件读取",
-		Status:  "completed",
+		ID:     cardID,
+		Type:   "ResultSummaryCard",
+		Title:  "远程文件读取",
+		Status: "completed",
+		Detail: map[string]any{
+			"cancelable": result.Cancelable,
+		},
 		Summary: summary,
 		KVRows: []model.KeyValueRow{
 			{Key: "主机", Value: hostID},
@@ -426,6 +429,9 @@ func buildFileListCardWithRecursive(cardID, hostID string, result *agentrpc.File
 		Title:   "远程文件列表",
 		Summary: fmt.Sprintf("目录 %s 下找到 %d 个条目（%d 个文件，%d 个目录）。", result.Path, len(result.Entries), files, dirs),
 		Status:  "completed",
+		Detail: map[string]any{
+			"cancelable": result.Cancelable,
+		},
 		KVRows: []model.KeyValueRow{
 			{Key: "主机", Value: hostID},
 			{Key: "目录", Value: result.Path},
@@ -468,6 +474,9 @@ func buildFileSearchCard(cardID, hostID string, result *agentrpc.FileSearchResul
 		Title:   "远程搜索结果",
 		Summary: fmt.Sprintf("在 %s 中搜索 %q，命中 %d 个位置，涉及 %d 个文件。", result.Path, result.Query, len(result.Matches), files),
 		Status:  "completed",
+		Detail: map[string]any{
+			"cancelable": result.Cancelable,
+		},
 		KVRows: []model.KeyValueRow{
 			{Key: "主机", Value: hostID},
 			{Key: "范围", Value: result.Path},

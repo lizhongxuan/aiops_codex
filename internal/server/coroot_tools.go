@@ -26,7 +26,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 	if a.corootClient == nil {
 		return nil
 	}
-	return []map[string]any{
+	return withToolRiskMetadataAll([]map[string]any{
 		{
 			"name":        corootToolListServices,
 			"description": "List all services monitored by Coroot. Returns service IDs, names, and health status.",
@@ -160,7 +160,7 @@ func (a *App) corootDynamicTools() []map[string]any {
 				"additionalProperties": false,
 			},
 		},
-	}
+	})
 }
 
 func normalizeCorootToolName(name string) string {

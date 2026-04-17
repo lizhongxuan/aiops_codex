@@ -911,6 +911,9 @@ func TestWorkspacePlanModeToolsCreateApprovalAndGateDispatch(t *testing.T) {
 		t.Fatalf("expected plan_exit approval, got %#v", session.Approvals)
 	}
 	snapshot := app.snapshot(sessionID)
+	if snapshot.CurrentMode != "analysis" || snapshot.CurrentStage != "waiting_plan_approval" {
+		t.Fatalf("expected plan exit to keep analysis/waiting_plan_approval before approval, got mode=%q stage=%q", snapshot.CurrentMode, snapshot.CurrentStage)
+	}
 	foundExitInvocation := false
 	for _, invocation := range snapshot.ToolInvocations {
 		if invocation.Name == "exit_plan_mode" && invocation.Status == "waiting_approval" {
@@ -940,6 +943,13 @@ func TestWorkspacePlanModeToolsCreateApprovalAndGateDispatch(t *testing.T) {
 	}
 	if phase := app.store.Session(sessionID).Runtime.Turn.Phase; phase != "executing" {
 		t.Fatalf("expected executing phase after plan approval, got %q", phase)
+	}
+	snapshot = app.snapshot(sessionID)
+	if snapshot.CurrentMode != "execute" || snapshot.CurrentStage != "executing" {
+		t.Fatalf("expected accepted plan approval to switch to execute/executing, got mode=%q stage=%q", snapshot.CurrentMode, snapshot.CurrentStage)
+	}
+	if snapshot.AgentLoop == nil || !snapshot.AgentLoop.ExecutionEnabled {
+		t.Fatalf("expected accepted plan approval to enable execution, got %#v", snapshot.AgentLoop)
 	}
 }
 
@@ -1196,6 +1206,10 @@ func TestWorkspacePlanExitApprovalDeclineReturnsToPlanning(t *testing.T) {
 	}
 	if !app.workspacePlanModeNeedsApproval(sessionID) {
 		t.Fatalf("expected declined plan approval to keep plan-mode approval gate active")
+	}
+	snapshot := app.snapshot(sessionID)
+	if snapshot.CurrentMode != "analysis" || snapshot.CurrentStage != "planning" {
+		t.Fatalf("expected declined plan approval to stay in analysis/planning, got mode=%q stage=%q", snapshot.CurrentMode, snapshot.CurrentStage)
 	}
 }
 

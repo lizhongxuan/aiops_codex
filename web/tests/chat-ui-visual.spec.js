@@ -36,20 +36,22 @@ const PATH_LIST = [
 ].join("\n");
 
 test.describe("Chat UI visual fixtures", () => {
-  test("active turn screenshot keeps process and dock structure stable", async ({ page }) => {
+  test("active turn screenshot keeps live status and dock structure stable", async ({ page }) => {
     await openVisualFixture(page, {
       state: createChatFixtureState(),
       sessions: createChatFixtureSessions(),
     });
 
     const turn = page.getByTestId("chat-turn-turn-user-main-1");
-    const processFold = page.getByTestId("chat-process-fold-turn-user-main-1");
+    const liveStatus = page.getByTestId("codex-activity-section");
 
     await expect(turn).toBeVisible();
     await expect(turn.locator(".message-wrapper.is-user")).toBeVisible();
-    await expect(processFold).toBeVisible();
-    await expect(processFold).toContainText("正在思考");
-    await expect(page.locator(".chat-process-body")).toHaveCount(1);
+    await expect(liveStatus).toBeVisible();
+    await expect(liveStatus).toContainText("Working");
+    await expect(liveStatus).toContainText("正在思考");
+    await expect(liveStatus).toContainText("正在搜索网页（nginx upstream timeout latest status）");
+    await expect(page.getByTestId("chat-process-fold-turn-user-main-1")).toHaveCount(0);
     await expect(page.locator(".chat-composer-dock")).toBeVisible();
     await expect(page.locator(".omnibar-wrapper")).toBeVisible();
     await expect(page.locator(".chat-composer-plan")).toContainText("共 2 个任务");
@@ -60,20 +62,22 @@ test.describe("Chat UI visual fixtures", () => {
     });
   });
 
-  test("running process fold screenshot keeps the thinking state compact", async ({ page }) => {
+  test("running live status screenshot keeps the thinking state compact", async ({ page }) => {
     await openVisualFixture(page, {
       state: createChatFixtureState(),
       sessions: createChatFixtureSessions(),
     });
 
-    const processFold = page.getByTestId("chat-process-fold-turn-user-main-1");
+    const liveStatus = page.getByTestId("codex-activity-section");
 
-    await expect(processFold).toBeVisible();
-    await expect(processFold).toContainText("正在思考");
-    await expect(page.locator(".chat-process-body")).toHaveCount(1);
+    await expect(liveStatus).toBeVisible();
+    await expect(liveStatus).toContainText("Working");
+    await expect(liveStatus).toContainText("正在思考");
+    await expect(liveStatus).toContainText("正在搜索网页（nginx upstream timeout latest status）");
+    await expect(page.getByTestId("chat-process-fold-turn-user-main-1")).toHaveCount(0);
 
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/chat-visual-running-process-fold.png`,
+      path: `${SCREENSHOT_DIR}/chat-visual-running-live-status.png`,
       fullPage: false,
     });
   });

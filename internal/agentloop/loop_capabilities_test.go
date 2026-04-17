@@ -23,7 +23,7 @@ func (p *capTestProvider) StreamChatCompletion(_ context.Context, _ bifrost.Chat
 	close(ch)
 	return ch, nil
 }
-func (p *capTestProvider) SupportsToolCalling() bool              { return true }
+func (p *capTestProvider) SupportsToolCalling() bool                  { return true }
 func (p *capTestProvider) Capabilities() bifrost.ProviderCapabilities { return p.caps }
 
 // newCapTestLoop creates a Loop with a configurable provider and tool registry
@@ -181,6 +181,74 @@ func TestProperty3_NonNativeSearchIncludesFunctionTool(t *testing.T) {
 	})
 }
 
+func TestBuildChatRequest_PreferExplicitWebSearchKeepsFunctionTool(t *testing.T) {
+	loop, session := newCapTestLoop(
+		bifrost.ProviderCapabilities{
+			SupportsNativeSearch:       true,
+			SupportsStreamingToolCalls: true,
+			ToolCallingFormat:          "openai_function",
+		},
+		"native",
+		ToolEntry{Name: "web_search", Description: "search the web"},
+	)
+	session.Metadata = map[string]string{
+		"prefer_explicit_web_search": "true",
+	}
+
+	req := loop.buildChatRequest(session)
+
+	foundWebSearch := false
+	for _, tool := range req.Tools {
+		if tool.Function.Name == "web_search" {
+			foundWebSearch = true
+			break
+		}
+	}
+	if !foundWebSearch {
+		t.Fatal("web_search function tool should remain enabled when the session prefers explicit web search")
+	}
+	if req.WebSearchEnabled {
+		t.Fatal("WebSearchEnabled should stay false when explicit web search is preferred")
+	}
+	if req.UseResponsesAPI {
+		t.Fatal("UseResponsesAPI should stay false when explicit web search is preferred")
+	}
+}
+
+func TestShouldNudgeCompactSnapshotAnswer(t *testing.T) {
+	session := NewSession("nudge-test", SessionSpec{Model: "gpt-5.4"})
+	session.Metadata = map[string]string{
+		"market_snapshot_tool_base": "0",
+	}
+	session.ContextManager().AppendUser("查看一下BTC的今天行情")
+	session.ContextManager().AppendToolResult("tool-1", "CoinMarketCap price")
+
+	if !shouldNudgeCompactSnapshotAnswer(session, "查看一下BTC的今天行情") {
+		t.Fatal("expected compact snapshot nudge after the first tool result and no assistant delta")
+	}
+
+	session.SetCurrentCardID("msg-live")
+	if shouldNudgeCompactSnapshotAnswer(session, "查看一下BTC的今天行情") {
+		t.Fatal("expected no nudge once assistant streaming has started")
+	}
+	session.SetCurrentCardID("")
+
+	session.Metadata["market_snapshot_answer_nudged"] = "true"
+	if shouldNudgeCompactSnapshotAnswer(session, "查看一下BTC的今天行情") {
+		t.Fatal("expected nudge to fire at most once per turn")
+	}
+	delete(session.Metadata, "market_snapshot_answer_nudged")
+
+	session.Metadata["market_snapshot_tool_base"] = "1"
+	if shouldNudgeCompactSnapshotAnswer(session, "查看一下BTC的今天行情") {
+		t.Fatal("expected no nudge before enough new tool results accumulate for the current turn")
+	}
+
+	if shouldNudgeCompactSnapshotAnswer(session, "帮我写一个 nginx 配置") {
+		t.Fatal("expected non-market query to skip compact snapshot nudge")
+	}
+}
+
 // Feature: bifrost-provider-capabilities, Property 12: Tool registry integrity after buildChatRequest
 // **Validates: Requirements 5.6**
 // buildChatRequest must never mutate the ToolRegistry. After calling buildChatRequest,
@@ -241,7 +309,7 @@ func (p *namedCapTestProvider) StreamChatCompletion(_ context.Context, _ bifrost
 	close(ch)
 	return ch, nil
 }
-func (p *namedCapTestProvider) SupportsToolCalling() bool                    { return true }
+func (p *namedCapTestProvider) SupportsToolCalling() bool                  { return true }
 func (p *namedCapTestProvider) Capabilities() bifrost.ProviderCapabilities { return p.caps }
 
 // TestFallbackCapabilityReEvaluation verifies that when the fallback chain

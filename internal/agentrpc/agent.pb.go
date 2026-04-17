@@ -87,6 +87,7 @@ type ExecStart struct {
 	Shell      string `json:"shell,omitempty"`
 	TimeoutSec int    `json:"timeoutSec,omitempty"`
 	Readonly   bool   `json:"readonly,omitempty"`
+	Cancelable bool   `json:"cancelable,omitempty"`
 }
 
 type ExecCancel struct {
@@ -100,16 +101,17 @@ type ExecOutput struct {
 }
 
 type ExecExit struct {
-	ExecID    string `json:"execId,omitempty"`
-	Code      int    `json:"code,omitempty"`
-	ExitCode  int    `json:"exitCode,omitempty"`
-	Status    string `json:"status,omitempty"`
-	Message   string `json:"message,omitempty"`
-	Stdout    string `json:"stdout,omitempty"`
-	Stderr    string `json:"stderr,omitempty"`
-	Timeout   bool   `json:"timeout,omitempty"`
-	Cancelled bool   `json:"cancelled,omitempty"`
-	Error     string `json:"error,omitempty"`
+	ExecID     string `json:"execId,omitempty"`
+	Code       int    `json:"code,omitempty"`
+	ExitCode   int    `json:"exitCode,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Stdout     string `json:"stdout,omitempty"`
+	Stderr     string `json:"stderr,omitempty"`
+	Timeout    bool   `json:"timeout,omitempty"`
+	Cancelled  bool   `json:"cancelled,omitempty"`
+	Cancelable bool   `json:"cancelable,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 type FileEntry struct {
@@ -133,11 +135,12 @@ type FileListRequest struct {
 }
 
 type FileListResult struct {
-	RequestID string      `json:"requestId,omitempty"`
-	Path      string      `json:"path,omitempty"`
-	Entries   []FileEntry `json:"entries,omitempty"`
-	Truncated bool        `json:"truncated,omitempty"`
-	Message   string      `json:"message,omitempty"`
+	RequestID  string      `json:"requestId,omitempty"`
+	Path       string      `json:"path,omitempty"`
+	Entries    []FileEntry `json:"entries,omitempty"`
+	Truncated  bool        `json:"truncated,omitempty"`
+	Cancelable bool        `json:"cancelable,omitempty"`
+	Message    string      `json:"message,omitempty"`
 }
 
 type FileReadRequest struct {
@@ -147,11 +150,12 @@ type FileReadRequest struct {
 }
 
 type FileReadResult struct {
-	RequestID string `json:"requestId,omitempty"`
-	Path      string `json:"path,omitempty"`
-	Content   string `json:"content,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
-	Message   string `json:"message,omitempty"`
+	RequestID  string `json:"requestId,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Content    string `json:"content,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	Cancelable bool   `json:"cancelable,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 type FileSearchRequest struct {
@@ -162,12 +166,13 @@ type FileSearchRequest struct {
 }
 
 type FileSearchResult struct {
-	RequestID string      `json:"requestId,omitempty"`
-	Path      string      `json:"path,omitempty"`
-	Query     string      `json:"query,omitempty"`
-	Matches   []FileMatch `json:"matches,omitempty"`
-	Truncated bool        `json:"truncated,omitempty"`
-	Message   string      `json:"message,omitempty"`
+	RequestID  string      `json:"requestId,omitempty"`
+	Path       string      `json:"path,omitempty"`
+	Query      string      `json:"query,omitempty"`
+	Matches    []FileMatch `json:"matches,omitempty"`
+	Truncated  bool        `json:"truncated,omitempty"`
+	Cancelable bool        `json:"cancelable,omitempty"`
+	Message    string      `json:"message,omitempty"`
 }
 
 type FileWriteRequest struct {
@@ -184,6 +189,7 @@ type FileWriteResult struct {
 	NewContent string `json:"newContent,omitempty"`
 	Created    bool   `json:"created,omitempty"`
 	WriteMode  string `json:"writeMode,omitempty"`
+	Cancelable bool   `json:"cancelable,omitempty"`
 	Message    string `json:"message,omitempty"`
 }
 

@@ -166,26 +166,28 @@ func applyRecoveryAction(action errorRecoveryAction, state *reActLoopState, app 
 // createRecoveryEvidenceCard creates an error card with evidence for recovery events.
 func createRecoveryEvidenceCard(app *App, sessionID, status, evidence string) {
 	now := model.NowString()
-	evidenceID := model.NewID("ev")
-
-	app.store.RememberItem(sessionID, evidenceID, map[string]any{
-		"kind":     "error_recovery",
-		"status":   status,
-		"evidence": evidence,
-	})
-
+	cardID := model.NewID("recovery")
 	app.store.UpsertCard(sessionID, model.Card{
-		ID:      model.NewID("recovery"),
-		Type:    "ErrorCard",
-		Title:   "错误恢复",
-		Message: evidence,
-		Status:  status,
-		Detail: map[string]any{
-			"evidenceId": evidenceID,
-			"recovery":   status,
-		},
+		ID:        cardID,
+		Type:      "ErrorCard",
+		Title:     "错误恢复",
+		Message:   evidence,
+		Status:    status,
+		Detail:    map[string]any{"recovery": status},
 		CreatedAt: now,
 		UpdatedAt: now,
+	})
+	app.bindCardEvidence(sessionID, cardID, evidenceArtifactInput{
+		Kind:       "error_recovery",
+		SourceKind: "recovery",
+		SourceRef:  status,
+		Title:      "错误恢复",
+		Summary:    evidence,
+		Content:    evidence,
+		Raw: map[string]any{
+			"status":   status,
+			"evidence": evidence,
+		},
 	})
 
 	app.broadcastSnapshot(sessionID)

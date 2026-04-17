@@ -43,6 +43,12 @@ const isRouteHostSyncing = ref(false);
 const OPEN_SESSION_HISTORY_EVENT = "codex:open-session-history";
 const OPEN_MCP_DRAWER_EVENT = "codex:open-mcp-drawer";
 
+async function initializeAppSession() {
+  await store.fetchState();
+  await store.fetchSessions();
+  store.connectWs();
+}
+
 function compactText(value) {
   return typeof value === "string" ? value.trim() : String(value || "").trim();
 }
@@ -447,6 +453,7 @@ const settingsNavStatus = computed(() => {
 const mainHeaderTitle = computed(() => {
   if (route.name === "chat") return "单机会话";
   if (route.name === "protocol") return "协作工作台";
+  if (route.name === "mcp") return "MCP";
   if (route.path.startsWith("/settings")) return "设置";
   return "Codex Workspace";
 });
@@ -488,6 +495,7 @@ const showHeaderHostControls = computed(() => isChatRoute.value);
 const menuActiveKey = computed(() => {
   if (route.name === "chat") return "chat";
   if (route.name === "protocol") return "protocol";
+  if (route.name === "mcp") return "mcp";
   if (route.name === "coroot") return "coroot";
   if (route.name === "settings-hosts") return "hosts";
   return "";
@@ -507,6 +515,11 @@ const menuOptions = computed(() => [
     label: "协作工作台",
     key: "protocol",
     icon: renderMenuIcon(PanelsTopLeftIcon),
+  },
+  {
+    label: "MCP",
+    key: "mcp",
+    icon: renderMenuIcon(ServerIcon),
   },
   {
     label: "Coroot 监控",
@@ -531,6 +544,9 @@ function handleMenuSelect(key) {
     case "coroot":
       router.push("/coroot");
       break;
+    case "mcp":
+      router.push("/mcp");
+      break;
     case "hosts":
       router.push("/settings/hosts");
       break;
@@ -539,9 +555,7 @@ function handleMenuSelect(key) {
 
 onMounted(() => {
   store.hydrateMcpDrawerState?.();
-  store.fetchState();
-  store.fetchSessions();
-  store.connectWs();
+  void initializeAppSession();
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener(OPEN_SESSION_HISTORY_EVENT, handleOpenSessionHistoryEvent);
   window.addEventListener(OPEN_MCP_DRAWER_EVENT, handleOpenMcpDrawerEvent);

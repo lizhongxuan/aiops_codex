@@ -340,11 +340,11 @@ button, input, textarea, select {
   flex: 1;
   overflow-y: auto;
   scroll-behavior: smooth;
-  padding: 12px 0 176px;
+  padding: 8px 0 164px;
 }
 
 .chat-stream-inner {
-  max-width: 780px;
+  max-width: 1180px;
   margin: 0 auto;
   padding: 0 24px;
 }
@@ -386,7 +386,7 @@ button, input, textarea, select {
 
 /* Chat Row Cards from old CardItem */
 .stream-row {
-  margin-bottom: 4px;
+  margin-bottom: 1px;
   display: flex;
   width: 100%;
 }

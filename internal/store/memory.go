@@ -9,27 +9,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lizhongxuan/aiops-codex/internal/agentloop"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 )
 
 type SessionState struct {
-	ID               string
-	AuthSessionID    string
-	ThreadID         string
-	ThreadConfigHash string
-	TurnID           string
-	SelectedHostID   string
-	Meta             model.SessionMeta
-	Cards            []model.Card
-	Approvals        map[string]model.ApprovalRequest
-	Choices          map[string]model.ChoiceRequest
-	ApprovalGrants   []model.ApprovalGrant
-	ItemCache        map[string]map[string]any
-	Runtime          model.RuntimeState
-	Auth             model.AuthState
-	Tokens           model.ExternalAuthTokens
-	CreatedAt        string
-	LastActivityAt   string
+	ID                  string
+	AuthSessionID       string
+	ThreadID            string
+	ThreadConfigHash    string
+	TurnID              string
+	SelectedHostID      string
+	Meta                model.SessionMeta
+	Cards               []model.Card
+	IncidentEvents      []model.IncidentEvent
+	VerificationRecords []model.VerificationRecord
+	Approvals           map[string]model.ApprovalRequest
+	Choices             map[string]model.ChoiceRequest
+	ApprovalGrants      []model.ApprovalGrant
+	ItemCache           map[string]map[string]any
+	Runtime             model.RuntimeState
+	Auth                model.AuthState
+	Tokens              model.ExternalAuthTokens
+	CreatedAt           string
+	LastActivityAt      string
 }
 
 type BrowserSessionState struct {
@@ -309,6 +312,8 @@ func (s *Store) ResetConversation(sessionID string) {
 	session.ThreadConfigHash = ""
 	session.TurnID = ""
 	session.Cards = nil
+	session.IncidentEvents = nil
+	session.VerificationRecords = nil
 	session.Approvals = make(map[string]model.ApprovalRequest)
 	session.Choices = make(map[string]model.ChoiceRequest)
 	session.ApprovalGrants = make([]model.ApprovalGrant, 0)
@@ -746,6 +751,51 @@ func (s *Store) AddApproval(sessionID string, approval model.ApprovalRequest) {
 	session.LastActivityAt = model.NowString()
 }
 
+func (s *Store) UpsertIncidentEvent(sessionID string, event model.IncidentEvent) {
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	event.SessionID = sessionID
+	if strings.TrimSpace(event.CreatedAt) == "" {
+		event.CreatedAt = model.NowString()
+	}
+	for i := range session.IncidentEvents {
+		if session.IncidentEvents[i].ID != event.ID {
+			continue
+		}
+		session.IncidentEvents[i] = cloneIncidentEvent(event)
+		session.LastActivityAt = model.NowString()
+		s.mu.Unlock()
+		s.scheduleSessionPersistence(sessionID)
+		return
+	}
+	session.IncidentEvents = append(session.IncidentEvents, cloneIncidentEvent(event))
+	session.LastActivityAt = model.NowString()
+	s.mu.Unlock()
+	s.scheduleSessionPersistence(sessionID)
+}
+
+func (s *Store) UpsertVerificationRecord(sessionID string, record model.VerificationRecord) {
+	s.mu.Lock()
+	session, _ := s.ensureSessionLocked(sessionID)
+	if strings.TrimSpace(record.CreatedAt) == "" {
+		record.CreatedAt = model.NowString()
+	}
+	for i := range session.VerificationRecords {
+		if session.VerificationRecords[i].ID != record.ID {
+			continue
+		}
+		session.VerificationRecords[i] = cloneVerificationRecord(record)
+		session.LastActivityAt = model.NowString()
+		s.mu.Unlock()
+		s.scheduleSessionPersistence(sessionID)
+		return
+	}
+	session.VerificationRecords = append(session.VerificationRecords, cloneVerificationRecord(record))
+	session.LastActivityAt = model.NowString()
+	s.mu.Unlock()
+	s.scheduleSessionPersistence(sessionID)
+}
+
 func (s *Store) AddChoice(sessionID string, choice model.ChoiceRequest) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -946,26 +996,64 @@ func (s *Store) Snapshot(sessionID string, cfg model.UIConfig) model.Snapshot {
 	model.SortHosts(hosts)
 
 	cards := append([]model.Card(nil), session.Cards...)
-	agentLoop, iterations, invocations, evidence := buildAgentLoopProjection(session, cards)
+	events := cloneIncidentEvents(session.IncidentEvents)
+	slices.SortFunc(events, func(a, b model.IncidentEvent) int {
+		switch {
+		case a.CreatedAt < b.CreatedAt:
+			return -1
+		case a.CreatedAt > b.CreatedAt:
+			return 1
+		default:
+			return strings.Compare(a.ID, b.ID)
+		}
+	})
+	verifications := cloneVerificationRecords(session.VerificationRecords)
+	slices.SortFunc(verifications, func(a, b model.VerificationRecord) int {
+		switch {
+		case a.CreatedAt > b.CreatedAt:
+			return -1
+		case a.CreatedAt < b.CreatedAt:
+			return 1
+		default:
+			return strings.Compare(a.ID, b.ID)
+		}
+	})
+	agentLoop, iterations, invocations, evidence := buildAgentLoopProjection(session, cards, verifications)
+	currentMode := incidentCurrentMode(agentLoop)
+	currentStage := incidentCurrentStage(session, cards, verifications)
+	currentLane := strings.TrimSpace(session.Runtime.TurnPolicy.Lane)
+	requiredNextTool := strings.TrimSpace(session.Runtime.TurnPolicy.RequiredNextTool)
+	finalGateStatus := strings.TrimSpace(session.Runtime.TurnPolicy.FinalGateStatus)
+	missingRequirements := append([]string(nil), session.Runtime.TurnPolicy.MissingRequirements...)
 	return model.Snapshot{
 		SessionID:           session.ID,
 		Kind:                session.Meta.Kind,
 		SelectedHostID:      session.SelectedHostID,
+		CurrentMode:         currentMode,
+		CurrentStage:        currentStage,
+		CurrentLane:         currentLane,
+		RequiredNextTool:    requiredNextTool,
+		FinalGateStatus:     finalGateStatus,
+		MissingRequirements: missingRequirements,
 		Auth:                session.Auth,
 		Hosts:               hosts,
 		Cards:               cards,
 		Approvals:           approvals,
 		Runtime:             cloneRuntime(session.Runtime),
+		TurnPolicy:          cloneTurnPolicyPtr(session.Runtime.TurnPolicy),
+		PromptEnvelope:      clonePromptEnvelope(session.Runtime.PromptEnvelope),
 		AgentLoop:           agentLoop,
 		AgentLoopIterations: iterations,
 		ToolInvocations:     invocations,
 		EvidenceSummaries:   evidence,
+		IncidentEvents:      events,
+		VerificationRecords: verifications,
 		LastActivityAt:      session.LastActivityAt,
 		Config:              cfg,
 	}
 }
 
-func buildAgentLoopProjection(session *SessionState, cards []model.Card) (*model.AgentLoopRun, []model.AgentLoopIteration, []model.ToolInvocation, []model.EvidenceRecord) {
+func buildAgentLoopProjection(session *SessionState, cards []model.Card, verifications []model.VerificationRecord) (*model.AgentLoopRun, []model.AgentLoopIteration, []model.ToolInvocation, []model.EvidenceRecord) {
 	if session == nil {
 		return nil, nil, nil, nil
 	}
@@ -978,7 +1066,7 @@ func buildAgentLoopProjection(session *SessionState, cards []model.Card) (*model
 	if phase == "" {
 		phase = "idle"
 	}
-	invocations, evidence := buildToolInvocationProjection(runID, iterationID, cards)
+	invocations, evidence := buildToolInvocationProjection(session, runID, iterationID, cards)
 	if !session.Runtime.Turn.Active && phase == "idle" && len(invocations) == 0 {
 		return nil, nil, nil, nil
 	}
@@ -1012,14 +1100,19 @@ func buildAgentLoopProjection(session *SessionState, cards []model.Card) (*model
 		mode = "plan"
 	}
 	run := &model.AgentLoopRun{
-		ID:                runID,
-		SessionID:         session.ID,
-		Status:            status,
-		Mode:              mode,
-		Kind:              session.Meta.Kind,
-		ActiveIterationID: iterationID,
-		CreatedAt:         firstNonEmptyString(session.Runtime.Turn.StartedAt, session.CreatedAt),
-		UpdatedAt:         session.LastActivityAt,
+		IncidentID:         incidentIDForSession(session),
+		ID:                 runID,
+		SessionID:          session.ID,
+		Status:             status,
+		Mode:               mode,
+		Stage:              incidentCurrentStage(session, cards, verifications),
+		Kind:               session.Meta.Kind,
+		PlanApprovalStatus: incidentPlanApprovalStatus(mode, cards),
+		ExecutionEnabled:   mode == "execute",
+		VerificationStatus: summarizeVerificationStatus(verifications),
+		ActiveIterationID:  iterationID,
+		CreatedAt:          firstNonEmptyString(session.Runtime.Turn.StartedAt, session.CreatedAt),
+		UpdatedAt:          session.LastActivityAt,
 	}
 	if !session.Runtime.Turn.Active {
 		run.ActiveIterationID = ""
@@ -1040,7 +1133,7 @@ func buildAgentLoopProjection(session *SessionState, cards []model.Card) (*model
 	return run, []model.AgentLoopIteration{iteration}, invocations, evidence
 }
 
-func buildToolInvocationProjection(runID, iterationID string, cards []model.Card) ([]model.ToolInvocation, []model.EvidenceRecord) {
+func buildToolInvocationProjection(session *SessionState, runID, iterationID string, cards []model.Card) ([]model.ToolInvocation, []model.EvidenceRecord) {
 	invocations := make([]model.ToolInvocation, 0)
 	evidence := make([]model.EvidenceRecord, 0)
 	for _, card := range cards {
@@ -1049,41 +1142,66 @@ func buildToolInvocationProjection(runID, iterationID string, cards []model.Card
 			continue
 		}
 		invocationID := "tool-" + card.ID
-		evidenceID := "evidence-" + card.ID
+		evidenceID := evidenceRecordIDForCard(card)
+		artifact := evidenceArtifact(session, evidenceID)
 		input := toolInvocationInputForCard(card)
 		output := toolInvocationOutputForCard(card)
+		outputSummary := toolInvocationOutputSummary(card, artifact, evidenceID)
+		citationKey := evidenceCitationKey(card, artifact, evidenceID)
 		invocations = append(invocations, model.ToolInvocation{
-			ID:            invocationID,
-			RunID:         runID,
-			IterationID:   iterationID,
-			Name:          name,
-			Status:        toolInvocationStatusForCard(card),
-			InputJSON:     stableJSON(input),
-			OutputJSON:    stableJSON(output),
-			InputSummary:  toolInvocationInputSummary(card),
-			OutputSummary: toolInvocationOutputSummary(card),
-			EvidenceID:    evidenceID,
-			StartedAt:     card.CreatedAt,
-			CompletedAt:   toolInvocationCompletedAt(card),
+			ID:               invocationID,
+			RunID:            runID,
+			IterationID:      iterationID,
+			Name:             name,
+			Status:           toolInvocationStatusForCard(card),
+			RiskLevel:        toolInvocationRiskLevel(card),
+			RequiresApproval: toolInvocationRequiresApproval(card),
+			DryRunSupported:  toolInvocationDryRunSupported(card),
+			TargetSummary:    toolInvocationTargetSummary(card),
+			InputJSON:        stableJSON(input),
+			OutputJSON:       stableJSON(output),
+			InputSummary:     toolInvocationInputSummary(card),
+			OutputSummary:    outputSummary,
+			EvidenceID:       evidenceID,
+			StartedAt:        card.CreatedAt,
+			CompletedAt:      toolInvocationCompletedAt(card),
 		})
 		evidence = append(evidence, model.EvidenceRecord{
-			ID:           evidenceID,
-			RunID:        runID,
-			InvocationID: invocationID,
-			Kind:         name,
-			Title:        firstNonEmptyString(card.Title, toolInvocationInputSummary(card), name),
-			Summary:      toolInvocationOutputSummary(card),
-			Content:      toolEvidenceContent(card),
-			Metadata: map[string]any{
-				"cardId": card.ID,
-				"type":   card.Type,
-				"status": card.Status,
-				"hostId": card.HostID,
-			},
-			CreatedAt: firstNonEmptyString(card.CreatedAt, card.UpdatedAt),
+			ID:                 evidenceID,
+			RunID:              runID,
+			InvocationID:       invocationID,
+			Kind:               name,
+			SourceKind:         evidenceSourceKind(card, artifact),
+			SourceRef:          evidenceSourceRef(card, artifact),
+			CitationKey:        citationKey,
+			RelatedEvidenceIDs: evidenceRelatedIDs(card, artifact),
+			Title:              toolEvidenceTitle(card, artifact, name),
+			Summary:            toolEvidenceSummary(card, artifact, evidenceID),
+			Content:            toolEvidenceContent(card, artifact, evidenceID),
+			Metadata:           mergeEvidenceMetadata(card, artifact, citationKey),
+			CreatedAt:          firstNonEmptyString(card.CreatedAt, card.UpdatedAt),
 		})
 	}
 	return invocations, evidence
+}
+
+func mergeEvidenceMetadata(card model.Card, artifact map[string]any, citationKey string) map[string]any {
+	metadata := map[string]any{
+		"cardId": card.ID,
+		"type":   card.Type,
+		"status": card.Status,
+		"hostId": card.HostID,
+	}
+	if citationKey != "" {
+		metadata["citationKey"] = citationKey
+	}
+	if artifactKind := artifactString(artifact, "kind"); artifactKind != "" {
+		metadata["artifactKind"] = artifactKind
+	}
+	if len(artifact) > 0 {
+		metadata["hasArtifact"] = true
+	}
+	return metadata
 }
 
 func toolInvocationNameForCard(card model.Card) string {
@@ -1170,7 +1288,10 @@ func toolInvocationInputSummary(card model.Card) string {
 	}
 }
 
-func toolInvocationOutputSummary(card model.Card) string {
+func toolInvocationOutputSummary(card model.Card, artifact map[string]any, evidenceID string) string {
+	if summary := artifactString(artifact, "summary", "outputSummary"); summary != "" {
+		return compactProjectionText(summary, 240)
+	}
 	switch card.Type {
 	case "ChoiceCard":
 		if len(card.AnswerSummary) > 0 {
@@ -1180,14 +1301,17 @@ func toolInvocationOutputSummary(card model.Card) string {
 			return "等待用户回答"
 		}
 	case "CommandCard":
-		return compactProjectionText(firstNonEmptyString(card.Output, card.Stdout, card.Stderr, card.Text, card.Summary, card.Status), 240)
+		return compactProjectionText(summarizeEvidenceBody(firstNonEmptyString(card.Output, card.Stdout, card.Stderr, card.Text, card.Summary, card.Status), evidenceID, 240), 240)
 	case "CommandApprovalCard", "FileChangeApprovalCard", "PlanApprovalCard":
 		return firstNonEmptyString(card.Text, card.Summary, card.Status)
 	}
 	return compactProjectionText(firstNonEmptyString(card.Summary, card.Text, card.Message, card.Status), 240)
 }
 
-func toolEvidenceContent(card model.Card) string {
+func toolEvidenceRawContent(card model.Card, artifact map[string]any) string {
+	if content := artifactString(artifact, "content", "rawContent", "output"); content != "" {
+		return content
+	}
 	switch card.Type {
 	case "CommandCard":
 		return firstNonEmptyString(card.Output, strings.TrimSpace(strings.Join([]string{card.Stdout, card.Stderr}, "\n")), card.Text, card.Summary)
@@ -1196,8 +1320,162 @@ func toolEvidenceContent(card model.Card) string {
 	case "PlanCard", "PlanApprovalCard":
 		return firstNonEmptyString(stableJSON(card.Detail), card.Text, card.Summary, card.Message)
 	default:
+		if len(artifact) > 0 {
+			return firstNonEmptyString(stableJSON(artifactAny(artifact, "raw", "state", "payload", "detail")), stableJSON(artifact))
+		}
 		return firstNonEmptyString(card.Output, card.Text, card.Summary, card.Message)
 	}
+}
+
+func toolEvidenceContent(card model.Card, artifact map[string]any, evidenceID string) string {
+	return summarizeEvidenceBody(toolEvidenceRawContent(card, artifact), evidenceID, 1600)
+}
+
+func toolEvidenceSummary(card model.Card, artifact map[string]any, evidenceID string) string {
+	if summary := artifactString(artifact, "summary", "outputSummary"); summary != "" {
+		return compactProjectionText(summary, 240)
+	}
+	return toolInvocationOutputSummary(card, artifact, evidenceID)
+}
+
+func toolEvidenceTitle(card model.Card, artifact map[string]any, name string) string {
+	return firstNonEmptyString(artifactString(artifact, "title"), card.Title, toolInvocationInputSummary(card), name)
+}
+
+func summarizeEvidenceBody(content, evidenceID string, maxLen int) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	if maxLen <= 0 || len(content) <= maxLen {
+		return content
+	}
+	headLimit := maxLen / 2
+	if headLimit < 240 {
+		headLimit = 240
+	}
+	tailLimit := maxLen - headLimit
+	if tailLimit < 160 {
+		tailLimit = 160
+	}
+	if headLimit+tailLimit > len(content) {
+		return content
+	}
+	head := strings.TrimSpace(content[:headLimit])
+	tail := strings.TrimSpace(content[len(content)-tailLimit:])
+	if evidenceID != "" {
+		return head + "\n\n[... content summarized, full detail in evidence " + evidenceID + " ...]\n\n" + tail
+	}
+	return head + "\n\n[... content summarized ...]\n\n" + tail
+}
+
+func artifactString(payload map[string]any, keys ...string) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch raw := value.(type) {
+		case string:
+			if text := strings.TrimSpace(raw); text != "" {
+				return text
+			}
+		default:
+			if text := strings.TrimSpace(stableJSON(raw)); text != "" && text != "null" && text != "{}" && text != "[]" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func artifactAny(payload map[string]any, keys ...string) any {
+	if len(payload) == 0 {
+		return nil
+	}
+	for _, key := range keys {
+		if value, ok := payload[key]; ok && value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func artifactStringSlice(payload map[string]any, keys ...string) []string {
+	if len(payload) == 0 {
+		return nil
+	}
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		switch raw := value.(type) {
+		case []string:
+			out := make([]string, 0, len(raw))
+			for _, item := range raw {
+				if text := strings.TrimSpace(item); text != "" {
+					out = append(out, text)
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
+		case []any:
+			out := make([]string, 0, len(raw))
+			for _, item := range raw {
+				switch typed := item.(type) {
+				case string:
+					if text := strings.TrimSpace(typed); text != "" {
+						out = append(out, text)
+					}
+				default:
+					if text := strings.TrimSpace(stableJSON(typed)); text != "" && text != "null" {
+						out = append(out, text)
+					}
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	return nil
+}
+
+func evidenceArtifact(session *SessionState, evidenceID string) map[string]any {
+	if session == nil || session.ItemCache == nil || strings.TrimSpace(evidenceID) == "" {
+		return nil
+	}
+	item := session.ItemCache[evidenceID]
+	if item == nil {
+		return nil
+	}
+	copyMap := make(map[string]any, len(item))
+	for key, value := range item {
+		copyMap[key] = value
+	}
+	return copyMap
+}
+
+func evidenceRecordIDForCard(card model.Card) string {
+	if evidenceID := cardDetailString(card, "evidenceId"); evidenceID != "" {
+		return evidenceID
+	}
+	return "evidence-" + card.ID
+}
+
+func evidenceCitationKeyForID(evidenceID string) string {
+	trimmed := strings.TrimSpace(evidenceID)
+	if trimmed == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(" ", "-", "_", "-", "/", "-", "\\", "-", ":", "-", ".", "-", "[", "-", "]", "-", "(", "-", ")", "-")
+	normalized := strings.Trim(replacer.Replace(strings.ToUpper(trimmed)), "-")
+	return "E-" + normalized
 }
 
 func cardDetailString(card model.Card, keys ...string) string {
@@ -1214,6 +1492,57 @@ func cardDetailString(card model.Card, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func cardDetailBool(card model.Card, keys ...string) bool {
+	if card.Detail == nil {
+		return false
+	}
+	for _, key := range keys {
+		value, ok := card.Detail[key]
+		if !ok {
+			continue
+		}
+		if flag, ok := value.(bool); ok {
+			return flag
+		}
+	}
+	return false
+}
+
+func cardDetailStringSlice(card model.Card, keys ...string) []string {
+	if card.Detail == nil {
+		return nil
+	}
+	for _, key := range keys {
+		value, ok := card.Detail[key]
+		if !ok {
+			continue
+		}
+		switch raw := value.(type) {
+		case []string:
+			out := make([]string, 0, len(raw))
+			for _, item := range raw {
+				if text := strings.TrimSpace(item); text != "" {
+					out = append(out, text)
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
+		case []any:
+			out := make([]string, 0, len(raw))
+			for _, item := range raw {
+				if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+					out = append(out, strings.TrimSpace(text))
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	return nil
 }
 
 func toolInvocationCompletedAt(card model.Card) string {
@@ -1273,6 +1602,240 @@ func compactProjectionText(value string, maxLen int) string {
 	return text
 }
 
+func incidentIDForSession(session *SessionState) string {
+	if session == nil {
+		return ""
+	}
+	if missionID := strings.TrimSpace(session.Meta.MissionID); missionID != "" {
+		return missionID
+	}
+	return "incident-" + session.ID
+}
+
+func incidentCurrentMode(agentLoop *model.AgentLoopRun) string {
+	if agentLoop != nil && agentLoop.ExecutionEnabled {
+		return string(agentloop.IncidentModeExecute)
+	}
+	return string(agentloop.IncidentModeAnalysis)
+}
+
+func incidentCurrentStage(session *SessionState, cards []model.Card, verifications []model.VerificationRecord) string {
+	verificationStatus := summarizeVerificationStatus(verifications)
+	switch verificationStatus {
+	case "pending", "running", "inconclusive":
+		return string(agentloop.IncidentStageVerifying)
+	case "failed":
+		return string(agentloop.IncidentStageRollbackSuggested)
+	}
+
+	phase := strings.TrimSpace(session.Runtime.Turn.Phase)
+	switch phase {
+	case "thinking":
+		return string(agentloop.IncidentStageUnderstanding)
+	case "planning":
+		return string(agentloop.IncidentStagePlanning)
+	case "waiting_input":
+		return string(agentloop.IncidentStageAnalyzing)
+	case "waiting_approval":
+		if hasPendingPlanApproval(cards) {
+			return string(agentloop.IncidentStageWaitingPlanApproval)
+		}
+		return string(agentloop.IncidentStageWaitingActionReview)
+	case "executing", "finalizing":
+		return string(agentloop.IncidentStageExecuting)
+	case "failed":
+		return string(agentloop.IncidentStageFailed)
+	case "aborted":
+		return string(agentloop.IncidentStageCanceled)
+	case "completed", "idle":
+		if len(cards) == 0 {
+			return string(agentloop.IncidentStageUnderstanding)
+		}
+		return string(agentloop.IncidentStageCompleted)
+	default:
+		if session.Runtime.Turn.Active {
+			return string(agentloop.IncidentStageCollectingEvidence)
+		}
+	}
+	return string(agentloop.IncidentStageUnderstanding)
+}
+
+func incidentPlanApprovalStatus(mode string, cards []model.Card) string {
+	for i := len(cards) - 1; i >= 0; i-- {
+		if cards[i].Type != "PlanApprovalCard" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(cards[i].Status)) {
+		case "pending", "waiting_approval":
+			return "pending"
+		case "rejected", "reject", "declined", "failed":
+			return "rejected"
+		case "approved", "accept", "accepted", "completed", "success":
+			return "approved"
+		}
+	}
+	switch mode {
+	case "execute":
+		return "approved"
+	case "plan":
+		return "draft"
+	default:
+		return ""
+	}
+}
+
+func hasPendingPlanApproval(cards []model.Card) bool {
+	for i := len(cards) - 1; i >= 0; i-- {
+		if cards[i].Type == "PlanApprovalCard" && strings.EqualFold(strings.TrimSpace(cards[i].Status), "pending") {
+			return true
+		}
+	}
+	return false
+}
+
+func summarizeVerificationStatus(records []model.VerificationRecord) string {
+	status := ""
+	for _, record := range records {
+		switch strings.ToLower(strings.TrimSpace(record.Status)) {
+		case "pending", "running":
+			return strings.ToLower(strings.TrimSpace(record.Status))
+		case "failed":
+			status = "failed"
+		case "inconclusive":
+			if status == "" || status == "passed" {
+				status = "inconclusive"
+			}
+		case "passed":
+			if status == "" {
+				status = "passed"
+			}
+		}
+	}
+	return status
+}
+
+func toolInvocationRiskLevel(card model.Card) string {
+	if risk := cardDetailString(card, "riskLevel", "risk"); risk != "" {
+		return strings.ToLower(risk)
+	}
+	switch card.Type {
+	case "CommandApprovalCard", "FileChangeApprovalCard":
+		return "high"
+	case "PlanApprovalCard":
+		return "medium"
+	case "CommandCard":
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func toolInvocationRequiresApproval(card model.Card) bool {
+	switch card.Type {
+	case "CommandApprovalCard", "FileChangeApprovalCard", "PlanApprovalCard":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolInvocationDryRunSupported(card model.Card) bool {
+	if cardDetailBool(card, "dryRunSupported") {
+		return true
+	}
+	return false
+}
+
+func toolInvocationTargetSummary(card model.Card) string {
+	if target := cardDetailString(card, "targetSummary", "target"); target != "" {
+		return target
+	}
+	switch card.Type {
+	case "CommandCard", "CommandApprovalCard":
+		parts := make([]string, 0, 2)
+		if hostID := strings.TrimSpace(card.HostID); hostID != "" {
+			parts = append(parts, hostID)
+		}
+		if cwd := strings.TrimSpace(card.Cwd); cwd != "" {
+			parts = append(parts, cwd)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " @ ")
+		}
+		return firstNonEmptyString(strings.TrimSpace(card.Command), card.Title)
+	case "FileChangeApprovalCard":
+		paths := make([]string, 0, len(card.Changes))
+		for _, change := range card.Changes {
+			if text := strings.TrimSpace(change.Path); text != "" {
+				paths = append(paths, text)
+			}
+		}
+		return compactProjectionText(strings.Join(paths, ", "), 120)
+	default:
+		return firstNonEmptyString(card.HostID, card.Title)
+	}
+}
+
+func evidenceSourceKind(card model.Card, artifact map[string]any) string {
+	if kind := artifactString(artifact, "sourceKind"); kind != "" {
+		return kind
+	}
+	switch card.Type {
+	case "CommandCard":
+		return "command"
+	case "CommandApprovalCard", "PlanApprovalCard":
+		return "approval"
+	case "FileChangeApprovalCard":
+		return "config_diff"
+	case "PlanCard":
+		return "plan"
+	case "ChoiceCard":
+		return "conversation"
+	case "DispatchSummaryCard":
+		return "orchestration"
+	default:
+		return "tool"
+	}
+}
+
+func evidenceSourceRef(card model.Card, artifact map[string]any) string {
+	if ref := artifactString(artifact, "sourceRef", "focus", "path", "hostId"); ref != "" {
+		return ref
+	}
+	switch card.Type {
+	case "CommandCard", "CommandApprovalCard":
+		return firstNonEmptyString(strings.TrimSpace(card.Command), strings.TrimSpace(card.HostID))
+	case "FileChangeApprovalCard":
+		for _, change := range card.Changes {
+			if text := strings.TrimSpace(change.Path); text != "" {
+				return text
+			}
+		}
+	case "PlanCard", "PlanApprovalCard":
+		return firstNonEmptyString(cardDetailString(card, "planId"), card.ID)
+	case "ChoiceCard":
+		return card.ID
+	}
+	return card.ID
+}
+
+func evidenceCitationKey(card model.Card, artifact map[string]any, evidenceID string) string {
+	if citationKey := artifactString(artifact, "citationKey"); citationKey != "" {
+		return citationKey
+	}
+	if citationKey := cardDetailString(card, "citationKey"); citationKey != "" {
+		return citationKey
+	}
+	return evidenceCitationKeyForID(evidenceID)
+}
+
+func evidenceRelatedIDs(card model.Card, artifact map[string]any) []string {
+	if related := artifactStringSlice(artifact, "relatedEvidenceIds", "relatedEvidenceIDs"); len(related) > 0 {
+		return related
+	}
+	return append([]string(nil), cardDetailStringSlice(card, "relatedEvidenceIds", "relatedEvidenceIDs")...)
+}
+
 func (s *Store) ensureSessionLocked(sessionID string) (*SessionState, bool) {
 	session, ok := s.sessions[sessionID]
 	if ok {
@@ -1291,16 +1854,18 @@ func (s *Store) ensureSessionLocked(sessionID string) (*SessionState, bool) {
 func defaultSession(sessionID string) *SessionState {
 	now := model.NowString()
 	return &SessionState{
-		ID:             sessionID,
-		SelectedHostID: model.ServerLocalHostID,
-		Meta:           model.DefaultSessionMeta(),
-		Approvals:      make(map[string]model.ApprovalRequest),
-		Choices:        make(map[string]model.ChoiceRequest),
-		ApprovalGrants: make([]model.ApprovalGrant, 0),
-		ItemCache:      make(map[string]map[string]any),
-		Runtime:        defaultRuntime(model.ServerLocalHostID),
-		CreatedAt:      now,
-		LastActivityAt: now,
+		ID:                  sessionID,
+		SelectedHostID:      model.ServerLocalHostID,
+		Meta:                model.DefaultSessionMeta(),
+		IncidentEvents:      make([]model.IncidentEvent, 0),
+		VerificationRecords: make([]model.VerificationRecord, 0),
+		Approvals:           make(map[string]model.ApprovalRequest),
+		Choices:             make(map[string]model.ChoiceRequest),
+		ApprovalGrants:      make([]model.ApprovalGrant, 0),
+		ItemCache:           make(map[string]map[string]any),
+		Runtime:             defaultRuntime(model.ServerLocalHostID),
+		CreatedAt:           now,
+		LastActivityAt:      now,
 	}
 }
 
@@ -1362,21 +1927,23 @@ func (s *Store) LoadStableState(path string) error {
 		}
 		meta := normalizeSessionMetaForLoad(session.Meta)
 		s.sessions[id] = &SessionState{
-			ID:             session.ID,
-			AuthSessionID:  session.AuthSessionID,
-			ThreadID:       "",
-			TurnID:         "",
-			SelectedHostID: defaultHostID(session.SelectedHostID),
-			Meta:           meta,
-			Approvals:      make(map[string]model.ApprovalRequest),
-			Choices:        make(map[string]model.ChoiceRequest),
-			ApprovalGrants: make([]model.ApprovalGrant, 0),
-			ItemCache:      make(map[string]map[string]any),
-			Auth:           session.Auth,
-			Tokens:         fromPersistentTokens(session.Tokens),
-			Runtime:        defaultRuntime(session.SelectedHostID),
-			CreatedAt:      session.CreatedAt,
-			LastActivityAt: session.LastActivityAt,
+			ID:                  session.ID,
+			AuthSessionID:       session.AuthSessionID,
+			ThreadID:            "",
+			TurnID:              "",
+			SelectedHostID:      defaultHostID(session.SelectedHostID),
+			Meta:                meta,
+			IncidentEvents:      make([]model.IncidentEvent, 0),
+			VerificationRecords: make([]model.VerificationRecord, 0),
+			Approvals:           make(map[string]model.ApprovalRequest),
+			Choices:             make(map[string]model.ChoiceRequest),
+			ApprovalGrants:      make([]model.ApprovalGrant, 0),
+			ItemCache:           make(map[string]map[string]any),
+			Auth:                session.Auth,
+			Tokens:              fromPersistentTokens(session.Tokens),
+			Runtime:             defaultRuntime(session.SelectedHostID),
+			CreatedAt:           session.CreatedAt,
+			LastActivityAt:      session.LastActivityAt,
 		}
 		if s.sessions[id].ID == "" {
 			s.sessions[id].ID = id
@@ -1542,6 +2109,8 @@ func cloneSession(session *SessionState) *SessionState {
 	}
 	out := *session
 	out.Cards = append([]model.Card(nil), session.Cards...)
+	out.IncidentEvents = cloneIncidentEvents(session.IncidentEvents)
+	out.VerificationRecords = cloneVerificationRecords(session.VerificationRecords)
 	out.Approvals = make(map[string]model.ApprovalRequest, len(session.Approvals))
 	out.Choices = make(map[string]model.ChoiceRequest, len(session.Choices))
 	out.ApprovalGrants = append([]model.ApprovalGrant(nil), session.ApprovalGrants...)
@@ -1626,6 +2195,66 @@ func cloneRuntime(runtime model.RuntimeState) model.RuntimeState {
 	out.Activity.ViewedFiles = append([]model.ActivityEntry(nil), runtime.Activity.ViewedFiles...)
 	out.Activity.SearchedWebQueries = append([]model.ActivityEntry(nil), runtime.Activity.SearchedWebQueries...)
 	out.Activity.SearchedContentQueries = append([]model.ActivityEntry(nil), runtime.Activity.SearchedContentQueries...)
+	out.TurnPolicy = cloneTurnPolicy(runtime.TurnPolicy)
+	out.PromptEnvelope = clonePromptEnvelope(runtime.PromptEnvelope)
+	return out
+}
+
+func cloneTurnPolicy(policy model.TurnPolicy) model.TurnPolicy {
+	out := policy
+	out.RequiredTools = append([]string(nil), policy.RequiredTools...)
+	out.RequiredEvidenceKinds = append([]string(nil), policy.RequiredEvidenceKinds...)
+	out.MissingRequirements = append([]string(nil), policy.MissingRequirements...)
+	return out
+}
+
+func cloneTurnPolicyPtr(policy model.TurnPolicy) *model.TurnPolicy {
+	if strings.TrimSpace(policy.IntentClass) == "" &&
+		strings.TrimSpace(policy.Lane) == "" &&
+		len(policy.RequiredTools) == 0 &&
+		len(policy.RequiredEvidenceKinds) == 0 &&
+		!policy.NeedsPlanArtifact &&
+		!policy.NeedsApproval &&
+		!policy.NeedsAssumptions &&
+		!policy.NeedsDisambiguation &&
+		!policy.RequiresExternalFacts &&
+		!policy.RequiresRealtimeData &&
+		policy.MinimumEvidenceCount == 0 &&
+		strings.TrimSpace(policy.RequiredNextTool) == "" &&
+		strings.TrimSpace(policy.FinalGateStatus) == "" &&
+		len(policy.MissingRequirements) == 0 &&
+		strings.TrimSpace(policy.ClassificationReason) == "" &&
+		strings.TrimSpace(policy.UpdatedAt) == "" {
+		return nil
+	}
+	cloned := cloneTurnPolicy(policy)
+	return &cloned
+}
+
+func clonePromptEnvelope(envelope *model.PromptEnvelope) *model.PromptEnvelope {
+	if envelope == nil {
+		return nil
+	}
+	out := *envelope
+	out.StaticSections = clonePromptEnvelopeSections(envelope.StaticSections)
+	out.LaneSections = clonePromptEnvelopeSections(envelope.LaneSections)
+	out.ContextAttachments = clonePromptEnvelopeSections(envelope.ContextAttachments)
+	if envelope.RuntimePolicy != nil {
+		runtimePolicy := *envelope.RuntimePolicy
+		out.RuntimePolicy = &runtimePolicy
+	}
+	out.VisibleTools = append([]model.PromptEnvelopeTool(nil), envelope.VisibleTools...)
+	out.HiddenTools = append([]model.PromptEnvelopeTool(nil), envelope.HiddenTools...)
+	out.MissingRequirements = append([]string(nil), envelope.MissingRequirements...)
+	return &out
+}
+
+func clonePromptEnvelopeSections(in []model.PromptEnvelopeSection) []model.PromptEnvelopeSection {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]model.PromptEnvelopeSection, 0, len(in))
+	out = append(out, in...)
 	return out
 }
 
@@ -1658,6 +2287,53 @@ func cloneHostMap(in map[string]model.Host) map[string]model.Host {
 	out := make(map[string]model.Host, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+func cloneIncidentEvent(event model.IncidentEvent) model.IncidentEvent {
+	out := event
+	if len(event.Metadata) > 0 {
+		out.Metadata = make(map[string]any, len(event.Metadata))
+		for k, v := range event.Metadata {
+			out.Metadata[k] = v
+		}
+	}
+	return out
+}
+
+func cloneIncidentEvents(events []model.IncidentEvent) []model.IncidentEvent {
+	if len(events) == 0 {
+		return make([]model.IncidentEvent, 0)
+	}
+	out := make([]model.IncidentEvent, 0, len(events))
+	for _, event := range events {
+		out = append(out, cloneIncidentEvent(event))
+	}
+	return out
+}
+
+func cloneVerificationRecord(record model.VerificationRecord) model.VerificationRecord {
+	out := record
+	out.SuccessCriteria = append([]string(nil), record.SuccessCriteria...)
+	out.Findings = append([]string(nil), record.Findings...)
+	out.EvidenceIDs = append([]string(nil), record.EvidenceIDs...)
+	if len(record.Metadata) > 0 {
+		out.Metadata = make(map[string]any, len(record.Metadata))
+		for k, v := range record.Metadata {
+			out.Metadata[k] = v
+		}
+	}
+	return out
+}
+
+func cloneVerificationRecords(records []model.VerificationRecord) []model.VerificationRecord {
+	if len(records) == 0 {
+		return make([]model.VerificationRecord, 0)
+	}
+	out := make([]model.VerificationRecord, 0, len(records))
+	for _, record := range records {
+		out = append(out, cloneVerificationRecord(record))
 	}
 	return out
 }

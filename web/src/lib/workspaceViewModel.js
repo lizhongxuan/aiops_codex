@@ -196,6 +196,19 @@ export function cleanAssistantDisplayText(text, role = "assistant") {
   cleaned = cleaned.replace(/`{3}json[\s\S]*?`{3}/g, (match) => (/"route"\s*:/.test(match) ? "" : match)).trim();
   cleaned = cleaned.replace(/`{3}json\s*\{[^`]*"route"\s*:[^`]*/g, "").trim();
   cleaned = cleaned.replace(/\{[^{}]*"route"\s*:\s*"[^"]*"[^{}]*\}/g, "").trim();
+  if (/(BTC|比特币|CoinMarketCap|CoinGecko|Binance|Crypto\.com|24h|24小时|市值|成交额|A股|上证|深证|创业板|指数)/i.test(cleaned)) {
+    cleaned = cleaned.replace(/(?:^|\n)\s*(?:短判断|一句话判断|简判断)[:：]\s*/gu, "\n");
+    cleaned = cleaned.replace(
+      /(?:^|\n)来源[:：]\s*\n((?:\[[^\]]+\]\([^)]+\)\s*\n?){1,4})/gu,
+      (_match, linksBlock) => {
+        const labels = [...String(linksBlock || "").matchAll(/\[([^\]]+)\]\([^)]+\)/g)]
+          .map((match) => compactText(match[1]))
+          .filter(Boolean)
+          .slice(0, 2);
+        return labels.length ? `\n来源：${labels.join("；")}\n` : "\n";
+      },
+    );
+  }
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
   if (isInternalRoutingMessageText(cleaned)) return "";
   return cleaned;

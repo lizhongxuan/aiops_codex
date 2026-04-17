@@ -129,6 +129,37 @@ func (m *Manager) AddServer(cfg ServerConfig) {
 	}
 }
 
+// UpsertServer adds or replaces a server configuration. Existing live
+// connections are closed so the new config becomes the single source of truth.
+func (m *Manager) UpsertServer(cfg ServerConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.servers[cfg.Name]; ok {
+		if existing.conn != nil {
+			_ = existing.conn.Close()
+		}
+		existing.conn = nil
+		existing.config = cfg
+		existing.info = ServerInfo{
+			Name:      cfg.Name,
+			Transport: cfg.Transport,
+			Status:    ServerStatusDisconnected,
+		}
+		if cfg.Disabled {
+			existing.info.Status = ServerStatusDisconnected
+		}
+		return
+	}
+	m.servers[cfg.Name] = &managedServer{
+		config: cfg,
+		info: ServerInfo{
+			Name:      cfg.Name,
+			Transport: cfg.Transport,
+			Status:    ServerStatusDisconnected,
+		},
+	}
+}
+
 // RemoveServer disconnects and removes an MCP server.
 func (m *Manager) RemoveServer(name string) error {
 	m.mu.Lock()
@@ -171,6 +202,25 @@ func (m *Manager) ConnectServer(ctx context.Context, name string) error {
 	return nil
 }
 
+// DisconnectServer disconnects a specific server without removing its config.
+func (m *Manager) DisconnectServer(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	srv, ok := m.servers[name]
+	if !ok {
+		return fmt.Errorf("mcp server %q not found", name)
+	}
+	if srv.conn != nil {
+		_ = srv.conn.Close()
+		srv.conn = nil
+	}
+	srv.info.Status = ServerStatusDisconnected
+	srv.info.Error = ""
+	srv.info.Tools = nil
+	srv.info.Resources = nil
+	return nil
+}
+
 func (m *Manager) connectServerLocked(ctx context.Context, name string, srv *managedServer) {
 	srv.info.Status = ServerStatusConnecting
 	var conn Connection
@@ -205,6 +255,13 @@ func (m *Manager) connectServerLocked(ctx context.Context, name string, srv *man
 			tools[i].ServerName = name
 		}
 		srv.info.Tools = tools
+	}
+
+	resources, err := conn.ListResources(ctx)
+	if err != nil {
+		log.Printf("[mcphost] failed to list resources from %s: %v", name, err)
+	} else {
+		srv.info.Resources = resources
 	}
 
 	log.Printf("[mcphost] connected to %s (%s), %d tools discovered", name, srv.config.Transport, len(srv.info.Tools))
@@ -317,6 +374,17 @@ func (m *Manager) ServerInfos() []ServerInfo {
 	var out []ServerInfo
 	for _, srv := range m.servers {
 		out = append(out, srv.info)
+	}
+	return out
+}
+
+// ServerConfigs returns a snapshot of the current managed server configs.
+func (m *Manager) ServerConfigs() []ServerConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]ServerConfig, 0, len(m.servers))
+	for _, srv := range m.servers {
+		out = append(out, srv.config)
 	}
 	return out
 }

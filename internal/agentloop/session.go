@@ -159,6 +159,8 @@ func (s *Session) DiffTracker() *filepatch.TurnDiffTracker {
 
 // SystemPrompt returns the assembled system prompt.
 func (s *Session) SystemPrompt() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.systemPrompt
 }
 
@@ -169,6 +171,28 @@ func (s *Session) EnabledTools() []string {
 	out := make([]string, len(s.enabledTools))
 	copy(out, s.enabledTools)
 	return out
+}
+
+// SetSystemPrompt replaces the current system prompt for subsequent model calls.
+func (s *Session) SetSystemPrompt(prompt string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.systemPrompt = prompt
+}
+
+// SetEnabledTools replaces the current model-visible tool list for subsequent model calls.
+func (s *Session) SetEnabledTools(tools []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enabledTools = append([]string(nil), tools...)
+}
+
+// ApplyTurnConfiguration atomically updates the system prompt and tool set.
+func (s *Session) ApplyTurnConfiguration(prompt string, tools []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.systemPrompt = prompt
+	s.enabledTools = append([]string(nil), tools...)
 }
 
 // MaxIterations returns the maximum number of agent loop iterations.
@@ -339,13 +363,18 @@ func BuildSystemPrompt(spec SessionSpec) string {
 		"## 输出格式",
 		"",
 		"回复时遵循以下格式规范：",
-		"- 先给结论，再给关键证据",
+		"- 先直接回答，再补必要证据",
 		"- 使用 **加粗** 标注关键数字、指标名称和状态",
-		"- 多项结果用清晰的分段或列表呈现，每段用 `##` 或 `###` 标题分隔",
+		"- 优先使用短段落和少量 bullet；只有在结构真的复杂时才使用 `##` 或 `###` 标题",
 		"- 代码、命令、文件路径用 `反引号` 包裹",
 		"- 长输出用折叠块或摘要，不要一次性倾倒大量原始日志",
 		"- 工具输出只摘要关键行，完整内容放到证据详情里",
 		"- 不要在回复中描述你正在做什么（如「我先查一下」「让我搜索一下」），直接给出结果",
+		"- 如果问题属于“行情 / 价格 / 指数 / 今日 / 最新 / 实时”这类快照型问题，使用紧凑快照格式：第一行写清截至时间 + 当前价格/指数 + 涨跌方向；接 2-4 个 bullet 只保留最关键数值；再用 1 句给出短判断；最后列 1-2 个来源链接",
+		"- 对快照型问题，不要使用“关键证据 / 主流报价 / 市场状态 / 简要解读 / 详细分析”这类泛化标题，除非用户明确要求展开",
+		"- 对同一类快照数据，不要重复罗列多个相近来源；最多保留 2 个最有代表性的来源，并明确不同来源若存在时点差异就用区间表达",
+		"- 对快照型问题，不要原样粘贴搜索摘要里的“搜索结果 / 页面头部 / 页面汇率 / 摘要显示”片段；要把它们归并成自然语言 bullet",
+		"- 对快照型问题，给出核心信息后就停止，不要再追加“详细分析 / 证据详情 / 市场状态 / 如果你要我再展开”这类冗长尾巴，除非用户明确追问",
 	}, "\n"))
 
 	return strings.Join(sections, "\n\n")

@@ -19,6 +19,9 @@ func TestBuildFileListCardProducesStructuredCounts(t *testing.T) {
 	if card.Type != "ResultSummaryCard" {
 		t.Fatalf("expected ResultSummaryCard, got %q", card.Type)
 	}
+	if got, ok := card.Detail["cancelable"].(bool); !ok || got {
+		t.Fatalf("expected file list card cancelable=false, got %#v", card.Detail)
+	}
 	if card.Summary == "" || card.Text == "" {
 		t.Fatalf("expected structured summary and note, got summary=%q text=%q", card.Summary, card.Text)
 	}
@@ -42,6 +45,9 @@ func TestBuildFileReadCardProducesStructuredPreview(t *testing.T) {
 
 	if card.Type != "ResultSummaryCard" {
 		t.Fatalf("expected ResultSummaryCard, got %q", card.Type)
+	}
+	if got, ok := card.Detail["cancelable"].(bool); !ok || got {
+		t.Fatalf("expected file read card cancelable=false, got %#v", card.Detail)
 	}
 	if len(card.KVRows) < 4 {
 		t.Fatalf("expected structured kv rows, got %#v", card.KVRows)
@@ -73,6 +79,9 @@ func TestBuildFileSearchCardProducesStructuredMatches(t *testing.T) {
 
 	if card.Type != "ResultSummaryCard" {
 		t.Fatalf("expected ResultSummaryCard, got %q", card.Type)
+	}
+	if got, ok := card.Detail["cancelable"].(bool); !ok || got {
+		t.Fatalf("expected file search card cancelable=false, got %#v", card.Detail)
 	}
 	if len(card.KVRows) < 6 {
 		t.Fatalf("expected structured kv rows, got %#v", card.KVRows)

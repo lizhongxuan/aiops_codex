@@ -132,6 +132,40 @@ func (a *App) eventSummaryAttachment(sessionID string) string {
 	return attachmentSection("event_summary", strings.Join(events, "\n"))
 }
 
+// evidenceSummaryAttachment builds the recent evidence summary attachment text.
+func (a *App) evidenceSummaryAttachment(sessionID string) string {
+	snapshot := a.snapshot(sessionID)
+	if len(snapshot.EvidenceSummaries) == 0 {
+		return ""
+	}
+
+	const maxEvidence = 5
+	start := len(snapshot.EvidenceSummaries) - maxEvidence
+	if start < 0 {
+		start = 0
+	}
+
+	lines := make([]string, 0, maxEvidence)
+	for i := start; i < len(snapshot.EvidenceSummaries); i++ {
+		record := snapshot.EvidenceSummaries[i]
+		summary := firstNonEmptyValue(strings.TrimSpace(record.Summary), strings.TrimSpace(record.Title))
+		if summary == "" {
+			continue
+		}
+		citation := firstNonEmptyValue(strings.TrimSpace(record.CitationKey), strings.TrimSpace(record.ID))
+		title := strings.TrimSpace(record.Title)
+		if title != "" && title != summary {
+			lines = append(lines, fmt.Sprintf("- [%s] %s: %s", citation, title, summary))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s", citation, summary))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return attachmentSection("evidence_summary", strings.Join(lines, "\n"))
+}
+
 // planModeAttachment builds the plan_mode attachment text.
 func (a *App) planModeAttachment(sessionID string, planMode bool) string {
 	var b strings.Builder
@@ -288,6 +322,7 @@ func (a *App) buildAllAttachments(sessionID, hostID, permissionMode string, plan
 		a.workspaceStateAttachment(sessionID),
 		a.approvalStateAttachment(sessionID),
 		a.eventSummaryAttachment(sessionID),
+		a.evidenceSummaryAttachment(sessionID),
 		a.planModeAttachment(sessionID, planMode),
 		a.permissionModeAttachment(sessionID, permissionMode),
 		a.hostContextAttachment(hostID),

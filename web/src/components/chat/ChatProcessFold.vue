@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-vue-next";
 import MessageCard from "../MessageCard.vue";
+import ChatTerminalPreview from "./ChatTerminalPreview.vue";
 
 const props = defineProps({
   turn: {
@@ -11,13 +12,13 @@ const props = defineProps({
 });
 
 const expanded = ref(!props.turn?.collapsedByDefault);
-const searchExpanded = ref(false);
+const expandedCommandIds = ref(new Set());
 
 watch(
   () => [props.turn?.id, props.turn?.collapsedByDefault],
   () => {
     expanded.value = !props.turn?.collapsedByDefault;
-    searchExpanded.value = false;
+    expandedCommandIds.value = new Set();
   },
 );
 
@@ -27,7 +28,7 @@ const hasContent = computed(() => {
     props.turn?.liveHint ||
     props.turn?.summary ||
     intermediateMessages.value.length > 0 ||
-    searchItems.value.length > 0
+    historyItems.value.length > 0
   );
 });
 
@@ -37,29 +38,10 @@ const intermediateMessages = computed(() => {
   return items.filter(item => item.kind === "assistant" || item.kind === "assistant_message" || item.kind === "message");
 });
 
-// Search activity items
-const searchItems = computed(() => {
+const historyItems = computed(() => {
   const items = props.turn?.processItems || [];
-  return items.filter(item =>
-    item.kind === "search" ||
-    item.kind === "web_search" ||
-    item.processKind === "search" ||
-    (item.text && (item.text.startsWith("已搜索") || item.text.startsWith("Searched")))
-  );
-});
-
-// Other process items (commands, file reads, etc.)
-const otherItems = computed(() => {
-  const items = props.turn?.processItems || [];
-  const searchSet = new Set(searchItems.value.map(i => i.id));
   const msgSet = new Set(intermediateMessages.value.map(i => i.id));
-  return items.filter(item => !searchSet.has(item.id) && !msgSet.has(item.id));
-});
-
-const searchCountLabel = computed(() => {
-  const count = searchItems.value.length;
-  if (!count) return "";
-  return `Searched web ${count} time${count > 1 ? "s" : ""}`;
+  return items.filter(item => !msgSet.has(item.id));
 });
 
 const foldLabel = computed(() => {
@@ -71,8 +53,31 @@ function toggleExpanded() {
   expanded.value = !expanded.value;
 }
 
-function toggleSearchExpanded() {
-  searchExpanded.value = !searchExpanded.value;
+function isCommandItem(item) {
+  return item?.kind === "command" && (item?.command || item?.commandCard?.command);
+}
+
+function commandOutput(item) {
+  return String(
+    item?.output ||
+    item?.commandCard?.output ||
+    item?.commandCard?.stdout ||
+    item?.commandCard?.stderr ||
+    item?.detail ||
+    "",
+  ).trim();
+}
+
+function isCommandExpanded(item) {
+  return expandedCommandIds.value.has(item.id);
+}
+
+function toggleCommandItem(item) {
+  if (!isCommandItem(item)) return;
+  const next = new Set(expandedCommandIds.value);
+  if (next.has(item.id)) next.delete(item.id);
+  else next.add(item.id);
+  expandedCommandIds.value = next;
 }
 </script>
 
@@ -97,37 +102,41 @@ function toggleSearchExpanded() {
     </div>
 
     <!-- Expanded content -->
-    <div v-if="expanded" class="chat-process-body">
-      <!-- Intermediate assistant messages (model's thinking text) -->
-      <div v-for="msg in intermediateMessages" :key="msg.id" class="chat-process-message">
-        <MessageCard v-if="msg.card" :card="msg.card" />
-        <div v-else class="chat-process-text">{{ msg.text }}</div>
-      </div>
-
-      <!-- Search sub-fold: "Searched web 9 times >" -->
-      <div v-if="searchItems.length" class="chat-search-fold">
-        <button
-          type="button"
-          class="chat-search-toggle"
-          @click="toggleSearchExpanded"
-        >
-          <span>{{ searchCountLabel }}</span>
-          <component :is="searchExpanded ? ChevronDownIcon : ChevronRightIcon" size="14" />
-        </button>
-        <div v-if="searchExpanded" class="chat-search-list">
-          <div v-for="item in searchItems" :key="item.id" class="chat-search-item">
-            {{ item.text }}
-          </div>
+    <div v-if="expanded" class="chat-process-surface">
+      <div class="chat-process-body">
+        <div v-for="msg in intermediateMessages" :key="msg.id" class="chat-process-message">
+          <MessageCard v-if="msg.card" :card="msg.card" />
+          <div v-else class="chat-process-text">{{ msg.text }}</div>
         </div>
-      </div>
 
-      <!-- Other process items (commands, file reads) -->
-      <div v-for="item in otherItems" :key="item.id" class="chat-process-item-line">
-        {{ item.text }}
-      </div>
+        <template v-for="item in historyItems" :key="item.id">
+          <template v-if="isCommandItem(item)">
+            <button
+              type="button"
+              class="chat-process-command-row"
+              :data-testid="`chat-process-command-row-${item.id}`"
+              @click="toggleCommandItem(item)"
+            >
+              <component :is="isCommandExpanded(item) ? ChevronDownIcon : ChevronRightIcon" size="14" class="chat-process-command-icon" />
+              <span class="chat-process-command-text">{{ item.text }}</span>
+            </button>
 
-      <!-- Live hint (during active turn) -->
-      <div v-if="turn.liveHint" class="chat-process-live">{{ turn.liveHint }}</div>
+            <ChatTerminalPreview
+              v-if="isCommandExpanded(item)"
+              :test-id="`chat-process-terminal-${item.id}`"
+              :command="item.command || item.commandCard?.command || item.commandCard?.title || ''"
+              :output="commandOutput(item)"
+            />
+          </template>
+
+          <div v-else class="chat-process-item-line">
+            <span class="chat-process-item-bullet">•</span>
+            <span>{{ item.text }}</span>
+          </div>
+        </template>
+
+        <div v-if="turn.active && turn.liveHint" class="chat-process-live">{{ turn.liveHint }}</div>
+      </div>
     </div>
   </section>
 </template>
@@ -136,15 +145,15 @@ function toggleSearchExpanded() {
 .chat-process-fold {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 4px 0 4px 30px;
-  max-width: 720px;
+  gap: 4px;
+  width: min(980px, 100%);
+  margin: 2px auto;
 }
 
 .chat-process-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .chat-process-toggle {
@@ -155,9 +164,9 @@ function toggleSearchExpanded() {
   border: none;
   background: transparent;
   color: #6b7280;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.3;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -184,66 +193,88 @@ function toggleSearchExpanded() {
 .chat-process-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+}
+
+.chat-process-surface {
+  border: 1px solid rgba(226, 232, 240, 0.98);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.9));
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .chat-process-message {
   /* Intermediate messages render inline */
 }
 
-.chat-process-text {
-  font-size: 14px;
-  color: #374151;
-  line-height: 1.6;
+.chat-process-surface :deep(.message-wrapper) {
+  padding-left: 0;
 }
 
-/* Search sub-fold */
-.chat-search-fold {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.chat-search-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  border: none;
+.chat-process-surface :deep(.assistant-thread-block) {
   background: transparent;
-  color: #9ca3af;
-  font-size: 13px;
-  font-weight: 400;
-  cursor: pointer;
-  white-space: nowrap;
+  border: none;
+  box-shadow: none;
 }
 
-.chat-search-toggle:hover {
-  color: #6b7280;
-}
-
-.chat-search-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-left: 4px;
-}
-
-.chat-search-item {
-  font-size: 13px;
-  color: #9ca3af;
-  line-height: 1.6;
+.chat-process-surface :deep(.message-text),
+.chat-process-surface :deep(.markdown-body) {
+  color: #475569;
 }
 
 .chat-process-item-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: #64748b;
+  line-height: 1.45;
+}
+
+.chat-process-item-bullet {
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.chat-process-text {
   font-size: 13px;
-  color: #9ca3af;
-  line-height: 1.6;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.chat-process-command-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #475569;
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-process-command-row:hover {
+  color: #0f172a;
+}
+
+.chat-process-command-icon {
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.chat-process-command-text {
+  min-width: 0;
 }
 
 .chat-process-live {
-  color: #6b7280;
-  font-size: 13px;
-  line-height: 1.5;
+  color: #64748b;
+  font-size: 12.5px;
+  line-height: 1.42;
 }
 </style>

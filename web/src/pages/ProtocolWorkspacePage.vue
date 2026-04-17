@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { AlertTriangleIcon, Loader2Icon, PanelsTopLeftIcon, RefreshCwIcon, XIcon } from "lucide-vue-next";
 import ProtocolApprovalRail from "../components/protocol-workspace/ProtocolApprovalRail.vue";
 import ProtocolAgentDetailModal from "../components/protocol-workspace/ProtocolAgentDetailModal.vue";
 import ProtocolConversationPane from "../components/protocol-workspace/ProtocolConversationPane.vue";
+import ProtocolEvidenceDrawer from "../components/protocol-workspace/ProtocolEvidenceDrawer.vue";
 import ProtocolEventTimeline from "../components/protocol-workspace/ProtocolEventTimeline.vue";
 import ProtocolEvidenceModal from "../components/protocol-workspace/ProtocolEvidenceModal.vue";
 import { buildMcpDecisionNotice, buildSyntheticMcpApproval, buildSyntheticMcpEvent, formatMcpActionLabel, formatMcpActionTarget, isMcpMutationAction } from "../lib/mcpActionRuntime";
@@ -16,6 +17,10 @@ const OPEN_SESSION_HISTORY_EVENT = "codex:open-session-history";
 const OPEN_MCP_DRAWER_EVENT = "codex:open-mcp-drawer";
 const MCP_SURFACE_TAB = "mcp-surface";
 const DISMISSED_STATUS_BANNER_STORAGE_KEY = "codex:protocol-workspace-dismissed-status-banners:v1";
+const promptDebugEnabled =
+  import.meta.env.DEV ||
+  import.meta.env.MODE === "test" ||
+  (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("promptDebug") === "1");
 
 const refreshBusy = ref(false);
 const decisionBusy = ref(false);
@@ -25,6 +30,16 @@ const actionNotice = ref("");
 const actionTone = ref("info");
 const evidenceOpen = ref(false);
 const evidenceTab = ref("main-agent-plan");
+const evidenceDrawerOpen = ref(false);
+const evidenceDrawerActiveTab = ref("main-agent-plan");
+const evidenceDrawerState = ref({
+  title: "证据抽屉",
+  subtitle: "把当前重细节内容固定到侧边抽屉，方便边看边对照主线程。",
+  tabs: [],
+  panels: {},
+});
+const promptDebugOpen = ref(false);
+const promptDebugActiveTab = ref("runtime-policy");
 const selectedHostId = ref("");
 const selectedStepId = ref("");
 const selectedApprovalId = ref("");
@@ -34,6 +49,9 @@ const selectedAgentId = ref("");
 const selectedCommandEvidence = ref(null);
 const selectedProcessEvidence = ref(null);
 const selectedToolInvocationId = ref("");
+const selectedVerificationId = ref("");
+const selectedCitationEvidenceId = ref("");
+const selectedEventId = ref("");
 const agentDetailOpen = ref(false);
 const evidenceSource = ref("mission");
 const workspaceBootstrapBusy = ref(false);
@@ -50,6 +68,49 @@ function asArray(value) {
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function projectionCandidateIds(value = null) {
+  const source = asObject(value);
+  const projection = asObject(source.projection);
+  return [...new Set([
+    compactText(projection.id),
+    ...asArray(projection.aliases).map((item) => compactText(item)),
+    compactText(source.id),
+    compactText(source.approvalId),
+    compactText(source.commandCardId),
+    compactText(source.actionEventId),
+    compactText(source.targetId),
+    compactText(source.raw?.id),
+  ].filter(Boolean))];
+}
+
+function projectionLinksOfKind(value = null, kind = "") {
+  const targetKind = compactText(kind).toLowerCase();
+  return asArray(value?.projection?.links).filter((link) => compactText(link?.kind).toLowerCase() === targetKind);
+}
+
+function resolveProjectionLinkTarget(collection = [], link = null, kind = "") {
+  const sourceKind = compactText(link?.kind).toLowerCase();
+  const targetKind = compactText(kind || sourceKind).toLowerCase();
+  const targetId = compactText(link?.id);
+  if (!targetKind || !targetId) return null;
+  return asArray(collection).find((item) => {
+    const projection = asObject(item?.projection);
+    if (compactText(projection.kind).toLowerCase() !== targetKind) return false;
+    return projectionCandidateIds(item).includes(targetId);
+  }) || null;
+}
+
+function resolveProjectionTarget(value = null, kind = "", collection = []) {
+  const link = projectionLinksOfKind(value, kind)[0] || null;
+  return resolveProjectionLinkTarget(collection, link, kind);
+}
+
+function resolveProjectionTargets(value = null, kind = "", collection = []) {
+  return projectionLinksOfKind(value, kind)
+    .map((link) => resolveProjectionLinkTarget(collection, link, kind))
+    .filter(Boolean);
 }
 
 function normalizePhaseLabel(value) {
@@ -97,6 +158,16 @@ function stringifyRaw(value) {
     }
   }
   return "";
+}
+
+function cloneStructuredValue(value) {
+  if (value === null || value === undefined) return value;
+  if (["string", "number", "boolean"].includes(typeof value)) return value;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
 }
 
 function stripMatchingQuotes(value = "") {
@@ -158,6 +229,13 @@ function compactRow(label, value) {
   return text ? { label, value: text } : null;
 }
 
+function previewText(value, maxLength = 240) {
+  const text = compactText(value);
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}...`;
+}
+
 function objectRows(value = {}) {
   const source = asObject(value);
   return Object.entries(source)
@@ -175,6 +253,10 @@ function toolDisplayName(name = "") {
       return "审批请求";
     case "readonly_host_inspect":
       return "只读主机检查";
+    case "query_ai_server_state":
+      return "工作台状态快照";
+    case "web_search":
+      return "外部搜索";
     case "orchestrator_dispatch_tasks":
       return "任务派发";
     case "enter_plan_mode":
@@ -183,6 +265,23 @@ function toolDisplayName(name = "") {
       return "计划更新";
     case "exit_plan_mode":
       return "计划审批";
+    case "service_restart":
+    case "service.restart":
+      return "服务重启";
+    case "service_stop":
+    case "service.stop":
+      return "停止服务";
+    case "config_apply":
+    case "config.apply":
+      return "配置下发";
+    case "package_install":
+    case "package.install":
+      return "安装软件包";
+    case "package_upgrade":
+    case "package.upgrade":
+      return "升级软件包";
+    case "execute_system_mutation":
+      return "受控变更";
     default:
       return compactText(name) || "工具调用";
   }
@@ -465,6 +564,7 @@ const workspaceApprovalItems = computed(() => workspaceModel.value.approvalItems
 const workspaceEventItems = computed(() => workspaceModel.value.eventItems || []);
 const toolInvocations = computed(() => workspaceModel.value.toolInvocations || []);
 const evidenceSummaries = computed(() => workspaceModel.value.evidenceSummaries || []);
+const verificationRecords = computed(() => workspaceModel.value.verificationRecords || store.snapshot.verificationRecords || []);
 const agentLoopRun = computed(() => workspaceModel.value.agentLoop || store.snapshot.agentLoop || null);
 const waitingForUserAnswer = computed(() => {
   const loopStatus = compactText(agentLoopRun.value?.status);
@@ -516,11 +616,10 @@ const statusBanner = computed(() => {
 });
 
 const selectedApprovalItem = computed(() => {
-  if (selectedApprovalId.value) {
-    return approvalItems.value.find((item) => item.id === selectedApprovalId.value) || approvalItems.value[0] || null;
-  }
-  return approvalItems.value[0] || null;
+  return resolveApprovalSelection(selectedApprovalId.value, approvalItems.value);
 });
+
+const activeApprovalCardId = computed(() => compactText(selectedApprovalItem.value?.id || approvalItems.value[0]?.id || ""));
 
 const selectedStep = computed(() => {
   const steps = asArray(planCardModel.value.stepItems);
@@ -569,6 +668,18 @@ const canSendWorkspaceMessage = computed(() => {
 });
 
 const conversationSubtitle = computed(() => {
+  if (workspaceModel.value.currentLane === "plan") {
+    return "当前处于方案规划中：主 Agent 会先生成计划，再提交计划审批，不会直接执行变更。";
+  }
+  if (workspaceModel.value.currentLane === "readonly" && workspaceModel.value.requiredNextTool) {
+    return `当前处于分析中：先完成 ${toolDisplayName(workspaceModel.value.requiredNextTool)}，再形成结论。`;
+  }
+  if (workspaceModel.value.currentLane === "execute") {
+    return "当前处于受控执行中：仅会在已审批计划范围内推进派发和动作执行。";
+  }
+  if (workspaceModel.value.currentLane === "verify") {
+    return "当前处于自动验证中：先核对验证结果和回滚提示，再给出最终结论。";
+  }
   const summary = compactText(planCardModel.value.summary);
   if (summary) return summary;
   if (workspaceModel.value.missionPhase === "waiting_approval") return "主 Agent 已产出计划，当前正在等待审批继续推进。";
@@ -611,9 +722,35 @@ const planOverviewRows = computed(() => [
   compactRow("计划摘要", planCardModel.value.summary || planCardModel.value.title),
   compactRow("范围", planCardModel.value.scope),
   compactRow("风险", planCardModel.value.risk),
+  compactRow("假设", planCardModel.value.assumptions),
   compactRow("验证", planCardModel.value.validation),
   compactRow("回滚", planCardModel.value.rollback),
 ].filter(Boolean));
+
+const runtimePolicyCard = computed(() => {
+  const modeLabel = compactText(workspaceModel.value.incidentSummary?.modeLabel || "分析模式");
+  const stageLabel = compactText(workspaceModel.value.incidentSummary?.stageLabel || "待命");
+  const laneLabel = compactText(workspaceModel.value.currentLaneLabel || "分析中");
+  const gateLabel = compactText(workspaceModel.value.finalGateLabel || "待校验");
+  const missingRequirements = asArray(workspaceModel.value.missingRequirements).map((item) => compactText(item)).filter(Boolean);
+  const nextTool = compactText(workspaceModel.value.requiredNextTool);
+  const intentLabel = compactText(workspaceModel.value.turnIntentLabel || "事实问答");
+  const detail = missingRequirements.length
+    ? `当前回答被 final gate 拦截，需先补齐 ${missingRequirements.join(" / ")}。`
+    : compactText(workspaceModel.value.turnPolicy?.classificationReason || workspaceModel.value.incidentSummary?.detail || "当前没有额外 gate 限制。");
+  return {
+    modeLabel,
+    stageLabel,
+    laneLabel,
+    intentLabel,
+    gateLabel,
+    nextTool,
+    nextToolLabel: toolDisplayName(nextTool),
+    missingRequirements,
+    detail,
+    blocked: compactText(workspaceModel.value.finalGateStatus) === "blocked",
+  };
+});
 
 const planCards = computed(() => {
   const stepCards = asArray(planCardModel.value.stepItems).map((item) => ({
@@ -693,7 +830,26 @@ const selectedToolEvidence = computed(() => {
   return evidenceSummaries.value.find((item) => item.id === evidenceId) || selectedToolInvocation.value?.evidence || null;
 });
 
+const selectedVerificationRecord = computed(() => resolveVerificationSelection(selectedVerificationId.value, verificationRecords.value));
+const selectedTimelineEvent = computed(() => resolveTimelineSelection(selectedEventId.value, timelineItems.value));
+const selectedCitationEvidence = computed(() => {
+  const evidenceId = compactText(selectedCitationEvidenceId.value);
+  if (!evidenceId) return null;
+  return evidenceSummaries.value.find((item) => compactText(item.id) === evidenceId) || null;
+});
+const selectedCitationRelatedEvidence = computed(() => {
+  const projectionMatches = resolveProjectionTargets(selectedCitationEvidence.value, "evidence", evidenceSummaries.value);
+  if (projectionMatches.length) return projectionMatches;
+  const relatedIds = asArray(selectedCitationEvidence.value?.relatedEvidenceIds).map((item) => compactText(item)).filter(Boolean);
+  if (!relatedIds.length) return [];
+  return relatedIds
+    .map((evidenceId) => evidenceSummaries.value.find((item) => compactText(item.id) === evidenceId) || null)
+    .filter(Boolean);
+});
+
 const selectedToolApprovalItem = computed(() => {
+  const projectedApproval = resolveProjectionTarget(selectedToolInvocation.value, "approval", approvalItems.value);
+  if (projectedApproval) return projectedApproval;
   const invocation = selectedToolInvocation.value;
   if (!invocation) return null;
   const approvalId = compactText(invocation.output?.approval?.requestId || invocation.input?.approvalId || selectedToolEvidence.value?.metadata?.approvalId);
@@ -704,14 +860,61 @@ const selectedToolApprovalItem = computed(() => {
   ) || null;
 });
 
+const selectedApprovalVerification = computed(() =>
+  resolveProjectionTarget(selectedApprovalItem.value, "verification", verificationRecords.value) ||
+  resolveVerificationForApproval(selectedApprovalItem.value, verificationRecords.value),
+);
+const selectedApprovalTimelineEvent = computed(() =>
+  resolveProjectionTarget(selectedApprovalItem.value, "event", timelineItems.value) ||
+  resolveTimelineEventForApproval(selectedApprovalItem.value, timelineItems.value),
+);
+const selectedVerificationApproval = computed(() =>
+  resolveProjectionTarget(selectedVerificationRecord.value, "approval", approvalItems.value) ||
+  resolveApprovalForVerification(selectedVerificationRecord.value, approvalItems.value),
+);
+const selectedVerificationTimelineEvent = computed(() =>
+  resolveProjectionTarget(selectedVerificationRecord.value, "event", timelineItems.value) ||
+  resolveTimelineEventForVerification(selectedVerificationRecord.value, timelineItems.value),
+);
+
 const evidenceBase = computed(() =>
   buildProtocolEvidenceTabs({
     planCardModel: planCardModel.value,
     hostRow: selectedHostRow.value,
     approvalItem: selectedApprovalItem.value,
+    verificationItem: selectedVerificationRecord.value,
+    verificationRecords: verificationRecords.value,
     eventItems: filteredEventItems.value,
   }),
 );
+
+const citationEvidencePanel = computed(() => {
+  const evidence = selectedCitationEvidence.value || {};
+  const rows = [
+    compactRow("Citation", evidence.citationKey),
+    compactRow("Evidence ID", evidence.id),
+    compactRow("类型", evidence.kind),
+    compactRow("来源类型", evidence.sourceKind),
+    compactRow("来源引用", evidence.sourceRef),
+    compactRow("标题", evidence.title),
+    compactRow("摘要", evidence.summary),
+    compactRow("原始内容摘要", previewText(evidence.content)),
+    compactRow("创建时间", evidence.createdAt),
+    ...objectRows(evidence.metadata),
+    ...selectedCitationRelatedEvidence.value.map((item, index) => ({
+      label: `关联证据 ${index + 1}`,
+      value: [compactText(item.citationKey || item.id), compactText(item.title || item.summary)].filter(Boolean).join(" · "),
+    })),
+  ].filter(Boolean);
+  return {
+    title: evidence.title || evidence.citationKey || "证据摘要",
+    summary: evidence.summary || "这里展示当前结论引用的 evidence 摘要和原始内容。",
+    items: rows.length
+      ? rows
+      : [{ label: "证据", value: "当前没有可展示的 evidence 详情。" }],
+    raw: evidence.content || evidence.summary || evidence || "",
+  };
+});
 
 const mainAgentPlanPanel = computed(() => {
   if (evidenceSource.value === "process" && selectedProcessEvidence.value) {
@@ -817,6 +1020,7 @@ const mainAgentPlanPanel = computed(() => {
   for (const row of [
     compactRow("范围", planCardModel.value.scope),
     compactRow("风险", planCardModel.value.risk),
+    compactRow("假设", planCardModel.value.assumptions),
     compactRow("验证", planCardModel.value.validation),
     compactRow("回滚", planCardModel.value.rollback),
   ].filter(Boolean)) {
@@ -920,6 +1124,23 @@ const approvalContextPanel = computed(() => {
     summary: selectedApprovalItem.value
       ? "通过弹框查看当前审批所关联的命令、主机和证据。"
       : "当前没有待处理的审批上下文。",
+    actions: [
+      selectedApprovalItem.value
+        ? { id: "focus-approval", label: "定位审批卡", kind: "focus_approval", approvalId: selectedApprovalItem.value.id }
+        : null,
+      selectedApprovalTimelineEvent.value
+        ? { id: "focus-approval-event", label: "定位时间线事件", kind: "focus_event", eventId: selectedApprovalTimelineEvent.value.id }
+        : null,
+      selectedApprovalVerification.value
+        ? {
+            id: "open-approval-verification",
+            label: "查看验证结果",
+            kind: "open_verification",
+            verificationId: selectedApprovalVerification.value.id,
+            hostId: selectedApprovalVerification.value.hostId,
+          }
+        : null,
+    ].filter(Boolean),
     items: rows.length
       ? rows
       : [
@@ -932,12 +1153,65 @@ const approvalContextPanel = computed(() => {
   };
 });
 
+const verificationPanel = computed(() => {
+  const rows = asArray(evidenceBase.value.verificationResults).map((item) => ({
+    label: compactText(item.title || item.label || "验证结果"),
+    value: compactText(item.text || item.value),
+  }));
+  return {
+    title: "验证结果",
+    summary: selectedVerificationRecord.value
+      ? "这里展示当前动作的自动验证结论、策略和回滚建议。"
+      : "这里汇总当前动作关联的自动验证结果。",
+    actions: [
+      selectedVerificationApproval.value
+        ? {
+            id: "open-verification-approval",
+            label: "查看审批上下文",
+            kind: "open_approval",
+            approvalId: selectedVerificationApproval.value.id,
+            hostId: selectedVerificationApproval.value.hostId,
+          }
+        : null,
+      selectedVerificationApproval.value
+        ? {
+            id: "focus-verification-approval",
+            label: "定位审批卡",
+            kind: "focus_approval",
+            approvalId: selectedVerificationApproval.value.id,
+          }
+        : null,
+      selectedVerificationTimelineEvent.value
+        ? {
+            id: "focus-verification-event",
+            label: "定位时间线事件",
+            kind: "focus_event",
+            eventId: selectedVerificationTimelineEvent.value.id,
+          }
+        : null,
+    ].filter(Boolean),
+    items: rows.length
+      ? rows
+      : [
+          {
+            label: "状态",
+            value: "当前还没有可展示的验证结果。",
+          },
+        ],
+    raw: selectedVerificationRecord.value?.raw || verificationRecords.value || null,
+  };
+});
+
 const toolInputPanel = computed(() => {
   const invocation = selectedToolInvocation.value || {};
   const rows = [
     compactRow("工具", toolDisplayName(invocation.name)),
     compactRow("工具名", invocation.name),
     compactRow("状态", invocation.status),
+    compactRow("风险级别", invocation.riskLevel),
+    compactRow("目标范围", invocation.targetSummary),
+    compactRow("需要审批", invocation.requiresApproval ? "是" : ""),
+    compactRow("Dry-run", invocation.dryRunSupported ? "支持" : ""),
     compactRow("输入摘要", invocation.inputSummary),
     compactRow("开始时间", invocation.startedAt),
     compactRow("结束时间", invocation.completedAt),
@@ -991,6 +1265,7 @@ const toolLinkedPlanPanel = computed(() => {
     compactRow("计划标题", input.title || evidence.title || metadata.title),
     compactRow("计划摘要", input.summary || input.plan || evidence.summary),
     compactRow("风险", input.risk || input.risks),
+    compactRow("假设", input.assumptions),
     compactRow("回滚", input.rollback),
     compactRow("验证方式", input.validation),
     compactRow("关联 Evidence", evidence.id),
@@ -1084,11 +1359,13 @@ const mcpSurfacePanel = computed(() => {
 });
 
 const evidencePanels = computed(() => ({
+  "citation-evidence": citationEvidencePanel.value,
   "main-agent-plan": mainAgentPlanPanel.value,
   "worker-conversation": workerConversationPanel.value,
   "host-terminal": hostTerminalPanel.value,
   [MCP_SURFACE_TAB]: mcpSurfacePanel.value,
   "approval-context": approvalContextPanel.value,
+  "verification-results": verificationPanel.value,
   "tool-input": toolInputPanel.value,
   "tool-output": toolOutputPanel.value,
   "raw-evidence": rawEvidencePanel.value,
@@ -1104,7 +1381,11 @@ const primaryEvidenceTabLabel = computed(() => {
 });
 
 const evidenceTabs = computed(() => [
-  ...(evidenceSource.value === "tool_invocation"
+  ...(evidenceSource.value === "citation"
+    ? [
+        { value: "citation-evidence", label: "证据摘要", badge: citationEvidencePanel.value.items?.length || 0 },
+      ]
+    : evidenceSource.value === "tool_invocation"
 	    ? [
 	        { value: "tool-input", label: "输入", badge: toolInputPanel.value.items?.length || 0 },
 	        { value: "tool-output", label: "输出", badge: toolOutputPanel.value.items?.length || 0 },
@@ -1119,10 +1400,17 @@ const evidenceTabs = computed(() => [
         { value: "host-terminal", label: "Host Terminal", badge: hostTerminalPanel.value.items?.length || 0 },
         { value: MCP_SURFACE_TAB, label: "MCP 面板", badge: mcpSurfacePanel.value.items?.length || 0 },
         { value: "approval-context", label: "审批上下文", badge: approvalContextPanel.value.items?.length || 0 },
+        { value: "verification-results", label: "验证结果", badge: verificationPanel.value.items?.length || 0 },
       ]),
 ]);
 
 const evidenceTitle = computed(() => {
+  if (evidenceSource.value === "citation" && selectedCitationEvidence.value) {
+    return `证据摘要 · ${selectedCitationEvidence.value.citationKey || selectedCitationEvidence.value.id || "Evidence"}`;
+  }
+  if (evidenceSource.value === "verification" && selectedVerificationRecord.value) {
+    return `验证结果 · ${selectedVerificationRecord.value.hostName || selectedVerificationRecord.value.hostId || "Host"}`;
+  }
   if (evidenceSource.value === "approval" && selectedApprovalItem.value) {
     return `审批上下文 · ${selectedApprovalItem.value.hostName || selectedApprovalItem.value.hostId || "Host"}`;
   }
@@ -1161,6 +1449,12 @@ const evidenceTitle = computed(() => {
 });
 
 const evidenceSubtitle = computed(() => {
+  if (evidenceSource.value === "citation") {
+    return "这里展示当前结论引用的 evidence 摘要和原始内容，不把长证据正文直接回灌到消息气泡。";
+  }
+  if (evidenceSource.value === "verification") {
+    return "这里展示动作执行后的自动验证结论，以及可复用的回滚提示。";
+  }
   if (evidenceSource.value === "approval") {
     return "审批详情通过弹框查看，不占用主页面空间。";
   }
@@ -1188,9 +1482,107 @@ const evidenceSubtitle = computed(() => {
   return "按 tab 切换主 Agent 计划摘要、Worker 对话、Host Terminal 与审批上下文。";
 });
 
+function captureEvidenceDrawerSnapshot(activeTab = evidenceTab.value) {
+  const tabs = cloneStructuredValue(evidenceTabs.value);
+  const panels = cloneStructuredValue(evidencePanels.value);
+  const normalizedTabs = Array.isArray(tabs) ? tabs : [];
+  const preferredTab = compactText(activeTab);
+  const fallbackTab = compactText(normalizedTabs[0]?.value || "main-agent-plan");
+  return {
+    title: compactText(evidenceTitle.value || "证据抽屉"),
+    subtitle: compactText(evidenceSubtitle.value || "把当前重细节内容固定到侧边抽屉，方便边看边对照主线程。"),
+    tabs: normalizedTabs,
+    panels: panels && typeof panels === "object" ? panels : {},
+    activeTab:
+      preferredTab && normalizedTabs.some((tab) => compactText(tab?.value) === preferredTab)
+        ? preferredTab
+        : fallbackTab,
+  };
+}
+
+const promptDebugState = computed(() => {
+  const turnPolicy = asObject(workspaceModel.value.turnPolicy);
+  const promptEnvelope = asObject(workspaceModel.value.promptEnvelope);
+  const staticSections = asArray(promptEnvelope.staticSections);
+  const laneSections = asArray(promptEnvelope.laneSections);
+  const contextAttachments = asArray(promptEnvelope.contextAttachments);
+  const runtimePolicySection = asObject(promptEnvelope.runtimePolicy);
+  const visibleTools = asArray(promptEnvelope.visibleTools);
+  const hiddenTools = asArray(promptEnvelope.hiddenTools);
+  const missingRequirements = asArray(workspaceModel.value.missingRequirements).map((item) => compactText(item)).filter(Boolean);
+  return {
+    title: "Prompt Debug",
+    subtitle: "查看本轮发给模型的上下文、tool visibility 与 final gate 命中情况。",
+    tabs: [
+      { value: "runtime-policy", label: "Runtime Policy", badge: 6 },
+      { value: "final-gate", label: "Final Gate", badge: missingRequirements.length },
+      { value: "prompt-context", label: "Prompt Context", badge: staticSections.length + laneSections.length + contextAttachments.length + (runtimePolicySection.name ? 1 : 0) },
+      { value: "tool-visibility", label: "Tool Visibility", badge: visibleTools.length },
+    ],
+    panels: {
+      "runtime-policy": {
+        title: "Turn Policy",
+        summary: "当前 turn classifier 产出的 intent、lane 与制度化约束。",
+        items: [
+          compactRow("Intent", workspaceModel.value.turnIntentLabel),
+          compactRow("Lane", workspaceModel.value.currentLaneLabel),
+          compactRow("Current Mode", workspaceModel.value.incidentSummary?.modeLabel),
+          compactRow("Current Stage", workspaceModel.value.incidentSummary?.stageLabel),
+          compactRow("Required Next Tool", toolDisplayName(workspaceModel.value.requiredNextTool || "")),
+          compactRow("Classification Reason", turnPolicy.classificationReason),
+        ].filter(Boolean),
+        raw: turnPolicy,
+      },
+      "final-gate": {
+        title: "Final Answer Gate",
+        summary: "解释当前回答为什么被放行、待校验或被拦截。",
+        items: [
+          compactRow("Gate Status", workspaceModel.value.finalGateLabel),
+          compactRow("Required Next Tool", workspaceModel.value.requiredNextTool ? `${toolDisplayName(workspaceModel.value.requiredNextTool)} (${workspaceModel.value.requiredNextTool})` : ""),
+          compactRow("Missing Requirements", missingRequirements.join(" / ")),
+        ].filter(Boolean),
+        raw: {
+          finalGateStatus: workspaceModel.value.finalGateStatus,
+          missingRequirements,
+        },
+      },
+      "prompt-context": {
+        title: "Prompt Envelope",
+        summary: "按静态提示、lane 提示和上下文附件查看本轮 prompt 组装结果。",
+        items: [
+          compactRow("Compression", promptEnvelope.compressionState),
+          compactRow("Token Estimate", promptEnvelope.tokenEstimate ? String(promptEnvelope.tokenEstimate) : ""),
+          ...staticSections.map((section) => compactRow(`Static · ${section.name}`, previewText(section.content, 280))),
+          ...laneSections.map((section) => compactRow(`Lane · ${section.name}`, previewText(section.content, 280))),
+          ...(runtimePolicySection.name ? [compactRow(`Policy · ${runtimePolicySection.name}`, previewText(runtimePolicySection.content, 280))] : []),
+          ...contextAttachments.map((section) => compactRow(`Context · ${section.name}`, previewText(section.content, 280))),
+        ].filter(Boolean),
+        raw: promptEnvelope,
+      },
+      "tool-visibility": {
+        title: "Tool Visibility",
+        summary: "展示本轮对模型可见和被隐藏的工具，以及对应原因。",
+        items: [
+          ...visibleTools.map((tool) => compactRow(`Visible · ${tool.name}`, tool.reason)),
+          ...hiddenTools.map((tool) => compactRow(`Hidden · ${tool.name}`, tool.reason)),
+        ].filter(Boolean),
+        raw: {
+          visibleTools,
+          hiddenTools,
+        },
+      },
+    },
+  };
+});
+
 const runtimeStatus = computed(() => {
   if (workspaceModel.value.statusBanner?.runtimeText) {
     return workspaceModel.value.statusBanner.runtimeText;
+  }
+  const laneLabel = compactText(workspaceModel.value.currentLaneLabel || "");
+  const missingRequirements = asArray(workspaceModel.value.missingRequirements).map((item) => compactText(item)).filter(Boolean);
+  if (compactText(workspaceModel.value.finalGateStatus) === "blocked" && missingRequirements.length) {
+    return `${laneLabel || "分析中"} | 缺口: ${missingRequirements.join(" / ")}`;
   }
   const phase = normalizePhaseLabel(workspaceModel.value.missionPhase);
   const total = Number(planCardModel.value.totalSteps || 0);
@@ -1206,14 +1598,20 @@ const runtimeStatus = computed(() => {
   }
   if (!total) {
     if (workspaceModel.value.missionPhase === "thinking") {
-      return "正在思考";
+      return laneLabel || "正在思考";
     }
     if (workspaceModel.value.cards?.planCard || compactText(planCardModel.value.generatedAt || planCardModel.value.summary)) {
-      return `${phase} | 已收到计划投影，等待步骤同步`;
+      return `${laneLabel || phase} | 已收到计划投影，等待步骤同步`;
     }
-    return `${phase} | 等待主 Agent 生成计划`;
+    if (workspaceModel.value.currentLane === "readonly") {
+      return `${laneLabel || phase} | 正在收集证据`;
+    }
+    if (workspaceModel.value.currentLane === "verify") {
+      return `${laneLabel || phase} | 正在核对执行结果`;
+    }
+    return `${laneLabel || phase} | 等待主 Agent 生成计划`;
   }
-  return `${phase} | 共 ${total} 个任务，已完成 ${completed} 个`;
+  return `${laneLabel || phase} | 共 ${total} 个任务，已完成 ${completed} 个`;
 });
 
 const toolbarTone = computed(() => {
@@ -1235,11 +1633,100 @@ const toolbarMessage = computed(() => {
 watch(
   approvalItems,
   (items) => {
-    if (selectedApprovalId.value && items.some((item) => item.id === selectedApprovalId.value)) return;
+    if (resolveApprovalSelection(selectedApprovalId.value, items)) return;
     selectedApprovalId.value = items[0]?.id || "";
   },
   { immediate: true, deep: true },
 );
+
+watch(
+  verificationRecords,
+  (items) => {
+    if (resolveVerificationSelection(selectedVerificationId.value, items)) return;
+    selectedVerificationId.value = "";
+  },
+  { immediate: true, deep: true },
+);
+
+watch(
+  timelineItems,
+  (items) => {
+    if (resolveTimelineSelection(selectedEventId.value, items)) return;
+    selectedEventId.value = "";
+  },
+  { immediate: true, deep: true },
+);
+
+function resolveApprovalSelection(selectionId, items) {
+  const list = asArray(items);
+  if (!list.length) return null;
+  const selection = compactText(selectionId);
+  if (!selection) return list[0] || null;
+  return list.find((item) => compactText(item.id) === selection || compactText(item.approvalId) === selection) || list[0] || null;
+}
+
+function resolveVerificationSelection(selectionId, items) {
+  const list = asArray(items);
+  if (!list.length) return null;
+  const selection = compactText(selectionId);
+  if (!selection) return null;
+  return list.find((item) => compactText(item.id || item.raw?.id) === selection) || null;
+}
+
+function resolveTimelineSelection(selectionId, items) {
+  const list = asArray(items);
+  if (!list.length) return null;
+  const selection = compactText(selectionId);
+  if (!selection) return null;
+  return list.find((item) => compactText(item.id) === selection || compactText(item.raw?.id) === selection) || null;
+}
+
+function resolveVerificationForApproval(approval, records) {
+  const item = approval || {};
+  const approvalId = compactText(item.approvalId || item.id);
+  const cardId = compactText(item.raw?.id || item.id);
+  return asArray(records).find((record) =>
+    (approvalId && compactText(record.approvalId || record.raw?.approvalId || record.raw?.metadata?.approvalId) === approvalId) ||
+    (cardId && (
+      compactText(record.commandCardId || record.raw?.commandCardId || record.raw?.metadata?.cardId) === cardId ||
+      compactText(record.raw?.actionEventId) === cardId
+    ))
+  ) || null;
+}
+
+function resolveApprovalForVerification(record, approvals) {
+  const item = record || {};
+  const approvalId = compactText(item.approvalId || item.raw?.approvalId || item.raw?.metadata?.approvalId);
+  const cardId = compactText(item.commandCardId || item.raw?.commandCardId || item.raw?.metadata?.cardId || item.raw?.actionEventId);
+  return asArray(approvals).find((approval) =>
+    (approvalId && compactText(approval.approvalId || approval.id) === approvalId) ||
+    (cardId && compactText(approval.raw?.id || approval.id) === cardId)
+  ) || null;
+}
+
+function resolveTimelineEventForApproval(approval, items) {
+  const approvalId = compactText(approval?.approvalId || approval?.id);
+  return asArray(items).find((item) =>
+    compactText(item.targetType).toLowerCase() === "approval" &&
+    (compactText(item.targetId) === approvalId || compactText(item.raw?.targetId) === approvalId)
+  ) || null;
+}
+
+function resolveTimelineEventForVerification(record, items) {
+  const verificationId = compactText(record?.id || record?.raw?.id);
+  return asArray(items).find((item) =>
+    compactText(item.targetType).toLowerCase() === "verification" &&
+    (compactText(item.targetId) === verificationId || compactText(item.raw?.targetId) === verificationId)
+  ) || null;
+}
+
+function scrollToTestId(testId) {
+  if (typeof window === "undefined" || !testId) return;
+  const node = window.document.querySelector(`[data-testid="${testId}"]`);
+  if (node && typeof node.scrollIntoView === "function") {
+    node.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+}
 
 watch(
   hostRows,
@@ -1299,11 +1786,21 @@ onMounted(() => {
   }
 });
 
-function openEvidence({ source = "mission", hostId = "", stepId = "", approvalId = "", tab = "main-agent-plan" } = {}) {
+function openEvidence({ source = "mission", hostId = "", stepId = "", approvalId = "", verificationId = "", evidenceId = "", tab = "main-agent-plan" } = {}) {
   agentDetailOpen.value = false;
   if (hostId) selectedHostId.value = hostId;
   if (stepId) selectedStepId.value = stepId;
   if (approvalId) selectedApprovalId.value = approvalId;
+  if (verificationId) {
+    selectedVerificationId.value = verificationId;
+  } else if (source !== "verification") {
+    selectedVerificationId.value = "";
+  }
+  if (evidenceId) {
+    selectedCitationEvidenceId.value = evidenceId;
+  } else if (source !== "citation") {
+    selectedCitationEvidenceId.value = "";
+  }
   if (source !== "command") selectedCommandEvidence.value = null;
   if (source !== "process") selectedProcessEvidence.value = null;
   if (source !== "tool_invocation") selectedToolInvocationId.value = "";
@@ -1537,6 +2034,10 @@ function approvalDecisionNotice(approval, decision) {
   return isPlanApproval ? "计划审批已通过，主 Agent 将继续推进。" : "审批结果已提交。";
 }
 
+function isApprovalPermissionDenied(message = "") {
+  return /权限不足|无权|forbidden|not authorized|unauthorized|permission denied/i.test(String(message || ""));
+}
+
 async function submitApprovalDecision(approval, decision) {
   if (approval?.mcpSynthetic) {
     settleLocalMcpApproval(approval, decision);
@@ -1562,6 +2063,9 @@ async function submitApprovalDecision(approval, decision) {
       pushActionNotice("该审批已过期或已被处理，已自动清除。", "warning");
       store.errorMessage = "";
       selectedApprovalId.value = "";
+    } else if (isApprovalPermissionDenied(msg)) {
+      store.errorMessage = msg;
+      store.setTurnPhase("waiting_approval");
     } else {
       store.errorMessage = msg;
       store.setTurnPhase("failed");
@@ -1634,6 +2138,81 @@ function handleMessageSelect(message) {
   selectedMessageId.value = compactText(message?.id);
 }
 
+function handleEvidenceSelect(payload) {
+  const reference = payload?.reference || {};
+  const evidenceId = compactText(reference.evidenceId);
+  if (!evidenceId) return;
+  openEvidence({
+    source: "citation",
+    evidenceId,
+    tab: "citation-evidence",
+  });
+}
+
+async function focusApprovalContext(approvalId) {
+  const targetId = compactText(approvalId);
+  if (!targetId) return;
+  selectedApprovalId.value = targetId;
+  evidenceOpen.value = false;
+  await nextTick();
+  scrollToTestId(`protocol-approval-${targetId}`);
+}
+
+async function focusTimelineContext(eventId) {
+  const targetId = compactText(eventId);
+  if (!targetId) return;
+  selectedEventId.value = targetId;
+  evidenceOpen.value = false;
+  await nextTick();
+  scrollToTestId(`protocol-event-${targetId}`);
+}
+
+function handleEvidenceModalAction(action) {
+  const kind = compactText(action?.kind).toLowerCase();
+  if (kind === "open_verification") {
+    openEvidence({
+      source: "verification",
+      verificationId: compactText(action?.verificationId),
+      hostId: compactText(action?.hostId),
+      tab: "verification-results",
+    });
+    return;
+  }
+  if (kind === "open_approval") {
+    openEvidence({
+      source: "approval",
+      approvalId: compactText(action?.approvalId),
+      hostId: compactText(action?.hostId),
+      tab: "approval-context",
+    });
+    return;
+  }
+  if (kind === "focus_approval") {
+    void focusApprovalContext(action?.approvalId);
+    return;
+  }
+  if (kind === "focus_event") {
+    void focusTimelineContext(action?.eventId);
+  }
+}
+
+function handleEvidencePin(payload = {}) {
+  const snapshot = captureEvidenceDrawerSnapshot(payload?.activeTab || evidenceTab.value);
+  if (!snapshot.tabs.length) return;
+  evidenceDrawerState.value = snapshot;
+  evidenceDrawerActiveTab.value = snapshot.activeTab;
+  promptDebugOpen.value = false;
+  evidenceDrawerOpen.value = true;
+  evidenceOpen.value = false;
+  pushActionNotice(`${snapshot.title || "当前证据"} 已固定到证据抽屉。`, "info");
+}
+
+function openPromptDebugDrawer() {
+  promptDebugActiveTab.value = "runtime-policy";
+  evidenceDrawerOpen.value = false;
+  promptDebugOpen.value = true;
+}
+
 function handleProcessItemSelect(payload) {
   const item = payload?.item || {};
   const hostId = compactText(item.hostId);
@@ -1669,6 +2248,7 @@ function handleProcessItemSelect(payload) {
 }
 
 function handleEventSelect(item) {
+  selectedEventId.value = compactText(item?.id || item?.raw?.id);
   const targetType = compactText(item?.targetType).toLowerCase();
   if (targetType === "tool_invocation") {
     openToolInvocationEvidence(item?.targetId);
@@ -1689,6 +2269,10 @@ function handleEventSelect(item) {
   }
   if (targetType === "approval") {
     openEvidence({ source: "approval", approvalId: compactText(item?.targetId), hostId: compactText(item?.hostId), tab: "approval-context" });
+    return;
+  }
+  if (targetType === "verification") {
+    openEvidence({ source: "verification", verificationId: compactText(item?.targetId), hostId: compactText(item?.hostId), tab: "verification-results" });
     return;
   }
   if (targetType === "host") {
@@ -1749,6 +2333,7 @@ function handleMcpSurfaceEventPin(surface) {
 function handleMcpSurfaceEventRefresh(surface) {
   void handleMcpSurfaceRefresh(surface);
 }
+
 </script>
 
 <template>
@@ -1783,10 +2368,21 @@ function handleMcpSurfaceEventRefresh(surface) {
           <AlertTriangleIcon v-if="store.errorMessage || toolbarTone === 'danger'" size="14" />
           <span>{{ toolbarMessage }}</span>
         </div>
-        <button class="toolbar-refresh" type="button" :disabled="refreshBusy" @click="refreshProtocolState">
-          <RefreshCwIcon size="14" :class="{ spin: refreshBusy }" />
-          <span>{{ refreshBusy ? "刷新中..." : "刷新" }}</span>
-        </button>
+        <div class="toolbar-actions">
+          <button
+            v-if="promptDebugEnabled"
+            class="toolbar-debug"
+            type="button"
+            data-testid="protocol-prompt-debug-button"
+            @click="openPromptDebugDrawer"
+          >
+            查看 Prompt Debug
+          </button>
+          <button class="toolbar-refresh" type="button" :disabled="refreshBusy" @click="refreshProtocolState">
+            <RefreshCwIcon size="14" :class="{ spin: refreshBusy }" />
+            <span>{{ refreshBusy ? "刷新中..." : "刷新" }}</span>
+          </button>
+        </div>
       </div>
 
       <div class="protocol-workspace-shell">
@@ -1796,7 +2392,7 @@ function handleMcpSurfaceEventRefresh(surface) {
             <span>正在载入工作台...</span>
           </div>
 
-          <article v-else-if="statusBanner" class="workspace-status-banner" :class="statusBanner.tone">
+          <article v-if="!store.loading && statusBanner" class="workspace-status-banner" :class="statusBanner.tone">
             <div class="workspace-status-banner-head">
               <strong>{{ statusBanner.title }}</strong>
               <button class="workspace-status-banner-close" type="button" title="关闭提示" aria-label="关闭提示" @click="dismissStatusBanner">
@@ -1805,6 +2401,34 @@ function handleMcpSurfaceEventRefresh(surface) {
             </div>
             <p>{{ statusBanner.text }}</p>
             <span v-if="statusBanner.hint" class="workspace-status-banner-hint">{{ statusBanner.hint }}</span>
+          </article>
+
+          <article v-if="!store.loading" class="workspace-runtime-policy-card" :class="{ blocked: runtimePolicyCard.blocked }" data-testid="protocol-runtime-policy">
+            <div class="workspace-runtime-policy-head">
+              <div class="workspace-runtime-policy-chips">
+                <span class="runtime-policy-chip">{{ runtimePolicyCard.modeLabel }}</span>
+                <span class="runtime-policy-chip">{{ runtimePolicyCard.stageLabel }}</span>
+                <span class="runtime-policy-chip strong">{{ runtimePolicyCard.laneLabel }}</span>
+                <span class="runtime-policy-chip" :class="{ blocked: runtimePolicyCard.blocked }">Final Gate · {{ runtimePolicyCard.gateLabel }}</span>
+              </div>
+              <span class="runtime-policy-intent">{{ runtimePolicyCard.intentLabel }}</span>
+            </div>
+            <p class="workspace-runtime-policy-detail">{{ runtimePolicyCard.detail }}</p>
+            <div class="workspace-runtime-policy-meta">
+              <span v-if="runtimePolicyCard.nextTool">
+                下一步工具：<strong>{{ runtimePolicyCard.nextToolLabel || runtimePolicyCard.nextTool }}</strong>
+              </span>
+              <span v-else>当前没有额外的强制下一步工具。</span>
+            </div>
+            <div v-if="runtimePolicyCard.missingRequirements.length" class="workspace-runtime-policy-missing">
+              <span
+                v-for="item in runtimePolicyCard.missingRequirements"
+                :key="item"
+                class="runtime-policy-missing-chip"
+              >
+                {{ item }}
+              </span>
+            </div>
           </article>
 
           <ProtocolConversationPane
@@ -1835,6 +2459,7 @@ function handleMcpSurfaceEventRefresh(surface) {
             @choice="handleChoice"
             @select-message="handleMessageSelect"
             @process-item-select="handleProcessItemSelect"
+            @evidence-select="handleEvidenceSelect"
             @plan-action="handlePlanAction"
             @agent-select="handleAgentSelect"
             @action="handleMcpAction"
@@ -1851,7 +2476,7 @@ function handleMcpSurfaceEventRefresh(surface) {
               title="待审批决策"
               subtitle="右侧固定审批区，直接快速完成授权、拒绝或同意执行。"
               :queue-items="approvalItems"
-              :active-approval-id="selectedApprovalId"
+              :active-approval-id="activeApprovalCardId"
               :busy="decisionBusy"
               empty-label="当前没有待处理的审批。"
               @detail="handleApprovalDetail"
@@ -1866,6 +2491,7 @@ function handleMcpSurfaceEventRefresh(surface) {
               title="实时事件"
               subtitle="轻量时间线只保留关键变化，帮助你快速判断当前执行推进到哪里。"
               :items="timelineItems"
+              :active-item-id="selectedEventId"
               empty-label="当前还没有可展示的实时事件。"
               :max-items="8"
               @select="handleEventSelect"
@@ -1892,6 +2518,8 @@ function handleMcpSurfaceEventRefresh(surface) {
       :subtitle="evidenceSubtitle"
       :tabs="evidenceTabs"
       :panels="evidencePanels"
+      @action="handleEvidenceModalAction"
+      @pin="handleEvidencePin"
     >
       <template #mcp-surface="{ panel }">
         <section class="mcp-evidence-panel">
@@ -1952,6 +2580,31 @@ function handleMcpSurfaceEventRefresh(surface) {
         </section>
       </template>
     </ProtocolEvidenceModal>
+
+    <ProtocolEvidenceDrawer
+      v-model:open="evidenceDrawerOpen"
+      v-model:active-tab="evidenceDrawerActiveTab"
+      :title="evidenceDrawerState.title"
+      :subtitle="evidenceDrawerState.subtitle"
+      :tabs="evidenceDrawerState.tabs"
+      :panels="evidenceDrawerState.panels"
+      kicker="EVIDENCE DRAWER"
+      offset-right="356px"
+      @action="handleEvidenceModalAction"
+    />
+
+    <ProtocolEvidenceDrawer
+      v-if="promptDebugEnabled"
+      v-model:open="promptDebugOpen"
+      v-model:active-tab="promptDebugActiveTab"
+      title="Prompt Debug"
+      subtitle="查看本轮上下文、可见工具、gate 命中项，以及为什么这轮被放行或拦截。"
+      :tabs="promptDebugState.tabs"
+      :panels="promptDebugState.panels"
+      kicker="PROMPT DEBUG"
+      test-id="protocol-prompt-debug-drawer"
+      offset-right="356px"
+    />
   </div>
 </template>
 
@@ -1976,6 +2629,12 @@ function handleMcpSurfaceEventRefresh(surface) {
   background: #ffffff;
 }
 
+.toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .toolbar-notice {
   display: inline-flex;
   align-items: center;
@@ -1996,6 +2655,7 @@ function handleMcpSurfaceEventRefresh(surface) {
   background: #fef2f2;
 }
 
+.toolbar-debug,
 .toolbar-refresh {
   display: inline-flex;
   align-items: center;
@@ -2009,9 +2669,22 @@ function handleMcpSurfaceEventRefresh(surface) {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.toolbar-debug {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.toolbar-debug:hover {
+  border-color: #93c5fd;
+  background: #dbeafe;
 }
 
 .toolbar-refresh:hover {
+  border-color: #cbd5e1;
   background: #f8fafc;
 }
 
@@ -2037,7 +2710,8 @@ function handleMcpSurfaceEventRefresh(surface) {
 }
 
 .workspace-status-banner {
-  margin: 16px 20px 0;
+  width: min(980px, calc(100% - 40px));
+  margin: 16px auto 0;
   padding: 14px 16px;
   border-radius: 14px;
   border: 1px solid #e2e8f0;
@@ -2056,6 +2730,102 @@ function handleMcpSurfaceEventRefresh(surface) {
   border-color: #fde68a;
   background: #fffbeb;
   color: #92400e;
+}
+
+.workspace-runtime-policy-card {
+  width: min(980px, calc(100% - 40px));
+  margin: 14px auto 0;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(191, 219, 254, 0.95);
+  background:
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.98));
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+  flex-shrink: 0;
+}
+
+.workspace-runtime-policy-card.blocked {
+  border-color: rgba(253, 186, 116, 0.95);
+  background:
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(255, 247, 237, 0.98));
+}
+
+.workspace-runtime-policy-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workspace-runtime-policy-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-policy-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(239, 246, 255, 0.95);
+  color: #1e3a8a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-policy-chip.strong {
+  background: rgba(219, 234, 254, 0.98);
+}
+
+.runtime-policy-chip.blocked {
+  background: rgba(255, 237, 213, 0.98);
+  color: #9a3412;
+}
+
+.runtime-policy-intent {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.workspace-runtime-policy-detail {
+  margin: 12px 0 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.workspace-runtime-policy-meta {
+  margin-top: 10px;
+  color: #475569;
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.workspace-runtime-policy-missing {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-policy-missing-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(255, 237, 213, 0.98);
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .workspace-status-banner-head {
