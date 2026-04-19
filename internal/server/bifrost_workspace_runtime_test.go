@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lizhongxuan/aiops-codex/internal/agentloop"
 	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
@@ -241,5 +242,46 @@ func TestWorkspaceWorkerBifrostCompletionSyncsProjection(t *testing.T) {
 	}
 	if got := strings.TrimSpace(workerSession.Cards[len(workerSession.Cards)-1].Text); got != "worker done" {
 		t.Fatalf("expected worker assistant card content, got %q", got)
+	}
+}
+
+func TestExecuteBifrostUnifiedToolResultUsesUnifiedTool(t *testing.T) {
+	app := newBifrostWorkspaceTestApp(t)
+	session := &agentloop.Session{ID: "bifrost-unified-tool"}
+	tool := scriptedUnifiedTool{
+		name: "list_remote_files",
+		callFn: func(_ context.Context, req ToolCallRequest) (ToolCallResult, error) {
+			if got := getStringAny(req.Input, "path"); got != "/srv/app" {
+				t.Fatalf("unexpected input passed to unified tool: %#v", req.Input)
+			}
+			return ToolCallResult{Output: "listed /srv/app"}, nil
+		},
+	}
+
+	result, err := app.executeBifrostUnifiedToolResult(context.Background(), session, bifrost.ToolCall{
+		ID: "call-bifrost-unified",
+		Function: bifrost.FunctionCall{
+			Name: "list_files",
+		},
+	}, "list_files", "list_remote_files", "host-1", map[string]any{
+		"host":   "host-1",
+		"path":   "/srv/app",
+		"reason": "inspect",
+	}, tool)
+	if err != nil {
+		t.Fatalf("execute bifrost unified tool: %v", err)
+	}
+	if result != "listed /srv/app" {
+		t.Fatalf("unexpected bifrost result: %q", result)
+	}
+	stored, ok := app.consumeBifrostToolResult(session.ID, "list_files")
+	if !ok {
+		t.Fatal("expected bifrost result to be stored")
+	}
+	if stored.OutputText != "listed /srv/app" {
+		t.Fatalf("expected stored output text, got %#v", stored)
+	}
+	if got := getStringAny(stored.ProjectionPayload, "toolNameOverride"); got != "list_remote_files" {
+		t.Fatalf("expected tool name override to be recorded, got %#v", stored.ProjectionPayload)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/lizhongxuan/aiops-codex/internal/agentloop"
 	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
+	"github.com/lizhongxuan/aiops-codex/internal/filepatch"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 )
@@ -630,7 +631,6 @@ func (a *App) bifrostQueryAIServerState(_ context.Context, session *agentloop.Se
 		card.Text = responseText
 		card.UpdatedAt = model.NowString()
 	})
-	a.broadcastSnapshot(sessionID)
 	return responseText, nil
 }
 
@@ -723,11 +723,13 @@ func (a *App) bifrostEnterPlanMode(_ context.Context, session *agentloop.Session
 		Summary: reason,
 		Status:  "inProgress",
 		Detail: map[string]any{
-			"tool":   "enter_plan_mode",
-			"mode":   "plan",
-			"goal":   goal,
-			"reason": reason,
-			"scope":  strings.TrimSpace(getStringAny(arguments, "scope")),
+			"tool":        "enter_plan_mode",
+			"displayName": "进入计划模式",
+			"toolKind":    "plan",
+			"mode":        "plan",
+			"goal":        goal,
+			"reason":      reason,
+			"scope":       strings.TrimSpace(getStringAny(arguments, "scope")),
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -752,16 +754,18 @@ func (a *App) bifrostUpdatePlan(_ context.Context, session *agentloop.Session, c
 		Status:  "inProgress",
 		Items:   planItemsFromArguments(arguments),
 		Detail: map[string]any{
-			"tool":       "update_plan",
-			"mode":       "plan",
-			"summary":    summary,
-			"background": strings.TrimSpace(getStringAny(arguments, "background")),
-			"scope":      strings.TrimSpace(getStringAny(arguments, "scope")),
+			"tool":        "update_plan",
+			"displayName": "计划更新",
+			"toolKind":    "plan",
+			"mode":        "plan",
+			"summary":     summary,
+			"background":  strings.TrimSpace(getStringAny(arguments, "background")),
+			"scope":       strings.TrimSpace(getStringAny(arguments, "scope")),
 			"assumptions": strings.TrimSpace(getStringAny(arguments, "assumptions")),
-			"risk":       strings.TrimSpace(getStringAny(arguments, "risk", "risks")),
-			"rollback":   strings.TrimSpace(getStringAny(arguments, "rollback")),
-			"validation": strings.TrimSpace(getStringAny(arguments, "validation")),
-			"steps":      arguments["steps"],
+			"risk":        strings.TrimSpace(getStringAny(arguments, "risk", "risks")),
+			"rollback":    strings.TrimSpace(getStringAny(arguments, "rollback")),
+			"validation":  strings.TrimSpace(getStringAny(arguments, "validation")),
+			"steps":       arguments["steps"],
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -802,23 +806,28 @@ func (a *App) bifrostExitPlanMode(_ context.Context, session *agentloop.Session,
 			Decisions: approval.Decisions,
 		},
 		Detail: a.approvalCardDetail(session.ID, approval, map[string]any{
-			"tool":       "exit_plan_mode",
-			"mode":       "plan",
-			"summary":    summary,
-			"plan":       strings.TrimSpace(getStringAny(arguments, "plan")),
+			"tool":        "exit_plan_mode",
+			"displayName": "计划审批",
+			"toolKind":    "approval",
+			"mode":        "plan",
+			"summary":     summary,
+			"plan":        strings.TrimSpace(getStringAny(arguments, "plan")),
 			"assumptions": strings.TrimSpace(getStringAny(arguments, "assumptions")),
-			"risk":       strings.TrimSpace(getStringAny(arguments, "risk", "risks")),
-			"rollback":   strings.TrimSpace(getStringAny(arguments, "rollback")),
-			"validation": strings.TrimSpace(getStringAny(arguments, "validation")),
-			"tasks":      arguments["tasks"],
+			"risk":        strings.TrimSpace(getStringAny(arguments, "risk", "risks")),
+			"rollback":    strings.TrimSpace(getStringAny(arguments, "rollback")),
+			"validation":  strings.TrimSpace(getStringAny(arguments, "validation")),
+			"tasks":       arguments["tasks"],
 		}),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	a.store.AddApproval(session.ID, approval)
-	a.store.UpsertCard(session.ID, card)
 	a.setRuntimeTurnPhase(session.ID, "waiting_approval")
-	a.recordOrchestratorApprovalRequested(session.ID, approval)
+	emitted := a.emitBifrostApprovalRequestedEvent(context.Background(), session.ID, "exit_plan_mode", approval, card)
+	if !emitted {
+		a.store.AddApproval(session.ID, approval)
+		a.store.UpsertCard(session.ID, card)
+		a.projectApprovalRequestedFallback(session.ID, approval, card, false)
+	}
 	a.auditApprovalRequested(session.ID, approval, map[string]any{
 		"planSummary": truncate(summary, 400),
 	})
@@ -878,11 +887,11 @@ func (a *App) bifrostRequestApproval(_ context.Context, session *agentloop.Sessi
 		UpdatedAt: now,
 	}
 	a.setRuntimeTurnPhase(session.ID, "waiting_approval")
-	a.store.AddApproval(session.ID, approval)
-	a.store.UpsertCard(session.ID, card)
-	a.recordOrchestratorApprovalRequested(session.ID, approval)
-	if kind := a.sessionKind(session.ID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
-		a.mirrorInternalApprovalToWorkspace(session.ID, approval, card)
+	emitted := a.emitBifrostApprovalRequestedEvent(context.Background(), session.ID, call.Function.Name, approval, card)
+	if !emitted {
+		a.store.AddApproval(session.ID, approval)
+		a.store.UpsertCard(session.ID, card)
+		a.projectApprovalRequestedFallback(session.ID, approval, card, false)
 	}
 	a.auditApprovalRequested(session.ID, approval, map[string]any{
 		"riskAssessment": emptyToNil(strings.TrimSpace(riskAssessment)),
@@ -897,7 +906,7 @@ func (a *App) bifrostRequestApproval(_ context.Context, session *agentloop.Sessi
 	return "", agentloop.ErrPauseTurn
 }
 
-func (a *App) bifrostDispatchTasks(_ context.Context, session *agentloop.Session, _ bifrost.ToolCall, arguments map[string]any) (string, error) {
+func (a *App) bifrostDispatchTasks(_ context.Context, session *agentloop.Session, call bifrost.ToolCall, arguments map[string]any) (string, error) {
 	storeSession := a.store.EnsureSession(session.ID)
 	if storeSession.Runtime.PlanMode {
 		return "", errors.New("orchestrator_dispatch_tasks is not allowed in plan mode. Use exit_plan_mode to get approval first")
@@ -910,6 +919,50 @@ func (a *App) bifrostDispatchTasks(_ context.Context, session *agentloop.Session
 	if err != nil {
 		return "", err
 	}
+	now := model.NowString()
+	cardID := ""
+	if strings.TrimSpace(call.ID) != "" {
+		cardID = dynamicToolCardID(call.ID)
+	}
+	if strings.TrimSpace(cardID) == "" {
+		cardID = model.NewID("dispatch")
+	}
+	card := model.Card{
+		ID:      cardID,
+		Type:    "DispatchSummaryCard",
+		Title:   fmt.Sprintf("派发 %d 个任务", result.Accepted),
+		Summary: fmt.Sprintf("Activated: %d | Queued: %d", result.Activated, result.Queued),
+		Status:  "inProgress",
+		Detail: map[string]any{
+			"tool":                "orchestrator_dispatch_tasks",
+			"displayName":         "任务派发",
+			"toolKind":            "agent",
+			"accepted":            result.Accepted,
+			"activated":           result.Activated,
+			"queued":              result.Queued,
+			"targetSummary":       dispatchTaskTargetSummary(req),
+			"workerStatusSummary": dispatchWorkerStatusSummary(result),
+			"subtaskSummary":      dispatchTaskTitlesSummary(req),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	a.store.UpsertCard(session.ID, card)
+	a.bindCardEvidence(session.ID, cardID, evidenceArtifactInput{
+		Kind:       "dispatch_workers",
+		SourceKind: "orchestration",
+		SourceRef:  firstNonEmptyValue(cardID, "dispatch"),
+		Title:      card.Title,
+		Summary:    card.Summary,
+		Content:    stableCardJSON(arguments),
+		Raw: map[string]any{
+			"accepted":  result.Accepted,
+			"activated": result.Activated,
+			"queued":    result.Queued,
+			"tasks":     arguments,
+		},
+	})
+	a.broadcastSnapshot(session.ID)
 	return fmt.Sprintf("dispatch accepted=%d activated=%d queued=%d", result.Accepted, result.Activated, result.Queued), nil
 }
 
@@ -1065,35 +1118,7 @@ func (a *App) bifrostListRemoteFiles(ctx context.Context, session *agentloop.Ses
 	if err != nil {
 		return "", err
 	}
-	processCardID := "process-" + dynamicToolCardID(call.ID)
-	startedAt := model.NowString()
-	a.beginToolProcess(session.ID, processCardID, "browsing", "现在列出 "+args.Path)
-	a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-		runtime.Activity.CurrentListingPath = args.Path
-	})
-	a.auditRemoteToolEvent("remote.file_list.started", session.ID, hostID, "list_files", map[string]any{
-		"path":      args.Path,
-		"startedAt": startedAt,
-	})
-	result, err := a.remoteListFiles(ctx, hostID, args.Path, args.Recursive, args.MaxEntries)
-	if err != nil {
-		a.failToolProcess(session.ID, processCardID, "列目录失败："+err.Error())
-		a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-			if runtime.Activity.CurrentListingPath == args.Path {
-				runtime.Activity.CurrentListingPath = ""
-			}
-		})
-		return "", err
-	}
-	a.completeToolProcess(session.ID, processCardID, "已列出 "+result.Path)
-	a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-		if runtime.Activity.CurrentListingPath == args.Path || runtime.Activity.CurrentListingPath == result.Path {
-			runtime.Activity.CurrentListingPath = ""
-		}
-		runtime.Activity.ListCount++
-	})
-	a.broadcastSnapshot(session.ID)
-	return renderFileListMessage(hostID, result.Path, result.Entries, result.Truncated), nil
+	return a.executeBifrostUnifiedToolResult(ctx, session, call, "list_files", "list_remote_files", hostID, arguments, a.remoteFileListUnifiedTool())
 }
 
 func (a *App) bifrostReadRemoteFile(ctx context.Context, session *agentloop.Session, call bifrost.ToolCall, arguments map[string]any) (string, error) {
@@ -1105,38 +1130,7 @@ func (a *App) bifrostReadRemoteFile(ctx context.Context, session *agentloop.Sess
 	if err != nil {
 		return "", err
 	}
-	processCardID := "process-" + dynamicToolCardID(call.ID)
-	a.beginToolProcess(session.ID, processCardID, "browsing", "现在浏览 "+args.Path)
-	a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-		runtime.Activity.CurrentReadingFile = args.Path
-	})
-	result, err := a.remoteReadFile(ctx, hostID, args.Path, args.MaxBytes)
-	if err != nil {
-		a.failToolProcess(session.ID, processCardID, "浏览文件失败："+err.Error())
-		a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-			if runtime.Activity.CurrentReadingFile == args.Path {
-				runtime.Activity.CurrentReadingFile = ""
-			}
-		})
-		return "", err
-	}
-	a.completeToolProcess(session.ID, processCardID, "已浏览 "+result.Path)
-	a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-		if runtime.Activity.CurrentReadingFile == args.Path || runtime.Activity.CurrentReadingFile == result.Path {
-			runtime.Activity.CurrentReadingFile = ""
-		}
-		entry := model.ActivityEntry{Label: filepathBase(result.Path), Path: result.Path}
-		appendUniqueActivityEntry(&runtime.Activity.ViewedFiles, entry, func(existing, next model.ActivityEntry) bool {
-			return existing.Path != "" && existing.Path == next.Path
-		})
-		runtime.Activity.FilesViewed = len(runtime.Activity.ViewedFiles)
-	})
-	a.broadcastSnapshot(session.ID)
-	toolText := fmt.Sprintf("Read file %s:\n\n%s", result.Path, result.Content)
-	if result.Truncated {
-		toolText += "\n\n[truncated]"
-	}
-	return toolText, nil
+	return a.executeBifrostUnifiedToolResult(ctx, session, call, "read_file", "read_remote_file", hostID, arguments, a.remoteFileReadUnifiedTool())
 }
 
 func (a *App) bifrostSearchRemoteFiles(ctx context.Context, session *agentloop.Session, call bifrost.ToolCall, arguments map[string]any) (string, error) {
@@ -1148,41 +1142,98 @@ func (a *App) bifrostSearchRemoteFiles(ctx context.Context, session *agentloop.S
 	if err != nil {
 		return "", err
 	}
-	processCardID := "process-" + dynamicToolCardID(call.ID)
-	a.beginToolProcess(session.ID, processCardID, "searching", "现在搜索内容（"+args.Query+"）")
-	a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-		runtime.Activity.CurrentSearchKind = "content"
-		runtime.Activity.CurrentSearchQuery = args.Query
-	})
-	result, err := a.remoteSearchFiles(ctx, hostID, args.Path, args.Query, args.MaxMatches)
+	return a.executeBifrostUnifiedToolResult(ctx, session, call, "search_files", "search_remote_files", hostID, arguments, a.remoteFileSearchUnifiedTool())
+}
+
+func (a *App) executeBifrostUnifiedToolResult(ctx context.Context, session *agentloop.Session, call bifrost.ToolCall, toolName, projectedToolName, hostID string, arguments map[string]any, tool UnifiedTool) (string, error) {
+	if a == nil || tool == nil {
+		return "", errors.New("bifrost tool is not configured")
+	}
+
+	invocationArgs := cloneAnyMap(arguments)
+	if invocationArgs == nil {
+		invocationArgs = make(map[string]any)
+	}
+	if strings.TrimSpace(getStringAny(invocationArgs, "hostId", "host_id")) == "" && strings.TrimSpace(hostID) != "" {
+		invocationArgs["hostId"] = strings.TrimSpace(hostID)
+	}
+
+	req := ToolCallRequest{
+		Invocation: ToolInvocation{
+			InvocationID: model.NewID("toolinv"),
+			SessionID:    session.ID,
+			ThreadID:     a.sessionThreadID(session.ID),
+			TurnID:       a.sessionTurnID(session.ID),
+			ToolName:     toolName,
+			ToolKind:     "bifrost",
+			Source:       ToolInvocationSourceAgentloopToolCall,
+			HostID:       defaultHostID(hostID),
+			CallID:       strings.TrimSpace(call.ID),
+			Arguments:    invocationArgs,
+			ReadOnly:     true,
+			StartedAt:    time.Now(),
+		},
+		Input: invocationArgs,
+	}
+	req.Normalize()
+
+	callResult, err := tool.Call(ctx, req)
 	if err != nil {
-		a.failToolProcess(session.ID, processCardID, "搜索内容失败："+err.Error())
-		a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-			if runtime.Activity.CurrentSearchKind == "content" && runtime.Activity.CurrentSearchQuery == args.Query {
-				runtime.Activity.CurrentSearchKind = ""
-				runtime.Activity.CurrentSearchQuery = ""
-			}
-		})
 		return "", err
 	}
-	a.completeToolProcess(session.ID, processCardID, fmt.Sprintf("已搜索内容（命中 %d 个位置）", len(result.Matches)))
-	a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
-		if runtime.Activity.CurrentSearchKind == "content" && runtime.Activity.CurrentSearchQuery == args.Query {
-			runtime.Activity.CurrentSearchKind = ""
-			runtime.Activity.CurrentSearchQuery = ""
+	display := callResult.DisplayOutput
+	if display == nil && tool.Display() != nil {
+		display = tool.Display().RenderResult(callResult)
+	}
+	result := toolExecutionResultFromCallResult(req.Invocation, callResult, display)
+	if projectedToolName != "" && projectedToolName != toolName {
+		if result.ProjectionPayload == nil {
+			result.ProjectionPayload = make(map[string]any)
 		}
-		runtime.Activity.SearchCount++
-		runtime.Activity.SearchLocationCount += len(result.Matches)
-		appendUniqueActivityEntry(&runtime.Activity.SearchedContentQueries, model.ActivityEntry{
-			Label: fmt.Sprintf("在 %s 中搜索 %s（命中 %d 个位置）", result.Path, result.Query, len(result.Matches)),
-			Query: result.Query,
-			Path:  result.Path,
-		}, func(existing, next model.ActivityEntry) bool {
-			return existing.Path == next.Path && existing.Query == next.Query
-		})
-	})
-	a.broadcastSnapshot(session.ID)
-	return renderFileSearchMessage(hostID, result.Path, result.Query, result.Matches, result.Truncated), nil
+		result.ProjectionPayload["toolNameOverride"] = projectedToolName
+	}
+	a.storeBifrostToolResult(session.ID, toolName, result)
+
+	switch result.Status {
+	case ToolRunStatusCompleted:
+		return result.OutputText, nil
+	case ToolRunStatusCancelled:
+		return "", errors.New(firstNonEmptyValue(strings.TrimSpace(result.ErrorText), "tool execution cancelled"))
+	default:
+		return "", errors.New(firstNonEmptyValue(strings.TrimSpace(result.ErrorText), strings.TrimSpace(result.OutputText), "tool execution failed"))
+	}
+}
+
+func (a *App) storeBifrostToolResult(sessionID, toolName string, result ToolExecutionResult) {
+	if a == nil {
+		return
+	}
+	a.bifrostToolResults.Store(sessionID+":"+toolName, result)
+}
+
+func (a *App) consumeBifrostToolResult(sessionID, toolName string) (ToolExecutionResult, bool) {
+	if a == nil {
+		return ToolExecutionResult{}, false
+	}
+	key := sessionID + ":" + toolName
+	raw, ok := a.bifrostToolResults.LoadAndDelete(key)
+	if !ok {
+		return ToolExecutionResult{}, false
+	}
+	result, ok := raw.(ToolExecutionResult)
+	return result, ok
+}
+
+func synthesizeBifrostApplyPatchResult(processCardID string, args map[string]interface{}, outputText string, execErr error) (ToolExecutionResult, bool) {
+	patchText, _ := args["patch"].(string)
+	if strings.TrimSpace(patchText) == "" {
+		return ToolExecutionResult{}, false
+	}
+	action, err := filepatch.ParsePatch(patchText)
+	if err != nil {
+		return ToolExecutionResult{}, false
+	}
+	return patchExecutionResult(processCardID, action, outputText, execErr, time.Now())
 }
 
 func (a *App) bifrostWriteRemoteFile(ctx context.Context, session *agentloop.Session, call bifrost.ToolCall, arguments map[string]any) (string, error) {
@@ -1218,7 +1269,6 @@ func (a *App) bifrostWriteRemoteFile(ctx context.Context, session *agentloop.Ses
 		return "", annotatedErr
 	}
 
-	diff := renderFileDiff(result.Path, result.OldContent, result.NewContent)
 	now := model.NowString()
 	a.completeToolProcess(session.ID, processCardID, "已修改 "+result.Path)
 	a.store.UpdateRuntime(session.ID, func(runtime *model.RuntimeState) {
@@ -1227,20 +1277,17 @@ func (a *App) bifrostWriteRemoteFile(ctx context.Context, session *agentloop.Ses
 		}
 		runtime.Activity.FilesChanged++
 	})
-	a.store.UpsertCard(session.ID, model.Card{
-		ID:      dynamicToolCardID(call.ID),
-		Type:    "FileChangeCard",
-		Title:   "Remote file change",
-		Status:  "completed",
-		Changes: []model.FileChange{{Path: result.Path, Kind: remoteFileChangeKind(result.Created, result.WriteMode), Diff: diff}},
-		Text:    fmt.Sprintf("已修改远程文件 %s", result.Path),
-		HostID:  hostID,
-		HostName: func() string {
-			return hostNameOrID(a.findHost(hostID))
-		}(),
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
+	card := fileWriteResultCard(
+		dynamicToolCardID(call.ID),
+		hostID,
+		hostNameOrID(a.findHost(hostID)),
+		result,
+		nil,
+		now,
+		now,
+	)
+	a.store.UpsertCard(session.ID, card)
+	a.syncActionArtifacts(session.ID, card)
 	a.broadcastSnapshot(session.ID)
 	return fmt.Sprintf("Updated file %s successfully.", result.Path), nil
 }
@@ -1331,12 +1378,21 @@ func (a *App) requestBifrostToolApproval(ctx context.Context, session *agentloop
 			a.blockApprovalByPlanMode(sessionID, approval, "计划审批通过前不能执行变更命令")
 			return "", errors.New("计划审批通过前不能执行变更命令")
 		}
-		if autoResolved := a.autoApproveBifrostToolApproval(session, approval, decision.Mode == model.AgentPermissionModeAllow && !capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "commandExecution"))); autoResolved {
+		resolution, err := a.toolApprovalCoordinator.Request(ctx, buildToolApprovalRequestForExistingApproval(
+			sessionID,
+			call.Function.Name,
+			approval,
+			decision.Mode == model.AgentPermissionModeAllow && !capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "commandExecution")),
+			readonly,
+		))
+		if err != nil {
+			return "", err
+		}
+		if resolution.IsApproved() {
+			a.resolveAutoApprovedBifrostToolApproval(ctx, session, approval, resolution)
 			return approval.ID, nil
 		}
 
-		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
-		a.store.AddApproval(sessionID, approval)
 		card := model.Card{
 			ID:      approval.ItemID,
 			Type:    "CommandApprovalCard",
@@ -1355,15 +1411,14 @@ func (a *App) requestBifrostToolApproval(ctx context.Context, session *agentloop
 			UpdatedAt: approval.RequestedAt,
 		}
 		applyCardHost(&card, host)
-		a.store.UpsertCard(sessionID, card)
-		a.recordOrchestratorApprovalRequested(sessionID, approval)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
-			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
-			if kind == model.SessionKindWorker {
-				if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
-					a.activateQueuedMissionWorkers(workspaceSessionID)
-				}
-			}
+		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
+		emitted := a.emitBifrostApprovalRequestedEventWithOptions(ctx, sessionID, call.Function.Name, approval, card, approvalRequestedEventOptions{
+			activateQueuedWorkers: a.sessionKind(sessionID) == model.SessionKindWorker,
+		})
+		if !emitted {
+			a.store.AddApproval(sessionID, approval)
+			a.store.UpsertCard(sessionID, card)
+			a.projectApprovalRequestedFallback(sessionID, approval, card, true)
 		}
 		a.auditApprovalRequested(sessionID, approval, nil)
 		a.broadcastSnapshot(sessionID)
@@ -1411,12 +1466,21 @@ func (a *App) requestBifrostToolApproval(ctx context.Context, session *agentloop
 			a.blockApprovalByPlanMode(sessionID, approval, "计划审批通过前不能执行文件变更")
 			return "", errors.New("计划审批通过前不能执行文件变更")
 		}
-		if autoResolved := a.autoApproveBifrostToolApproval(session, approval, !capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "fileChange"))); autoResolved {
+		resolution, err := a.toolApprovalCoordinator.Request(ctx, buildToolApprovalRequestForExistingApproval(
+			sessionID,
+			call.Function.Name,
+			approval,
+			!capabilityNeedsApproval(a.effectiveCapabilityState(hostID, "fileChange")),
+			false,
+		))
+		if err != nil {
+			return "", err
+		}
+		if resolution.IsApproved() {
+			a.resolveAutoApprovedBifrostToolApproval(ctx, session, approval, resolution)
 			return approval.ID, nil
 		}
 
-		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
-		a.store.AddApproval(sessionID, approval)
 		card := model.Card{
 			ID:      approval.ItemID,
 			Type:    "FileChangeApprovalCard",
@@ -1436,15 +1500,14 @@ func (a *App) requestBifrostToolApproval(ctx context.Context, session *agentloop
 			UpdatedAt: approval.RequestedAt,
 		}
 		applyCardHost(&card, a.findHost(hostID))
-		a.store.UpsertCard(sessionID, card)
-		a.recordOrchestratorApprovalRequested(sessionID, approval)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindPlanner || kind == model.SessionKindWorker {
-			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
-			if kind == model.SessionKindWorker {
-				if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
-					a.activateQueuedMissionWorkers(workspaceSessionID)
-				}
-			}
+		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
+		emitted := a.emitBifrostApprovalRequestedEventWithOptions(ctx, sessionID, call.Function.Name, approval, card, approvalRequestedEventOptions{
+			activateQueuedWorkers: a.sessionKind(sessionID) == model.SessionKindWorker,
+		})
+		if !emitted {
+			a.store.AddApproval(sessionID, approval)
+			a.store.UpsertCard(sessionID, card)
+			a.projectApprovalRequestedFallback(sessionID, approval, card, true)
 		}
 		a.auditApprovalRequested(sessionID, approval, map[string]any{"filePath": fileArgs.Path})
 		a.broadcastSnapshot(sessionID)
@@ -1454,34 +1517,12 @@ func (a *App) requestBifrostToolApproval(ctx context.Context, session *agentloop
 	}
 }
 
-func (a *App) autoApproveBifrostToolApproval(session *agentloop.Session, approval model.ApprovalRequest, allowByPolicy bool) bool {
-	sessionID := session.ID
-	if approval.Fingerprint != "" {
-		if _, ok := a.store.ApprovalGrant(sessionID, approval.Fingerprint); ok {
-			a.resolveAutoApprovedBifrostToolApproval(session, approval, "accepted_for_session_auto", "Auto-approved for session", autoApprovalNoticeText(approval), "accept_session")
-			return true
-		}
-	}
-	if approval.Fingerprint != "" && approval.HostID != "" && a.approvalGrantStore != nil {
-		if _, ok := a.approvalGrantStore.MatchFingerprint(approval.HostID, approval.Fingerprint); ok {
-			a.resolveAutoApprovedBifrostToolApproval(session, approval, "accepted_for_host_auto", "Auto-approved by host grant", hostGrantAutoApprovalNoticeText(approval), "accept")
-			return true
-		}
-	}
-	if allowByPolicy {
-		a.resolveAutoApprovedBifrostToolApproval(session, approval, "accepted_by_policy_auto", "Auto-approved by profile", "当前 main-agent profile 允许该操作直接执行，因此已自动放行。", "accept")
-		return true
-	}
-	return false
-}
-
-func (a *App) resolveAutoApprovedBifrostToolApproval(session *agentloop.Session, approval model.ApprovalRequest, status, title, text, decision string) {
+func (a *App) resolveAutoApprovedBifrostToolApproval(ctx context.Context, session *agentloop.Session, approval model.ApprovalRequest, resolution ApprovalResolution) {
+	status, title, text, decision := bifrostAutoApprovalPresentation(approval, resolution.RuleName)
 	now := model.NowString()
 	approval.Status = status
 	approval.ResolvedAt = now
-	a.store.AddApproval(session.ID, approval)
-	a.store.ResolveApproval(session.ID, approval.ID, approval.Status, now)
-	a.store.UpsertCard(session.ID, model.Card{
+	card := model.Card{
 		ID:        "auto-approval-" + approval.ItemID,
 		Type:      "NoticeCard",
 		Title:     title,
@@ -1489,10 +1530,16 @@ func (a *App) resolveAutoApprovedBifrostToolApproval(session *agentloop.Session,
 		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	emitted := a.emitBifrostApprovalResolvedEvent(ctx, session.ID, resolution.ToolName, "executing", approval, card)
+	if !emitted {
+		a.store.AddApproval(session.ID, approval)
+		a.store.ResolveApproval(session.ID, approval.ID, approval.Status, now)
+		a.store.UpsertCard(session.ID, card)
+	}
 	a.setRuntimeTurnPhase(session.ID, "executing")
-	if a.orchestrator != nil && a.sessionKind(session.ID) == model.SessionKindWorker {
-		_ = a.orchestrator.SyncWorkerPhase(session.ID, "executing")
+	if !emitted {
+		a.syncWorkerPhaseAndRefreshWorkspace(session.ID, "executing")
 	}
 	a.recordOrchestratorApprovalResolved(session.ID, approval)
 	a.broadcastSnapshot(session.ID)
@@ -1500,6 +1547,114 @@ func (a *App) resolveAutoApprovedBifrostToolApproval(session *agentloop.Session,
 		ApprovalID: approval.ID,
 		Decision:   decision,
 	})
+}
+
+func bifrostAutoApprovalPresentation(approval model.ApprovalRequest, ruleName string) (status, title, text, decision string) {
+	return approvalAutoApprovalPresentation(approval, ruleName)
+}
+
+func (a *App) emitBifrostApprovalRequestedEvent(ctx context.Context, sessionID, toolName string, approval model.ApprovalRequest, card model.Card) bool {
+	return a.emitBifrostApprovalRequestedEventWithOptions(ctx, sessionID, toolName, approval, card, approvalRequestedEventOptions{})
+}
+
+func (a *App) emitBifrostApprovalRequestedEventWithOptions(ctx context.Context, sessionID, toolName string, approval model.ApprovalRequest, card model.Card, opts approvalRequestedEventOptions) bool {
+	return a.emitApprovalRequestedEventWithOptions(ctx, sessionID, toolName, approval, card, opts)
+}
+
+func (a *App) emitBifrostApprovalResolvedEvent(ctx context.Context, sessionID, toolName, phase string, approval model.ApprovalRequest, card model.Card) bool {
+	return a.emitApprovalResolvedEvent(ctx, sessionID, toolName, phase, approval, card)
+}
+
+func newBifrostApprovalRequestedEvent(sessionID, toolName string, approval model.ApprovalRequest, card model.Card) ToolLifecycleEvent {
+	return ToolLifecycleEvent{
+		EventID:    model.NewID("toolevent"),
+		SessionID:  sessionID,
+		ToolName:   firstNonEmptyValue(strings.TrimSpace(toolName), bifrostApprovalToolName(approval.Type)),
+		Type:       ToolLifecycleEventApprovalRequested,
+		Phase:      "waiting_approval",
+		HostID:     defaultHostID(approval.HostID),
+		CardID:     card.ID,
+		ApprovalID: approval.ID,
+		Label:      firstNonEmptyValue(strings.TrimSpace(card.Title), strings.TrimSpace(approval.Reason), strings.TrimSpace(approval.Command), "需要审批"),
+		Message:    firstNonEmptyValue(strings.TrimSpace(card.Text), strings.TrimSpace(approval.Reason), strings.TrimSpace(approval.Command), "需要审批"),
+		CreatedAt:  firstNonEmptyValue(strings.TrimSpace(approval.RequestedAt), strings.TrimSpace(card.CreatedAt), model.NowString()),
+		Payload: map[string]any{
+			"approval": bifrostApprovalEventPayload(approval),
+			"card":     bifrostApprovalCardEventPayload(card),
+		},
+	}
+}
+
+func newBifrostApprovalResolvedEvent(sessionID, toolName, phase string, approval model.ApprovalRequest, card model.Card) ToolLifecycleEvent {
+	return ToolLifecycleEvent{
+		EventID:    model.NewID("toolevent"),
+		SessionID:  sessionID,
+		ToolName:   firstNonEmptyValue(strings.TrimSpace(toolName), bifrostApprovalToolName(approval.Type)),
+		Type:       ToolLifecycleEventApprovalResolved,
+		Phase:      firstNonEmptyValue(strings.TrimSpace(phase), "thinking"),
+		HostID:     defaultHostID(approval.HostID),
+		CardID:     card.ID,
+		ApprovalID: approval.ID,
+		Label:      firstNonEmptyValue(strings.TrimSpace(card.Title), strings.TrimSpace(card.Text), strings.TrimSpace(approval.Reason), "审批已处理"),
+		Message:    firstNonEmptyValue(strings.TrimSpace(card.Text), strings.TrimSpace(card.Title), strings.TrimSpace(approval.Reason), "审批已处理"),
+		CreatedAt:  firstNonEmptyValue(strings.TrimSpace(approval.ResolvedAt), strings.TrimSpace(card.UpdatedAt), model.NowString()),
+		Payload: map[string]any{
+			"approval": bifrostApprovalEventPayload(approval),
+			"card":     bifrostApprovalCardEventPayload(card),
+		},
+	}
+}
+
+func bifrostApprovalEventPayload(approval model.ApprovalRequest) map[string]any {
+	return map[string]any{
+		"approvalId":   approval.ID,
+		"requestIdRaw": approval.RequestIDRaw,
+		"hostId":       defaultHostID(approval.HostID),
+		"fingerprint":  approval.Fingerprint,
+		"approvalType": approval.Type,
+		"status":       approval.Status,
+		"threadId":     approval.ThreadID,
+		"turnId":       approval.TurnID,
+		"itemId":       approval.ItemID,
+		"command":      approval.Command,
+		"cwd":          approval.Cwd,
+		"reason":       approval.Reason,
+		"grantRoot":    approval.GrantRoot,
+		"changes":      append([]model.FileChange(nil), approval.Changes...),
+		"requestedAt":  approval.RequestedAt,
+		"resolvedAt":   approval.ResolvedAt,
+		"decisions":    append([]string(nil), approval.Decisions...),
+	}
+}
+
+func bifrostApprovalCardEventPayload(card model.Card) map[string]any {
+	return map[string]any{
+		"cardId":    card.ID,
+		"cardType":  card.Type,
+		"title":     card.Title,
+		"text":      card.Text,
+		"summary":   card.Summary,
+		"status":    card.Status,
+		"command":   card.Command,
+		"cwd":       card.Cwd,
+		"hostId":    card.HostID,
+		"hostName":  card.HostName,
+		"changes":   append([]model.FileChange(nil), card.Changes...),
+		"detail":    cloneAnyMap(card.Detail),
+		"createdAt": card.CreatedAt,
+		"updatedAt": card.UpdatedAt,
+	}
+}
+
+func bifrostApprovalToolName(approvalType string) string {
+	switch strings.TrimSpace(approvalType) {
+	case bifrostApprovalTypeRemoteFileChange:
+		return "write_file"
+	case bifrostApprovalTypeRemoteCommand:
+		return "execute_command"
+	default:
+		return strings.TrimSpace(approvalType)
+	}
 }
 
 func (a *App) OnAssistantDelta(_ context.Context, session *agentloop.Session, delta string) error {
@@ -1557,14 +1712,8 @@ func (a *App) resolveBifrostApproval(targetSessionID string, approval model.Appr
 	}
 	now := model.NowString()
 	cardStatus := approvalStatusFromDecision(decision)
-	a.store.ResolveApproval(targetSessionID, approval.ID, cardStatus, now)
 	approval.Status = cardStatus
 	approval.ResolvedAt = now
-	a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
-	a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
-		card.Status = cardStatus
-		card.UpdatedAt = now
-	})
 
 	nextPhase := "thinking"
 	if a.hasPendingApprovals(targetSessionID) {
@@ -1572,9 +1721,19 @@ func (a *App) resolveBifrostApproval(targetSessionID string, approval model.Appr
 	} else if decision == "accept" || decision == "accept_session" {
 		nextPhase = "executing"
 	}
+	memoCard := approvalMemoCard(a.findHost(approval.HostID), approval, decision, now)
+	emitted := a.emitBifrostApprovalResolvedEvent(context.Background(), targetSessionID, bifrostApprovalToolName(approval.Type), nextPhase, approval, memoCard)
+	if !emitted {
+		a.store.ResolveApproval(targetSessionID, approval.ID, cardStatus, now)
+		a.store.UpsertCard(targetSessionID, memoCard)
+		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
+			card.Status = cardStatus
+			card.UpdatedAt = now
+		})
+	}
 	a.setRuntimeTurnPhase(targetSessionID, nextPhase)
-	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, nextPhase)
+	if !emitted {
+		a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, nextPhase)
 	}
 	a.recordOrchestratorApprovalResolved(targetSessionID, approval)
 	a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
@@ -1591,13 +1750,16 @@ func (a *App) resolveBifrostApproval(targetSessionID string, approval model.Appr
 // runtime.Activity so the frontend shows real-time tool status.
 // ---------------------------------------------------------------------------
 
-func (a *App) OnToolStart(_ context.Context, session *agentloop.Session, toolName string, args map[string]interface{}) {
+func (a *App) OnToolStart(ctx context.Context, session *agentloop.Session, toolName string, args map[string]interface{}) {
 	sessionID := session.ID
 
 	// For single_host sessions, keep the UI lightweight, but still update
 	// runtime.Activity so the frontend can stream Codex-style progress lines.
 	kind := a.sessionKind(sessionID)
-	if kind == "" || kind == "single_host" {
+	if isSingleHostSessionKind(kind) {
+		if a.emitBifrostToolStartEvent(ctx, sessionID, kind, toolName, args) {
+			return
+		}
 		a.store.UpdateRuntime(sessionID, func(rt *model.RuntimeState) {
 			switch toolName {
 			case "web_search":
@@ -1622,6 +1784,10 @@ func (a *App) OnToolStart(_ context.Context, session *agentloop.Session, toolNam
 		})
 		a.setRuntimeTurnPhase(sessionID, "thinking")
 		a.broadcastSnapshot(sessionID)
+		return
+	}
+
+	if a.emitBifrostToolStartEvent(ctx, sessionID, kind, toolName, args) {
 		return
 	}
 
@@ -1659,14 +1825,109 @@ func (a *App) OnToolStart(_ context.Context, session *agentloop.Session, toolNam
 	a.bifrostToolCards.Store(sessionID+":"+toolName, cardID)
 }
 
+func (a *App) emitBifrostToolStartEvent(ctx context.Context, sessionID, sessionKind, toolName string, args map[string]interface{}) bool {
+	if a == nil || a.toolEventBus == nil {
+		return false
+	}
+	if sessionKind != model.SessionKindWorkspace && sessionKind != model.SessionKindWorker && !isSingleHostSessionKind(sessionKind) {
+		return false
+	}
+	if !isBifrostLifecycleProjectionTool(toolName) {
+		return false
+	}
+
+	invocationArgs := make(map[string]any, len(args))
+	for key, value := range args {
+		invocationArgs[key] = value
+	}
+
+	invocation := ToolInvocation{
+		InvocationID: model.NewID("toolinv"),
+		SessionID:    sessionID,
+		ToolName:     toolName,
+		ToolKind:     "bifrost",
+		Source:       ToolInvocationSourceAgentloopToolCall,
+		HostID:       defaultHostID(a.sessionHostID(sessionID)),
+		Arguments:    invocationArgs,
+		ReadOnly:     isBifrostLifecycleReadOnlyTool(toolName),
+		StartedAt:    time.Now(),
+	}
+	phase, label := toolPhaseAndLabel(toolName, args)
+	if isSingleHostSessionKind(sessionKind) {
+		phase = "thinking"
+	}
+	event := newToolStartedEvent(invocation, ToolDescriptor{
+		Name:         toolName,
+		Domain:       "bifrost",
+		Kind:         "bifrost",
+		DisplayLabel: label,
+		StartPhase:   phase,
+		IsReadOnly:   isBifrostLifecycleReadOnlyTool(toolName),
+	})
+	if event.Payload == nil {
+		event.Payload = make(map[string]any)
+	}
+	event.Payload["trackActivityStart"] = shouldBifrostLifecycleTrackActivityStart(toolName)
+	event.Payload["skipCardProjection"] = shouldBifrostLifecycleSkipCardProjection(toolName) || isSingleHostSessionKind(sessionKind)
+	if err := a.toolEventBus.Emit(ctx, event); err != nil {
+		log.Printf("[bifrost] failed to emit tool start event session=%s tool=%s err=%v", sessionID, toolName, err)
+	}
+	if !isSingleHostSessionKind(sessionKind) && !shouldBifrostLifecycleSkipCardProjection(toolName) {
+		a.bifrostToolCards.Store(sessionID+":"+toolName, event.CardID)
+	}
+	return true
+}
+
+func isBifrostLifecycleProjectionTool(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "web_search", "open_page", "find_in_page", "list_files", "list_dir", "read_file", "search_files", "execute_command", "execute_readonly_query", "query_ai_server_state", "readonly_host_inspect", "write_file", "apply_patch":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldBifrostLifecycleTrackActivityStart(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "web_search", "open_page", "find_in_page", "list_files", "list_dir", "read_file", "search_files":
+		return true
+	default:
+		return false
+	}
+}
+
+func isBifrostLifecycleReadOnlyTool(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "web_search", "open_page", "find_in_page", "list_files", "list_dir", "read_file", "search_files", "execute_readonly_query", "query_ai_server_state", "readonly_host_inspect":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldBifrostLifecycleSkipCardProjection(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "execute_readonly_query", "query_ai_server_state":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *App) OnToolComplete(ctx context.Context, session *agentloop.Session, toolName string, args map[string]interface{}, result string, err error) {
 	sessionID := session.ID
 	processCardID := ""
+	storedResult, hasStoredResult := a.consumeBifrostToolResult(sessionID, toolName)
 
 	// For single_host sessions, keep updating runtime.Activity, but skip
 	// ProcessLineCards so the UI stays in the lightweight Codex-style mode.
 	kind := a.sessionKind(sessionID)
-	if kind == "" || kind == "single_host" {
+	if isSingleHostSessionKind(kind) {
+		if a.emitBifrostToolCompletionEvent(ctx, sessionID, kind, toolName, args, processCardID, result, err, storedResult, hasStoredResult) {
+			a.bifrostToolCards.Delete(sessionID + ":" + toolName)
+			a.maybeCreateMCPResultCard(ctx, sessionID, toolName, processCardID, result, err)
+			return
+		}
 		a.store.UpdateRuntime(sessionID, func(rt *model.RuntimeState) {
 			switch toolName {
 			case "web_search":
@@ -1703,9 +1964,22 @@ func (a *App) OnToolComplete(ctx context.Context, session *agentloop.Session, to
 		return
 	}
 
-	// Workspace / worker sessions: complete the ProcessLineCard.
-	if raw, ok := a.bifrostToolCards.LoadAndDelete(sessionID + ":" + toolName); ok {
+	if raw, ok := a.bifrostToolCards.Load(sessionID + ":" + toolName); ok {
 		processCardID, _ = raw.(string)
+	}
+	if !hasStoredResult && toolName == "apply_patch" {
+		storedResult, hasStoredResult = synthesizeBifrostApplyPatchResult(processCardID, args, result, err)
+	}
+	if a.emitBifrostToolCompletionEvent(ctx, sessionID, kind, toolName, args, processCardID, result, err, storedResult, hasStoredResult) {
+		a.bifrostToolCards.Delete(sessionID + ":" + toolName)
+		a.maybeCreateMCPResultCard(ctx, sessionID, toolName, processCardID, result, err)
+		a.broadcastSnapshot(sessionID)
+		return
+	}
+
+	// Workspace / worker sessions: complete the ProcessLineCard.
+	if processCardID != "" {
+		a.bifrostToolCards.Delete(sessionID + ":" + toolName)
 		if processCardID != "" {
 			if err != nil {
 				a.failToolProcess(sessionID, processCardID, fmt.Sprintf("工具 %s 执行失败", toolName))
@@ -1753,6 +2027,99 @@ func (a *App) OnToolComplete(ctx context.Context, session *agentloop.Session, to
 	a.broadcastSnapshot(sessionID)
 }
 
+func (a *App) emitBifrostToolCompletionEvent(ctx context.Context, sessionID, sessionKind, toolName string, args map[string]interface{}, processCardID, result string, execErr error, storedResult ToolExecutionResult, hasStoredResult bool) bool {
+	if a == nil || a.toolEventBus == nil {
+		return false
+	}
+	if sessionKind != model.SessionKindWorkspace && sessionKind != model.SessionKindWorker && !isSingleHostSessionKind(sessionKind) {
+		return false
+	}
+	if !isBifrostLifecycleProjectionTool(toolName) {
+		return false
+	}
+
+	invocationArgs := make(map[string]any, len(args))
+	for key, value := range args {
+		invocationArgs[key] = value
+	}
+
+	invocation := ToolInvocation{
+		InvocationID: model.NewID("toolinv"),
+		SessionID:    sessionID,
+		ToolName:     toolName,
+		ToolKind:     "bifrost",
+		Source:       ToolInvocationSourceAgentloopToolCall,
+		HostID:       defaultHostID(a.sessionHostID(sessionID)),
+		Arguments:    invocationArgs,
+		ReadOnly:     isBifrostLifecycleReadOnlyTool(toolName),
+		StartedAt:    time.Now(),
+	}
+	_, label := toolPhaseAndLabel(toolName, args)
+
+	var event ToolLifecycleEvent
+	if execErr != nil {
+		event = newToolFailedEvent(invocation, execErr)
+		failureText := fmt.Sprintf("工具 %s 执行失败", toolName)
+		if hasStoredResult && strings.TrimSpace(storedResult.ErrorText) != "" {
+			failureText = strings.TrimSpace(storedResult.ErrorText)
+		}
+		event.Label = failureText
+		event.Message = failureText
+		event.Error = failureText
+	} else {
+		event = newToolCompletedEvent(invocation, ToolExecutionResult{
+			InvocationID: invocation.InvocationID,
+			Status:       ToolRunStatusCompleted,
+			OutputText:   result,
+			FinishedAt:   time.Now(),
+		})
+		event.Label = label
+		event.Message = label
+		if hasStoredResult && strings.TrimSpace(storedResult.LifecycleMessage) != "" {
+			event.Label = strings.TrimSpace(storedResult.LifecycleMessage)
+			event.Message = strings.TrimSpace(storedResult.LifecycleMessage)
+		}
+	}
+	event.CardID = strings.TrimSpace(processCardID)
+	if event.CardID == "" && !shouldBifrostLifecycleSkipCardProjection(toolName) && !isSingleHostSessionKind(sessionKind) {
+		if raw, ok := a.bifrostToolCards.Load(sessionID + ":" + toolName); ok {
+			if cardID, ok := raw.(string); ok {
+				event.CardID = strings.TrimSpace(cardID)
+			}
+		}
+	}
+	if event.Payload == nil {
+		event.Payload = make(map[string]any)
+	}
+	event.Payload["trackActivityCompletion"] = shouldBifrostLifecycleTrackActivityCompletion(toolName)
+	event.Payload["skipCardProjection"] = shouldBifrostLifecycleSkipCardProjection(toolName) || isSingleHostSessionKind(sessionKind)
+	event.Payload["arguments"] = cloneToolPayload(invocationArgs)
+	if hasStoredResult {
+		if outputData := cloneToolPayload(storedResult.OutputData); len(outputData) > 0 {
+			event.Payload["outputData"] = outputData
+		}
+		for key, value := range cloneToolPayload(storedResult.ProjectionPayload) {
+			if _, exists := event.Payload[key]; !exists {
+				event.Payload[key] = value
+			}
+		}
+		if override := strings.TrimSpace(getStringAny(storedResult.ProjectionPayload, "toolNameOverride")); override != "" {
+			event.ToolName = override
+		}
+	}
+	if result != "" {
+		event.Payload["resultText"] = result
+	}
+	if err := a.toolEventBus.Emit(ctx, event); err != nil {
+		log.Printf("[bifrost] failed to emit tool completion event session=%s tool=%s err=%v", sessionID, toolName, err)
+	}
+	return true
+}
+
+func isSingleHostSessionKind(kind string) bool {
+	return strings.TrimSpace(kind) == "" || strings.TrimSpace(kind) == model.SessionKindSingleHost
+}
+
 // toolPhaseAndLabel maps a tool name to a UI phase and a human-readable label.
 func toolPhaseAndLabel(toolName string, args map[string]interface{}) (phase, label string) {
 	switch toolName {
@@ -1765,9 +2132,24 @@ func toolPhaseAndLabel(toolName string, args map[string]interface{}) (phase, lab
 	case "find_in_page":
 		query, _ := args["query"].(string)
 		return "searching", fmt.Sprintf("在页面中搜索：%s", truncateLabel(query, 60))
+	case "query_ai_server_state":
+		focus := firstNonEmptyValue(getStringAny(args, "focus", "query", "topic"), "workspace")
+		return "thinking", fmt.Sprintf("查询工作台状态：%s", truncateLabel(focus, 60))
 	case "execute_command", "readonly_host_inspect":
 		cmd, _ := args["command"].(string)
 		return "executing", fmt.Sprintf("执行命令：%s", truncateLabel(cmd, 60))
+	case "execute_readonly_query":
+		cmd, _ := args["command"].(string)
+		return "executing", fmt.Sprintf("执行只读命令：%s", truncateLabel(cmd, 60))
+	case "list_remote_files":
+		path, _ := args["path"].(string)
+		return "browsing", fmt.Sprintf("现在列出 %s", truncateLabel(path, 60))
+	case "read_remote_file":
+		path, _ := args["path"].(string)
+		return "browsing", fmt.Sprintf("现在浏览 %s", truncateLabel(path, 60))
+	case "search_remote_files":
+		query, _ := args["query"].(string)
+		return "searching", fmt.Sprintf("现在搜索内容（%s）", truncateLabel(query, 60))
 	case "list_files", "list_dir":
 		path, _ := args["path"].(string)
 		return "browsing", fmt.Sprintf("浏览目录：%s", truncateLabel(path, 60))
@@ -1788,6 +2170,15 @@ func toolPhaseAndLabel(toolName string, args map[string]interface{}) (phase, lab
 		return "planning", "规划中"
 	default:
 		return "executing", fmt.Sprintf("执行工具：%s", toolName)
+	}
+}
+
+func shouldBifrostLifecycleTrackActivityCompletion(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "execute_readonly_query", "query_ai_server_state":
+		return false
+	default:
+		return true
 	}
 }
 

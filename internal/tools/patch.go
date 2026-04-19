@@ -16,7 +16,7 @@ import (
 func RegisterApplyPatchTool(reg *ToolRegistry) {
 	reg.Register(ToolEntry{
 		Name:        "apply_patch",
-		Description: "Apply a unified diff patch to modify, create, rename, or delete files in the project. The patch must be in standard unified diff format (diff --git).",
+		Description: "Edit existing files through a single diff-oriented patch facade. Constraints: Use it for targeted edits to existing files when patch-style changes are clearer than whole-file overwrite. Provide a valid unified diff patch and keep the patch as small as possible while still uniquely locating the intended edit. Prefer write_file for create, overwrite, or append flows instead of overloading patch intent. Result: Returns patch summaries, per-file diff metadata, and FileChangeCard-friendly descriptors after approval and execution. This tool always requires user approval before execution.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

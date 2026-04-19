@@ -163,11 +163,29 @@ func TestRemoteListFilesKeepsProcessStateButNoResultSummaryCard(t *testing.T) {
 	if !strings.Contains(card.Text, "已列出 /etc/nginx") {
 		t.Fatalf("expected completion text, got %q", card.Text)
 	}
+	display, ok := card.Detail["display"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured display, got %#v", card.Detail)
+	}
+	blocks, ok := display["blocks"].([]map[string]any)
+	if !ok || len(blocks) < 2 {
+		t.Fatalf("expected structured blocks, got %#v", display["blocks"])
+	}
+	if getStringAny(blocks[0], "kind") != ToolDisplayBlockResultStats || getStringAny(blocks[1], "kind") != ToolDisplayBlockLinkList {
+		t.Fatalf("expected result_stats + link_list blocks, got %#v", blocks)
+	}
 	if session.Runtime.Turn.Phase != "thinking" {
 		t.Fatalf("expected turn to return to thinking, got %q", session.Runtime.Turn.Phase)
 	}
 	if session.Runtime.Activity.CurrentListingPath != "" || session.Runtime.Activity.ListCount != 1 {
 		t.Fatalf("expected listing activity to clear and count once, got %#v", session.Runtime.Activity)
+	}
+	events := app.toolEventStore.SessionEvents("sess-remote-list")
+	if len(events) < 2 {
+		t.Fatalf("expected lifecycle events for remote list tool, got %#v", events)
+	}
+	if events[0].Type != string(ToolLifecycleEventStarted) || events[len(events)-1].Type != string(ToolLifecycleEventCompleted) {
+		t.Fatalf("expected started/completed lifecycle events, got %#v", events)
 	}
 	assertNoResultSummaryCard(t, session)
 }
@@ -239,6 +257,17 @@ func TestRemoteReadFileKeepsProcessStateButNoResultSummaryCard(t *testing.T) {
 	if !strings.Contains(card.Text, "已浏览 /etc/nginx/nginx.conf") {
 		t.Fatalf("expected completion text, got %q", card.Text)
 	}
+	display, ok := card.Detail["display"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured display, got %#v", card.Detail)
+	}
+	blocks, ok := display["blocks"].([]map[string]any)
+	if !ok || len(blocks) < 2 {
+		t.Fatalf("expected structured blocks, got %#v", display["blocks"])
+	}
+	if getStringAny(blocks[1], "kind") != ToolDisplayBlockFilePreview {
+		t.Fatalf("expected file_preview block, got %#v", blocks)
+	}
 	if session.Runtime.Turn.Phase != "thinking" {
 		t.Fatalf("expected turn to return to thinking, got %q", session.Runtime.Turn.Phase)
 	}
@@ -247,6 +276,13 @@ func TestRemoteReadFileKeepsProcessStateButNoResultSummaryCard(t *testing.T) {
 	}
 	if len(session.Runtime.Activity.ViewedFiles) != 1 || session.Runtime.Activity.ViewedFiles[0].Path != "/etc/nginx/nginx.conf" {
 		t.Fatalf("expected viewed file activity to update, got %#v", session.Runtime.Activity.ViewedFiles)
+	}
+	events := app.toolEventStore.SessionEvents("sess-remote-read")
+	if len(events) < 2 {
+		t.Fatalf("expected lifecycle events for remote read tool, got %#v", events)
+	}
+	if events[0].Type != string(ToolLifecycleEventStarted) || events[len(events)-1].Type != string(ToolLifecycleEventCompleted) {
+		t.Fatalf("expected started/completed lifecycle events, got %#v", events)
 	}
 	assertNoResultSummaryCard(t, session)
 }
@@ -323,6 +359,17 @@ func TestRemoteSearchFilesKeepsProcessStateButNoResultSummaryCard(t *testing.T) 
 	if !strings.Contains(card.Text, "已搜索内容（命中 2 个位置）") {
 		t.Fatalf("expected completion text, got %q", card.Text)
 	}
+	display, ok := card.Detail["display"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured display, got %#v", card.Detail)
+	}
+	blocks, ok := display["blocks"].([]map[string]any)
+	if !ok || len(blocks) < 3 {
+		t.Fatalf("expected structured blocks, got %#v", display["blocks"])
+	}
+	if getStringAny(blocks[0], "kind") != ToolDisplayBlockSearchQueries || getStringAny(blocks[2], "kind") != ToolDisplayBlockLinkList {
+		t.Fatalf("expected search_queries + link_list blocks, got %#v", blocks)
+	}
 	if session.Runtime.Turn.Phase != "thinking" {
 		t.Fatalf("expected turn to return to thinking, got %q", session.Runtime.Turn.Phase)
 	}
@@ -334,6 +381,13 @@ func TestRemoteSearchFilesKeepsProcessStateButNoResultSummaryCard(t *testing.T) 
 	}
 	if len(session.Runtime.Activity.SearchedContentQueries) != 1 {
 		t.Fatalf("expected one search activity entry, got %#v", session.Runtime.Activity.SearchedContentQueries)
+	}
+	events := app.toolEventStore.SessionEvents("sess-remote-search")
+	if len(events) < 2 {
+		t.Fatalf("expected lifecycle events for remote search tool, got %#v", events)
+	}
+	if events[0].Type != string(ToolLifecycleEventStarted) || events[len(events)-1].Type != string(ToolLifecycleEventCompleted) {
+		t.Fatalf("expected started/completed lifecycle events, got %#v", events)
 	}
 	assertNoResultSummaryCard(t, session)
 }

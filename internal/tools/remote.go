@@ -23,8 +23,8 @@ func RegisterRemoteHostTools(reg *ToolRegistry) {
 	})
 
 	reg.Register(ToolEntry{
-		Name:             "execute_command",
-		Description:      "Run a shell command that changes system state on the currently selected remote host. Always requires user approval.",
+		Name:        "execute_command",
+		Description: "Run a shell command that changes system state on the currently selected remote host. Always requires user approval.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -94,16 +94,16 @@ func RegisterRemoteHostTools(reg *ToolRegistry) {
 	})
 
 	reg.Register(ToolEntry{
-		Name:             "write_file",
-		Description:      "Write content to a file on the currently selected remote host. Requires user approval.",
+		Name:        "write_file",
+		Description: "Write content to a file on the currently selected remote host through a single FileWriteTool-style facade. Use it for create, overwrite, or append writes when you already know the target path. Requires user approval.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"host":       map[string]interface{}{"type": "string", "description": "Required selected remote host ID."},
-				"path":       map[string]interface{}{"type": "string", "description": "Target file path on the remote host."},
-				"content":    map[string]interface{}{"type": "string", "description": "File content to write."},
-				"write_mode": map[string]interface{}{"type": "string", "enum": []string{"overwrite", "append"}, "description": "Write mode: overwrite or append."},
-				"reason":     map[string]interface{}{"type": "string", "description": "Short explanation of why this file change is needed."},
+				"path":       map[string]interface{}{"type": "string", "description": "Target file path to write on the remote host."},
+				"content":    map[string]interface{}{"type": "string", "description": "Final file content to write."},
+				"write_mode": map[string]interface{}{"type": "string", "enum": []string{"overwrite", "append"}, "description": "Optional file write mode. Defaults to overwrite; use append to add content to the existing file."},
+				"reason":     map[string]interface{}{"type": "string", "description": "Why this file write is needed."},
 			},
 			"required":             []string{"host", "path", "content", "reason"},
 			"additionalProperties": false,

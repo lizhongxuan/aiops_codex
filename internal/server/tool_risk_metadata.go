@@ -122,6 +122,7 @@ func isReadonlyToolName(name string) bool {
 	switch strings.TrimSpace(name) {
 	case "query_ai_server_state",
 		"readonly_host_inspect",
+		shellCommandToolName,
 		"execute_readonly_query",
 		"list_remote_files",
 		"read_remote_file",

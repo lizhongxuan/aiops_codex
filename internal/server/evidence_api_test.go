@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lizhongxuan/aiops-codex/internal/model"
+	"github.com/lizhongxuan/aiops-codex/internal/store"
 )
 
 func TestHandleEvidenceDetailFallsBackToProjectedEvidence(t *testing.T) {
@@ -149,6 +150,61 @@ func TestIncidentTimelineRouteReturnsOwnedSessionEvents(t *testing.T) {
 	}
 }
 
+func TestToolEventTimelineRouteReturnsOwnedSessionEvents(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	browserID := "browser-tool-event-route"
+	session := app.store.CreateSessionWithMeta(browserID, model.SessionMeta{
+		Kind:    model.SessionKindWorkspace,
+		Visible: true,
+	}, true)
+	sessionID := session.ID
+
+	app.toolEventStore.Append(store.ToolEventRecord{
+		SessionID: sessionID,
+		EventID:   "evt-tool-1",
+		Type:      string(ToolLifecycleEventStarted),
+		ToolName:  "read_file",
+	})
+	app.toolEventStore.Append(store.ToolEventRecord{
+		SessionID: sessionID,
+		EventID:   "evt-tool-2",
+		Type:      string(ToolLifecycleEventChoiceResolved),
+		ToolName:  "ask_user_question",
+	})
+	app.toolEventStore.Append(store.ToolEventRecord{
+		SessionID: "other-session",
+		EventID:   "evt-tool-3",
+		Type:      string(ToolLifecycleEventCompleted),
+		ToolName:  "execute_command",
+	})
+
+	mux := http.NewServeMux()
+	app.registerEvidenceRoutes(mux)
+
+	req := sessionDetailRequest(app, browserID, "/api/v1/sessions/"+sessionID+"/tool-events?type=choice_resolved&limit=1")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected tool-events route 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode tool event response: %v", err)
+	}
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected one filtered tool event, got %#v", payload)
+	}
+	item, _ := items[0].(map[string]any)
+	if got := item["eventId"]; got != "evt-tool-2" {
+		t.Fatalf("expected choice_resolved tool event, got %#v", item)
+	}
+	if got := item["toolName"]; got != "ask_user_question" {
+		t.Fatalf("expected ask_user_question tool name, got %#v", item)
+	}
+}
+
 func TestSessionDetailRoutesRejectForeignBrowserSession(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	session := app.store.CreateSessionWithMeta("browser-owner", model.SessionMeta{
@@ -176,10 +232,10 @@ func TestPromptDebugRouteReturnsTurnPolicyAndPromptEnvelope(t *testing.T) {
 	sessionID := session.ID
 	app.store.UpdateRuntime(sessionID, func(rt *model.RuntimeState) {
 		rt.TurnPolicy = model.TurnPolicy{
-			IntentClass:       string(model.TurnIntentDesign),
-			Lane:              string(model.TurnLanePlan),
-			RequiredNextTool:  "update_plan",
-			FinalGateStatus:   "blocked",
+			IntentClass:         string(model.TurnIntentDesign),
+			Lane:                string(model.TurnLanePlan),
+			RequiredNextTool:    "update_plan",
+			FinalGateStatus:     "blocked",
 			MissingRequirements: []string{"缺少计划产物"},
 		}
 		rt.PromptEnvelope = &model.PromptEnvelope{

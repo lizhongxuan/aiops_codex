@@ -101,7 +101,7 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 		},
 		{
 			Name:            hostFileReadToolName,
-			Description:     "Read the contents of a file on the remote host (up to a limited number of lines).",
+			Description:     toolPromptDescription(hostFileReadToolName),
 			CommandTemplate: `head -n %s %s`,
 			ArgKeys:         []string{"max_lines", "path"},
 			ExtraProperties: map[string]map[string]any{
@@ -112,7 +112,7 @@ func structuredReadToolRegistry() []structuredReadToolDef {
 		},
 		{
 			Name:            hostFileSearchToolName,
-			Description:     "Search for a text pattern in files under a directory on the remote host.",
+			Description:     toolPromptDescription(hostFileSearchToolName),
 			CommandTemplate: `grep -rn --include='*' %s %s | head -n %s`,
 			ArgKeys:         []string{"pattern", "path", "max_matches"},
 			ExtraProperties: map[string]map[string]any{

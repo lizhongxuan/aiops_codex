@@ -1,12 +1,14 @@
 package tools
 
+import toolprompts "github.com/lizhongxuan/aiops-codex/internal/toolprompts"
+
 // RegisterWorkspaceTools registers the workspace-level tool definitions into
 // the given ToolRegistry. Handlers are placeholder stubs — actual
 // implementations are wired during server integration (task 15).
 func RegisterWorkspaceTools(reg *ToolRegistry) {
 	reg.Register(ToolEntry{
 		Name:        "ask_user_question",
-		Description: "Ask the user to clarify ambiguous intent, scope, or authorization before inspecting hosts, dispatching workers, or making changes.",
+		Description: toolprompts.AskUserQuestion.Description(),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -31,7 +33,7 @@ func RegisterWorkspaceTools(reg *ToolRegistry) {
 
 	reg.Register(ToolEntry{
 		Name:        "query_ai_server_state",
-		Description: "Read the current ai-server workspace, host, approval, and runtime state for project-local status questions.",
+		Description: toolprompts.QueryAIServerState.Description(),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -45,7 +47,7 @@ func RegisterWorkspaceTools(reg *ToolRegistry) {
 
 	reg.Register(ToolEntry{
 		Name:        "readonly_host_inspect",
-		Description: "Run a bounded read-only inspection command on the currently selected host, including server-local or an online remote host-agent.",
+		Description: toolprompts.ReadonlyHostInspect.Description(),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -64,7 +66,7 @@ func RegisterWorkspaceTools(reg *ToolRegistry) {
 
 	reg.Register(ToolEntry{
 		Name:        "enter_plan_mode",
-		Description: "Enter formal plan mode for a complex or risky workspace task. In plan mode the agent may clarify, inspect read-only context, and update the plan, but must not dispatch workers or perform mutation until exit_plan_mode is approved.",
+		Description: toolprompts.EnterPlanMode.Description(),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -80,7 +82,7 @@ func RegisterWorkspaceTools(reg *ToolRegistry) {
 
 	reg.Register(ToolEntry{
 		Name:        "update_plan",
-		Description: "Update the current workspace plan while in plan mode. This is a planning tool only and does not authorize execution.",
+		Description: toolprompts.UpdatePlan.Description(),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -109,7 +111,7 @@ func RegisterWorkspaceTools(reg *ToolRegistry) {
 
 	reg.Register(ToolEntry{
 		Name:        "exit_plan_mode",
-		Description: "Submit the completed plan for user approval. This is the only plan-mode exit into execution.",
+		Description: toolprompts.ExitPlanMode.Description(),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -135,7 +137,7 @@ func RegisterWorkspaceTools(reg *ToolRegistry) {
 
 	reg.Register(ToolEntry{
 		Name:        "orchestrator_dispatch_tasks",
-		Description: "Dispatch structured host tasks to the orchestrator from the main workspace session. Only available after plan approval.",
+		Description: toolprompts.OrchestratorDispatchTasks.Description(),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -162,7 +164,7 @@ func RegisterWorkspaceTools(reg *ToolRegistry) {
 
 	reg.Register(ToolEntry{
 		Name:        "request_approval",
-		Description: "Request approval for a mutation operation with command, host, risk assessment, expected impact, and rollback suggestion.",
+		Description: toolprompts.RequestApproval.Description(),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

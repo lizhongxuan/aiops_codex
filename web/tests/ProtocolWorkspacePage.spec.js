@@ -725,8 +725,8 @@ describe("ProtocolWorkspacePage", () => {
           laneSections: [{ name: "Lane", content: "当前处于 readonly lane。" }],
           runtimePolicy: { name: "RuntimePolicy", content: "intentClass=factual\nlane=readonly" },
           contextAttachments: [{ name: "RequiredNextTool", content: "web_search" }],
-          visibleTools: [{ name: "web_search", reason: "本轮 policy 必需工具" }],
-          hiddenTools: [{ name: "orchestrator_dispatch_tasks", reason: "当前 lane=readonly，工具未对模型暴露" }],
+          visibleTools: [{ name: "web_search", displayName: "外部搜索", kind: "search", reason: "本轮 policy 必需工具" }],
+          hiddenTools: [{ name: "orchestrator_dispatch_tasks", displayName: "任务派发", kind: "agent", reason: "当前 lane=readonly，工具未对模型暴露" }],
           compressionState: "summary_only",
           tokenEstimate: 512,
           currentLane: "readonly",
@@ -778,7 +778,8 @@ describe("ProtocolWorkspacePage", () => {
     await toolVisibilityTab.trigger("click");
     await flushPromises();
 
-    expect(drawer.text()).toContain("orchestrator_dispatch_tasks");
+    expect(drawer.text()).toContain("任务派发");
+    expect(drawer.text()).not.toContain("Visible · web_search");
   });
 
   it("does not render the incident summary module even when incident metadata exists", async () => {
@@ -2264,6 +2265,7 @@ describe("ProtocolWorkspacePage", () => {
           {
             id: "tool-readonly-1",
             name: "readonly_host_inspect",
+            displayName: "主库只读检查",
             status: "completed",
             inputJson: JSON.stringify({
               hostId: "server-local",
@@ -2310,18 +2312,18 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
 
     const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
-    expect(timeline.text()).toContain("只读主机检查");
+    expect(timeline.text()).toContain("主库只读检查");
     expect(timeline.text()).not.toContain("readonly_host_inspect");
-    expect(timeline.findAll(".timeline-item").filter((button) => button.text().includes("只读主机检查"))).toHaveLength(1);
+    expect(timeline.findAll(".timeline-item").filter((button) => button.text().includes("主库只读检查"))).toHaveLength(1);
 
-    const toolEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("只读主机检查"));
+    const toolEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("主库只读检查"));
     expect(toolEvent).toBeTruthy();
 
     await toolEvent.trigger("click");
     await flushPromises();
 
     const modal = wrapper.get(".protocol-evidence-modal");
-    expect(modal.text()).toContain("只读主机检查");
+    expect(modal.text()).toContain("主库只读检查");
     expect(modal.text()).toContain("postgresql_replication");
     expect(modal.text()).toContain("pg_isready");
     const outputTab = wrapper.findAll(".modal-tab").find((button) => button.text().includes("输出"));
@@ -2343,6 +2345,8 @@ describe("ProtocolWorkspacePage", () => {
           {
             id: "tool-dispatch-1",
             name: "orchestrator_dispatch_tasks",
+            displayName: "Agent Worker 派发",
+            kind: "agent",
             status: "completed",
             inputJson: JSON.stringify({
               missionTitle: "PG 同步修复",
@@ -2391,10 +2395,10 @@ describe("ProtocolWorkspacePage", () => {
     await flushPromises();
 
     const timeline = wrapper.get('[data-testid="protocol-event-timeline"]');
-    expect(timeline.text()).toContain("任务派发");
+    expect(timeline.text()).toContain("Agent Worker 派发");
     expect(timeline.text()).toContain("派发 1 个 PG 同步修复任务");
 
-    const toolEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("任务派发"));
+    const toolEvent = wrapper.findAll(".timeline-item").find((button) => button.text().includes("Agent Worker 派发"));
     expect(toolEvent).toBeTruthy();
     await toolEvent.trigger("click");
     await flushPromises();

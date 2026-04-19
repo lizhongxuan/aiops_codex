@@ -209,6 +209,36 @@ docker compose up -d
 
 ## API 概览
 
+## Prompt 规则
+
+为避免 prompt 规则再次散落到多个文件，当前仓库遵循这组约束：
+
+- `BuildSystemPrompt()` 只负责通用身份、安全边界、审批与沙箱说明，不承载垂类业务规则。
+- tool 的能力、输入限制、host/path/shell/approval 约束只写在 tool-owned prompt spec，不在 developer instructions 里重复展开。
+- `TurnPolicy` 只描述结构化合同：
+  - `KnowledgeFreshness`
+  - `EvidenceContract`
+  - `AnswerContract`
+  - `MinimumIndependentSources`
+  - `RequireSourceAttribution`
+  - `RequiredCitationKinds`
+  - `AllowEarlyStop`
+- 当前/外部 factual query 的要求按通用 freshness/evidence contract 判断，不允许再维护行业或市场专用关键词白名单。
+- completion/final-gate repair 只允许说明“缺了什么、下一步该调用什么工具”，不允许再注入 market-specific answer style，例如：
+  - `compact snapshot`
+  - `1-2 sources`
+  - `answer now`
+- 搜索类最终回答如命中 `sourced_snapshot` 或 `external_facts` 合同，必须满足独立来源和来源归因要求；这类要求由 `TurnPolicy` 和 final gate 保证，不靠 tool prose 临时兜底。
+
+如果后续需要新增 prompt 规则，请优先判断它属于：
+
+1. 通用 system rule
+2. tool-owned contract
+3. `TurnPolicy` 结构化约束
+4. 极少数 runtime repair
+
+不要把同一条规则同时写进 `system prompt`、`developer instructions`、`tool description` 和 `loop nudge`。
+
 ### 核心 API
 
 | 端点 | 方法 | 说明 |

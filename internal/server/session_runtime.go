@@ -81,21 +81,6 @@ func (a *App) buildSingleHostTurnStartSpec(ctx context.Context, req chatRequest)
 	}
 }
 
-// LEGACY: Route thread config hash, retained for rollback only.
-func (a *App) workspaceRouteThreadConfigHash(hostID string) string {
-	return a.mainAgentThreadConfigHash(hostID) + ":workspace-route"
-}
-
-// LEGACY: Readonly thread config hash, retained for rollback only.
-func (a *App) workspaceReadonlyThreadConfigHash(hostID string) string {
-	return a.mainAgentThreadConfigHash(hostID) + ":workspace-readonly"
-}
-
-// LEGACY: Orchestration thread config hash, retained for rollback only.
-func (a *App) workspaceOrchestrationThreadConfigHash(hostID string) string {
-	return a.mainAgentThreadConfigHash(hostID) + ":workspace-orchestration"
-}
-
 func (a *App) singleHostReActThreadConfigHash(hostID string) string {
 	return a.mainAgentThreadConfigHash(hostID) + ":" + reActLoopVersion
 }
@@ -129,14 +114,7 @@ func (a *App) buildSingleHostReActTurnStartSpec(ctx context.Context, sessionID s
 func (a *App) buildWorkspaceReActThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
 	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceReActPrompt("", "")
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	developerInstructions = appendReActLoopInstructions(
-		developerInstructions,
-		a.buildReActLoopInstructions(reActLoopKindWorkspace, sessionID, selectedHostID, false),
-	)
+	developerInstructions := a.buildWorkspaceReActDeveloperInstructions(sessionID, selectedHostID, "", "", false)
 	spec := threadStartSpec{
 		Model:                 profile.Runtime.Model,
 		Cwd:                   a.cfg.DefaultWorkspace,
@@ -155,14 +133,7 @@ func (a *App) buildWorkspaceReActThreadStartSpec(ctx context.Context, sessionID,
 func (a *App) buildWorkspaceReActTurnStartSpec(ctx context.Context, sessionID, hostID, message string) turnStartSpec {
 	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceReActPrompt("", "")
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	developerInstructions = appendReActLoopInstructions(
-		developerInstructions,
-		a.buildReActLoopInstructions(reActLoopKindWorkspace, sessionID, selectedHostID, true),
-	)
+	developerInstructions := a.buildWorkspaceReActDeveloperInstructions(sessionID, selectedHostID, "", "", true)
 	return turnStartSpec{
 		Cwd:                   a.cfg.DefaultWorkspace,
 		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
@@ -187,6 +158,19 @@ func appendReActLoopInstructions(base, extra string) string {
 	default:
 		return base + "\n\n" + extra
 	}
+}
+
+func (a *App) buildWorkspaceReActDeveloperInstructions(sessionID, hostID, title, summary string, turnScoped bool) string {
+	selectedHostID := defaultHostID(hostID)
+	profile := a.mainAgentProfile()
+	developerInstructions := orchestrator.BuildWorkspaceReActPrompt(strings.TrimSpace(title), strings.TrimSpace(summary))
+	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, turnScoped); base != "" {
+		developerInstructions = developerInstructions + "\n\n" + base
+	}
+	return appendReActLoopInstructions(
+		developerInstructions,
+		a.buildReActLoopInstructions(reActLoopKindWorkspace, sessionID, selectedHostID, turnScoped),
+	)
 }
 
 func (a *App) buildReActLoopInstructions(kind, sessionID, hostID string, turnScoped bool) string {
@@ -215,140 +199,6 @@ func (a *App) buildReActLoopInstructions(kind, sessionID, hostID string, turnSco
 		)
 	}
 	return strings.Join(lines, "\n")
-}
-
-// LEGACY: Only used for historical data recovery and rollback. New requests use buildWorkspaceReActThreadStartSpec.
-func (a *App) buildWorkspaceRouteThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
-	selectedHostID := defaultHostID(hostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceRoutePrompt()
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	spec := threadStartSpec{
-		Model:                 profile.Runtime.Model,
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		DeveloperInstructions: developerInstructions,
-		DynamicTools:          a.workspaceRouteDynamicTools(),
-		ThreadConfigHash:      a.workspaceRouteThreadConfigHash(selectedHostID),
-	}
-	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
-		spec.Config = threadConfig
-	}
-	return spec
-}
-
-// LEGACY: Only used for historical data recovery and rollback. New requests use buildWorkspaceReActTurnStartSpec.
-func (a *App) buildWorkspaceRouteTurnStartSpec(ctx context.Context, hostID, message string) turnStartSpec {
-	selectedHostID := defaultHostID(hostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceRoutePrompt()
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	return turnStartSpec{
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		WritableRoots:         a.mainAgentWritableRoots(profile),
-		DeveloperInstructions: developerInstructions,
-		Input: []map[string]any{
-			{"type": "text", "text": message},
-		},
-		ReasoningEffort: profile.Runtime.ReasoningEffort,
-	}
-}
-
-// LEGACY: Only used for historical data recovery and rollback. New readonly uses readonly_host_inspect tool.
-func (a *App) buildWorkspaceReadonlyThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
-	selectedHostID := defaultHostID(hostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceReadonlyPrompt()
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	spec := threadStartSpec{
-		Model:                 profile.Runtime.Model,
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		DeveloperInstructions: developerInstructions,
-		DynamicTools:          a.workspaceDirectDynamicTools(sessionID),
-		ThreadConfigHash:      a.workspaceReadonlyThreadConfigHash(selectedHostID),
-	}
-	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
-		spec.Config = threadConfig
-	}
-	return spec
-}
-
-// LEGACY: Only used for historical data recovery and rollback.
-func (a *App) buildWorkspaceReadonlyTurnStartSpec(ctx context.Context, hostID, message string) turnStartSpec {
-	selectedHostID := defaultHostID(hostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceReadonlyPrompt()
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	return turnStartSpec{
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		WritableRoots:         a.mainAgentWritableRoots(profile),
-		DeveloperInstructions: developerInstructions,
-		Input: []map[string]any{
-			{"type": "text", "text": message},
-		},
-		ReasoningEffort: profile.Runtime.ReasoningEffort,
-	}
-}
-
-// LEGACY: Only used for historical data recovery and rollback. New orchestration uses DispatchWorkers tool.
-func (a *App) buildWorkspaceOrchestrationThreadStartSpec(ctx context.Context, sessionID string, mission *orchestrator.Mission) threadStartSpec {
-	session := a.store.EnsureSession(sessionID)
-	selectedHostID := defaultHostID(session.SelectedHostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspacePrompt(strings.TrimSpace(mission.Title), strings.TrimSpace(mission.Summary))
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	spec := threadStartSpec{
-		Model:                 profile.Runtime.Model,
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		DeveloperInstructions: developerInstructions,
-		DynamicTools:          a.workspaceDynamicTools(sessionID),
-		ThreadConfigHash:      a.workspaceOrchestrationThreadConfigHash(selectedHostID),
-	}
-	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
-		spec.Config = threadConfig
-	}
-	return spec
-}
-
-// LEGACY: Only used for historical data recovery and rollback.
-func (a *App) buildWorkspaceOrchestrationTurnStartSpec(ctx context.Context, sessionID string, mission *orchestrator.Mission, message string) turnStartSpec {
-	session := a.store.EnsureSession(sessionID)
-	selectedHostID := defaultHostID(session.SelectedHostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspacePrompt(strings.TrimSpace(mission.Title), strings.TrimSpace(mission.Summary))
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	return turnStartSpec{
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		WritableRoots:         a.mainAgentWritableRoots(profile),
-		DeveloperInstructions: developerInstructions,
-		Input: []map[string]any{
-			{"type": "text", "text": message},
-		},
-		ReasoningEffort: profile.Runtime.ReasoningEffort,
-	}
 }
 
 func (a *App) buildWorkerThreadStartSpec(mission *orchestrator.Mission, task *orchestrator.TaskRun, hostID string) threadStartSpec {

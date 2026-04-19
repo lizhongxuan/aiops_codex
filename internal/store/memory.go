@@ -1153,6 +1153,8 @@ func buildToolInvocationProjection(session *SessionState, runID, iterationID str
 			RunID:            runID,
 			IterationID:      iterationID,
 			Name:             name,
+			DisplayName:      toolInvocationDisplayNameForCard(card, name),
+			Kind:             toolInvocationKindForCard(card, name),
 			Status:           toolInvocationStatusForCard(card),
 			RiskLevel:        toolInvocationRiskLevel(card),
 			RequiresApproval: toolInvocationRequiresApproval(card),
@@ -1238,6 +1240,42 @@ func toolInvocationStatusForCard(card model.Card) string {
 		return "completed"
 	}
 	return status
+}
+
+func toolInvocationDisplayNameForCard(card model.Card, name string) string {
+	if label := cardDetailString(card, "displayName", "displayLabel", "label"); label != "" {
+		return label
+	}
+	switch card.Type {
+	case "ChoiceCard", "DispatchSummaryCard":
+		return firstNonEmptyString(strings.TrimSpace(card.Title), name)
+	case "PlanCard", "PlanApprovalCard":
+		return firstNonEmptyString(strings.TrimSpace(card.Title), name)
+	default:
+		return ""
+	}
+}
+
+func toolInvocationKindForCard(card model.Card, name string) string {
+	if kind := cardDetailString(card, "toolKind", "kind"); kind != "" {
+		return kind
+	}
+	switch name {
+	case "ask_user_question":
+		return "question"
+	case "query_ai_server_state":
+		return "workspace_state"
+	case "readonly_host_inspect", "command":
+		return "command"
+	case "enter_plan_mode", "update_plan":
+		return "plan"
+	case "exit_plan_mode", "request_approval":
+		return "approval"
+	case "orchestrator_dispatch_tasks":
+		return "agent"
+	default:
+		return ""
+	}
 }
 
 func toolInvocationInputForCard(card model.Card) map[string]any {
@@ -2204,6 +2242,8 @@ func cloneTurnPolicy(policy model.TurnPolicy) model.TurnPolicy {
 	out := policy
 	out.RequiredTools = append([]string(nil), policy.RequiredTools...)
 	out.RequiredEvidenceKinds = append([]string(nil), policy.RequiredEvidenceKinds...)
+	out.RequiredCitationKinds = append([]string(nil), policy.RequiredCitationKinds...)
+	out.EvidenceDiversityRules = append([]string(nil), policy.EvidenceDiversityRules...)
 	out.MissingRequirements = append([]string(nil), policy.MissingRequirements...)
 	return out
 }
@@ -2213,6 +2253,7 @@ func cloneTurnPolicyPtr(policy model.TurnPolicy) *model.TurnPolicy {
 		strings.TrimSpace(policy.Lane) == "" &&
 		len(policy.RequiredTools) == 0 &&
 		len(policy.RequiredEvidenceKinds) == 0 &&
+		len(policy.RequiredCitationKinds) == 0 &&
 		!policy.NeedsPlanArtifact &&
 		!policy.NeedsApproval &&
 		!policy.NeedsAssumptions &&
@@ -2220,6 +2261,15 @@ func cloneTurnPolicyPtr(policy model.TurnPolicy) *model.TurnPolicy {
 		!policy.RequiresExternalFacts &&
 		!policy.RequiresRealtimeData &&
 		policy.MinimumEvidenceCount == 0 &&
+		policy.MinimumIndependentSources == 0 &&
+		!policy.RequireSourceAttribution &&
+		strings.TrimSpace(policy.PreferredAnswerStyle) == "" &&
+		!policy.AllowEarlyStop &&
+		strings.TrimSpace(policy.KnowledgeFreshness) == "" &&
+		strings.TrimSpace(policy.EvidenceContract) == "" &&
+		strings.TrimSpace(policy.AnswerContract) == "" &&
+		strings.TrimSpace(policy.FreshnessDeadline) == "" &&
+		len(policy.EvidenceDiversityRules) == 0 &&
 		strings.TrimSpace(policy.RequiredNextTool) == "" &&
 		strings.TrimSpace(policy.FinalGateStatus) == "" &&
 		len(policy.MissingRequirements) == 0 &&

@@ -188,7 +188,7 @@ func TestCorootFullConfigured(t *testing.T) {
 
 // **Validates: Requirements 2.1**
 // Property 18: Config WEB_SEARCH_MODE loading — when WEB_SEARCH_MODE is set,
-// Load() returns that value; when unset, it defaults to "duckduckgo".
+// Load() returns that value; when unset, it defaults to "native".
 func TestProperty_ConfigWebSearchModeLoading(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		// Clear env vars that might interfere.
@@ -212,8 +212,8 @@ func TestProperty_ConfigWebSearchModeLoading(t *testing.T) {
 			}
 		} else {
 			cfg := Load()
-			if cfg.WebSearchMode != "duckduckgo" {
-				rt.Fatalf("WebSearchMode = %q, want default %q", cfg.WebSearchMode, "duckduckgo")
+			if cfg.WebSearchMode != "native" {
+				rt.Fatalf("WebSearchMode = %q, want default %q", cfg.WebSearchMode, "native")
 			}
 		}
 	})

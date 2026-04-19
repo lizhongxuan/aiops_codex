@@ -17,9 +17,9 @@ import {
 import { adaptMcpUiPayloadFromCard } from "./mcpUiPayloadAdapter";
 import { normalizeMcpBundle, normalizeMcpPayloadSource, normalizeMcpUiCard } from "./mcpUiCardModel";
 import { resolveMcpBundlePreset } from "./mcpBundleResolver";
+import { normalizeToolDisplayPayload } from "./toolDisplayModel";
 
 const ACTIVE_PHASES = new Set(["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"]);
-const WAITING_PHASES = new Set(["waiting_approval", "waiting_input"]);
 const PROTOCOL_SURFACE_OWNED_PATTERN = /审批|批准|授权|approval|派发|dispatch|host-agent|worker|时间线|timeline|step\s*->\s*host|host-agent 映射|编排执行计划|接管任务|执行位/i;
 const PROTOCOL_SURFACE_DETAIL_PATTERN = /审批ID|风险级别|目标环境|目标范围|影响面|blast\s*radius|dry-?run|验证策略|验证来源|审批上下文|证据摘要|原始 evidence|evidence id|citation|关联证据|时间线事件|事件时间线|timeline event/i;
 const STRUCTURED_LIST_PATTERN = /(?:^|\n)\s*(?:[-*]|[0-9]+\.)\s+/m;
@@ -33,6 +33,11 @@ function asArray(value) {
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function buildToolDisplayModel(detail = null) {
+  if (!detail || typeof detail !== "object") return null;
+  return normalizeToolDisplayPayload(detail.display || detail.displayOutput || detail.display_output || detail);
 }
 
 function buildEvidenceIndex(evidenceSummaries = []) {
@@ -172,15 +177,6 @@ function displayCommand(value = "") {
   return raw;
 }
 
-function commandStatusLabel(value = "") {
-  const normalized = compactText(value).toLowerCase();
-  if (normalized.includes("permission") || normalized.includes("denied")) return "权限不足";
-  if (normalized.includes("fail") || normalized.includes("error")) return "失败";
-  if (normalized.includes("complete") || normalized.includes("done")) return "已完成";
-  if (normalized.includes("run") || normalized.includes("progress")) return "执行中";
-  return compactText(value) || "已处理";
-}
-
 function formatDurationLabel(ms) {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   if (!totalSeconds) return "";
@@ -241,6 +237,7 @@ function buildAssistantProcessItems(messages = [], options = {}) {
     processKind: inferProcessKind(message.card?.text || ""),
     text: String(message.card?.text || "").trim(),
     detail: "",
+    display: buildToolDisplayModel(message.card?.detail),
     time: compactText(message.time),
     hostId: "",
     tone: "neutral",
@@ -261,6 +258,7 @@ function buildProcessLineItems(processCards = [], options = {}) {
       processKind: inferProcessKind(`${card?.title || ""} ${primary} ${secondary}`),
       text: primary,
       detail: secondary,
+      display: buildToolDisplayModel(card?.detail),
       time: formatShortTime(card?.updatedAt || card?.createdAt),
       hostId,
       tone: processToneFromStatus(card?.status),
@@ -295,6 +293,7 @@ function buildCommandProcessItems(commandCards = []) {
         processKind: "command",
         text,
         detail: compactText(card?.output || card?.stdout || card?.stderr || card?.text || card?.summary),
+        display: buildToolDisplayModel(card?.detail),
         time: formatShortTime(card?.updatedAt || card?.createdAt),
         hostId: compactText(card?.hostId),
         tone: processToneFromStatus(card?.status),
@@ -472,7 +471,7 @@ function looksLikeMainChatResult(text = "") {
   );
 }
 
-function shouldExposeActiveFinalMessage(message = null) {
+export function shouldExposeActiveFinalMessage(message = null) {
   const text = compactText(message?.card?.text || message?.text);
   if (!text) return false;
   if (looksLikeMainChatPrelude(text)) return false;
@@ -877,12 +876,14 @@ export function formatMainChatTurns({
   return buckets.map((bucket, index) => {
     const isCurrentTurn = index === buckets.length - 1;
     const isActiveTurn = isCurrentTurn && Boolean(turnActive);
-    const suppressLiveProcessDetails = Boolean(hideLiveProcessDetails) && isActiveTurn;
     const assistantMessages = asArray(bucket.assistantMessages);
     const lastAssistantMessage = assistantMessages[assistantMessages.length - 1] || null;
     const activeFinalMessage = isActiveTurn && shouldExposeActiveFinalMessage(lastAssistantMessage)
       ? lastAssistantMessage
       : null;
+    const hasActiveFinalMessage = Boolean(activeFinalMessage);
+    const suppressLiveProcessNarration = Boolean(hideLiveProcessDetails) && isActiveTurn;
+    const suppressLiveProcessDetails = Boolean(hideLiveProcessDetails) && isActiveTurn && !hasActiveFinalMessage;
     const finalMessage = isActiveTurn ? activeFinalMessage : lastAssistantMessage;
     const rawAssistantProcessMessages = isActiveTurn
       ? (activeFinalMessage ? assistantMessages.slice(0, -1) : assistantMessages)
@@ -915,6 +916,7 @@ export function formatMainChatTurns({
           processKind: inferProcessKind(`${item?.kind || ""} ${item?.text || item?.label || item?.value || ""}`),
           text: String(item?.text || item?.label || item?.value || "").trim(),
           detail: String(item?.detail || "").trim(),
+          display: buildToolDisplayModel(item?.detail),
           time: compactText(item?.time),
           hostId: compactText(item?.hostId),
           tone: compactText(item?.tone || "neutral"),
@@ -924,7 +926,7 @@ export function formatMainChatTurns({
       : [];
     // Include intermediate assistant messages with card property so ChatProcessFold
     // can render them via MessageCard (model's thinking text inside the fold)
-    const messageProcessItems = suppressLiveProcessDetails
+    const messageProcessItems = suppressLiveProcessNarration
       ? []
       : assistantProcessMessages
       .map((msg, msgIndex) => ({
@@ -933,6 +935,7 @@ export function formatMainChatTurns({
       processKind: inferProcessKind(msg.card?.text || ""),
       text: compactText(msg.card?.text || ""),
       detail: "",
+      display: buildToolDisplayModel(msg.card?.detail),
       time: compactText(msg.time),
       hostId: "",
       tone: "neutral",
@@ -954,7 +957,9 @@ export function formatMainChatTurns({
       ...filteredActivityProcessItems,
       ...commandProcessItems,
     ]);
-    const liveHint = suppressLiveProcessDetails
+    const liveHint = hasActiveFinalMessage
+      ? ""
+      : suppressLiveProcessDetails
       ? ""
       : isActiveTurn
         ? compactText(activeProcess?.liveHint || activeProcess?.hint || "")
@@ -995,6 +1000,7 @@ export function formatMainChatTurns({
       summary,
       collapsedByDefault: !isActiveTurn && Boolean(processItems.length || summary || liveHint),
       active: isActiveTurn,
+      hasActiveFinalMessage,
       phase,
       resultAttachments: turnSurfaces.resultAttachments,
       actionSurfaces: turnSurfaces.actionSurfaces,

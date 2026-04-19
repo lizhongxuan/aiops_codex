@@ -56,59 +56,65 @@ const (
 var contextualFollowupPattern = regexp.MustCompile(`(?i)(继续|刚才|上面|前面|前文|上一|这个|那个|第\s*\d+\s*步|same|above|previous|continue|earlier|step\s*\d+)`)
 
 type App struct {
-	cfg                    config.Config
-	store                  *store.Store
-	agentLoop              *agentloop.Loop
-	bifrostGateway         *bifrost.Gateway
-	bifrostMu              sync.Mutex
-	bifrostSessions        map[string]*agentloop.Session
-	workspaceRuntimes      map[string]*agentloop.WorkspaceRuntime
-	orchestrator           *orchestrator.Manager
-	runtimeStartThreadFunc func(context.Context, string, threadStartSpec) (string, error)
-	runtimeStartTurnFunc   func(context.Context, string, string, turnStartSpec) (string, error)
-	codexRespondFunc       func(context.Context, string, any) error
-	skillDiscoveryFunc     discoverInstalledSkillsFunc
-	upgrader               websocket.Upgrader
-	agentMu                sync.Mutex
-	agents                 map[string]*agentConnection
-	wsMu                   sync.Mutex
-	wsClients              map[string]map[*websocket.Conn]struct{}
-	turnMu                 sync.Mutex
-	turnCancels            map[string]context.CancelFunc
-	terminalMu             sync.Mutex
-	terminals              map[string]*terminalSession
-	execMu                 sync.Mutex
-	execs                  map[string]*remoteExecSession
-	fileReqMu              sync.Mutex
-	fileReqs               map[string]*agentResponseWaiter
-	approvalMu             sync.Mutex
-	fileChangeClaims       map[string]struct{}
-	oauthMu                sync.Mutex
-	oauthStates            map[string]string
-	auditMu                sync.Mutex
-	turnTraceMu            sync.Mutex
-	turnTraces             map[string]*turnTrace
-	orchestratorMu         sync.Mutex
-	orchestratorJobs       map[string]string
-	broadcastThrotMu       sync.Mutex
-	broadcastTimers        map[string]*time.Timer
-	threadStarts           []time.Time
-	turnStarts             []time.Time
-	approvalAuditStore     *store.ApprovalAuditStore
-	approvalGrantStore     *store.ApprovalGrantStore
-	capabilityBindingStore *store.CapabilityBindingStore
-	uiCardStore            *store.UICardStore
-	scriptConfigStore      *store.ScriptConfigStore
-	labEnvironmentStore    *store.LabEnvironmentStore
-	corootClient           *coroot.Client
-	dataSourceRouter       *coroot.DataSourceRouter
-	rcaEngine              coroot.RCAEngine
-	mcpManager             mcpRuntime
-	mcpToolBindings        map[string]mcpToolBinding
-	httpServer             *http.Server
-	grpcServer             *grpc.Server
-	commandRunner          commandRunner
-	bifrostToolCards       sync.Map // tracks active ProcessLineCard IDs per tool call (key: sessionID+":"+toolName)
+	cfg                     config.Config
+	store                   *store.Store
+	toolHandlerRegistry     *ToolHandlerRegistry
+	toolEventBus            *InProcessToolEventBus
+	toolEventStore          *store.ToolEventStore
+	toolApprovalCoordinator ToolApprovalCoordinator
+	toolDispatcher          *toolDispatcher
+	agentLoop               *agentloop.Loop
+	bifrostGateway          *bifrost.Gateway
+	bifrostMu               sync.Mutex
+	bifrostSessions         map[string]*agentloop.Session
+	workspaceRuntimes       map[string]*agentloop.WorkspaceRuntime
+	orchestrator            *orchestrator.Manager
+	runtimeStartThreadFunc  func(context.Context, string, threadStartSpec) (string, error)
+	runtimeStartTurnFunc    func(context.Context, string, string, turnStartSpec) (string, error)
+	codexRespondFunc        func(context.Context, string, any) error
+	skillDiscoveryFunc      discoverInstalledSkillsFunc
+	upgrader                websocket.Upgrader
+	agentMu                 sync.Mutex
+	agents                  map[string]*agentConnection
+	wsMu                    sync.Mutex
+	wsClients               map[string]map[*websocket.Conn]struct{}
+	turnMu                  sync.Mutex
+	turnCancels             map[string]context.CancelFunc
+	terminalMu              sync.Mutex
+	terminals               map[string]*terminalSession
+	execMu                  sync.Mutex
+	execs                   map[string]*remoteExecSession
+	fileReqMu               sync.Mutex
+	fileReqs                map[string]*agentResponseWaiter
+	approvalMu              sync.Mutex
+	fileChangeClaims        map[string]struct{}
+	oauthMu                 sync.Mutex
+	oauthStates             map[string]string
+	auditMu                 sync.Mutex
+	turnTraceMu             sync.Mutex
+	turnTraces              map[string]*turnTrace
+	orchestratorMu          sync.Mutex
+	orchestratorJobs        map[string]string
+	broadcastThrotMu        sync.Mutex
+	broadcastTimers         map[string]*time.Timer
+	threadStarts            []time.Time
+	turnStarts              []time.Time
+	approvalAuditStore      *store.ApprovalAuditStore
+	approvalGrantStore      *store.ApprovalGrantStore
+	capabilityBindingStore  *store.CapabilityBindingStore
+	uiCardStore             *store.UICardStore
+	scriptConfigStore       *store.ScriptConfigStore
+	labEnvironmentStore     *store.LabEnvironmentStore
+	corootClient            *coroot.Client
+	dataSourceRouter        *coroot.DataSourceRouter
+	rcaEngine               coroot.RCAEngine
+	mcpManager              mcpRuntime
+	mcpToolBindings         map[string]mcpToolBinding
+	httpServer              *http.Server
+	grpcServer              *grpc.Server
+	commandRunner           commandRunner
+	bifrostToolCards        sync.Map // tracks active ProcessLineCard IDs per tool call (key: sessionID+":"+toolName)
+	bifrostToolResults      sync.Map // tracks latest ToolExecutionResult per sessionID+":"+toolName for lifecycle completion payloads
 }
 
 type authLoginRequest struct {
@@ -667,6 +673,16 @@ func New(cfg config.Config) *App {
 		broadcastTimers:   make(map[string]*time.Timer),
 		commandRunner:     defaultCommandRunner,
 	}
+	app.toolHandlerRegistry = NewToolHandlerRegistry()
+	app.toolEventBus = NewInProcessToolEventBus()
+	app.toolEventStore = store.NewToolEventStore(256)
+	app.toolEventBus.Subscribe(NewToolEventStoreSubscriber(app.toolEventStore))
+	app.toolEventBus.Subscribe(NewProductProjectionSubscriber(app))
+	app.toolEventBus.Subscribe(NewSnapshotBroadcastSubscriber(app))
+	app.toolApprovalCoordinator = NewToolApprovalCoordinator()
+	app.registerDefaultToolApprovalRules()
+	app.toolDispatcher = newToolDispatcher(app, app.toolHandlerRegistry, app.toolEventBus, app.toolApprovalCoordinator)
+	app.registerDefaultToolHandlers()
 	return app
 }
 
@@ -2078,22 +2094,26 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		}
 		now := model.NowString()
 		cardStatus := approvalStatusFromDecision(decision)
-		a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
 		approval.Status = cardStatus
 		approval.ResolvedAt = now
-		a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
-		if sessionID != targetSessionID {
-			a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
-		}
 
 		if decision == "decline" {
-			a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
-				card.Status = cardStatus
-				card.UpdatedAt = now
-			})
+			memoCard := approvalMemoCard(a.findHost(approval.HostID), approval, decision, now)
+			emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, approvalEventToolName(approval.Type), "thinking", approval, memoCard)
+			if !emitted {
+				a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
+				a.store.UpsertCard(targetSessionID, memoCard)
+				a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
+					card.Status = cardStatus
+					card.UpdatedAt = now
+				})
+			}
+			if sessionID != targetSessionID {
+				a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
+			}
 			a.setRuntimeTurnPhase(targetSessionID, "thinking")
-			if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-				_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
+			if !emitted {
+				a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, "thinking")
 			}
 			a.recordOrchestratorApprovalResolved(targetSessionID, approval)
 			a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
@@ -2130,7 +2150,15 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				UpdatedAt: now,
 			}
 			applyCardHost(&card, a.findHost(approval.HostID))
-			a.store.UpsertCard(targetSessionID, card)
+			emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, approvalEventToolName(approval.Type), "executing", approval, card)
+			if !emitted {
+				a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
+				a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
+				a.store.UpsertCard(targetSessionID, card)
+			}
+			if !emitted {
+				a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, "executing")
+			}
 		} else {
 			card := model.Card{
 				ID:        approval.ItemID,
@@ -2144,12 +2172,20 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				UpdatedAt: now,
 			}
 			applyCardHost(&card, a.findHost(approval.HostID))
-			a.store.UpsertCard(targetSessionID, card)
+			emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, approvalEventToolName(approval.Type), "executing", approval, card)
+			if !emitted {
+				a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
+				a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
+				a.store.UpsertCard(targetSessionID, card)
+			}
+			if !emitted {
+				a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, "executing")
+			}
+		}
+		if sessionID != targetSessionID {
+			a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
 		}
 		a.setRuntimeTurnPhase(targetSessionID, "executing")
-		if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-			_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "executing")
-		}
 		a.recordOrchestratorApprovalResolved(targetSessionID, approval)
 		a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
 		a.broadcastSnapshot(targetSessionID)
@@ -2161,12 +2197,11 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	if strings.TrimSpace(approval.RequestIDRaw) == "" {
 		cardStatus := approvalStatusFromDecision(decision)
 		resolvedAt := model.NowString()
-		a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
 		approval.Status = cardStatus
 		approval.ResolvedAt = resolvedAt
 
 		nextPhase := "thinking"
-		if a.hasPendingApprovals(targetSessionID) {
+		if a.hasPendingApprovalsExcluding(targetSessionID, approvalID) {
 			nextPhase = "waiting_approval"
 		} else if approval.Type == "plan_exit" && decision == "decline" {
 			nextPhase = "planning"
@@ -2179,15 +2214,17 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				rt.PlanMode = false
 			})
 		}
-		if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-			_ = a.orchestrator.SyncWorkerPhase(targetSessionID, nextPhase)
+		resolutionCard := a.approvalResolutionProjectionCard(targetSessionID, approval, cardStatus, resolvedAt)
+		emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, a.approvalResolvedToolName(targetSessionID, approval), nextPhase, approval, resolutionCard)
+		if !emitted {
+			a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
+			a.store.UpsertCard(targetSessionID, resolutionCard)
+		}
+		if !emitted {
+			a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, nextPhase)
 		}
 		a.recordOrchestratorApprovalResolved(targetSessionID, approval)
 		a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, resolvedAt, nil)
-		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
-			card.Status = cardStatus
-			card.UpdatedAt = model.NowString()
-		})
 		a.broadcastSnapshot(targetSessionID)
 		if sessionID != targetSessionID {
 			a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
@@ -2214,11 +2251,10 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 
 	cardStatus := approvalStatusFromDecision(decision)
 	resolvedAt := model.NowString()
-	a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
 	approval.Status = cardStatus
 	approval.ResolvedAt = resolvedAt
 	nextPhase := "thinking"
-	if a.hasPendingApprovals(targetSessionID) {
+	if a.hasPendingApprovalsExcluding(targetSessionID, approvalID) {
 		nextPhase = "waiting_approval"
 	} else if approval.Type == "plan_exit" && codexDecision == "decline" {
 		nextPhase = "planning"
@@ -2231,21 +2267,61 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 			rt.PlanMode = false
 		})
 	}
-	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, nextPhase)
-	}
 	a.recordOrchestratorApprovalResolved(targetSessionID, approval)
 	a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, model.NowString(), nil)
 	if approval.Type == "command" {
-		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
-			card.Status = cardStatus
-			card.UpdatedAt = model.NowString()
-		})
+		resolutionCard := model.Card{
+			ID:        approval.ItemID,
+			Type:      "CommandApprovalCard",
+			Title:     "Command approval required",
+			Command:   approval.Command,
+			Cwd:       approval.Cwd,
+			Text:      approval.Reason,
+			Status:    cardStatus,
+			Detail:    a.approvalCardDetail(targetSessionID, approval, nil),
+			CreatedAt: approval.RequestedAt,
+			UpdatedAt: resolvedAt,
+		}
+		applyCardHost(&resolutionCard, a.findHost(approval.HostID))
+		if existing := a.cardByID(targetSessionID, approval.ItemID); existing != nil {
+			if existing.Type != "" {
+				resolutionCard.Type = existing.Type
+			}
+			if existing.Title != "" {
+				resolutionCard.Title = existing.Title
+			}
+			if existing.Text != "" {
+				resolutionCard.Text = existing.Text
+			}
+			if existing.Command != "" {
+				resolutionCard.Command = existing.Command
+			}
+			if existing.Cwd != "" {
+				resolutionCard.Cwd = existing.Cwd
+			}
+			if existing.CreatedAt != "" {
+				resolutionCard.CreatedAt = existing.CreatedAt
+			}
+			if len(existing.Detail) > 0 {
+				resolutionCard.Detail = cloneAnyMap(existing.Detail)
+			}
+		}
+		emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, "execute_command", nextPhase, approval, resolutionCard)
+		if !emitted {
+			a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
+			a.store.UpsertCard(targetSessionID, resolutionCard)
+		}
+		if !emitted {
+			a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, nextPhase)
+		}
 	} else {
-		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
-			card.Status = cardStatus
-			card.UpdatedAt = model.NowString()
-		})
+		resolutionCard := a.approvalResolutionProjectionCard(targetSessionID, approval, cardStatus, resolvedAt)
+		emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, a.approvalResolvedToolName(targetSessionID, approval), nextPhase, approval, resolutionCard)
+		if !emitted {
+			a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
+			a.store.UpsertCard(targetSessionID, resolutionCard)
+			a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, nextPhase)
+		}
 	}
 	a.broadcastSnapshot(targetSessionID)
 	if sessionID != targetSessionID {
@@ -2347,17 +2423,40 @@ func (a *App) submitChoiceAnswer(ctx context.Context, sessionID, choiceID string
 		card.UpdatedAt = now
 	})
 	a.setRuntimeTurnPhase(targetSessionID, "thinking")
-	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
+	choiceState := choice
+	choiceState.Status = "completed"
+	choiceState.Answers = modelAnswers
+	choiceState.ResolvedAt = now
+	resolutionCard := a.cardByID(targetSessionID, choice.ItemID)
+	if resolutionCard == nil {
+		resolutionCard = &model.Card{
+			ID:            choice.ItemID,
+			Type:          "ChoiceCard",
+			Title:         choiceCardTitle(choice.Questions),
+			RequestID:     choice.ID,
+			Question:      firstChoiceQuestionText(choice.Questions),
+			Questions:     append([]model.ChoiceQuestion(nil), choice.Questions...),
+			AnswerSummary: choiceAnswerSummary(choice.Questions, answers),
+			Status:        "completed",
+			CreatedAt:     firstNonEmptyValue(choice.RequestedAt, now),
+			UpdatedAt:     now,
+		}
+		if len(resolutionCard.Questions) > 0 {
+			resolutionCard.Options = append([]model.ChoiceOption(nil), resolutionCard.Questions[0].Options...)
+		}
 	}
-	a.recordOrchestratorChoiceResolved(targetSessionID, choice, answers)
+	emitted := a.emitChoiceResolvedEvent(ctx, targetSessionID, "thinking", choiceState, *resolutionCard)
+	if !emitted {
+		a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, "thinking")
+		a.recordOrchestratorChoiceResolved(targetSessionID, choiceState, answers)
+	}
 	a.audit("choice.answer", map[string]any{
 		"sessionId": targetSessionID,
 		"choiceId":  choiceID,
 		"answers":   len(answers),
 	})
 	a.broadcastSnapshot(targetSessionID)
-	if sessionID != targetSessionID {
+	if sessionID != targetSessionID && !emitted {
 		a.resolveMirroredChoiceCard(sessionID, choiceID, answers, choice.Questions)
 	}
 	if !hasCodexRequest {
@@ -2584,9 +2683,6 @@ func (a *App) applyTurnPlanUpdated(payload map[string]any) {
 		return
 	}
 	a.bindTurnToSession(sessionID, payload)
-	if a.isWorkspaceDirectThread(sessionID) {
-		return
-	}
 	a.setRuntimeTurnPhase(sessionID, "planning")
 	cardID := "plan-" + getString(payload, "turnId")
 	planItems := toPlanItems(payload["plan"])
@@ -2657,21 +2753,61 @@ func (a *App) handleLocalCommandApprovalRequest(rawID string, payload map[string
 		a.rejectApprovalByProfile(sessionID, rawID, approval, "Command blocked by timeout policy", "requested timeout exceeds the current main-agent profile limit")
 		return
 	}
-	if a.autoApproveBySessionGrant(sessionID, approval) {
-		return
-	}
-	if a.autoApproveByHostGrant(sessionID, approval) {
-		return
-	}
-	if !capabilityNeedsApproval(commandState) && (decision.Mode == model.AgentPermissionModeAllow || decision.Mode == model.AgentPermissionModeReadonlyOnly) {
-		if a.autoApproveLocalApprovalByProfile(sessionID, approval) {
+	policyAllowsAutoApprove := !capabilityNeedsApproval(commandState) && (decision.Mode == model.AgentPermissionModeAllow || decision.Mode == model.AgentPermissionModeReadonlyOnly)
+	resolution := a.requestCommandApprovalResolution(context.Background(), sessionID, "execute_command", approval, policyAllowsAutoApprove, false)
+	approval = approvalWithResolution(approval, resolution)
+	if resolution.IsApproved() {
+		status, title, text, codexDecision := localCommandAutoApprovalPresentation(approval, resolution.RuleName)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := a.respondCodex(ctx, approval.RequestIDRaw, map[string]any{
+			"decision": codexDecision,
+		}); err != nil {
+			log.Printf("local command auto approval failed session=%s approval=%s err=%s", sessionID, approval.ID, truncate(err.Error(), 200))
 			return
 		}
+		approval.Status = status
+		approval.ResolvedAt = firstNonEmptyValue(strings.TrimSpace(approval.ResolvedAt), model.NowString())
+		a.setRuntimeTurnPhase(sessionID, "executing")
+		card := model.Card{
+			ID:        "auto-approval-" + approval.ItemID,
+			Type:      "NoticeCard",
+			Title:     title,
+			Text:      text,
+			Status:    "notice",
+			CreatedAt: approval.ResolvedAt,
+			UpdatedAt: approval.ResolvedAt,
+		}
+		if !a.emitApprovalResolvedEvent(context.Background(), sessionID, "execute_command", "executing", approval, card) {
+			a.store.AddApproval(sessionID, approval)
+			a.store.ResolveApproval(sessionID, approval.ID, approval.Status, approval.ResolvedAt)
+			a.store.UpsertCard(sessionID, card)
+		}
+		switch strings.TrimSpace(resolution.RuleName) {
+		case toolApprovalRuleSessionGrant, toolApprovalRuleHostGrant:
+			extra := map[string]any{
+				"fingerprint": approval.Fingerprint,
+			}
+			decisionName := "accept_session"
+			if resolution.RuleName == toolApprovalRuleHostGrant {
+				extra["grantMode"] = "host"
+				decisionName = "auto_accept"
+			}
+			a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, decisionName, approval.Status, approval.RequestedAt, approval.ResolvedAt, extra)
+		case toolApprovalRuleProfilePolicy:
+			a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, "accept", approval.Status, approval.RequestedAt, approval.ResolvedAt, map[string]any{
+				"autoApprovedByProfile": true,
+			})
+		default:
+			a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, "accept", approval.Status, approval.RequestedAt, approval.ResolvedAt, nil)
+		}
+		a.broadcastSnapshot(sessionID)
+		return
 	}
+	approval.Status = "pending"
 	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
 	log.Printf("approval requested type=command session=%s item=%s command=%q", sessionID, approval.ItemID, approval.Command)
 	a.auditApprovalRequested(sessionID, approval, nil)
-	a.store.AddApproval(sessionID, approval)
 	card := model.Card{
 		ID:      approval.ItemID,
 		Type:    "CommandApprovalCard",
@@ -2680,22 +2816,23 @@ func (a *App) handleLocalCommandApprovalRequest(rawID string, payload map[string
 		Cwd:     approval.Cwd,
 		Text:    approval.Reason,
 		Status:  "pending",
+		Detail:  a.approvalCardDetail(sessionID, approval, nil),
 		Approval: &model.ApprovalRef{
 			RequestID: approval.ID,
 			Type:      approval.Type,
 			Decisions: approval.Decisions,
 		},
-		CreatedAt: model.NowString(),
-		UpdatedAt: model.NowString(),
+		CreatedAt: approval.RequestedAt,
+		UpdatedAt: approval.RequestedAt,
 	}
 	applyCardHost(&card, a.findHost(approval.HostID))
-	a.store.UpsertCard(sessionID, card)
-	a.recordOrchestratorApprovalRequested(sessionID, approval)
-	if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
-		a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
-		if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
-			a.activateQueuedMissionWorkers(workspaceSessionID)
-		}
+	emitted := a.emitApprovalRequestedEventWithOptions(context.Background(), sessionID, "execute_command", approval, card, approvalRequestedEventOptions{
+		activateQueuedWorkers: a.sessionKind(sessionID) == model.SessionKindWorker,
+	})
+	if !emitted {
+		a.store.AddApproval(sessionID, approval)
+		a.store.UpsertCard(sessionID, card)
+		a.projectApprovalRequestedFallback(sessionID, approval, card, true)
 	}
 	a.broadcastSnapshot(sessionID)
 }
@@ -2760,9 +2897,9 @@ func (a *App) createChoiceRequest(rawID, sessionID string, payload map[string]an
 	}
 	a.store.AddChoice(sessionID, choice)
 	a.store.UpsertCard(sessionID, card)
-	a.recordOrchestratorChoiceRequested(sessionID, choice)
-	if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
-		a.mirrorInternalChoiceToWorkspace(sessionID, choice, card)
+	emitted := a.emitChoiceRequestedEvent(context.Background(), sessionID, choice, card)
+	if !emitted {
+		a.projectChoiceRequestedFallback(sessionID, choice, card)
 	}
 	a.audit("choice.requested", map[string]any{
 		"sessionId": sessionID,
@@ -2846,9 +2983,6 @@ func (a *App) handleItemStarted(payload map[string]any) {
 		a.scheduleFinalizingExecutionCleanup(sessionID, getStringAny(payload, "threadId", "thread_id"))
 		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
 	}
-	if itemType == "agentMessage" && a.isWorkspaceRouteThread(sessionID) {
-		return
-	}
 	a.broadcastSnapshot(sessionID)
 }
 
@@ -2906,6 +3040,7 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 				output = aggregated
 			}
 			result, finalStatus, summary, highlights, kvRows := buildLocalCommandCardPresentation(item, output)
+			display := toolDisplayPayloadToProjectionMap(commandResultDisplayPayload(card.Command, card.Cwd, result, finalStatus))
 			card.Output = output
 			card.Stdout = result.Stdout
 			card.Stderr = result.Stderr
@@ -2917,6 +3052,7 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			card.Highlights = highlights
 			card.KVRows = kvRows
 			card.Status = finalStatus
+			card.Detail = toolProjectionDisplayDetailMap(display, card.Detail)
 			if itemDuration, ok := getIntAny(item, "durationMs", "duration_ms"); ok && itemDuration > 0 {
 				card.DurationMS = int64(itemDuration)
 			} else {
@@ -2993,20 +3129,16 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 	}
 	if itemType == "agentMessage" {
 		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
-		if a.isWorkspaceRouteThread(sessionID) {
-			a.flushThrottledBroadcast(sessionID)
-			a.broadcastSnapshot(sessionID)
-			return
-		}
 	}
 	a.broadcastSnapshot(sessionID)
 }
 
 func (a *App) autoApproveBySessionGrant(sessionID string, approval model.ApprovalRequest) bool {
-	if approval.Fingerprint == "" {
-		return false
-	}
-	if _, ok := a.store.ApprovalGrant(sessionID, approval.Fingerprint); !ok {
+	if _, ok := a.matchToolApprovalRule(
+		context.Background(),
+		buildToolApprovalRequestForExistingApproval(sessionID, "execute_command", approval, false, false),
+		toolApprovalRuleSessionGrant,
+	); !ok {
 		return false
 	}
 
@@ -3022,10 +3154,8 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 	now := model.NowString()
 	approval.Status = "accepted_for_session_auto"
 	approval.ResolvedAt = now
-	a.store.AddApproval(sessionID, approval)
-	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
 	a.setRuntimeTurnPhase(sessionID, "executing")
-	a.store.UpsertCard(sessionID, model.Card{
+	card := model.Card{
 		ID:        "auto-approval-" + approval.ItemID,
 		Type:      "NoticeCard",
 		Title:     "Auto-approved for session",
@@ -3033,7 +3163,12 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	if !a.emitApprovalResolvedEvent(context.Background(), sessionID, "execute_command", "executing", approval, card) {
+		a.store.AddApproval(sessionID, approval)
+		a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+		a.store.UpsertCard(sessionID, card)
+	}
 	log.Printf("approval auto accepted by session grant session=%s approval=%s type=%s", sessionID, approval.ID, approval.Type)
 	a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, "accept_session", approval.Status, approval.RequestedAt, now, map[string]any{
 		"fingerprint": approval.Fingerprint,
@@ -3043,13 +3178,11 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 }
 
 func (a *App) autoApproveByHostGrant(sessionID string, approval model.ApprovalRequest) bool {
-	if approval.Fingerprint == "" || approval.HostID == "" {
-		return false
-	}
-	if a.approvalGrantStore == nil {
-		return false
-	}
-	if _, ok := a.approvalGrantStore.MatchFingerprint(approval.HostID, approval.Fingerprint); !ok {
+	if _, ok := a.matchToolApprovalRule(
+		context.Background(),
+		buildToolApprovalRequestForExistingApproval(sessionID, "execute_command", approval, false, false),
+		toolApprovalRuleHostGrant,
+	); !ok {
 		return false
 	}
 
@@ -3065,10 +3198,8 @@ func (a *App) autoApproveByHostGrant(sessionID string, approval model.ApprovalRe
 	now := model.NowString()
 	approval.Status = "accepted_for_host_auto"
 	approval.ResolvedAt = now
-	a.store.AddApproval(sessionID, approval)
-	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
 	a.setRuntimeTurnPhase(sessionID, "executing")
-	a.store.UpsertCard(sessionID, model.Card{
+	card := model.Card{
 		ID:        "auto-approval-" + approval.ItemID,
 		Type:      "NoticeCard",
 		Title:     "Auto-approved by host grant",
@@ -3076,7 +3207,12 @@ func (a *App) autoApproveByHostGrant(sessionID string, approval model.ApprovalRe
 		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	if !a.emitApprovalResolvedEvent(context.Background(), sessionID, "execute_command", "executing", approval, card) {
+		a.store.AddApproval(sessionID, approval)
+		a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+		a.store.UpsertCard(sessionID, card)
+	}
 	log.Printf("approval auto accepted by host grant session=%s approval=%s type=%s host=%s", sessionID, approval.ID, approval.Type, approval.HostID)
 	a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, "auto_accept", approval.Status, approval.RequestedAt, now, map[string]any{
 		"fingerprint": approval.Fingerprint,
@@ -3654,6 +3790,7 @@ func (a *App) finalizeLingeringExecutionCards(sessionID string) bool {
 			}
 			result, status, summary, highlights, kvRows := buildLocalCommandCardPresentation(item, output)
 			a.store.UpdateCard(sessionID, existing.ID, func(card *model.Card) {
+				display := toolDisplayPayloadToProjectionMap(commandResultDisplayPayload(card.Command, card.Cwd, result, status))
 				card.Output = output
 				card.Stdout = result.Stdout
 				card.Stderr = result.Stderr
@@ -3665,6 +3802,7 @@ func (a *App) finalizeLingeringExecutionCards(sessionID string) bool {
 				card.Highlights = highlights
 				card.KVRows = kvRows
 				card.Status = status
+				card.Detail = toolProjectionDisplayDetailMap(display, card.Detail)
 				card.DurationMS = durationMS
 				card.UpdatedAt = now
 			})
@@ -3816,26 +3954,6 @@ func (a *App) shouldIgnoreTurnPayload(sessionID string, payload map[string]any) 
 	}
 	threadID := getStringAny(payload, "threadId", "thread_id")
 	return threadID != "" && threadID == session.ThreadID
-}
-
-func (a *App) isWorkspaceRouteThread(sessionID string) bool {
-	session := a.store.Session(sessionID)
-	if session == nil {
-		return false
-	}
-	return session.Meta.Kind == model.SessionKindWorkspace && strings.HasSuffix(strings.TrimSpace(session.ThreadConfigHash), ":workspace-route")
-}
-
-func (a *App) isWorkspaceReadonlyThread(sessionID string) bool {
-	session := a.store.Session(sessionID)
-	if session == nil {
-		return false
-	}
-	return session.Meta.Kind == model.SessionKindWorkspace && strings.HasSuffix(strings.TrimSpace(session.ThreadConfigHash), ":workspace-readonly")
-}
-
-func (a *App) isWorkspaceDirectThread(sessionID string) bool {
-	return a.isWorkspaceRouteThread(sessionID) || a.isWorkspaceReadonlyThread(sessionID)
 }
 
 func (a *App) isReActThread(sessionID string) bool {
@@ -4275,7 +4393,7 @@ func autoApprovalNoticeText(approval model.ApprovalRequest) string {
 }
 
 func approvalMemoCard(host model.Host, approval model.ApprovalRequest, decision, now string) model.Card {
-	return model.Card{
+	card := model.Card{
 		ID:        "approval-memo-" + approval.ID,
 		Type:      "NoticeCard",
 		Text:      approvalMemoText(host, approval, decision),
@@ -4283,6 +4401,14 @@ func approvalMemoCard(host model.Host, approval model.ApprovalRequest, decision,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	if approval.Type == "remote_file_change" || approval.Type == "file_change" || approval.Type == bifrostApprovalTypeRemoteFileChange {
+		if len(approval.Changes) > 0 {
+			change := approval.Changes[0]
+			card.Summary = declinedRemoteFileChangeSummary(change.Path)
+			card.Detail = fileChangeDisplayDetail(nil, fileChangeDisplayPayload(change, "", declinedRemoteFileChangeSummary(change.Path), "用户拒绝了本次文件变更审批。"))
+		}
+	}
+	return card
 }
 
 func approvalMemoText(host model.Host, approval model.ApprovalRequest, decision string) string {
@@ -4542,6 +4668,69 @@ func approvalStatusFromDecision(decision string) string {
 		return "accepted_for_session"
 	}
 	return decision
+}
+
+func (a *App) hasPendingApprovalsExcluding(sessionID, approvalID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for id, approval := range session.Approvals {
+		if strings.TrimSpace(id) == strings.TrimSpace(approvalID) {
+			continue
+		}
+		if strings.TrimSpace(approval.Status) == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) approvalResolutionProjectionCard(sessionID string, approval model.ApprovalRequest, approvalStatus, resolvedAt string) model.Card {
+	cardStatus := approvalStatusToCardStatus(approvalStatus)
+	if existing := a.cardByID(sessionID, approval.ItemID); existing != nil {
+		card := *existing
+		if existing.Detail != nil {
+			card.Detail = cloneAnyMap(existing.Detail)
+		}
+		if existing.Approval != nil {
+			approvalRef := *existing.Approval
+			card.Approval = &approvalRef
+		}
+		if len(existing.Changes) > 0 {
+			card.Changes = append([]model.FileChange(nil), existing.Changes...)
+		}
+		card.Status = cardStatus
+		card.UpdatedAt = resolvedAt
+		return card
+	}
+
+	card := model.Card{
+		ID:        approval.ItemID,
+		Status:    cardStatus,
+		Detail:    a.approvalCardDetail(sessionID, approval, nil),
+		CreatedAt: firstNonEmptyValue(strings.TrimSpace(approval.RequestedAt), resolvedAt),
+		UpdatedAt: resolvedAt,
+	}
+	switch approval.Type {
+	case "plan_exit":
+		card.Type = "PlanApprovalCard"
+		card.Title = firstNonEmptyValue(strings.TrimSpace(approval.Reason), "计划审批")
+	case "command":
+		card.Type = "CommandApprovalCard"
+		card.Title = "Command approval required"
+		card.Command = approval.Command
+		card.Cwd = approval.Cwd
+		card.Text = approval.Reason
+	default:
+		card.Type = "ApprovalCard"
+		card.Title = firstNonEmptyValue(strings.TrimSpace(approval.Reason), "审批请求")
+		card.Command = approval.Command
+		card.Cwd = approval.Cwd
+		card.Text = approval.Reason
+	}
+	applyCardHost(&card, a.findHost(approval.HostID))
+	return card
 }
 
 func planExitApprovalToolResponse(approval model.ApprovalRequest, decision, codexDecision string) map[string]any {
@@ -5828,23 +6017,36 @@ func toChoiceOptions(raw any) []model.ChoiceOption {
 }
 
 func toChanges(raw any) []model.FileChange {
-	list, ok := raw.([]any)
-	if !ok {
+	switch typed := raw.(type) {
+	case []model.FileChange:
+		return append([]model.FileChange(nil), typed...)
+	case []map[string]any:
+		changes := make([]model.FileChange, 0, len(typed))
+		for _, changeMap := range typed {
+			changes = append(changes, model.FileChange{
+				Path: getString(changeMap, "path"),
+				Kind: kindLabel(changeMap["kind"]),
+				Diff: getString(changeMap, "diff"),
+			})
+		}
+		return changes
+	case []any:
+		changes := make([]model.FileChange, 0, len(typed))
+		for _, entry := range typed {
+			changeMap, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			changes = append(changes, model.FileChange{
+				Path: getString(changeMap, "path"),
+				Kind: kindLabel(changeMap["kind"]),
+				Diff: getString(changeMap, "diff"),
+			})
+		}
+		return changes
+	default:
 		return nil
 	}
-	changes := make([]model.FileChange, 0, len(list))
-	for _, entry := range list {
-		changeMap, ok := entry.(map[string]any)
-		if !ok {
-			continue
-		}
-		changes = append(changes, model.FileChange{
-			Path: getString(changeMap, "path"),
-			Kind: kindLabel(changeMap["kind"]),
-			Diff: getString(changeMap, "diff"),
-		})
-	}
-	return changes
 }
 
 func choiceCardTitle(questions []model.ChoiceQuestion) string {
@@ -5857,6 +6059,13 @@ func choiceCardTitle(questions []model.ChoiceQuestion) string {
 		}
 	}
 	return "需要你的输入"
+}
+
+func firstChoiceQuestionText(questions []model.ChoiceQuestion) string {
+	if len(questions) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(questions[0].Question)
 }
 
 func choiceAnswerSummary(questions []model.ChoiceQuestion, answers []choiceAnswerInput) []string {

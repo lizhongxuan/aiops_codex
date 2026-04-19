@@ -94,7 +94,7 @@ func (a *App) countOrchestratorActiveLocked(missionID, excludeSessionID string) 
 			continue
 		}
 		meta := a.sessionMeta(sessionID)
-		if meta.Kind != model.SessionKindWorkspace && meta.Kind != model.SessionKindWorker {
+		if meta.Kind != model.SessionKindWorker {
 			continue
 		}
 		global++

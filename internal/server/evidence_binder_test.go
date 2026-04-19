@@ -28,12 +28,26 @@ func TestHandleWorkspaceQueryAIServerStateBindsEvidenceArtifact(t *testing.T) {
 	if card == nil {
 		t.Fatalf("expected state query card to exist")
 	}
+	if card.Type != "WorkspaceResultCard" || card.Status != "completed" {
+		t.Fatalf("expected completed WorkspaceResultCard, got %#v", card)
+	}
 	evidenceID := getStringAny(card.Detail, "evidenceId")
 	if evidenceID == "" {
 		t.Fatalf("expected evidenceId on state query card, got %#v", card.Detail)
 	}
 	if !strings.Contains(card.Text, evidenceID) {
 		t.Fatalf("expected state query card text to reference evidence, got %q", card.Text)
+	}
+	session := app.store.Session(sessionID)
+	if session == nil || len(session.Cards) != 1 {
+		t.Fatalf("expected only state result card, got %#v", session)
+	}
+	events := app.toolEventStore.SessionEvents(sessionID)
+	if len(events) < 2 {
+		t.Fatalf("expected lifecycle events for state query, got %#v", events)
+	}
+	if events[0].Type != string(ToolLifecycleEventStarted) || events[len(events)-1].Type != string(ToolLifecycleEventCompleted) {
+		t.Fatalf("expected started/completed lifecycle events, got %#v", events)
 	}
 
 	item := app.store.Item(sessionID, evidenceID)

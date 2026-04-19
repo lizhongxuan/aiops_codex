@@ -8,7 +8,7 @@ import ProtocolEvidenceDrawer from "../components/protocol-workspace/ProtocolEvi
 import ProtocolEventTimeline from "../components/protocol-workspace/ProtocolEventTimeline.vue";
 import ProtocolEvidenceModal from "../components/protocol-workspace/ProtocolEvidenceModal.vue";
 import { buildMcpDecisionNotice, buildSyntheticMcpApproval, buildSyntheticMcpEvent, formatMcpActionLabel, formatMcpActionTarget, isMcpMutationAction } from "../lib/mcpActionRuntime";
-import { buildProtocolAgentDetailModel, buildProtocolEvidenceTabs, buildProtocolWorkspaceModel } from "../lib/protocolWorkspaceVm";
+import { buildProtocolAgentDetailModel, buildProtocolEvidenceTabs, buildProtocolWorkspaceModel, resolveWorkspaceToolLabel } from "../lib/protocolWorkspaceVm";
 import { compactText } from "../lib/workspaceViewModel";
 import { useAppStore } from "../store";
 
@@ -243,48 +243,8 @@ function objectRows(value = {}) {
     .map(([key, entry]) => ({ label: key, value: entry }));
 }
 
-function toolDisplayName(name = "") {
-  switch (compactText(name)) {
-    case "ask_user_question":
-      return "澄清问题";
-    case "command":
-      return "命令执行";
-    case "request_approval":
-      return "审批请求";
-    case "readonly_host_inspect":
-      return "只读主机检查";
-    case "query_ai_server_state":
-      return "工作台状态快照";
-    case "web_search":
-      return "外部搜索";
-    case "orchestrator_dispatch_tasks":
-      return "任务派发";
-    case "enter_plan_mode":
-      return "进入计划模式";
-    case "update_plan":
-      return "计划更新";
-    case "exit_plan_mode":
-      return "计划审批";
-    case "service_restart":
-    case "service.restart":
-      return "服务重启";
-    case "service_stop":
-    case "service.stop":
-      return "停止服务";
-    case "config_apply":
-    case "config.apply":
-      return "配置下发";
-    case "package_install":
-    case "package.install":
-      return "安装软件包";
-    case "package_upgrade":
-    case "package.upgrade":
-      return "升级软件包";
-    case "execute_system_mutation":
-      return "受控变更";
-    default:
-      return compactText(name) || "工具调用";
-  }
+function toolDisplayName(tool = "") {
+  return resolveWorkspaceToolLabel(tool);
 }
 
 function selectedStepHostRows(step = null) {
@@ -672,7 +632,7 @@ const conversationSubtitle = computed(() => {
     return "当前处于方案规划中：主 Agent 会先生成计划，再提交计划审批，不会直接执行变更。";
   }
   if (workspaceModel.value.currentLane === "readonly" && workspaceModel.value.requiredNextTool) {
-    return `当前处于分析中：先完成 ${toolDisplayName(workspaceModel.value.requiredNextTool)}，再形成结论。`;
+    return `当前处于分析中：先完成 ${workspaceModel.value.requiredNextToolLabel || toolDisplayName(workspaceModel.value.requiredNextTool)}，再形成结论。`;
   }
   if (workspaceModel.value.currentLane === "execute") {
     return "当前处于受控执行中：仅会在已审批计划范围内推进派发和动作执行。";
@@ -745,7 +705,7 @@ const runtimePolicyCard = computed(() => {
     intentLabel,
     gateLabel,
     nextTool,
-    nextToolLabel: toolDisplayName(nextTool),
+    nextToolLabel: workspaceModel.value.requiredNextToolLabel || toolDisplayName(nextTool),
     missingRequirements,
     detail,
     blocked: compactText(workspaceModel.value.finalGateStatus) === "blocked",
@@ -1205,7 +1165,7 @@ const verificationPanel = computed(() => {
 const toolInputPanel = computed(() => {
   const invocation = selectedToolInvocation.value || {};
   const rows = [
-    compactRow("工具", toolDisplayName(invocation.name)),
+    compactRow("工具", toolDisplayName(invocation)),
     compactRow("工具名", invocation.name),
     compactRow("状态", invocation.status),
     compactRow("风险级别", invocation.riskLevel),
@@ -1434,7 +1394,7 @@ const evidenceTitle = computed(() => {
     return `命令执行详情 · ${command.command || command.hostId || "local"}`;
   }
   if (evidenceSource.value === "tool_invocation" && selectedToolInvocation.value) {
-    return `${toolDisplayName(selectedToolInvocation.value.name)} · ${selectedToolInvocation.value.inputSummary || selectedToolInvocation.value.id}`;
+    return `${toolDisplayName(selectedToolInvocation.value)} · ${selectedToolInvocation.value.inputSummary || selectedToolInvocation.value.id}`;
   }
   if (evidenceSource.value === "process" && selectedProcessEvidence.value) {
     return "过程详情";
@@ -1528,7 +1488,7 @@ const promptDebugState = computed(() => {
           compactRow("Lane", workspaceModel.value.currentLaneLabel),
           compactRow("Current Mode", workspaceModel.value.incidentSummary?.modeLabel),
           compactRow("Current Stage", workspaceModel.value.incidentSummary?.stageLabel),
-          compactRow("Required Next Tool", toolDisplayName(workspaceModel.value.requiredNextTool || "")),
+          compactRow("Required Next Tool", workspaceModel.value.requiredNextToolLabel || toolDisplayName(workspaceModel.value.requiredNextTool || "")),
           compactRow("Classification Reason", turnPolicy.classificationReason),
         ].filter(Boolean),
         raw: turnPolicy,
@@ -1538,7 +1498,7 @@ const promptDebugState = computed(() => {
         summary: "解释当前回答为什么被放行、待校验或被拦截。",
         items: [
           compactRow("Gate Status", workspaceModel.value.finalGateLabel),
-          compactRow("Required Next Tool", workspaceModel.value.requiredNextTool ? `${toolDisplayName(workspaceModel.value.requiredNextTool)} (${workspaceModel.value.requiredNextTool})` : ""),
+          compactRow("Required Next Tool", workspaceModel.value.requiredNextTool ? `${workspaceModel.value.requiredNextToolLabel || toolDisplayName(workspaceModel.value.requiredNextTool)} (${workspaceModel.value.requiredNextTool})` : ""),
           compactRow("Missing Requirements", missingRequirements.join(" / ")),
         ].filter(Boolean),
         raw: {
@@ -1563,8 +1523,8 @@ const promptDebugState = computed(() => {
         title: "Tool Visibility",
         summary: "展示本轮对模型可见和被隐藏的工具，以及对应原因。",
         items: [
-          ...visibleTools.map((tool) => compactRow(`Visible · ${tool.name}`, tool.reason)),
-          ...hiddenTools.map((tool) => compactRow(`Hidden · ${tool.name}`, tool.reason)),
+          ...visibleTools.map((tool) => compactRow(`Visible · ${tool.displayName || toolDisplayName(tool)}`, tool.reason)),
+          ...hiddenTools.map((tool) => compactRow(`Hidden · ${tool.displayName || toolDisplayName(tool)}`, tool.reason)),
         ].filter(Boolean),
         raw: {
           visibleTools,

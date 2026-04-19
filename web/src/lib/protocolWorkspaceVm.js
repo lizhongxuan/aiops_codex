@@ -35,6 +35,91 @@ function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function firstNonEmptyCompact(...values) {
+  for (const value of values) {
+    const text = compactText(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function normalizeToolAliases(value) {
+  return [...new Set(asArray(value).map((item) => compactText(item)).filter(Boolean))];
+}
+
+function legacyWorkspaceToolDisplayName(name = "") {
+  switch (compactText(name)) {
+    case "ask_user_question":
+      return "澄清问题";
+    case "command":
+      return "命令执行";
+    case "request_approval":
+      return "审批请求";
+    case "readonly_host_inspect":
+      return "只读主机检查";
+    case "query_ai_server_state":
+      return "工作台状态快照";
+    case "web_search":
+      return "外部搜索";
+    case "open_page":
+      return "网页读取";
+    case "find_in_page":
+      return "页面定位";
+    case "orchestrator_dispatch_tasks":
+      return "任务派发";
+    case "enter_plan_mode":
+      return "进入计划模式";
+    case "update_plan":
+      return "计划更新";
+    case "exit_plan_mode":
+      return "计划审批";
+    case "service_restart":
+    case "service.restart":
+      return "服务重启";
+    case "service_stop":
+    case "service.stop":
+      return "停止服务";
+    case "config_apply":
+    case "config.apply":
+      return "配置下发";
+    case "package_install":
+    case "package.install":
+      return "安装软件包";
+    case "package_upgrade":
+    case "package.upgrade":
+      return "升级软件包";
+    case "execute_system_mutation":
+      return "受控变更";
+    default:
+      return compactText(name);
+  }
+}
+
+export function resolveWorkspaceToolDescriptor(value = "") {
+  const source = typeof value === "string" ? { name: value } : asObject(value);
+  const descriptor = asObject(source.descriptor);
+  const name = firstNonEmptyCompact(source.name, source.tool, descriptor.name, descriptor.tool);
+  const displayName = firstNonEmptyCompact(
+    source.displayName,
+    source.label,
+    descriptor.displayName,
+    descriptor.label,
+    descriptor.title,
+    legacyWorkspaceToolDisplayName(name),
+  );
+  return {
+    name,
+    displayName: displayName || "工具调用",
+    kind: firstNonEmptyCompact(source.kind, descriptor.kind),
+    description: firstNonEmptyCompact(source.description, source.summary, descriptor.description, descriptor.summary),
+    aliases: [...new Set([...normalizeToolAliases(source.aliases), ...normalizeToolAliases(descriptor.aliases)])],
+  };
+}
+
+export function resolveWorkspaceToolLabel(value = "") {
+  return resolveWorkspaceToolDescriptor(value).displayName || "工具调用";
+}
+
 function normalizeProtocolProjectionLinks(links = []) {
   const seen = new Set();
   return asArray(links)
@@ -681,47 +766,6 @@ function invocationTone(value = "") {
   return commandTone(value);
 }
 
-function invocationDisplayName(name = "") {
-  const normalized = compactText(name);
-  switch (normalized) {
-    case "ask_user_question":
-      return "澄清问题";
-    case "command":
-      return "命令执行";
-    case "request_approval":
-      return "审批请求";
-    case "readonly_host_inspect":
-      return "只读主机检查";
-    case "orchestrator_dispatch_tasks":
-      return "任务派发";
-    case "enter_plan_mode":
-      return "进入计划模式";
-    case "update_plan":
-      return "计划更新";
-    case "exit_plan_mode":
-      return "计划审批";
-    case "service_restart":
-    case "service.restart":
-      return "服务重启";
-    case "service_stop":
-    case "service.stop":
-      return "停止服务";
-    case "config_apply":
-    case "config.apply":
-      return "配置下发";
-    case "package_install":
-    case "package.install":
-      return "安装软件包";
-    case "package_upgrade":
-    case "package.upgrade":
-      return "升级软件包";
-    case "execute_system_mutation":
-      return "受控变更";
-    default:
-      return normalized || "工具调用";
-  }
-}
-
 function normalizeProtocolEvidenceSummary(record = {}) {
   const source = asObject(record);
   const metadata = asObject(source.metadata);
@@ -784,6 +828,13 @@ function normalizeProtocolToolInvocations(toolInvocations = [], evidenceSummarie
       const input = safeParseJSON(item?.inputJson) || {};
       const output = safeParseJSON(item?.outputJson) || {};
       const metadata = asObject(evidence?.metadata);
+      const tool = resolveWorkspaceToolDescriptor({
+        name: item?.name,
+        displayName: item?.displayName || metadata.displayName,
+        kind: item?.kind || metadata.kind,
+        description: metadata.description,
+        aliases: metadata.aliases,
+      });
       const hostId = compactText(input.hostId || item?.hostId || output.hostId || metadata.hostId);
       const hostName = compactText(metadata.hostName) || hostId;
       const approvalId = compactText(input.approvalId || item?.approvalId || metadata.approvalId);
@@ -793,7 +844,9 @@ function normalizeProtocolToolInvocations(toolInvocations = [], evidenceSummarie
       return {
         ...item,
         id: compactText(item?.id),
-        name: compactText(item?.name),
+        name: tool.name,
+        displayName: tool.displayName,
+        kind: tool.kind,
         status: compactText(item?.status),
         input,
         output,
@@ -805,7 +858,7 @@ function normalizeProtocolToolInvocations(toolInvocations = [], evidenceSummarie
         projection: buildProtocolProjection({
           kind: "tool_invocation",
           id: compactText(item?.id),
-          title: invocationDisplayName(item?.name),
+          title: tool.displayName,
           summary: compactText(item?.inputSummary || item?.outputSummary || evidence?.summary),
           hostId,
           hostName,
@@ -835,7 +888,7 @@ function buildProtocolToolInvocationEventItems(toolInvocations = [], hostRows = 
       const hostId = compactText(input.hostId || invocation.hostId || output.hostId || "server-local");
       const hostLabel = compactText(hostLabelById.get(hostId)) || (hostId === "server-local" ? "local" : hostId);
       const command = displayCommand(input.command || invocation.inputSummary);
-      const toolLabel = invocationDisplayName(invocation.name);
+      const toolLabel = resolveWorkspaceToolLabel(invocation);
       const statusLabel = invocationStatusLabel(invocation.status);
       const title = invocation.name === "command" && command
         ? `${hostLabel} · ${command}`
@@ -1155,13 +1208,22 @@ function normalizePromptEnvelopeSection(section = {}) {
 
 function normalizePromptEnvelopeTool(tool = {}) {
   const source = asObject(tool);
-  const name = compactText(source.name || source.tool);
+  const descriptor = resolveWorkspaceToolDescriptor(source);
   const reason = compactText(source.reason || source.summary);
-  if (!name && !reason) return null;
+  if (!descriptor.name && !reason && !descriptor.description) return null;
   return {
-    name,
+    ...descriptor,
     reason,
   };
+}
+
+function findPromptEnvelopeTool(tools = [], name = "") {
+  const normalizedName = compactText(name);
+  if (!normalizedName) return null;
+  return asArray(tools).find((tool) => {
+    const descriptor = resolveWorkspaceToolDescriptor(tool);
+    return descriptor.name === normalizedName || descriptor.aliases.includes(normalizedName);
+  }) || null;
 }
 
 function normalizeTurnPolicy(policy = {}) {
@@ -2535,6 +2597,13 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
       || turnPolicy.requiredNextTool
       || promptEnvelope.requiredNextTool,
   );
+  const requiredNextToolDescriptor = requiredNextTool
+    ? resolveWorkspaceToolDescriptor(
+        findPromptEnvelopeTool(promptEnvelope.visibleTools, requiredNextTool)
+          || findPromptEnvelopeTool(promptEnvelope.hiddenTools, requiredNextTool)
+          || requiredNextTool,
+      )
+    : { displayName: "" };
   const finalGateStatus = normalizeTurnFinalGateStatus(
     snapshot.finalGateStatus
       || turnPolicy.finalGateStatus
@@ -2588,6 +2657,7 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     finalGateStatus,
     finalGateLabel: turnFinalGateLabel(finalGateStatus),
     requiredNextTool,
+    requiredNextToolLabel: requiredNextToolDescriptor.displayName,
     missingRequirements,
     turnPolicy: {
       ...turnPolicy,

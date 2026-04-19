@@ -293,40 +293,11 @@ func (a *App) buildMainAgentTurnInput(ctx context.Context, profile model.AgentPr
 	items := []map[string]any{
 		{"type": "text", "text": message},
 	}
-	discovered, err := a.listInstalledSkills(ctx)
+	resolution, err := a.resolveSkillContext(ctx, profile, message)
 	if err != nil {
 		log.Printf("main-agent skill discovery skipped while building turn input: %v", err)
 		return items
 	}
-	pathMap := buildManagedSkillPathMap(profile, discovered)
-	selectedPaths := make(map[string]struct{})
-	for _, item := range profile.Skills {
-		if !skillEnabledByProfile(item) {
-			continue
-		}
-		mode := model.NormalizeAgentSkillActivationMode(item.ActivationMode)
-		if mode == model.AgentSkillActivationExplicit && !explicitSkillRequested(message, item) {
-			continue
-		}
-		path := ""
-		for _, candidate := range []string{item.ID, item.Name} {
-			path = strings.TrimSpace(pathMap[normalizeSkillLookupKey(candidate)])
-			if path != "" {
-				break
-			}
-		}
-		if path == "" {
-			continue
-		}
-		if _, exists := selectedPaths[path]; exists {
-			continue
-		}
-		selectedPaths[path] = struct{}{}
-		items = append(items, map[string]any{
-			"type": "skill",
-			"name": strings.TrimSpace(item.Name),
-			"path": path,
-		})
-	}
+	items = append(items, cloneNestedAnyValue(resolution.Items).([]map[string]any)...)
 	return items
 }

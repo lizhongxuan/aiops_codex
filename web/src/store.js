@@ -1,4 +1,6 @@
 import { defineStore } from "pinia";
+import { cloneUiFixturePayload } from "./lib/uiFixturePresets";
+import { resolveUiFixtureRuntime } from "./lib/uiFixtureRuntime";
 
 const MCP_DRAWER_STORAGE_KEY = "codex:mcp-drawer:v1";
 const MCP_DRAWER_PIN_LIMIT = 8;
@@ -1646,15 +1648,27 @@ export const useAppStore = defineStore("app", {
       };
     },
     async fetchState() {
+      const fixture = resolveUiFixtureRuntime();
+      if (fixture?.state) {
+        this.applySnapshot(cloneUiFixturePayload(fixture.state));
+        return true;
+      }
       try {
         const response = await fetch("/api/v1/state", { credentials: "include" });
         const data = await response.json();
         this.applySnapshot(data);
+        return true;
       } catch (e) {
         console.error("Failed to fetch state:", e);
+        return false;
       }
     },
     async fetchSessions() {
+      const fixture = resolveUiFixtureRuntime();
+      if (fixture?.sessions) {
+        this.applySessions(cloneUiFixturePayload(fixture.sessions));
+        return true;
+      }
       this.historyLoading = true;
       try {
         const response = await fetch("/api/v1/sessions", { credentials: "include" });
@@ -2285,6 +2299,13 @@ export const useAppStore = defineStore("app", {
     },
     connectWs() {
       this.disconnectWs();
+      const fixture = resolveUiFixtureRuntime();
+      if (fixture) {
+        this.wsStatus = "connected";
+        this.runtime.codex.status = "connected";
+        this.runtime.codex.lastError = "";
+        return;
+      }
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
       const touchHeartbeat = () => {

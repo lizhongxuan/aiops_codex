@@ -157,8 +157,7 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	app.setRuntimeTurnPhase(approvedSessionID, "waiting_approval")
 	app.store.AddApproval(approvedSessionID, approval)
 	app.store.UpsertCard(approvedSessionID, approvalCard)
-	app.recordOrchestratorApprovalRequested(approvedSessionID, approval)
-	app.mirrorInternalApprovalToWorkspace(approvedSessionID, approval, approvalCard)
+	app.projectApprovalRequestedFallback(approvedSessionID, approval, approvalCard, false)
 
 	waitFor(t, 5*time.Second, "workspace mirrored approval", func() bool {
 		approval, ok := app.store.Approval(workspaceSessionID, approvalID)

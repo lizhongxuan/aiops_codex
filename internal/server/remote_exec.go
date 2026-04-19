@@ -447,6 +447,66 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 	}
 }
 
+func (a *App) runRemoteExecWithoutCard(ctx context.Context, sessionID, hostID string, spec execSpec) (remoteExecResult, error) {
+	if hostID == model.ServerLocalHostID {
+		return remoteExecResult{}, errors.New("server-local should use built-in Codex tools instead of remote execute_* tools")
+	}
+
+	host := a.findHost(hostID)
+	if host.Status != "online" || !host.Executable {
+		return remoteExecResult{}, errors.New("selected remote host is offline or not executable")
+	}
+	spec = normalizeRemoteExecSpec(host, spec)
+
+	exec := &remoteExecSession{
+		ID:        model.NewID("exec"),
+		SessionID: sessionID,
+		HostID:    hostID,
+		ToolName:  execSpecToolName(spec),
+		Command:   spec.Command,
+		Cwd:       spec.Cwd,
+		Shell:     spec.Shell,
+		StartedAt: model.NowString(),
+		Approval:  spec.Approval,
+		done:      make(chan remoteExecResult, 1),
+	}
+	a.setExecSession(exec)
+
+	if err := a.sendAgentEnvelope(hostID, &agentrpc.Envelope{
+		Kind: "exec/start",
+		ExecStart: &agentrpc.ExecStart{
+			ExecID:     exec.ID,
+			Command:    spec.Command,
+			Cwd:        spec.Cwd,
+			Shell:      spec.Shell,
+			TimeoutSec: clampExecTimeout(spec.TimeoutSec, spec.Readonly),
+			Readonly:   spec.Readonly,
+			Cancelable: true,
+		},
+	}); err != nil {
+		a.clearExecSession(exec.ID)
+		return remoteExecResult{}, err
+	}
+
+	select {
+	case <-ctx.Done():
+		_ = a.sendAgentEnvelope(hostID, &agentrpc.Envelope{
+			Kind: "exec/cancel",
+			ExecCancel: &agentrpc.ExecCancel{
+				ExecID: exec.ID,
+			},
+		})
+		exec.requestCancel("command cancelled")
+		go a.forceCancelRemoteExec(exec.ID, 2*time.Second)
+		result := <-exec.done
+		a.clearExecSession(exec.ID)
+		return result, ctx.Err()
+	case result := <-exec.done:
+		a.clearExecSession(exec.ID)
+		return result, nil
+	}
+}
+
 func (a *App) executeLocalReadonlyHostInspect(sessionID, rawID string, params dynamicToolCallParams, args execToolArgs) {
 	cardID := dynamicToolCardID(params.CallID)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(clampExecTimeout(args.TimeoutSec, true)+5)*time.Second)
@@ -614,6 +674,7 @@ func (a *App) finalizeExecCard(exec *remoteExecSession, createdAt string, result
 	now := model.NowString()
 	finalStatus := execResultCardStatus(result)
 	summary, highlights, kvRows := buildExecCardPresentation(exec, result, finalStatus)
+	display := toolDisplayPayloadToProjectionMap(commandResultDisplayPayload(exec.Command, exec.Cwd, result, finalStatus))
 	a.store.UpdateCard(exec.SessionID, exec.CardID, func(card *model.Card) {
 		card.Output = result.Output
 		card.Stdout = result.Stdout
@@ -626,6 +687,7 @@ func (a *App) finalizeExecCard(exec *remoteExecSession, createdAt string, result
 		card.Highlights = highlights
 		card.KVRows = kvRows
 		card.Status = finalStatus
+		card.Detail = toolProjectionDisplayDetailMap(display, card.Detail)
 		card.DurationMS = durationBetween(createdAt, now)
 		card.UpdatedAt = now
 	})

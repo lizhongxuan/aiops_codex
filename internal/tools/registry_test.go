@@ -3,10 +3,12 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
 	"github.com/lizhongxuan/aiops-codex/internal/filepatch"
+	toolprompts "github.com/lizhongxuan/aiops-codex/internal/toolprompts"
 )
 
 // testToolContext is a minimal ToolContext for testing.
@@ -27,9 +29,9 @@ func newTestToolContext(cwd string) *testToolContext {
 	}
 }
 
-func (t *testToolContext) Cwd() string                            { return t.cwd }
-func (t *testToolContext) SessionID() string                      { return t.id }
-func (t *testToolContext) Model() string                          { return t.model }
+func (t *testToolContext) Cwd() string                             { return t.cwd }
+func (t *testToolContext) SessionID() string                       { return t.id }
+func (t *testToolContext) Model() string                           { return t.model }
 func (t *testToolContext) EnabledTools() []string                  { return t.tools }
 func (t *testToolContext) DiffTracker() *filepatch.TurnDiffTracker { return t.diffTracker }
 
@@ -190,6 +192,19 @@ func TestRegisterRemoteHostTools(t *testing.T) {
 			t.Errorf("%s should be read-only", name)
 		}
 	}
+
+	writeFile, ok := reg.Get("write_file")
+	if !ok {
+		t.Fatal("expected write_file definition")
+	}
+	if got := writeFile.Description; got == "" || !strings.Contains(got, "create, overwrite, or append") {
+		t.Fatalf("expected write_file description to describe create/overwrite/append semantics, got %q", got)
+	}
+	properties := writeFile.Parameters["properties"].(map[string]interface{})
+	writeMode := properties["write_mode"].(map[string]interface{})
+	if got := writeMode["description"].(string); !strings.Contains(got, "Defaults to overwrite") {
+		t.Fatalf("expected write_mode description to mention default overwrite, got %q", got)
+	}
 }
 
 func TestRegisterCorootTools(t *testing.T) {
@@ -237,6 +252,30 @@ func TestRegisterWorkspaceTools(t *testing.T) {
 	for i, n := range names {
 		if n != expected[i] {
 			t.Errorf("names[%d] = %s, want %s", i, n, expected[i])
+		}
+	}
+}
+
+func TestRegisterWorkspaceToolsUseSharedPromptDescriptions(t *testing.T) {
+	reg := NewToolRegistry()
+	RegisterWorkspaceTools(reg)
+
+	for name, want := range map[string]string{
+		"ask_user_question":           toolprompts.AskUserQuestion.Description(),
+		"query_ai_server_state":       toolprompts.QueryAIServerState.Description(),
+		"readonly_host_inspect":       toolprompts.ReadonlyHostInspect.Description(),
+		"enter_plan_mode":             toolprompts.EnterPlanMode.Description(),
+		"update_plan":                 toolprompts.UpdatePlan.Description(),
+		"exit_plan_mode":              toolprompts.ExitPlanMode.Description(),
+		"orchestrator_dispatch_tasks": toolprompts.OrchestratorDispatchTasks.Description(),
+		"request_approval":            toolprompts.RequestApproval.Description(),
+	} {
+		entry, ok := reg.Get(name)
+		if !ok {
+			t.Fatalf("expected workspace tool %q to be registered", name)
+		}
+		if entry.Description != want {
+			t.Fatalf("workspace tool %q description mismatch: got %q want %q", name, entry.Description, want)
 		}
 	}
 }

@@ -2,10 +2,18 @@ package server
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/lizhongxuan/aiops-codex/internal/model"
+	"github.com/lizhongxuan/aiops-codex/internal/store"
 )
+
+type toolEventListResponse struct {
+	SessionID string                  `json:"sessionId"`
+	Items     []store.ToolEventRecord `json:"items"`
+	Total     int                     `json:"total"`
+}
 
 // handleEvidenceDetail returns a single evidence record by ID.
 // GET /api/sessions/{sessionID}/evidence/{evidenceID}
@@ -107,6 +115,46 @@ func (a *App) handleIncidentTimeline(w http.ResponseWriter, r *http.Request, ses
 	})
 }
 
+// handleToolEventTimeline returns the recorded tool lifecycle event stream for a
+// session.
+// GET /api/v1/sessions/{sessionID}/tool-events
+func (a *App) handleToolEventTimeline(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	items := make([]store.ToolEventRecord, 0)
+	if a.toolEventStore != nil {
+		items = a.toolEventStore.SessionEvents(sessionID)
+	}
+
+	typeFilter := strings.TrimSpace(r.URL.Query().Get("type"))
+	toolFilter := strings.TrimSpace(r.URL.Query().Get("tool"))
+	filtered := make([]store.ToolEventRecord, 0, len(items))
+	for _, item := range items {
+		if typeFilter != "" && strings.TrimSpace(item.Type) != typeFilter {
+			continue
+		}
+		if toolFilter != "" && strings.TrimSpace(item.ToolName) != toolFilter {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if limit, err := strconv.Atoi(raw); err == nil && limit > 0 && len(filtered) > limit {
+			filtered = filtered[len(filtered)-limit:]
+		}
+	}
+
+	writeJSON(w, http.StatusOK, toolEventListResponse{
+		SessionID: sessionID,
+		Items:     filtered,
+		Total:     len(filtered),
+	})
+}
+
 // handleVerificationDetail returns a single verification record by ID.
 // GET /api/v1/sessions/{sessionID}/verification/{verificationID}
 func (a *App) handleVerificationDetail(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -202,6 +250,7 @@ func (a *App) registerEvidenceRoutes(mux *http.ServeMux) {
 	handlerEvidence := a.withOwnedSessionFromPath(a.handleEvidenceDetail)
 	handlerInvocation := a.withOwnedSessionFromPath(a.handleInvocationDetail)
 	handlerTimeline := a.withOwnedSessionFromPath(a.handleIncidentTimeline)
+	handlerToolEvents := a.withOwnedSessionFromPath(a.handleToolEventTimeline)
 	handlerVerification := a.withOwnedSessionFromPath(a.handleVerificationDetail)
 	handlerPromptDebug := a.withOwnedSessionFromPath(a.handlePromptDebug)
 
@@ -222,6 +271,12 @@ func (a *App) registerEvidenceRoutes(mux *http.ServeMux) {
 		"GET /api/sessions/{sessionID}/timeline",
 	} {
 		mux.HandleFunc(pattern, handlerTimeline)
+	}
+	for _, pattern := range []string{
+		"GET /api/v1/sessions/{sessionID}/tool-events",
+		"GET /api/sessions/{sessionID}/tool-events",
+	} {
+		mux.HandleFunc(pattern, handlerToolEvents)
 	}
 	for _, pattern := range []string{
 		"GET /api/v1/sessions/{sessionID}/verification/{verificationID}",

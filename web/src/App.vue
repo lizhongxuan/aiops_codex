@@ -724,11 +724,18 @@ watch(
             v-if="showHeaderHostControls"
             tertiary
             size="small"
+            class="header-host-button"
             @click="isHostModalOpen = true"
           >
             <template #icon><ServerIcon size="14" /></template>
-            {{ selectedHostLabel }}
-            <n-badge dot :type="store.selectedHost.status === 'online' ? 'success' : 'default'" :offset="[-2, 0]" />
+            <span class="header-host-content">
+              <span class="header-host-label">{{ selectedHostLabel }}</span>
+              <span
+                class="header-host-status"
+                :class="{ 'is-online': store.selectedHost.status === 'online' }"
+                aria-hidden="true"
+              />
+            </span>
           </n-button>
 
           <n-button
@@ -938,6 +945,35 @@ watch(
   background: #f1f5f9;
   padding: 2px 6px;
   border-radius: 4px;
+}
+
+.header-host-button :deep(.n-button__content) {
+  min-width: 0;
+}
+
+.header-host-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.header-host-label {
+  min-width: 0;
+}
+
+.header-host-status {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #94a3b8;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18);
+}
+
+.header-host-status.is-online {
+  background: #22c55e;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.18), 0 0 10px rgba(34, 197, 94, 0.28);
 }
 
 .sidebar-bottom {

@@ -58,7 +58,7 @@ type Config struct {
 	WorkspaceReActLoopEnabled bool
 
 	// Web search configuration
-	WebSearchMode string // "duckduckgo" (default) or "brave"
+	WebSearchMode string // "native" (default), "duckduckgo", or "brave"
 	BraveAPIKey   string // Brave Search API key
 
 	// MCP configuration

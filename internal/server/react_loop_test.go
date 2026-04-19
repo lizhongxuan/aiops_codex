@@ -1256,6 +1256,13 @@ func TestReadonlyHostInspectRunsServerLocalReadOnlyCommand(t *testing.T) {
 	if text := toolResponseText(t, respondedPayload); !strings.Contains(text, "Host command `pwd` completed") || !strings.Contains(text, cwd) {
 		t.Fatalf("expected readonly local command output, got %q", text)
 	}
+	session := app.store.Session(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to exist")
+	}
+	if len(session.Cards) != 1 {
+		t.Fatalf("expected only command card, got %#v", session.Cards)
+	}
 	card := app.cardByID(sessionID, dynamicToolCardID("call-readonly-local"))
 	if card == nil || card.Type != "CommandCard" || card.Status != "completed" {
 		t.Fatalf("expected completed CommandCard, got %#v", card)
@@ -1273,6 +1280,13 @@ func TestReadonlyHostInspectRunsServerLocalReadOnlyCommand(t *testing.T) {
 	}
 	if !foundInvocation {
 		t.Fatalf("expected readonly_host_inspect invocation, got %#v", snapshot.ToolInvocations)
+	}
+	events := app.toolEventStore.SessionEvents(sessionID)
+	if len(events) < 2 {
+		t.Fatalf("expected lifecycle events for readonly_host_inspect, got %#v", events)
+	}
+	if events[0].Type != string(ToolLifecycleEventStarted) || events[len(events)-1].Type != string(ToolLifecycleEventCompleted) {
+		t.Fatalf("expected started/completed lifecycle events, got %#v", events)
 	}
 }
 

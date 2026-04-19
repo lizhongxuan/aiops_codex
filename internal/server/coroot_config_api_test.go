@@ -16,14 +16,8 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestHandleCorootConfig_Configured(t *testing.T) {
-	// Start a dummy upstream so the coroot client has a valid base URL.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
 	app := &App{
-		corootClient: coroot.NewClient(upstream.URL, "test-token", 5*time.Second),
+		corootClient: coroot.NewClient("http://coroot.internal:8080", "test-token", 5*time.Second),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/coroot/config", nil)

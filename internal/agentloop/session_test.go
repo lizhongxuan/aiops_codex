@@ -211,8 +211,11 @@ func TestBuildSystemPromptIncludesInstructions(t *testing.T) {
 	if !strings.Contains(prompt, "ReAct agent loop") {
 		t.Fatal("prompt should contain ReAct agent loop description")
 	}
-	if !strings.Contains(prompt, "紧凑快照格式") {
-		t.Fatal("prompt should contain compact snapshot guidance for market-style queries")
+	if strings.Contains(prompt, "紧凑快照格式") {
+		t.Fatal("prompt should not contain market-specific compact snapshot guidance")
+	}
+	if strings.Contains(prompt, "1-2 个来源") {
+		t.Fatal("prompt should not contain market-specific source-count guidance")
 	}
 }
 
@@ -233,6 +236,25 @@ func TestBuildSystemPromptMinimal(t *testing.T) {
 	}
 	if strings.Contains(prompt, "当前沙箱模式") {
 		t.Fatal("prompt should not contain sandbox mode when not set")
+	}
+}
+
+func TestBuildSystemPromptDoesNotLeakToolSpecificProse(t *testing.T) {
+	spec := SessionSpec{
+		Model:        "test-model",
+		DynamicTools: []string{"web_search", "execute_readonly_query"},
+	}
+
+	prompt := BuildSystemPrompt(spec)
+
+	if !strings.Contains(prompt, "web_search") || !strings.Contains(prompt, "execute_readonly_query") {
+		t.Fatalf("expected tool names in prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "DuckDuckGo") {
+		t.Fatalf("system prompt should not leak tool-specific web search prose: %q", prompt)
+	}
+	if strings.Contains(prompt, "server-local") {
+		t.Fatalf("system prompt should not leak host-specific exec prose: %q", prompt)
 	}
 }
 
@@ -265,7 +287,6 @@ func TestEnabledToolsReturnsCopy(t *testing.T) {
 		t.Fatal("EnabledTools should return a copy, not a reference")
 	}
 }
-
 
 // --- contextWindowForModel tests ---
 
@@ -359,7 +380,6 @@ func TestNewSession_ExplicitContextWindowOverridesModel(t *testing.T) {
 		t.Fatal("expected non-nil ContextManager")
 	}
 }
-
 
 // --- InjectMessage / DrainInterrupt tests ---
 

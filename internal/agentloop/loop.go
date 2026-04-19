@@ -157,9 +157,7 @@ func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) 
 	if session.Metadata == nil {
 		session.Metadata = make(map[string]string)
 	}
-	delete(session.Metadata, "market_snapshot_answer_nudged")
 	delete(session.Metadata, "completion_gate_repairs")
-	session.Metadata["market_snapshot_tool_base"] = strconv.Itoa(sessionToolResultCount(session))
 
 	// Execute prompt_submit hooks before processing user input.
 	if l.hookRuntime != nil {
@@ -288,10 +286,6 @@ func (l *Loop) RunTurn(ctx context.Context, session *Session, userInput string) 
 			if err := l.postToolCompress(ctx, session); err != nil {
 				log.Printf("[loop] post-tool compression error: %v", err)
 			}
-		}
-		if shouldNudgeCompactSnapshotAnswer(session, userInput) {
-			session.ContextManager().AppendUser(compactSnapshotAnswerNudge)
-			session.Metadata["market_snapshot_answer_nudged"] = "true"
 		}
 
 		// Checkpoint after tool execution
@@ -654,73 +648,6 @@ func queryNeedsWebSearch(userInput string) bool {
 		}
 	}
 	return len([]rune(inputLower)) > 0 && len([]rune(inputLower)) <= 20
-}
-
-const compactSnapshotAnswerNudge = "[System: You already have enough market snapshot data to answer. Stop calling more tools unless there is a material conflict you cannot resolve with a price range or a brief timing-difference note. Answer now in compact snapshot format: time boundary + current price/index + 2-4 bullets + 1 short judgment + 1-2 sources.]"
-
-func queryNeedsCompactSnapshotAnswer(userInput string) bool {
-	keywords := []string{
-		"行情", "指数", "价格", "报价", "最新", "实时", "今日", "今天",
-		"btc", "eth", "比特币", "以太坊", "crypto", "bitcoin", "market", "price",
-		"a股", "美股", "港股", "上证", "深证", "创业板",
-	}
-	inputLower := strings.ToLower(strings.TrimSpace(userInput))
-	for _, kw := range keywords {
-		if strings.Contains(inputLower, strings.ToLower(kw)) {
-			return true
-		}
-	}
-	return false
-}
-
-func sessionToolResultCount(session *Session) int {
-	if session == nil {
-		return 0
-	}
-	count := 0
-	for _, msg := range session.ContextManager().Messages() {
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "tool") {
-			count++
-		}
-	}
-	return count
-}
-
-func sessionMarketSnapshotToolBase(session *Session) int {
-	if session == nil || session.Metadata == nil {
-		return 0
-	}
-	base, err := strconv.Atoi(strings.TrimSpace(session.Metadata["market_snapshot_tool_base"]))
-	if err != nil || base < 0 {
-		return 0
-	}
-	return base
-}
-
-func sessionHasCompactSnapshotAnswerNudge(session *Session) bool {
-	if session == nil || session.Metadata == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(session.Metadata["market_snapshot_answer_nudged"])) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
-
-func shouldNudgeCompactSnapshotAnswer(session *Session, userInput string) bool {
-	if !queryNeedsCompactSnapshotAnswer(userInput) || session == nil {
-		return false
-	}
-	if sessionHasCompactSnapshotAnswerNudge(session) {
-		return false
-	}
-	if strings.TrimSpace(session.CurrentCardID()) != "" {
-		return false
-	}
-	base := sessionMarketSnapshotToolBase(session)
-	return sessionToolResultCount(session)-base >= 1
 }
 
 func sessionHasAutoWebSearchResults(session *Session) bool {

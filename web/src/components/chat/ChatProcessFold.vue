@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-vue-next";
 import MessageCard from "../MessageCard.vue";
 import ChatTerminalPreview from "./ChatTerminalPreview.vue";
+import ToolDisplayRenderer from "./tool-display/ToolDisplayRenderer.vue";
 
 const props = defineProps({
   turn: {
@@ -15,7 +16,7 @@ const expanded = ref(!props.turn?.collapsedByDefault);
 const expandedCommandIds = ref(new Set());
 
 watch(
-  () => [props.turn?.id, props.turn?.collapsedByDefault],
+  () => props.turn?.id,
   () => {
     expanded.value = !props.turn?.collapsedByDefault;
     expandedCommandIds.value = new Set();
@@ -68,6 +69,10 @@ function commandOutput(item) {
   ).trim();
 }
 
+function itemDisplay(item) {
+  return item?.display || null;
+}
+
 function isCommandExpanded(item) {
   return expandedCommandIds.value.has(item.id);
 }
@@ -107,6 +112,7 @@ function toggleCommandItem(item) {
         <div v-for="msg in intermediateMessages" :key="msg.id" class="chat-process-message">
           <MessageCard v-if="msg.card" :card="msg.card" />
           <div v-else class="chat-process-text">{{ msg.text }}</div>
+          <ToolDisplayRenderer v-if="itemDisplay(msg)" class="chat-process-item-display" :display="itemDisplay(msg)" />
         </div>
 
         <template v-for="item in historyItems" :key="item.id">
@@ -121,6 +127,8 @@ function toggleCommandItem(item) {
               <span class="chat-process-command-text">{{ item.text }}</span>
             </button>
 
+            <ToolDisplayRenderer v-if="itemDisplay(item)" class="chat-process-item-display" :display="itemDisplay(item)" />
+
             <ChatTerminalPreview
               v-if="isCommandExpanded(item)"
               :test-id="`chat-process-terminal-${item.id}`"
@@ -129,9 +137,12 @@ function toggleCommandItem(item) {
             />
           </template>
 
-          <div v-else class="chat-process-item-line">
-            <span class="chat-process-item-bullet">•</span>
-            <span>{{ item.text }}</span>
+          <div v-else class="chat-process-item">
+            <div v-if="item.text" class="chat-process-item-line">
+              <span class="chat-process-item-bullet">•</span>
+              <span>{{ item.text }}</span>
+            </div>
+            <ToolDisplayRenderer v-if="itemDisplay(item)" class="chat-process-item-display" :display="itemDisplay(item)" />
           </div>
         </template>
 
@@ -232,6 +243,12 @@ function toggleCommandItem(item) {
   line-height: 1.45;
 }
 
+.chat-process-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .chat-process-item-bullet {
   flex-shrink: 0;
   color: #94a3b8;
@@ -241,6 +258,10 @@ function toggleCommandItem(item) {
   font-size: 13px;
   color: #475569;
   line-height: 1.5;
+}
+
+.chat-process-item-display {
+  margin-top: 4px;
 }
 
 .chat-process-command-row {

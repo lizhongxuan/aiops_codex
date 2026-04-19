@@ -624,8 +624,13 @@ func TestRunTurn_CompletionValidatorContinuesLoop(t *testing.T) {
 	if !foundToolResult {
 		t.Fatalf("expected repaired loop to execute required tool, got %#v", msgs)
 	}
+	for _, msg := range msgs {
+		content, _ := msg.Content.(string)
+		if strings.Contains(content, "compact snapshot format") || strings.Contains(content, "1-2 sources") {
+			t.Fatalf("expected generic repair without market-specific prose, got %#v", msgs)
+		}
+	}
 }
-
 
 // --- Mid-turn message injection tests ---
 
@@ -798,9 +803,9 @@ func TestIterationBudgetTracker_NoCompressWithGoodProgress(t *testing.T) {
 
 func TestTotalContentLength(t *testing.T) {
 	msgs := []bifrost.Message{
-		{Role: "user", Content: "hello"},                                                                    // 5
+		{Role: "user", Content: "hello"}, // 5
 		{Role: "assistant", Content: "world", ToolCalls: []bifrost.ToolCall{{Function: bifrost.FunctionCall{Arguments: `{"a":1}`}}}}, // 5 + 7 = 12
-		{Role: "tool", Content: "result"},                                                                   // 6
+		{Role: "tool", Content: "result"}, // 6
 	}
 	total := totalContentLength(msgs)
 	expected := 5 + 5 + 7 + 6 // 23

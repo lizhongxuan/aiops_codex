@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, ref, watch, nextTick, onMounted, onBeforeUnmount, shallowRef } from "vue";
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
-import { formatMainChatTurns, isChatConversationCard } from "../lib/chatTurnFormatter";
+import { formatMainChatTurns, isChatConversationCard, shouldExposeActiveFinalMessage } from "../lib/chatTurnFormatter";
 import { useChatHistoryPager } from "../composables/useChatHistoryPager";
 import { useChatScrollState } from "../composables/useChatScrollState";
 import { useAwaySummary } from "../composables/useAwaySummary";
@@ -916,8 +916,38 @@ const streamCards = computed(() =>
   }),
 );
 
+function isUserConversationCard(card = {}) {
+  return card?.type === "UserMessageCard" || card?.role === "user";
+}
+
+function isAssistantConversationCard(card = {}) {
+  return card?.type === "AssistantMessageCard" || card?.role === "assistant";
+}
+
+const currentTurnAssistantCards = computed(() => {
+  const cards = streamCards.value.filter((card) => isChatConversationCard(card));
+  const assistants = [];
+  for (let index = cards.length - 1; index >= 0; index -= 1) {
+    const card = cards[index];
+    if (isUserConversationCard(card)) {
+      break;
+    }
+    if (isAssistantConversationCard(card)) {
+      assistants.unshift(card);
+    }
+  }
+  return assistants;
+});
+
+const activeStreamingFinalMessageVisible = computed(() => {
+  if (isWorkspaceSession.value) return false;
+  if (!(showThinkingCard.value || store.runtime.turn.active)) return false;
+  const lastAssistantCard = currentTurnAssistantCards.value[currentTurnAssistantCards.value.length - 1];
+  return shouldExposeActiveFinalMessage({ card: lastAssistantCard, sourceCard: lastAssistantCard });
+});
+
 const mainChatActiveProcess = computed(() => {
-  const completed = !store.runtime.turn.active && !showThinkingCard.value;
+  const completed = (!store.runtime.turn.active && !showThinkingCard.value) || activeStreamingFinalMessageVisible.value;
   const items = buildPersistedProcessItems(accumulatedActivityLines.value, { completed });
 
   // Return process data when turn is active OR when there are accumulated items
@@ -948,6 +978,7 @@ const mainChatTurnByAnchorId = computed(() =>
 
 const singleHostLiveTurnId = computed(() => {
   if (isWorkspaceSession.value) return "";
+  if (activeStreamingFinalMessageVisible.value) return "";
   if (!(showThinkingCard.value || store.runtime.turn.active || store.runtime.turn.pendingStart)) {
     return "";
   }

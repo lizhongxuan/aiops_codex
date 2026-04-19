@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -17,20 +19,30 @@ const (
 )
 
 type workspaceTurnSignals struct {
-	normalized            string
-	intentClass           string
-	lane                  string
-	classificationReason  string
-	needsRealtimeData     bool
-	requiresExternalFacts bool
-	needsPlanArtifact     bool
-	needsApproval         bool
-	needsAssumptions      bool
-	needsDisambiguation   bool
-	minimumEvidenceCount  int
-	requiredNextTool      string
-	requiredTools         []string
-	requiredEvidenceKinds []string
+	normalized                string
+	intentClass               string
+	lane                      string
+	classificationReason      string
+	knowledgeFreshness        string
+	evidenceContract          string
+	answerContract            string
+	freshnessDeadline         string
+	needsRealtimeData         bool
+	requiresExternalFacts     bool
+	needsPlanArtifact         bool
+	needsApproval             bool
+	needsAssumptions          bool
+	needsDisambiguation       bool
+	minimumEvidenceCount      int
+	minimumIndependentSources int
+	requireSourceAttribution  bool
+	preferredAnswerStyle      string
+	allowEarlyStop            bool
+	requiredNextTool          string
+	requiredTools             []string
+	requiredEvidenceKinds     []string
+	requiredCitationKinds     []string
+	evidenceDiversityRules    []string
 }
 
 func (a *App) prepareWorkspaceTurnRuntime(_ context.Context, session *agentloop.Session, req chatRequest) {
@@ -110,21 +122,31 @@ func (a *App) previewWorkspaceTurnPolicy(sessionID, hostID, message string, phas
 func (a *App) buildWorkspaceTurnPolicy(sessionID, hostID, message string) model.TurnPolicy {
 	signals := a.detectWorkspaceTurnSignals(sessionID, hostID, message)
 	policy := model.TurnPolicy{
-		IntentClass:           signals.intentClass,
-		Lane:                  signals.lane,
-		RequiredTools:         append([]string(nil), signals.requiredTools...),
-		RequiredEvidenceKinds: append([]string(nil), signals.requiredEvidenceKinds...),
-		NeedsPlanArtifact:     signals.needsPlanArtifact,
-		NeedsApproval:         signals.needsApproval,
-		NeedsAssumptions:      signals.needsAssumptions,
-		NeedsDisambiguation:   signals.needsDisambiguation,
-		RequiresExternalFacts: signals.requiresExternalFacts,
-		RequiresRealtimeData:  signals.needsRealtimeData,
-		MinimumEvidenceCount:  signals.minimumEvidenceCount,
-		RequiredNextTool:      signals.requiredNextTool,
-		FinalGateStatus:       turnFinalGatePending,
-		ClassificationReason:  signals.classificationReason,
-		UpdatedAt:             model.NowString(),
+		IntentClass:               signals.intentClass,
+		Lane:                      signals.lane,
+		RequiredTools:             append([]string(nil), signals.requiredTools...),
+		RequiredEvidenceKinds:     append([]string(nil), signals.requiredEvidenceKinds...),
+		RequiredCitationKinds:     append([]string(nil), signals.requiredCitationKinds...),
+		NeedsPlanArtifact:         signals.needsPlanArtifact,
+		NeedsApproval:             signals.needsApproval,
+		NeedsAssumptions:          signals.needsAssumptions,
+		NeedsDisambiguation:       signals.needsDisambiguation,
+		RequiresExternalFacts:     signals.requiresExternalFacts,
+		RequiresRealtimeData:      signals.needsRealtimeData,
+		MinimumEvidenceCount:      signals.minimumEvidenceCount,
+		MinimumIndependentSources: signals.minimumIndependentSources,
+		RequireSourceAttribution:  signals.requireSourceAttribution,
+		PreferredAnswerStyle:      signals.preferredAnswerStyle,
+		AllowEarlyStop:            signals.allowEarlyStop,
+		KnowledgeFreshness:        signals.knowledgeFreshness,
+		EvidenceContract:          signals.evidenceContract,
+		AnswerContract:            signals.answerContract,
+		FreshnessDeadline:         signals.freshnessDeadline,
+		EvidenceDiversityRules:    append([]string(nil), signals.evidenceDiversityRules...),
+		RequiredNextTool:          signals.requiredNextTool,
+		FinalGateStatus:           turnFinalGatePending,
+		ClassificationReason:      signals.classificationReason,
+		UpdatedAt:                 model.NowString(),
 	}
 	if policy.RequiredNextTool != "" {
 		policy.MissingRequirements = append(policy.MissingRequirements, requiredToolRequirement(policy.RequiredNextTool))
@@ -138,16 +160,21 @@ func (a *App) detectWorkspaceTurnSignals(sessionID, hostID, message string) work
 		normalized:           normalized,
 		intentClass:          string(model.TurnIntentFactual),
 		lane:                 string(model.TurnLaneAnswer),
+		knowledgeFreshness:   "stable",
+		evidenceContract:     "none",
+		answerContract:       "normal",
+		allowEarlyStop:       true,
 		classificationReason: "默认按事实问答处理",
 	}
 
 	isAmbiguous := workspaceMessageNeedsIntentClarification(message)
 	explicitExecution := containsExplicitExecutionAuthorization(message)
 	planApproved := a.workspacePlanApproved(sessionID)
-	isRealtime := containsAnyToken(normalized,
-		"最新", "今日", "今天", "当前", "现在", "实时", "latest", "current", "today",
-		"btc", "价格", "price", "行情", "quote", "news", "天气", "weather",
-	)
+	hasFreshnessCue := containsFreshnessCue(normalized)
+	asksForCanonicalResource := containsCanonicalResourceCue(normalized)
+	asksForSourceAttribution := containsSourceAttributionCue(normalized)
+	isExternalFactual := hasFreshnessCue || asksForCanonicalResource || asksForSourceAttribution
+	isSourcedSnapshot := hasFreshnessCue && !asksForCanonicalResource && !asksForSourceAttribution
 	isWorkspaceSnapshot := containsAnyToken(normalized,
 		"在线主机", "哪些主机", "当前状态", "工作台状态", "待审批", "runtime", "phase", "告警状态",
 		"summary", "hosts", "approvals", "plan status",
@@ -169,6 +196,7 @@ func (a *App) detectWorkspaceTurnSignals(sessionID, hostID, message string) work
 		signals.intentClass = string(model.TurnIntentAmbiguous)
 		signals.lane = string(model.TurnLaneAnswer)
 		signals.needsDisambiguation = true
+		signals.allowEarlyStop = false
 		signals.requiredTools = []string{"ask_user_question"}
 		signals.requiredNextTool = "ask_user_question"
 		signals.classificationReason = "检测到高风险能力询问，必须先澄清意图"
@@ -176,6 +204,9 @@ func (a *App) detectWorkspaceTurnSignals(sessionID, hostID, message string) work
 		signals.intentClass = string(model.TurnIntentRiskyExec)
 		signals.lane = string(model.TurnLaneExecute)
 		signals.needsApproval = true
+		signals.evidenceContract = "execution_evidence"
+		signals.answerContract = "verify"
+		signals.allowEarlyStop = false
 		signals.requiredTools = []string{"orchestrator_dispatch_tasks"}
 		signals.requiredNextTool = "orchestrator_dispatch_tasks"
 		signals.classificationReason = "已有批准计划且用户明确授权执行"
@@ -184,6 +215,9 @@ func (a *App) detectWorkspaceTurnSignals(sessionID, hostID, message string) work
 		signals.lane = string(model.TurnLanePlan)
 		signals.needsPlanArtifact = true
 		signals.needsAssumptions = needsAssumptions
+		signals.answerContract = "plan"
+		signals.preferredAnswerStyle = "plan"
+		signals.allowEarlyStop = false
 		signals.requiredTools = []string{"update_plan"}
 		signals.requiredNextTool = "update_plan"
 		signals.classificationReason = "检测到方案/设计类请求，直接进入 plan lane"
@@ -192,6 +226,9 @@ func (a *App) detectWorkspaceTurnSignals(sessionID, hostID, message string) work
 		signals.lane = string(model.TurnLanePlan)
 		signals.needsPlanArtifact = true
 		signals.needsApproval = true
+		signals.answerContract = "plan"
+		signals.preferredAnswerStyle = "plan"
+		signals.allowEarlyStop = false
 		signals.requiredTools = []string{"update_plan"}
 		signals.requiredNextTool = "update_plan"
 		signals.classificationReason = "检测到高风险执行请求，必须先出计划再审批"
@@ -200,6 +237,14 @@ func (a *App) detectWorkspaceTurnSignals(sessionID, hostID, message string) work
 		signals.lane = string(model.TurnLaneReadonly)
 		signals.requiresExternalFacts = true
 		signals.minimumEvidenceCount = 2
+		signals.minimumIndependentSources = 2
+		signals.requireSourceAttribution = true
+		signals.knowledgeFreshness = "external"
+		signals.evidenceContract = "external_facts"
+		signals.answerContract = "sourced_facts"
+		signals.requiredCitationKinds = []string{"url"}
+		signals.evidenceDiversityRules = []string{"independent_sources"}
+		signals.allowEarlyStop = false
 		signals.requiredTools = []string{"web_search"}
 		signals.requiredEvidenceKinds = []string{"web_search"}
 		signals.requiredNextTool = "web_search"
@@ -207,30 +252,78 @@ func (a *App) detectWorkspaceTurnSignals(sessionID, hostID, message string) work
 	case isWorkspaceSnapshot:
 		signals.intentClass = string(model.TurnIntentSnapshot)
 		signals.lane = string(model.TurnLaneReadonly)
+		signals.evidenceContract = "execution_evidence"
+		signals.answerContract = "sourced_facts"
+		signals.allowEarlyStop = false
 		signals.requiredTools = []string{"query_ai_server_state"}
 		signals.requiredEvidenceKinds = []string{"ai_server_state"}
 		signals.requiredNextTool = "query_ai_server_state"
 		signals.classificationReason = "检测到工作台当前状态查询，优先读取 ai-server 状态"
-	case isRealtime:
+	case isExternalFactual:
 		signals.intentClass = string(model.TurnIntentFactual)
 		signals.lane = string(model.TurnLaneReadonly)
-		signals.needsRealtimeData = true
 		signals.requiresExternalFacts = true
+		signals.minimumEvidenceCount = 2
+		signals.minimumIndependentSources = 2
+		signals.requireSourceAttribution = true
+		signals.requiredCitationKinds = []string{"url"}
+		signals.evidenceDiversityRules = []string{"independent_sources"}
+		signals.allowEarlyStop = false
+		if hasFreshnessCue {
+			signals.freshnessDeadline = "now"
+		}
+		if isSourcedSnapshot {
+			signals.needsRealtimeData = true
+			signals.knowledgeFreshness = "realtime"
+			signals.evidenceContract = "sourced_snapshot"
+			signals.answerContract = "sourced_snapshot"
+			signals.preferredAnswerStyle = "compact_snapshot"
+		} else {
+			signals.knowledgeFreshness = "external"
+			signals.evidenceContract = "external_facts"
+			signals.answerContract = "sourced_facts"
+		}
 		signals.requiredTools = []string{"web_search"}
 		signals.requiredEvidenceKinds = []string{"web_search"}
 		signals.requiredNextTool = "web_search"
-		signals.classificationReason = "检测到实时/外部事实请求，必须先搜索证据"
+		signals.classificationReason = "检测到需要外部最新或可验证事实的请求，必须先搜索证据"
 	case isImplementation:
 		signals.intentClass = string(model.TurnIntentImplementation)
 		signals.lane = string(model.TurnLaneAnswer)
+		signals.knowledgeFreshness = "stable"
+		signals.evidenceContract = "none"
+		signals.answerContract = "normal"
 		signals.classificationReason = "检测到实现类请求，允许直答或先补上下文"
 	default:
 		signals.intentClass = string(model.TurnIntentFactual)
 		signals.lane = string(model.TurnLaneAnswer)
+		signals.knowledgeFreshness = "stable"
+		signals.evidenceContract = "none"
+		signals.answerContract = "normal"
 		signals.classificationReason = "归类为普通事实问答"
 	}
 
 	return signals
+}
+
+func containsFreshnessCue(text string) bool {
+	return containsAnyToken(text,
+		"最新", "最近", "当前", "现在", "今日", "今天", "实时", "截至", "本周", "本月",
+		"latest", "current", "today", "now", "up-to-date", "recent", "as of", "this week", "this month",
+	)
+}
+
+func containsCanonicalResourceCue(text string) bool {
+	return containsAnyToken(text,
+		"官网", "官方", "文档", "documentation", "docs", "manual",
+		"地址", "链接", "url", "link", "官方文档", "官方地址",
+	)
+}
+
+func containsSourceAttributionCue(text string) bool {
+	return containsAnyToken(text,
+		"来源", "出处", "引用", "source", "sources", "citation", "cite",
+	)
 }
 
 func containsAnyToken(text string, tokens ...string) bool {
@@ -338,6 +431,8 @@ func turnPolicyToolAliases(toolName string) []string {
 	switch strings.TrimSpace(toolName) {
 	case "execute_system_mutation":
 		return []string{"execute_command", "write_file", "execute_system_mutation"}
+	case shellCommandToolName:
+		return []string{shellCommandToolName, "execute_readonly_query", "execute_command"}
 	case "list_remote_files":
 		return []string{"list_files", "list_remote_files"}
 	case "read_remote_file":
@@ -354,39 +449,40 @@ func turnPolicyToolAliases(toolName string) []string {
 }
 
 func (a *App) buildWorkspacePromptEnvelope(sessionID, hostID, message string, policy model.TurnPolicy, turnScoped bool) *model.PromptEnvelope {
-	profile := a.mainAgentProfile()
-	staticSections := []model.PromptEnvelopeSection{
-		toEnvelopeSection(staticSystemPromptSection()),
-		toEnvelopeSection(developerInstructionsSection()),
-		toEnvelopeSection(intentClarificationSection()),
-		{
-			Name:    "HostContext",
-			Content: strings.TrimSpace(a.renderMainAgentDeveloperInstructions(profile, hostID, turnScoped)),
-		},
-		{
-			Name:    "LoopRuntime",
-			Content: strings.TrimSpace(a.buildReActLoopInstructions(reActLoopKindWorkspace, sessionID, hostID, turnScoped)),
-		},
-	}
+	staticSections := toEnvelopeSections(defaultPromptSections())
+	dynamicSections := a.dynamicPromptSections(sessionID, hostID, policy)
 	laneSections := []model.PromptEnvelopeSection{{
 		Name:    "Lane",
 		Content: a.workspaceLaneInstructions(policy),
 	}}
-	runtimePolicy := &model.PromptEnvelopeSection{
-		Name: "RuntimePolicy",
-		Content: strings.Join([]string{
-			fmt.Sprintf("intentClass=%s", firstNonEmptyValue(strings.TrimSpace(policy.IntentClass), "factual")),
-			fmt.Sprintf("lane=%s", firstNonEmptyValue(strings.TrimSpace(policy.Lane), "answer")),
-			fmt.Sprintf("requiredTools=%s", firstNonEmptyValue(strings.Join(policy.RequiredTools, ", "), "-")),
-			fmt.Sprintf("requiredEvidenceKinds=%s", firstNonEmptyValue(strings.Join(policy.RequiredEvidenceKinds, ", "), "-")),
-			fmt.Sprintf("needsPlanArtifact=%t", policy.NeedsPlanArtifact),
-			fmt.Sprintf("needsApproval=%t", policy.NeedsApproval),
-			fmt.Sprintf("needsAssumptions=%t", policy.NeedsAssumptions),
-			fmt.Sprintf("needsDisambiguation=%t", policy.NeedsDisambiguation),
-			fmt.Sprintf("finalGateStatus=%s", firstNonEmptyValue(strings.TrimSpace(policy.FinalGateStatus), turnFinalGatePending)),
-		}, "\n"),
+	var runtimePolicy *model.PromptEnvelopeSection
+	contextAttachments := make([]model.PromptEnvelopeSection, 0, len(dynamicSections)+4)
+	for _, section := range dynamicSections {
+		envelopeSection := toEnvelopeSection(section)
+		switch envelopeSection.Name {
+		case "RuntimePolicy":
+			runtimePolicy = &envelopeSection
+		default:
+			contextAttachments = append(contextAttachments, envelopeSection)
+		}
 	}
-	contextAttachments := a.workspaceContextAttachments(sessionID, message, policy)
+	if runtimePolicy == nil {
+		runtimePolicy = &model.PromptEnvelopeSection{
+			Name: "RuntimePolicy",
+			Content: strings.Join([]string{
+				fmt.Sprintf("intentClass=%s", firstNonEmptyValue(strings.TrimSpace(policy.IntentClass), "factual")),
+				fmt.Sprintf("lane=%s", firstNonEmptyValue(strings.TrimSpace(policy.Lane), "answer")),
+				fmt.Sprintf("requiredTools=%s", firstNonEmptyValue(strings.Join(policy.RequiredTools, ", "), "-")),
+				fmt.Sprintf("requiredEvidenceKinds=%s", firstNonEmptyValue(strings.Join(policy.RequiredEvidenceKinds, ", "), "-")),
+				fmt.Sprintf("requiredCitationKinds=%s", firstNonEmptyValue(strings.Join(policy.RequiredCitationKinds, ", "), "-")),
+				fmt.Sprintf("knowledgeFreshness=%s", firstNonEmptyValue(strings.TrimSpace(policy.KnowledgeFreshness), "stable")),
+				fmt.Sprintf("evidenceContract=%s", firstNonEmptyValue(strings.TrimSpace(policy.EvidenceContract), "none")),
+				fmt.Sprintf("answerContract=%s", firstNonEmptyValue(strings.TrimSpace(policy.AnswerContract), "normal")),
+				fmt.Sprintf("finalGateStatus=%s", firstNonEmptyValue(strings.TrimSpace(policy.FinalGateStatus), turnFinalGatePending)),
+			}, "\n"),
+		}
+	}
+	contextAttachments = append(contextAttachments, a.workspaceContextAttachments(sessionID, message, policy)...)
 	visibleTools, hiddenTools := a.workspacePromptToolViews(sessionID, policy)
 	tokenEstimate := 0
 	for _, section := range append(append(append([]model.PromptEnvelopeSection{}, staticSections...), laneSections...), contextAttachments...) {
@@ -418,6 +514,17 @@ func toEnvelopeSection(section PromptSection) model.PromptEnvelopeSection {
 		Name:    strings.TrimSpace(section.Name),
 		Content: strings.TrimSpace(section.Content),
 	}
+}
+
+func toEnvelopeSections(sections []PromptSection) []model.PromptEnvelopeSection {
+	out := make([]model.PromptEnvelopeSection, 0, len(sections))
+	for _, section := range sections {
+		if trimmed := strings.TrimSpace(section.Content); trimmed == "" {
+			continue
+		}
+		out = append(out, toEnvelopeSection(section))
+	}
+	return out
 }
 
 func (a *App) workspaceLaneInstructions(policy model.TurnPolicy) string {
@@ -629,16 +736,29 @@ func (a *App) workspacePromptToolViews(sessionID string, policy model.TurnPolicy
 		if slices.Contains(policy.RequiredTools, name) {
 			reason = "本轮 policy 必需工具"
 		}
-		visible = append(visible, model.PromptEnvelopeTool{Name: name, Reason: reason})
+		desc := a.workspaceToolDescriptor(name)
+		visible = append(visible, model.PromptEnvelopeTool{
+			Name:        name,
+			DisplayName: desc.DisplayName,
+			Kind:        desc.Kind,
+			Description: desc.Description,
+			Aliases:     append([]string(nil), desc.Aliases...),
+			Reason:      reason,
+		})
 	}
 	hidden := make([]model.PromptEnvelopeTool, 0)
 	for _, name := range allTools {
 		if slices.Contains(visibleNames, name) {
 			continue
 		}
+		desc := a.workspaceToolDescriptor(name)
 		hidden = append(hidden, model.PromptEnvelopeTool{
-			Name:   name,
-			Reason: fmt.Sprintf("当前 lane=%s，工具未对模型暴露", firstNonEmptyValue(strings.TrimSpace(policy.Lane), "answer")),
+			Name:        name,
+			DisplayName: desc.DisplayName,
+			Kind:        desc.Kind,
+			Description: desc.Description,
+			Aliases:     append([]string(nil), desc.Aliases...),
+			Reason:      fmt.Sprintf("当前 lane=%s，工具未对模型暴露", firstNonEmptyValue(strings.TrimSpace(policy.Lane), "answer")),
 		})
 	}
 	return visible, hidden
@@ -769,6 +889,197 @@ func (a *App) workspacePlanApproved(sessionID string) bool {
 	return false
 }
 
+type externalEvidenceStats struct {
+	SearchCount        int
+	EvidenceCount      int
+	IndependentSources map[string]struct{}
+	URLCitations       map[string]struct{}
+	DomainCitations    map[string]struct{}
+	HasAttribution     bool
+}
+
+func newExternalEvidenceStats() externalEvidenceStats {
+	return externalEvidenceStats{
+		IndependentSources: make(map[string]struct{}),
+		URLCitations:       make(map[string]struct{}),
+		DomainCitations:    make(map[string]struct{}),
+	}
+}
+
+func (s externalEvidenceStats) independentSourceCount() int {
+	return len(s.IndependentSources)
+}
+
+func (s externalEvidenceStats) hasCitationKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "url", "page":
+		return len(s.URLCitations) > 0
+	case "domain":
+		return len(s.DomainCitations) > 0
+	default:
+		return s.HasAttribution
+	}
+}
+
+func collectExternalEvidenceStats(snapshot model.Snapshot) externalEvidenceStats {
+	stats := newExternalEvidenceStats()
+	stats.EvidenceCount = len(snapshot.EvidenceSummaries)
+	if len(snapshot.Runtime.Activity.SearchedWebQueries) > 0 {
+		stats.SearchCount = len(snapshot.Runtime.Activity.SearchedWebQueries)
+	}
+	for _, evidence := range snapshot.EvidenceSummaries {
+		if strings.TrimSpace(evidence.CitationKey) != "" || strings.TrimSpace(evidence.SourceRef) != "" {
+			stats.HasAttribution = true
+		}
+		if source := normalizeIndependentSource(evidence.SourceRef); source != "" {
+			stats.IndependentSources[source] = struct{}{}
+		}
+		for _, citation := range extractCitationRefs(evidence.SourceRef) {
+			recordCitation(&stats, citation)
+		}
+	}
+	for _, invocation := range snapshot.ToolInvocations {
+		if strings.TrimSpace(invocation.Status) == "failed" {
+			continue
+		}
+		switch strings.TrimSpace(invocation.Name) {
+		case "web_search":
+			if stats.SearchCount == 0 {
+				stats.SearchCount = 1
+			}
+			for _, citation := range extractWebSearchCitations(invocation) {
+				recordCitation(&stats, citation)
+			}
+		case "open_page", "find_in_page":
+			for _, citation := range extractInvocationURLCitations(invocation) {
+				recordCitation(&stats, citation)
+			}
+		}
+	}
+	if sourceCount := len(stats.IndependentSources); sourceCount > stats.EvidenceCount {
+		stats.EvidenceCount = sourceCount
+	}
+	return stats
+}
+
+func recordCitation(stats *externalEvidenceStats, raw string) {
+	normalizedSource := normalizeIndependentSource(raw)
+	if normalizedSource != "" {
+		stats.IndependentSources[normalizedSource] = struct{}{}
+		stats.HasAttribution = true
+	}
+	normalizedURL := normalizeCitationURL(raw)
+	if normalizedURL != "" {
+		stats.URLCitations[normalizedURL] = struct{}{}
+		stats.HasAttribution = true
+	}
+	if domain := normalizeCitationDomain(raw); domain != "" {
+		stats.DomainCitations[domain] = struct{}{}
+		stats.HasAttribution = true
+	}
+}
+
+func normalizeIndependentSource(raw string) string {
+	return normalizeCitationDomain(raw)
+}
+
+func normalizeCitationURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	u, err := parseCitationURL(trimmed)
+	if err != nil || strings.TrimSpace(u.Host) == "" {
+		return ""
+	}
+	u.Fragment = ""
+	return strings.ToLower(u.String())
+}
+
+func normalizeCitationDomain(raw string) string {
+	u, err := parseCitationURL(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	host = strings.TrimPrefix(host, "www.")
+	return host
+}
+
+func parseCitationURL(raw string) (*url.URL, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("empty url")
+	}
+	if strings.Contains(trimmed, "://") {
+		return url.Parse(trimmed)
+	}
+	if strings.Contains(trimmed, ".") && !strings.ContainsAny(trimmed, " \n\t") {
+		return url.Parse("https://" + trimmed)
+	}
+	return nil, fmt.Errorf("not a url")
+}
+
+func extractCitationRefs(raw string) []string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	return []string{trimmed}
+}
+
+func extractWebSearchCitations(invocation model.ToolInvocation) []string {
+	return extractCitationRefsFromPayload(invocation.OutputJSON)
+}
+
+func extractInvocationURLCitations(invocation model.ToolInvocation) []string {
+	return extractCitationRefsFromPayload(invocation.InputJSON)
+}
+
+func extractCitationRefsFromPayload(raw string) []string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return nil
+	}
+	return collectCitationRefsFromAny(payload)
+}
+
+func collectCitationRefsFromAny(value any) []string {
+	out := make([]string, 0)
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"url", "sourceRef"} {
+			if raw := strings.TrimSpace(getStringAny(typed, key)); raw != "" {
+				out = append(out, raw)
+			}
+		}
+		for _, key := range []string{"output", "content", "raw"} {
+			switch nested := typed[key].(type) {
+			case string:
+				out = append(out, extractCitationRefsFromPayload(nested)...)
+			default:
+				out = append(out, collectCitationRefsFromAny(nested)...)
+			}
+		}
+		for _, key := range []string{"results", "items", "matches", "sources", "entries"} {
+			out = append(out, collectCitationRefsFromAny(typed[key])...)
+		}
+	case []any:
+		for _, item := range typed {
+			out = append(out, collectCitationRefsFromAny(item)...)
+		}
+	case string:
+		if normalized := normalizeCitationURL(typed); normalized != "" {
+			out = append(out, typed)
+		}
+	}
+	return out
+}
+
 func (a *App) ValidateTurnCompletion(_ context.Context, session *agentloop.Session, _ string, _ string) agentloop.TurnCompletionDecision {
 	if a == nil || session == nil || a.sessionKind(session.ID) != model.SessionKindWorkspace {
 		return agentloop.TurnCompletionDecision{Action: "pass"}
@@ -781,6 +1092,7 @@ func (a *App) ValidateTurnCompletion(_ context.Context, session *agentloop.Sessi
 
 	missing := make([]string, 0)
 	requiredNextTool := strings.TrimSpace(policy.RequiredNextTool)
+	evidenceStats := collectExternalEvidenceStats(snapshot)
 
 	if policy.NeedsDisambiguation && !a.hasCompletedChoiceAfterLatestUser(session.ID) {
 		missing = append(missing, "缺少实体澄清")
@@ -797,14 +1109,29 @@ func (a *App) ValidateTurnCompletion(_ context.Context, session *agentloop.Sessi
 	if policy.NeedsApproval && strings.TrimSpace(policy.Lane) == string(model.TurnLaneExecute) && !a.workspacePlanApproved(session.ID) {
 		missing = append(missing, "缺少已审批计划")
 	}
-	if policy.RequiresRealtimeData || policy.RequiresExternalFacts {
-		if len(snapshot.Runtime.Activity.SearchedWebQueries) == 0 {
+	if policy.RequiresRealtimeData || policy.RequiresExternalFacts || strings.TrimSpace(policy.KnowledgeFreshness) == "external" || strings.TrimSpace(policy.KnowledgeFreshness) == "realtime" || strings.TrimSpace(policy.EvidenceContract) == "external_facts" || strings.TrimSpace(policy.EvidenceContract) == "sourced_snapshot" {
+		if evidenceStats.SearchCount == 0 {
 			missing = append(missing, "缺少外部实时证据")
 			requiredNextTool = firstNonEmptyValue(requiredNextTool, "web_search")
 		}
 	}
-	if policy.MinimumEvidenceCount > 0 && len(snapshot.EvidenceSummaries) < policy.MinimumEvidenceCount {
+	if policy.MinimumEvidenceCount > 0 && evidenceStats.EvidenceCount < policy.MinimumEvidenceCount {
 		missing = append(missing, "证据数量不足")
+		requiredNextTool = firstNonEmptyValue(requiredNextTool, "web_search")
+	}
+	if policy.MinimumIndependentSources > 0 && evidenceStats.independentSourceCount() < policy.MinimumIndependentSources {
+		missing = append(missing, "缺少独立来源")
+		requiredNextTool = firstNonEmptyValue(requiredNextTool, "web_search")
+	}
+	if policy.RequireSourceAttribution && !evidenceStats.HasAttribution {
+		missing = append(missing, "缺少来源归因")
+		requiredNextTool = firstNonEmptyValue(requiredNextTool, "web_search")
+	}
+	for _, kind := range policy.RequiredCitationKinds {
+		if evidenceStats.hasCitationKind(kind) {
+			continue
+		}
+		missing = append(missing, fmt.Sprintf("缺少%s归因", strings.TrimSpace(kind)))
 		requiredNextTool = firstNonEmptyValue(requiredNextTool, "web_search")
 	}
 	if len(missing) == 0 && len(policy.RequiredTools) > 0 {
@@ -915,6 +1242,8 @@ func copyTurnPolicy(policy model.TurnPolicy) model.TurnPolicy {
 	out := policy
 	out.RequiredTools = append([]string(nil), policy.RequiredTools...)
 	out.RequiredEvidenceKinds = append([]string(nil), policy.RequiredEvidenceKinds...)
+	out.RequiredCitationKinds = append([]string(nil), policy.RequiredCitationKinds...)
+	out.EvidenceDiversityRules = append([]string(nil), policy.EvidenceDiversityRules...)
 	out.MissingRequirements = append([]string(nil), policy.MissingRequirements...)
 	return out
 }

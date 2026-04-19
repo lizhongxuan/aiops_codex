@@ -301,12 +301,12 @@ type SessionMeta struct {
 }
 
 type RuntimeState struct {
-	Turn           TurnRuntime      `json:"turn"`
-	Codex          CodexRuntime     `json:"codex"`
-	Activity       ActivityRuntime  `json:"activity"`
-	PlanMode       bool             `json:"planMode,omitempty"`
-	TurnPolicy     TurnPolicy       `json:"turnPolicy,omitempty"`
-	PromptEnvelope *PromptEnvelope  `json:"promptEnvelope,omitempty"`
+	Turn           TurnRuntime     `json:"turn"`
+	Codex          CodexRuntime    `json:"codex"`
+	Activity       ActivityRuntime `json:"activity"`
+	PlanMode       bool            `json:"planMode,omitempty"`
+	TurnPolicy     TurnPolicy      `json:"turnPolicy,omitempty"`
+	PromptEnvelope *PromptEnvelope `json:"promptEnvelope,omitempty"`
 }
 
 type TurnIntentClass string
@@ -332,22 +332,32 @@ const (
 )
 
 type TurnPolicy struct {
-	IntentClass           string   `json:"intentClass,omitempty"`
-	Lane                  string   `json:"lane,omitempty"`
-	RequiredTools         []string `json:"requiredTools,omitempty"`
-	RequiredEvidenceKinds []string `json:"requiredEvidenceKinds,omitempty"`
-	NeedsPlanArtifact     bool     `json:"needsPlanArtifact,omitempty"`
-	NeedsApproval         bool     `json:"needsApproval,omitempty"`
-	NeedsAssumptions      bool     `json:"needsAssumptions,omitempty"`
-	NeedsDisambiguation   bool     `json:"needsDisambiguation,omitempty"`
-	RequiresExternalFacts bool     `json:"requiresExternalFacts,omitempty"`
-	RequiresRealtimeData  bool     `json:"requiresRealtimeData,omitempty"`
-	MinimumEvidenceCount  int      `json:"minimumEvidenceCount,omitempty"`
-	RequiredNextTool      string   `json:"requiredNextTool,omitempty"`
-	FinalGateStatus       string   `json:"finalGateStatus,omitempty"`
-	MissingRequirements   []string `json:"missingRequirements,omitempty"`
-	ClassificationReason  string   `json:"classificationReason,omitempty"`
-	UpdatedAt             string   `json:"updatedAt,omitempty"`
+	IntentClass               string   `json:"intentClass,omitempty"`
+	Lane                      string   `json:"lane,omitempty"`
+	RequiredTools             []string `json:"requiredTools,omitempty"`
+	RequiredEvidenceKinds     []string `json:"requiredEvidenceKinds,omitempty"`
+	RequiredCitationKinds     []string `json:"requiredCitationKinds,omitempty"`
+	NeedsPlanArtifact         bool     `json:"needsPlanArtifact,omitempty"`
+	NeedsApproval             bool     `json:"needsApproval,omitempty"`
+	NeedsAssumptions          bool     `json:"needsAssumptions,omitempty"`
+	NeedsDisambiguation       bool     `json:"needsDisambiguation,omitempty"`
+	RequiresExternalFacts     bool     `json:"requiresExternalFacts,omitempty"`
+	RequiresRealtimeData      bool     `json:"requiresRealtimeData,omitempty"`
+	MinimumEvidenceCount      int      `json:"minimumEvidenceCount,omitempty"`
+	MinimumIndependentSources int      `json:"minimumIndependentSources,omitempty"`
+	RequireSourceAttribution  bool     `json:"requireSourceAttribution,omitempty"`
+	PreferredAnswerStyle      string   `json:"preferredAnswerStyle,omitempty"`
+	AllowEarlyStop            bool     `json:"allowEarlyStop,omitempty"`
+	KnowledgeFreshness        string   `json:"knowledgeFreshness,omitempty"`
+	EvidenceContract          string   `json:"evidenceContract,omitempty"`
+	AnswerContract            string   `json:"answerContract,omitempty"`
+	FreshnessDeadline         string   `json:"freshnessDeadline,omitempty"`
+	EvidenceDiversityRules    []string `json:"evidenceDiversityRules,omitempty"`
+	RequiredNextTool          string   `json:"requiredNextTool,omitempty"`
+	FinalGateStatus           string   `json:"finalGateStatus,omitempty"`
+	MissingRequirements       []string `json:"missingRequirements,omitempty"`
+	ClassificationReason      string   `json:"classificationReason,omitempty"`
+	UpdatedAt                 string   `json:"updatedAt,omitempty"`
 }
 
 type PromptEnvelope struct {
@@ -372,8 +382,12 @@ type PromptEnvelopeSection struct {
 }
 
 type PromptEnvelopeTool struct {
-	Name   string `json:"name,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	DisplayName string   `json:"displayName,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
+	Reason      string   `json:"reason,omitempty"`
 }
 
 type AgentLoopRun struct {
@@ -410,6 +424,8 @@ type ToolInvocation struct {
 	RunID            string `json:"runId,omitempty"`
 	IterationID      string `json:"iterationId,omitempty"`
 	Name             string `json:"name"`
+	DisplayName      string `json:"displayName,omitempty"`
+	Kind             string `json:"kind,omitempty"`
 	Status           string `json:"status"`
 	RiskLevel        string `json:"riskLevel,omitempty"`
 	RequiresApproval bool   `json:"requiresApproval,omitempty"`
