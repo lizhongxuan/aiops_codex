@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +25,9 @@ func handleAgentFileList(runtime *hostAgentRuntime, sender *agentStreamSender, r
 
 	resolved, err := resolveAgentFilePath(req.Path)
 	result := &agentrpc.FileListResult{
-		RequestID: safeFileRequestID(req.RequestID),
-		Path:      resolved,
+		RequestID:  safeFileRequestID(req.RequestID),
+		Path:       resolved,
+		Cancelable: false,
 	}
 	if err != nil {
 		result.Message = err.Error()
@@ -42,6 +44,7 @@ func handleAgentFileList(runtime *hostAgentRuntime, sender *agentStreamSender, r
 	if listErr != nil {
 		result.Message = listErr.Error()
 	}
+	log.Printf("file list finished request=%s path=%q entries=%d truncated=%t error=%q", result.RequestID, result.Path, len(result.Entries), result.Truncated, result.Message)
 	return sender.send(&agentrpc.Envelope{
 		Kind:           "file/list/result",
 		FileListResult: result,
@@ -60,8 +63,9 @@ func handleAgentFileRead(runtime *hostAgentRuntime, sender *agentStreamSender, r
 
 	resolved, err := resolveAgentFilePath(req.Path)
 	result := &agentrpc.FileReadResult{
-		RequestID: safeFileRequestID(req.RequestID),
-		Path:      resolved,
+		RequestID:  safeFileRequestID(req.RequestID),
+		Path:       resolved,
+		Cancelable: false,
 	}
 	if err != nil {
 		result.Message = err.Error()
@@ -78,6 +82,7 @@ func handleAgentFileRead(runtime *hostAgentRuntime, sender *agentStreamSender, r
 	if readErr != nil {
 		result.Message = readErr.Error()
 	}
+	log.Printf("file read finished request=%s path=%q bytes=%d truncated=%t error=%q content=%q", result.RequestID, result.Path, len(result.Content), result.Truncated, result.Message, summarizeLogText(result.Content, 320))
 	return sender.send(&agentrpc.Envelope{
 		Kind:           "file/read/result",
 		FileReadResult: result,
@@ -99,9 +104,10 @@ func handleAgentFileSearch(runtime *hostAgentRuntime, sender *agentStreamSender,
 
 	resolved, err := resolveAgentFilePath(req.Path)
 	result := &agentrpc.FileSearchResult{
-		RequestID: safeFileRequestID(req.RequestID),
-		Path:      resolved,
-		Query:     strings.TrimSpace(req.Query),
+		RequestID:  safeFileRequestID(req.RequestID),
+		Path:       resolved,
+		Query:      strings.TrimSpace(req.Query),
+		Cancelable: false,
 	}
 	if err != nil {
 		result.Message = err.Error()
@@ -118,6 +124,7 @@ func handleAgentFileSearch(runtime *hostAgentRuntime, sender *agentStreamSender,
 	if searchErr != nil {
 		result.Message = searchErr.Error()
 	}
+	log.Printf("file search finished request=%s path=%q query=%q matches=%d truncated=%t error=%q", result.RequestID, result.Path, summarizeLogText(result.Query, 200), len(result.Matches), result.Truncated, result.Message)
 	return sender.send(&agentrpc.Envelope{
 		Kind:             "file/search/result",
 		FileSearchResult: result,
@@ -136,8 +143,9 @@ func handleAgentFileWrite(runtime *hostAgentRuntime, sender *agentStreamSender, 
 
 	resolved, err := resolveAgentFilePath(req.Path)
 	result := &agentrpc.FileWriteResult{
-		RequestID: safeFileRequestID(req.RequestID),
-		Path:      resolved,
+		RequestID:  safeFileRequestID(req.RequestID),
+		Path:       resolved,
+		Cancelable: false,
 	}
 	if err != nil {
 		result.Message = err.Error()
@@ -165,6 +173,7 @@ func handleAgentFileWrite(runtime *hostAgentRuntime, sender *agentStreamSender, 
 	if writeErr != nil {
 		result.Message = writeErr.Error()
 	}
+	log.Printf("file write finished request=%s path=%q mode=%q created=%t error=%q old=%q new=%q", result.RequestID, result.Path, result.WriteMode, result.Created, result.Message, summarizeLogText(result.OldContent, 240), summarizeLogText(result.NewContent, 240))
 	return sender.send(&agentrpc.Envelope{
 		Kind:            "file/write/result",
 		FileWriteResult: result,
@@ -172,16 +181,20 @@ func handleAgentFileWrite(runtime *hostAgentRuntime, sender *agentStreamSender, 
 }
 
 func resolveAgentFilePath(requested string) (string, error) {
+	path := strings.TrimSpace(requested)
+	if path != "" && path != "~" && filepath.IsAbs(path) {
+		return filepath.Abs(filepath.Clean(path))
+	}
+
 	resolved, err := resolveAgentTerminalCwd(requested)
 	if err == nil {
 		return resolved, nil
 	}
 
-	home, homeErr := os.UserHomeDir()
+	home, homeErr := agentUserHomeDir()
 	if homeErr != nil || home == "" {
 		home = "/tmp"
 	}
-	path := strings.TrimSpace(requested)
 	if path == "" || path == "~" {
 		path = home
 	}
@@ -212,16 +225,11 @@ func listAgentFiles(root string, recursive bool, maxEntries int) ([]agentrpc.Fil
 			truncated = true
 			return false
 		}
-		info, err := entry.Info()
-		size := int64(0)
-		if err == nil {
-			size = info.Size()
-		}
 		entries = append(entries, agentrpc.FileEntry{
 			Name: entry.Name(),
 			Path: path,
 			Kind: fileEntryKind(entry),
-			Size: size,
+			Size: 0,
 		})
 		return true
 	}

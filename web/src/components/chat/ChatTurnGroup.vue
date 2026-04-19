@@ -9,6 +9,10 @@ defineProps({
     type: Object,
     required: true,
   },
+  showLiveStatus: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const emit = defineEmits(["action", "detail", "pin", "refresh"]);
@@ -34,6 +38,10 @@ function emitRefresh(payload) {
   <article class="chat-turn-group" :data-testid="`chat-turn-${turn.id}`">
     <div v-if="turn.userMessage" class="stream-row row-user">
       <MessageCard :card="turn.userMessage.card" />
+    </div>
+
+    <div v-if="showLiveStatus" class="chat-turn-live-status">
+      <slot name="live-status" />
     </div>
 
     <ChatProcessFold :turn="turn" />
@@ -78,28 +86,34 @@ function emitRefresh(payload) {
 .chat-turn-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
 }
 
 .chat-turn-final {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 1px;
+  gap: 3px;
+  margin-top: 0;
+}
+
+.chat-turn-live-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .chat-turn-bundles,
 .chat-turn-actions {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .chat-turn-final-divider {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-left: 30px;
-  max-width: 720px;
+  gap: 8px;
+  width: min(980px, 100%);
+  margin: 0 auto;
 }
 
 .chat-turn-final-divider-line {
@@ -110,7 +124,7 @@ function emitRefresh(payload) {
 
 .chat-turn-final-divider-label {
   color: #64748b;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
   line-height: 1.4;
 }

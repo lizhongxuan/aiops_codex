@@ -2,6 +2,8 @@
 import { ref, nextTick, computed, watch, toRef } from "vue";
 import { useAppStore } from "../store";
 import { usePasteAssist } from "../composables/usePasteAssist";
+import { NButton, NAutoComplete } from "naive-ui";
+import { resolveHostDisplay } from "../lib/hostDisplay";
 
 const props = defineProps({
   modelValue: {
@@ -73,13 +75,18 @@ const activeMentions = computed(() => {
 const pasteAssist = usePasteAssist(toRef(props, "modelValue"));
 const artifactPills = computed(() => pasteAssist.artifactPills.value);
 const showToolTags = computed(() => activeMentions.value.length || artifactPills.value.length);
+const turnPendingStart = computed(() => !!store.runtime.turn.pendingStart);
+const turnActive = computed(() => {
+  const phase = String(store.runtime.turn.phase || "").trim().toLowerCase();
+  return store.runtime.turn.active && !["idle", "completed", "failed", "aborted"].includes(phase);
+});
 
 const canStop = computed(() => {
   if (props.primaryActionOverride === "send") return false;
   if (props.primaryActionOverride === "stop") return true;
-  const phase = String(store.runtime.turn.phase || "").trim().toLowerCase();
-  return store.runtime.turn.active && !["idle", "completed", "failed", "aborted"].includes(phase);
+  return turnPendingStart.value || turnActive.value;
 });
+const forceSendAction = computed(() => props.primaryActionOverride === "send");
 
 // Stabilize the stop button — once active, hold it for at least 2s to prevent flickering
 const stableCanStop = ref(false);
@@ -100,11 +107,14 @@ watch(canStop, (value) => {
   }
 }, { immediate: true });
 
-const followUpMode = computed(() => props.allowFollowUp && stableCanStop.value);
-const primaryAction = computed(() => (stableCanStop.value && !followUpMode.value ? "stop" : "send"));
+const primaryAction = computed(() => (stableCanStop.value ? "stop" : "send"));
 const canSendMessage = computed(() => (props.forceEnabled ? true : !!store.canSend));
 const inputDisabled = computed(
-  () => props.disabled || props.busy || !canSendMessage.value || store.sending || (stableCanStop.value && !followUpMode.value ? true : false),
+  () =>
+    props.disabled ||
+    props.busy ||
+    !canSendMessage.value ||
+    store.sending,
 );
 const sendDisabled = computed(
   () =>
@@ -112,10 +122,23 @@ const sendDisabled = computed(
     props.busy ||
     !canSendMessage.value ||
     store.sending ||
+    (!forceSendAction.value && (turnActive.value || turnPendingStart.value)) ||
     pasteAssist.sendBlocked.value ||
     !props.modelValue.trim(),
 );
-const showSecondaryStop = computed(() => followUpMode.value);
+const showSecondaryStop = computed(() => false);
+const showHintText = computed(() => Boolean(hintText.value));
+const showToolsLeft = computed(() => showToolTags.value || showHintText.value || pasteAssist.hasPendingArtifact.value);
+const compactStopMode = computed(() => {
+  return (
+    primaryAction.value === "stop" &&
+    !props.modelValue.trim() &&
+    !showToolsLeft.value &&
+    !slashResultVisible.value &&
+    !slashCommandVisible.value &&
+    !mentionPopover.value.visible
+  );
+});
 const hintTestId = computed(() => {
   if (!pasteAssist.indicator.value) return "omnibar-hint";
   if (pasteAssist.indicator.value.kind === "focus") return "omnibar-focus-hint";
@@ -124,12 +147,13 @@ const hintTestId = computed(() => {
 });
 const hintText = computed(() => {
   if (pasteAssist.indicator.value) return pasteAssist.indicator.value.text;
-  if (primaryAction.value === "stop") return "停止当前任务";
-  if (followUpMode.value) return "⌘ ↵ 发送 follow-up";
+  if (primaryAction.value === "stop" || turnPendingStart.value) return "";
   return "⌘ ↵ 发送";
 });
 
 function emitSend() {
+  // Check for /switch command before sending
+  if (tryExecuteSlashSwitch(props.modelValue)) return;
   pasteAssist.resetPasteState();
   emit("send");
 }
@@ -137,6 +161,9 @@ function emitSend() {
 function onInput(e) {
   const text = e.target.value;
   emit("update:modelValue", text);
+
+  // Check slash command trigger
+  checkSlashTrigger(text);
 
   const cursor = e.target.selectionStart;
   const textBeforeCursor = text.slice(0, cursor);
@@ -269,10 +296,170 @@ function getCaretCoordinates(element, position) {
   // Simple approximation without creating mirror div
   return { left: 24, top: 0 }; 
 }
+
+// --- Slash command support ---
+const slashCommandVisible = ref(false);
+const slashQuery = ref("");
+
+const SLASH_COMMANDS = [
+  { label: "/hosts", value: "/hosts", description: "列出所有主机及状态" },
+  { label: "/switch", value: "/switch ", description: "切换当前主机" },
+  { label: "/approve", value: "/approve", description: "批量审批当前 pending 项" },
+  { label: "/status", value: "/status", description: "显示系统状态摘要" },
+];
+
+const slashOptions = computed(() => {
+  const q = slashQuery.value.toLowerCase();
+  return SLASH_COMMANDS
+    .filter((cmd) => cmd.label.toLowerCase().includes(q))
+    .map((cmd) => ({
+      label: `${cmd.label}  —  ${cmd.description}`,
+      value: cmd.value,
+    }));
+});
+
+function checkSlashTrigger(text) {
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith("/")) {
+    slashQuery.value = trimmed;
+    slashCommandVisible.value = true;
+  } else {
+    slashCommandVisible.value = false;
+  }
+}
+
+function handleSlashSelect(value) {
+  slashCommandVisible.value = false;
+  const cmd = value.trim();
+  if (cmd === "/hosts") {
+    executeSlashHosts();
+  } else if (cmd === "/approve") {
+    executeSlashApprove();
+  } else if (cmd === "/status") {
+    executeSlashStatus();
+  } else if (cmd.startsWith("/switch ")) {
+    // Set the input to "/switch " so user can type host name
+    emit("update:modelValue", "/switch ");
+    nextTick(() => textareaRef.value?.focus());
+    return;
+  } else if (cmd.startsWith("/switch")) {
+    emit("update:modelValue", "/switch ");
+    nextTick(() => textareaRef.value?.focus());
+    return;
+  }
+  emit("update:modelValue", "");
+}
+
+const slashResultMessage = ref("");
+const slashResultVisible = ref(false);
+
+function showSlashResult(msg) {
+  slashResultMessage.value = msg;
+  slashResultVisible.value = true;
+  setTimeout(() => { slashResultVisible.value = false; }, 6000);
+}
+
+function executeSlashHosts() {
+  const hosts = store.snapshot.hosts || [];
+  if (!hosts.length) {
+    showSlashResult("当前没有已注册的主机。");
+    return;
+  }
+  const lines = hosts.map((h) => `• ${h.name || h.id} — ${h.status || "unknown"}${h.address ? ` (${h.address})` : ""}`);
+  showSlashResult(`主机列表：\n${lines.join("\n")}`);
+}
+
+async function executeSlashApprove() {
+  const approvals = (store.snapshot.approvals || []).filter((a) => a.status === "pending");
+  if (!approvals.length) {
+    showSlashResult("当前没有待审批项。");
+    return;
+  }
+  let approved = 0;
+  for (const approval of approvals) {
+    try {
+      const response = await fetch(`/api/v1/approvals/${approval.id}/decision`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "approve" }),
+      });
+      if (response.ok) approved++;
+    } catch (_) { /* skip */ }
+  }
+  showSlashResult(`已批量审批 ${approved}/${approvals.length} 项。`);
+}
+
+function executeSlashStatus() {
+  const hosts = store.snapshot.hosts || [];
+  const onlineCount = hosts.filter((h) => h.status === "online").length;
+  const pendingApprovals = (store.snapshot.approvals || []).filter((a) => a.status === "pending").length;
+  const turnPhase = store.runtime.turn.phase || "idle";
+  const turnActive = store.runtime.turn.active;
+  const wsStatus = store.wsStatus || "unknown";
+  const selectedHost = resolveHostDisplay(store.selectedHost) || "server-local";
+
+  const lines = [
+    `WebSocket: ${wsStatus}`,
+    `主机: ${onlineCount}/${hosts.length} 在线`,
+    `当前主机: ${selectedHost}`,
+    `Turn: ${turnActive ? turnPhase : "空闲"}`,
+    `待审批: ${pendingApprovals} 项`,
+  ];
+  showSlashResult(`系统状态：\n${lines.join("\n")}`);
+}
+
+// Handle /switch <host> on send
+function tryExecuteSlashSwitch(text) {
+  const match = text.trim().match(/^\/switch\s+(.+)$/i);
+  if (!match) return false;
+  const target = match[1].trim();
+  const host = (store.snapshot.hosts || []).find(
+    (h) => h.name === target || h.id === target || h.address === target,
+  );
+  if (!host) {
+    showSlashResult(`未找到主机: ${target}`);
+    emit("update:modelValue", "");
+    return true;
+  }
+  store.createOrActivateSingleHostSessionForHost?.(host.id, host);
+  showSlashResult(`已切换到主机: ${host.name || host.id}`);
+  emit("update:modelValue", "");
+  return true;
+}
+
+
 </script>
 
 <template>
-  <div class="omnibar-wrapper" :class="{ 'is-docked-bottom': isDockedBottom }">
+  <div
+    class="omnibar-wrapper"
+    :class="{
+      'is-docked-bottom': isDockedBottom,
+      'is-stop-mode': primaryAction === 'stop',
+      'is-compact-stop': compactStopMode,
+    }"
+  >
+    <!-- Slash command auto-complete -->
+    <div v-if="slashCommandVisible && slashOptions.length" class="slash-popover">
+      <div class="popover-header">Slash 命令</div>
+      <div class="popover-list">
+        <div
+          v-for="opt in slashOptions"
+          :key="opt.value"
+          class="popover-item"
+          @click="handleSlashSelect(opt.value)"
+        >
+          {{ opt.label }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Slash result message -->
+    <div v-if="slashResultVisible" class="slash-result" data-testid="slash-result">
+      <pre class="slash-result-text">{{ slashResultMessage }}</pre>
+    </div>
+
     <!-- Popover -->
     <div class="mention-popover" v-if="mentionPopover.visible && mentionOptions.length" :style="{ left: mentionPopover.x + 'px', bottom: '100%' }">
       <div class="popover-header">Hosts</div>
@@ -300,15 +487,16 @@ function getCaretCoordinates(element, position) {
       @keydown="onKeydown"
       @focus="onFocus"
       @blur="onBlur"
-      rows="3"
+      rows="1"
       class="omnibar-input"
+      :class="{ 'is-compact-stop': compactStopMode }"
       :placeholder="placeholder"
       :disabled="inputDisabled"
       data-testid="omnibar-input"
     ></textarea>
     
-    <div class="omnibar-tools">
-      <div class="tools-left" v-if="showToolTags">
+    <div class="omnibar-tools" :class="{ 'is-compact-stop': compactStopMode }">
+      <div v-if="showToolsLeft" class="tools-left">
          <span v-for="mention in activeMentions" :key="mention" class="pill-tag"><span class="pill-icon">@</span> {{ mention }}</span>
          <span
            v-for="artifact in artifactPills"
@@ -316,9 +504,8 @@ function getCaretCoordinates(element, position) {
            class="pill-tag artifact-pill"
            data-testid="omnibar-artifact-pill"
          >{{ artifact.label }}</span>
-      </div>
-      <div class="tools-right">
          <span
+           v-if="showHintText"
            class="hint-text"
            :class="{
              'is-paste-indicator': pasteAssist.indicator.value?.kind === 'buffering' || pasteAssist.indicator.value?.kind === 'ready',
@@ -336,10 +523,13 @@ function getCaretCoordinates(element, position) {
          >
            清除
          </button>
+      </div>
+      <div class="tools-right" :class="{ 'is-compact-stop': compactStopMode, 'is-alone': !showToolsLeft }">
          <div class="action-group">
-           <button
-             class="send-btn"
-             :class="{ 'stop-btn': primaryAction === 'stop' }"
+           <n-button
+             circle
+             :type="primaryAction === 'stop' ? 'error' : 'primary'"
+             :size="compactStopMode ? 'small' : 'medium'"
              :disabled="primaryAction === 'stop' ? busy : sendDisabled"
              data-testid="omnibar-primary-action"
              @click="primaryAction === 'stop' ? emit('stop') : emitSend()"
@@ -348,11 +538,13 @@ function getCaretCoordinates(element, position) {
              <span v-else-if="primaryAction === 'stop'">■</span>
              <span v-else-if="store.sending" class="spinner-small"></span>
              <span v-else>↑</span>
-           </button>
+           </n-button>
            <button v-if="showSecondaryStop" type="button" class="stop-link-btn" @click="emit('stop')">停止</button>
          </div>
       </div>
     </div>
+
+
   </div>
 </template>
 
@@ -363,14 +555,25 @@ function getCaretCoordinates(element, position) {
   margin: 0 auto;
   background: var(--omnibar-bg);
   border: 1px solid var(--border-color);
-  border-radius: 20px;
-  padding: 12px 14px 12px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  padding: 8px 14px 8px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
   display: flex;
   flex-direction: column;
   gap: 8px;
   transition: box-shadow 0.2s, border-color 0.2s;
   position: relative;
+}
+
+.omnibar-wrapper.is-stop-mode {
+  background: rgba(241, 245, 249, 0.9);
+}
+
+.omnibar-wrapper.is-compact-stop {
+  padding: 6px 12px;
+  gap: 4px;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05);
 }
 
 .omnibar-wrapper.is-docked-bottom {
@@ -391,12 +594,18 @@ function getCaretCoordinates(element, position) {
   background: transparent;
   resize: none;
   outline: none;
-  min-height: 64px;
+  min-height: 36px;
   font-size: 14px;
   line-height: 1.6;
   padding: 4px 6px 0;
   color: var(--text-main);
   font-family: inherit;
+}
+
+.omnibar-input.is-compact-stop {
+  min-height: 24px;
+  line-height: 1.45;
+  padding: 2px 2px 0;
 }
 
 .omnibar-input::placeholder {
@@ -414,10 +623,18 @@ function getCaretCoordinates(element, position) {
   gap: 12px;
 }
 
+.omnibar-tools.is-compact-stop {
+  align-items: center;
+  gap: 8px;
+}
+
 .tools-left {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
 }
 
 .pill-tag {
@@ -436,12 +653,27 @@ function getCaretCoordinates(element, position) {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.tools-right.is-alone {
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.tools-right.is-compact-stop {
+  gap: 0;
 }
 
 .action-group {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+}
+
+.tools-right.is-compact-stop .action-group {
+  gap: 0;
 }
 
 .hint-text {
@@ -479,34 +711,6 @@ function getCaretCoordinates(element, position) {
 
 .hint-clear-btn:hover {
   color: #0f172a;
-}
-
-.send-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 999px;
-  border: none;
-  background: #0f172a;
-  color: white;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
-  font-size: 14px;
-}
-
-.send-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.send-btn:not(:disabled):hover {
-  transform: translateY(-1px);
-}
-
-.send-btn.stop-btn {
-  background: #dc2626;
 }
 
 .stop-link-btn {
@@ -594,4 +798,39 @@ function getCaretCoordinates(element, position) {
 @keyframes spin { 
   to { transform: rotate(360deg); }
 }
+
+/* Slash command popover */
+.slash-popover {
+  position: absolute;
+  bottom: 100%;
+  left: 14px;
+  right: 14px;
+  margin-bottom: 8px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.1);
+  overflow: hidden;
+  z-index: 100;
+}
+
+/* Slash result */
+.slash-result {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 4px;
+}
+
+.slash-result-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #334155;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+
 </style>

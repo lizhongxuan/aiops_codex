@@ -21,15 +21,15 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
 	"github.com/gorilla/websocket"
+	"github.com/lizhongxuan/aiops-codex/internal/agentloop"
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
-	"github.com/lizhongxuan/aiops-codex/internal/codex"
+	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
 	"github.com/lizhongxuan/aiops-codex/internal/config"
 	"github.com/lizhongxuan/aiops-codex/internal/coroot"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
@@ -48,58 +48,73 @@ const (
 	autoThreadResetCardThreshold         = 80
 	autoThreadResetConversationThreshold = 24
 	autoThreadResetShortPromptRuneLimit  = 32
-	codexReconnectNoticeCardID           = "__codex_reconnect__"
 	terminalSubscriberGraceTTL           = 20 * time.Second
 	terminalConnectTimeout               = 15 * time.Second
 	terminalExitRetention                = 30 * time.Second
 )
 
-var codexReconnectMessagePattern = regexp.MustCompile(`(?i)^reconnecting\.\.\.\s*(\d+)\s*/\s*(\d+)\s*$`)
 var contextualFollowupPattern = regexp.MustCompile(`(?i)(继续|刚才|上面|前面|前文|上一|这个|那个|第\s*\d+\s*步|same|above|previous|continue|earlier|step\s*\d+)`)
 
 type App struct {
-	cfg              config.Config
-	store            *store.Store
-	codex            *codex.Client
-	orchestrator     *orchestrator.Manager
-	codexRequestFunc func(context.Context, string, any, any) error
-	codexRespondFunc func(context.Context, string, any) error
-	upgrader         websocket.Upgrader
-	agentMu          sync.Mutex
-	agents           map[string]*agentConnection
-	wsMu             sync.Mutex
-	wsClients        map[string]map[*websocket.Conn]struct{}
-	turnMu           sync.Mutex
-	turnCancels      map[string]context.CancelFunc
-	terminalMu       sync.Mutex
-	terminals        map[string]*terminalSession
-	execMu           sync.Mutex
-	execs            map[string]*remoteExecSession
-	fileReqMu        sync.Mutex
-	fileReqs         map[string]*agentResponseWaiter
-	approvalMu       sync.Mutex
-	fileChangeClaims map[string]struct{}
-	oauthMu          sync.Mutex
-	oauthStates      map[string]string
-	auditMu          sync.Mutex
-	turnTraceMu      sync.Mutex
-	turnTraces       map[string]*turnTrace
-	orchestratorMu   sync.Mutex
-	orchestratorJobs map[string]string
-	broadcastThrotMu sync.Mutex
-	broadcastTimers  map[string]*time.Timer
-	threadStarts     []time.Time
-	turnStarts       []time.Time
+	cfg                     config.Config
+	store                   *store.Store
+	toolHandlerRegistry     *ToolHandlerRegistry
+	toolEventBus            *InProcessToolEventBus
+	toolEventStore          *store.ToolEventStore
+	toolApprovalCoordinator ToolApprovalCoordinator
+	toolDispatcher          *toolDispatcher
+	agentLoop               *agentloop.Loop
+	bifrostGateway          *bifrost.Gateway
+	bifrostMu               sync.Mutex
+	bifrostSessions         map[string]*agentloop.Session
+	workspaceRuntimes       map[string]*agentloop.WorkspaceRuntime
+	orchestrator            *orchestrator.Manager
+	runtimeStartThreadFunc  func(context.Context, string, threadStartSpec) (string, error)
+	runtimeStartTurnFunc    func(context.Context, string, string, turnStartSpec) (string, error)
+	codexRespondFunc        func(context.Context, string, any) error
+	skillDiscoveryFunc      discoverInstalledSkillsFunc
+	upgrader                websocket.Upgrader
+	agentMu                 sync.Mutex
+	agents                  map[string]*agentConnection
+	wsMu                    sync.Mutex
+	wsClients               map[string]map[*websocket.Conn]struct{}
+	turnMu                  sync.Mutex
+	turnCancels             map[string]context.CancelFunc
+	terminalMu              sync.Mutex
+	terminals               map[string]*terminalSession
+	execMu                  sync.Mutex
+	execs                   map[string]*remoteExecSession
+	fileReqMu               sync.Mutex
+	fileReqs                map[string]*agentResponseWaiter
+	approvalMu              sync.Mutex
+	fileChangeClaims        map[string]struct{}
+	oauthMu                 sync.Mutex
+	oauthStates             map[string]string
+	auditMu                 sync.Mutex
+	turnTraceMu             sync.Mutex
+	turnTraces              map[string]*turnTrace
+	orchestratorMu          sync.Mutex
+	orchestratorJobs        map[string]string
+	broadcastThrotMu        sync.Mutex
+	broadcastTimers         map[string]*time.Timer
+	threadStarts            []time.Time
+	turnStarts              []time.Time
 	approvalAuditStore      *store.ApprovalAuditStore
 	approvalGrantStore      *store.ApprovalGrantStore
 	capabilityBindingStore  *store.CapabilityBindingStore
-	uiCardStore            *store.UICardStore
-	scriptConfigStore      *store.ScriptConfigStore
-	labEnvironmentStore    *store.LabEnvironmentStore
-	corootClient           *coroot.Client
-	httpServer         *http.Server
-	grpcServer         *grpc.Server
-	commandRunner      commandRunner
+	uiCardStore             *store.UICardStore
+	scriptConfigStore       *store.ScriptConfigStore
+	labEnvironmentStore     *store.LabEnvironmentStore
+	corootClient            *coroot.Client
+	dataSourceRouter        *coroot.DataSourceRouter
+	rcaEngine               coroot.RCAEngine
+	mcpManager              mcpRuntime
+	mcpToolBindings         map[string]mcpToolBinding
+	httpServer              *http.Server
+	grpcServer              *grpc.Server
+	commandRunner           commandRunner
+	bifrostToolCards        sync.Map // tracks active ProcessLineCard IDs per tool call (key: sessionID+":"+toolName)
+	bifrostToolResults      sync.Map // tracks latest ToolExecutionResult per sessionID+":"+toolName for lifecycle completion payloads
 }
 
 type authLoginRequest struct {
@@ -114,7 +129,7 @@ type authLoginRequest struct {
 type chatRequest struct {
 	Message        string                `json:"message"`
 	HostID         string                `json:"hostId"`
-	MonitorContext *model.MonitorContext  `json:"monitorContext,omitempty"`
+	MonitorContext *model.MonitorContext `json:"monitorContext,omitempty"`
 }
 
 type turnTrace struct {
@@ -153,8 +168,433 @@ type choiceAnswerInput struct {
 	Note    string `json:"note,omitempty"`
 }
 
+type requiredToolFollowup struct {
+	SessionID    string
+	ChoiceCardID string
+	Tool         string
+	HostID       string
+	Message      string
+}
+
 type choiceAnswerRequest struct {
 	Answers []choiceAnswerInput `json:"answers"`
+}
+
+func (a *App) answerPendingChoiceFromChatMessage(w http.ResponseWriter, r *http.Request, sessionID, message string) bool {
+	choiceID, choice, ok := a.latestPendingChoiceForSession(sessionID)
+	if !ok {
+		return false
+	}
+	if len(choice.Questions) != 1 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "当前有多个待回答问题，请先在澄清卡片中完成选择"})
+		return true
+	}
+	answers := buildChoiceAnswersFromText(choice.Questions, message)
+	if len(answers) == 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := a.submitChoiceAnswer(ctx, sessionID, choiceID, choice, answers); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"answeredChoice": true,
+	})
+	return true
+}
+
+func (a *App) latestPendingChoiceForSession(sessionID string) (string, model.ChoiceRequest, bool) {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return "", model.ChoiceRequest{}, false
+	}
+	for i := len(session.Cards) - 1; i >= 0; i-- {
+		card := session.Cards[i]
+		if card.Type != "ChoiceCard" || strings.TrimSpace(card.Status) != "pending" {
+			continue
+		}
+		choiceID := firstNonEmptyValue(strings.TrimSpace(card.RequestID), strings.TrimSpace(card.ID))
+		if choiceID == "" {
+			continue
+		}
+		_, choice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
+		if ok && strings.TrimSpace(choice.Status) == "pending" {
+			return choiceID, choice, true
+		}
+	}
+	return "", model.ChoiceRequest{}, false
+}
+
+func buildChoiceAnswersFromText(questions []model.ChoiceQuestion, message string) []choiceAnswerInput {
+	text := strings.TrimSpace(message)
+	if text == "" || len(questions) == 0 {
+		return nil
+	}
+	answers := make([]choiceAnswerInput, 0, len(questions))
+	for _, question := range questions {
+		answer := choiceAnswerInput{Value: text, Label: text, IsOther: true}
+		for _, option := range question.Options {
+			value := strings.TrimSpace(option.Value)
+			label := strings.TrimSpace(option.Label)
+			if strings.EqualFold(text, value) || strings.EqualFold(text, label) {
+				answer = choiceAnswerInput{
+					Value: firstNonEmptyValue(value, label),
+					Label: firstNonEmptyValue(label, value),
+				}
+				break
+			}
+		}
+		answers = append(answers, answer)
+	}
+	return answers
+}
+
+func choiceFollowUpPayload(questions []model.ChoiceQuestion, answers []choiceAnswerInput, codexAnswers []map[string]any) map[string]any {
+	answerSummary := choiceAnswerSummary(questions, answers)
+	payload := map[string]any{
+		"answers":        codexAnswers,
+		"answer_summary": answerSummary,
+		"instruction":    "Use this user clarification to continue. Do not ask the same clarification question again.",
+	}
+	if choiceAnswersRequirePlanMode(answers) {
+		payload["next_required_tool"] = "enter_plan_mode"
+		payload["permission_scope"] = "planning_only"
+		payload["intent"] = "enter_plan_mode_required"
+		payload["instruction"] = "The user explicitly selected a repair or execution-planning path. This authorizes planning only, not mutation. Your next assistant action MUST be a tool call to enter_plan_mode. Do not answer in plain text, do not ask the same intent question again, and do not call orchestrator_dispatch_tasks until exit_plan_mode is approved."
+		return payload
+	}
+	if choiceAnswersRequestReadonly(answers) {
+		payload["next_required_tool"] = "readonly_host_inspect"
+		payload["permission_scope"] = "readonly_only"
+		payload["intent"] = "readonly_requested"
+		payload["instruction"] = "The user selected a readonly diagnosis path. Your next assistant action MUST be a tool call to readonly_host_inspect on the selected host. Continue with readonly inspection only, do not mutate state, do not dispatch workers, and do not ask the same intent question again."
+	}
+	return payload
+}
+
+func choiceAnswersRequirePlanMode(answers []choiceAnswerInput) bool {
+	for _, answer := range answers {
+		if choiceAnswerTextRequiresPlanMode(answer.Value) || choiceAnswerTextRequiresPlanMode(answer.Label) || choiceAnswerTextRequiresPlanMode(answer.Note) {
+			return true
+		}
+	}
+	return false
+}
+
+func choiceAnswerInputsFromModel(answers []model.ChoiceAnswer) []choiceAnswerInput {
+	items := make([]choiceAnswerInput, 0, len(answers))
+	for _, answer := range answers {
+		items = append(items, choiceAnswerInput{
+			Value:   answer.Value,
+			Label:   answer.Label,
+			IsOther: answer.IsOther,
+			Note:    answer.Note,
+		})
+	}
+	return items
+}
+
+func choiceAnswerTextRequiresPlanMode(value string) bool {
+	normalized := normalizeChoiceIntentText(value)
+	if normalized == "" {
+		return false
+	}
+	for _, token := range []string{
+		"repair_plan",
+		"execute_repair",
+		"execution_plan",
+		"proceed_to_plan",
+		"plan_execute",
+		"mutation_plan",
+	} {
+		if strings.Contains(normalized, token) {
+			return true
+		}
+	}
+	for _, phrase := range []string{
+		"准备修复",
+		"执行修复",
+		"开始修复",
+		"修复计划",
+		"正式计划流程",
+		"审批后再执行",
+		"按计划执行",
+		"进入计划模式",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func choiceAnswersRequestReadonly(answers []choiceAnswerInput) bool {
+	for _, answer := range answers {
+		normalized := normalizeChoiceIntentText(firstNonEmptyValue(answer.Value, answer.Label, answer.Note))
+		if strings.Contains(normalized, "readonly") ||
+			strings.Contains(normalized, "read_only") ||
+			strings.Contains(normalized, "只读") {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceMessageNeedsIntentClarification(message string) bool {
+	normalized := normalizeChoiceIntentText(message)
+	if normalized == "" {
+		return false
+	}
+	hasCapabilityPhrase := false
+	for _, phrase := range []string{
+		"有办法",
+		"有没有办法",
+		"能不能",
+		"能否",
+		"可以吗",
+		"会不会",
+		"是否能",
+		"can you",
+		"do you have a way",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(phrase)) {
+			hasCapabilityPhrase = true
+			break
+		}
+	}
+	if !hasCapabilityPhrase {
+		return false
+	}
+	highRiskTopic := false
+	for _, token := range []string{
+		"pg",
+		"postgres",
+		"postgresql",
+		"数据库",
+		"同步",
+		"复制",
+		"replication",
+		"部署",
+		"生产",
+		"恢复",
+		"重启",
+		"修复",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(token)) {
+			highRiskTopic = true
+			break
+		}
+	}
+	if !highRiskTopic {
+		return false
+	}
+	for _, explicit := range []string{
+		"先只读",
+		"只读检查",
+		"只读诊断",
+		"不要修改",
+		"开始诊断",
+		"开始检查",
+		"开始修复",
+		"帮我修复",
+		"直接修复",
+		"制定计划",
+		"生成计划",
+		"先规划",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(explicit)) {
+			return false
+		}
+	}
+	return true
+}
+
+func workspaceIntentClarificationQuestions(message string) []model.ChoiceQuestion {
+	return []model.ChoiceQuestion{{
+		Header:   "确认意图",
+		Question: "可以处理，但数据库同步/修复属于高风险操作。你希望我现在按哪种方式继续？",
+		Options: []model.ChoiceOption{
+			{
+				Label:       "只读诊断",
+				Value:       "readonly",
+				Description: "先检查当前选中主机的 PostgreSQL 同步状态、日志和复制线索，不做任何修改。",
+				Recommended: true,
+			},
+			{
+				Label:       "只问能力",
+				Value:       "answer_only",
+				Description: "只回答是否能处理，不访问主机、不执行命令、不派发任务。",
+			},
+			{
+				Label:       "准备修复",
+				Value:       "repair_plan",
+				Description: "进入正式计划流程，列出风险、回滚和验证，待你审批后再执行任何变更。",
+			},
+		},
+		IsOther: true,
+	}}
+}
+
+func (a *App) requiredToolFollowupAfterTurn(sessionID string) (requiredToolFollowup, bool) {
+	if a == nil || a.sessionKind(sessionID) != model.SessionKindWorkspace {
+		return requiredToolFollowup{}, false
+	}
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return requiredToolFollowup{}, false
+	}
+	cards := session.Cards
+	for i := len(cards) - 1; i >= 0; i-- {
+		card := cards[i]
+		if card.Type == "UserMessageCard" || (card.Type == "MessageCard" && card.Role == "user") {
+			return requiredToolFollowup{}, false
+		}
+		if card.Type != "ChoiceCard" || normalizeCardStatus(card.Status) != "completed" {
+			continue
+		}
+		if getBool(card.Detail, "requiredToolFollowupStarted") {
+			return requiredToolFollowup{}, false
+		}
+		choice, ok := a.store.Choice(sessionID, card.RequestID)
+		if !ok {
+			return requiredToolFollowup{}, false
+		}
+		payload := choiceFollowUpPayload(card.Questions, choiceAnswerInputsFromModel(choice.Answers), choiceAnswerMaps(choice.Answers))
+		requiredTool := strings.TrimSpace(getStringAny(payload, "next_required_tool", "required_next_tool"))
+		if requiredTool == "" {
+			return requiredToolFollowup{}, false
+		}
+		if requiredToolObservedInCards(cards[i+1:], requiredTool) {
+			return requiredToolFollowup{}, false
+		}
+		hostID := defaultHostID(session.SelectedHostID)
+		if hostID == "" {
+			hostID = model.ServerLocalHostID
+		}
+		return requiredToolFollowup{
+			SessionID:    sessionID,
+			ChoiceCardID: card.ID,
+			Tool:         requiredTool,
+			HostID:       hostID,
+			Message:      requiredToolFollowupMessage(requiredTool, hostID, a.latestCompletedUserText(sessionID)),
+		}, true
+	}
+	return requiredToolFollowup{}, false
+}
+
+func requiredToolObservedInCards(cards []model.Card, tool string) bool {
+	tool = strings.TrimSpace(tool)
+	if tool == "" {
+		return false
+	}
+	for _, card := range cards {
+		if strings.TrimSpace(getStringAny(card.Detail, "tool", "toolName", "name")) == tool {
+			return true
+		}
+		switch tool {
+		case "enter_plan_mode":
+			if card.Type == "PlanModeCard" || (card.Type == "NoticeCard" && strings.Contains(card.Title, "计划模式")) {
+				return true
+			}
+		case "exit_plan_mode":
+			if card.Type == "PlanApprovalCard" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requiredToolFollowupMessage(tool, hostID, userMessage string) string {
+	hostID = defaultHostID(hostID)
+	switch strings.TrimSpace(tool) {
+	case "readonly_host_inspect":
+		return strings.TrimSpace(fmt.Sprintf(
+			"Required ReAct continuation after user clarification. The user selected readonly diagnosis for the original request: %q.\nYour next assistant action MUST be a tool call to readonly_host_inspect with host=%s. Do not answer in plain text, do not use built-in commandExecution, do not dispatch workers, and do not mutate state. Use safe read-only commands to inspect PostgreSQL availability, process/port state, service status, and replication clues on the selected host.",
+			userMessage,
+			hostID,
+		))
+	case "enter_plan_mode":
+		return strings.TrimSpace(fmt.Sprintf(
+			"Required ReAct continuation after user clarification. The user selected the repair/planning path for the original request: %q.\nYour next assistant action MUST be a tool call to enter_plan_mode. Do not answer in plain text and do not dispatch workers until exit_plan_mode is approved.",
+			userMessage,
+		))
+	default:
+		return strings.TrimSpace(fmt.Sprintf(
+			"Required ReAct continuation after user clarification for the original request: %q.\nYour next assistant action MUST be a tool call to %s. Do not answer in plain text and do not repeat the same clarification question.",
+			userMessage,
+			strings.TrimSpace(tool),
+		))
+	}
+}
+
+func (a *App) startRequiredToolFollowup(followup requiredToolFollowup) {
+	if a == nil || strings.TrimSpace(followup.SessionID) == "" || strings.TrimSpace(followup.Tool) == "" {
+		return
+	}
+	now := model.NowString()
+	a.store.UpdateCard(followup.SessionID, followup.ChoiceCardID, func(card *model.Card) {
+		if card.Detail == nil {
+			card.Detail = map[string]any{}
+		}
+		card.Detail["requiredToolFollowupStarted"] = true
+		card.Detail["requiredTool"] = followup.Tool
+		card.Detail["requiredToolFollowupAt"] = now
+		card.UpdatedAt = now
+	})
+	a.startRuntimeTurn(followup.SessionID, followup.HostID)
+	a.broadcastSnapshot(followup.SessionID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	var err error
+	if a.useBifrostForSession(followup.SessionID) {
+		err = a.runBifrostTurn(ctx, followup.SessionID, chatRequest{
+			Message: followup.Message,
+			HostID:  followup.HostID,
+		})
+	} else {
+		err = a.runReActAgentLoop(ctx, reActLoopRequest{
+			SessionID:        followup.SessionID,
+			Kind:             reActLoopKindWorkspace,
+			HostID:           followup.HostID,
+			Message:          followup.Message,
+			RequestID:        model.NewID("req"),
+			RequestStartedAt: time.Now(),
+		})
+	}
+	if err != nil {
+		a.finishRuntimeTurn(followup.SessionID, "failed")
+		a.store.UpsertCard(followup.SessionID, model.Card{
+			ID:        model.NewID("error"),
+			Type:      "ErrorCard",
+			Title:     "Required tool follow-up failed",
+			Message:   err.Error(),
+			Text:      err.Error(),
+			Status:    "failed",
+			CreatedAt: model.NowString(),
+			UpdatedAt: model.NowString(),
+		})
+		a.broadcastSnapshot(followup.SessionID)
+	}
+}
+
+func normalizeChoiceIntentText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r', '?', '？', ':', '：', '(', ')', '（', '）', '`', '"', '\'', '“', '”':
+			return -1
+		default:
+			return r
+		}
+	}, value)
 }
 
 type agentProfileResetRequest struct {
@@ -218,20 +658,31 @@ func New(cfg config.Config) *App {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
-		agents:           make(map[string]*agentConnection),
-		wsClients:        make(map[string]map[*websocket.Conn]struct{}),
-		turnCancels:      make(map[string]context.CancelFunc),
-		terminals:        make(map[string]*terminalSession),
-		execs:            make(map[string]*remoteExecSession),
-		fileReqs:         make(map[string]*agentResponseWaiter),
-		fileChangeClaims: make(map[string]struct{}),
-		oauthStates:      make(map[string]string),
-		turnTraces:       make(map[string]*turnTrace),
-		orchestratorJobs: make(map[string]string),
-		broadcastTimers:  make(map[string]*time.Timer),
-		commandRunner:    defaultCommandRunner,
+		agents:            make(map[string]*agentConnection),
+		wsClients:         make(map[string]map[*websocket.Conn]struct{}),
+		turnCancels:       make(map[string]context.CancelFunc),
+		bifrostSessions:   make(map[string]*agentloop.Session),
+		workspaceRuntimes: make(map[string]*agentloop.WorkspaceRuntime),
+		terminals:         make(map[string]*terminalSession),
+		execs:             make(map[string]*remoteExecSession),
+		fileReqs:          make(map[string]*agentResponseWaiter),
+		fileChangeClaims:  make(map[string]struct{}),
+		oauthStates:       make(map[string]string),
+		turnTraces:        make(map[string]*turnTrace),
+		orchestratorJobs:  make(map[string]string),
+		broadcastTimers:   make(map[string]*time.Timer),
+		commandRunner:     defaultCommandRunner,
 	}
-	app.codex = codex.New(cfg.CodexPath, app.handleCodexNotification, app.handleCodexServerRequest)
+	app.toolHandlerRegistry = NewToolHandlerRegistry()
+	app.toolEventBus = NewInProcessToolEventBus()
+	app.toolEventStore = store.NewToolEventStore(256)
+	app.toolEventBus.Subscribe(NewToolEventStoreSubscriber(app.toolEventStore))
+	app.toolEventBus.Subscribe(NewProductProjectionSubscriber(app))
+	app.toolEventBus.Subscribe(NewSnapshotBroadcastSubscriber(app))
+	app.toolApprovalCoordinator = NewToolApprovalCoordinator()
+	app.registerDefaultToolApprovalRules()
+	app.toolDispatcher = newToolDispatcher(app, app.toolHandlerRegistry, app.toolEventBus, app.toolApprovalCoordinator)
+	app.registerDefaultToolHandlers()
 	return app
 }
 
@@ -285,6 +736,19 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	if a.cfg.CorootConfigured() {
 		a.corootClient = coroot.NewClient(a.cfg.CorootBaseURL, a.cfg.CorootToken, a.cfg.CorootTimeout)
+		a.dataSourceRouter = coroot.NewDataSourceRouter(
+			coroot.NewClientProvider(a.corootClient),
+			nil, // fallback provider — will be wired in a later task
+			coroot.ParsePriorityStrategy(a.cfg.CorootPriority),
+		)
+		log.Printf("coroot data source router initialized (strategy=%s)", a.cfg.CorootPriority)
+	}
+	if a.cfg.CorootRCAEnabled && a.cfg.CorootConfigured() {
+		a.rcaEngine = coroot.NewCorootRCAEngine(a.corootClient)
+		log.Printf("coroot RCA engine initialized (live)")
+	} else {
+		a.rcaEngine = coroot.NewStubRCAEngine()
+		log.Printf("coroot RCA engine initialized (stub)")
 	}
 	a.store.UpsertHost(model.Host{
 		ID:              model.ServerLocalHostID,
@@ -311,8 +775,8 @@ func (a *App) Start(ctx context.Context) error {
 	if grpcAddrExposed(a.cfg.GRPCAddr) && (strings.TrimSpace(a.cfg.GRPCTLSCertFile) == "" || strings.TrimSpace(a.cfg.GRPCTLSKeyFile) == "") {
 		log.Printf("warning: grpc agent endpoint %s is exposed without TLS; prefer AIOPS_GRPC_TLS_CERT_FILE/AIOPS_GRPC_TLS_KEY_FILE or keep it behind VPN only", a.cfg.GRPCAddr)
 	}
-
-	if err := a.codex.Start(ctx); err != nil {
+	a.loadLLMConfig()
+	if err := a.initBifrostRuntime(); err != nil {
 		return err
 	}
 	a.reconcileOrchestratorRecoveredWorkers()
@@ -332,6 +796,8 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/agent-skills/", a.withSession(a.handleAgentSkillByID))
 	httpMux.HandleFunc("/api/v1/agent-mcps", a.withSession(a.handleAgentMCPs))
 	httpMux.HandleFunc("/api/v1/agent-mcps/", a.withSession(a.handleAgentMCPByID))
+	httpMux.HandleFunc("/api/v1/mcp/servers", a.withSession(a.handleMCPServers))
+	httpMux.HandleFunc("/api/v1/mcp/servers/", a.withSession(a.handleMCPServerByName))
 	httpMux.HandleFunc("/api/v1/agent-profile", a.withSession(a.handleAgentProfile))
 	httpMux.HandleFunc("/api/v1/agent-profile/reset", a.withSession(a.handleAgentProfileReset))
 	httpMux.HandleFunc("/api/v1/agent-profile/preview", a.withSession(a.handleAgentProfilePreview))
@@ -358,7 +824,12 @@ func (a *App) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/api/v1/script-configs/", a.withSession(a.handleScriptConfigByID))
 	httpMux.HandleFunc("/api/v1/lab-environments", a.withSession(a.handleLabEnvironments))
 	httpMux.HandleFunc("/api/v1/lab-environments/", a.withSession(a.handleLabEnvironmentByID))
+	a.registerEvidenceRoutes(httpMux)
 	httpMux.HandleFunc("/api/v1/generator/", a.withSession(a.handleGenerator))
+	httpMux.HandleFunc("/api/v1/llm-config", a.withSession(a.handleLLMConfig))
+	httpMux.HandleFunc("/api/v1/coroot/config", a.withSession(a.handleCorootConfig))
+	httpMux.HandleFunc("/api/v1/coroot/rca/", a.withSession(a.handleCorootRCA))
+	httpMux.HandleFunc("/api/v1/coroot/hosts/", a.withSession(a.handleCorootHostOverview))
 	httpMux.HandleFunc("/api/v1/coroot/", a.withSession(a.handleCorootProxy))
 	httpMux.HandleFunc("/api/v1/choices/", a.withSession(a.handleChoiceAnswer))
 	httpMux.HandleFunc("/api/v1/terminal/sessions", a.withSession(a.handleTerminalCreate))
@@ -414,6 +885,9 @@ func (a *App) Run(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		a.stopAllTerminals(shutdownCtx)
+		if a.mcpManager != nil {
+			a.mcpManager.DisconnectAll()
+		}
 		_ = a.httpServer.Shutdown(shutdownCtx)
 		a.grpcServer.GracefulStop()
 		return ctx.Err()
@@ -724,13 +1198,13 @@ func agentPeerRemoteAddress(ctx context.Context) string {
 
 func (a *App) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	status := http.StatusOK
-	if !a.codex.Alive() {
+	if !a.useBifrost() {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, map[string]any{
 		"ok":            status == http.StatusOK,
-		"codexAlive":    a.codex.Alive(),
-		"codexLastExit": a.codex.LastExitError(),
+		"codexAlive":    a.useBifrost(),
+		"codexLastExit": "",
 	})
 }
 
@@ -995,6 +1469,7 @@ func (a *App) handleThreadReset(w http.ResponseWriter, r *http.Request, sessionI
 	}
 
 	a.store.ResetConversation(sessionID)
+	a.clearBifrostSession(sessionID)
 	a.audit("thread.reset", map[string]any{
 		"sessionId": sessionID,
 	})
@@ -1014,31 +1489,13 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
 	switch req.Mode {
 	case "apiKey":
 		if req.APIKey == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "apiKey is required"})
 			return
 		}
-		var result map[string]any
 		log.Printf("auth login session=%s mode=apiKey", sessionID)
-		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
-			"type":   "apiKey",
-			"apiKey": req.APIKey,
-		}, &result); err != nil {
-			a.audit("auth.login_failed", map[string]any{
-				"sessionId": sessionID,
-				"mode":      req.Mode,
-				"error":     err.Error(),
-			})
-			a.store.SetAuth(sessionID, model.AuthState{LastError: err.Error()}, model.ExternalAuthTokens{})
-			a.broadcastAllSnapshots()
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-			return
-		}
 		a.store.SetAuth(sessionID, model.AuthState{
 			Connected: true,
 			Mode:      "apikey",
@@ -1051,33 +1508,20 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 		a.broadcastAllSnapshots()
 		writeJSON(w, http.StatusOK, loginResponse{})
 	case "chatgpt":
-		var result struct {
-			Type    string `json:"type"`
-			AuthURL string `json:"authUrl"`
-			LoginID string `json:"loginId"`
-		}
-		log.Printf("auth login session=%s mode=chatgpt", sessionID)
-		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
-			"type": "chatgpt",
-		}, &result); err != nil {
-			a.audit("auth.login_failed", map[string]any{
-				"sessionId": sessionID,
-				"mode":      req.Mode,
-				"error":     err.Error(),
-			})
-			a.store.SetAuth(sessionID, model.AuthState{LastError: err.Error()}, model.ExternalAuthTokens{})
-			a.broadcastAllSnapshots()
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		if !a.cfg.OAuthConfigured() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "oauth is not configured"})
 			return
 		}
-		a.store.SetPendingLogin(sessionID, result.LoginID)
+		loginID := model.NewID("login")
+		log.Printf("auth login session=%s mode=chatgpt", sessionID)
+		a.store.SetPendingLogin(sessionID, loginID)
 		a.audit("auth.login_started", map[string]any{
 			"sessionId": sessionID,
 			"mode":      req.Mode,
-			"loginId":   result.LoginID,
+			"loginId":   loginID,
 		})
 		a.broadcastAllSnapshots()
-		writeJSON(w, http.StatusOK, loginResponse{AuthURL: result.AuthURL})
+		writeJSON(w, http.StatusOK, loginResponse{AuthURL: a.cfg.OAuthAuthURL})
 	case "chatgptAuthTokens":
 		accountID := req.ChatGPTAccountID
 		if accountID == "" {
@@ -1091,24 +1535,7 @@ func (a *App) handleAuthLogin(w http.ResponseWriter, r *http.Request, sessionID 
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "accessToken and chatgptAccountId are required"})
 			return
 		}
-		var result map[string]any
 		log.Printf("auth login session=%s mode=chatgptAuthTokens", sessionID)
-		if err := a.codexRequest(ctx, "account/login/start", map[string]any{
-			"type":             "chatgptAuthTokens",
-			"accessToken":      req.AccessToken,
-			"chatgptAccountId": accountID,
-			"chatgptPlanType":  emptyToNil(planType),
-		}, &result); err != nil {
-			a.audit("auth.login_failed", map[string]any{
-				"sessionId": sessionID,
-				"mode":      req.Mode,
-				"error":     err.Error(),
-			})
-			a.store.SetAuth(sessionID, model.AuthState{LastError: err.Error()}, model.ExternalAuthTokens{})
-			a.broadcastAllSnapshots()
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-			return
-		}
 		a.store.SetAuth(sessionID, model.AuthState{
 			Connected: true,
 			Mode:      "chatgptAuthTokens",
@@ -1137,10 +1564,6 @@ func (a *App) handleAuthLogout(w http.ResponseWriter, r *http.Request, sessionID
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	var result map[string]any
-	_ = a.codexRequest(ctx, "account/logout", map[string]any{}, &result)
 	log.Printf("auth logout session=%s", sessionID)
 	a.audit("auth.logout", map[string]any{
 		"sessionId": sessionID,
@@ -1219,22 +1642,6 @@ func (a *App) handleOAuthCallback(w http.ResponseWriter, r *http.Request, sessio
 		email = a.fetchOAuthEmail(r.Context(), tokenResp.AccessToken)
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	var result map[string]any
-	err = a.codexRequest(ctx, "account/login/start", map[string]any{
-		"type":             "chatgptAuthTokens",
-		"accessToken":      tokenResp.AccessToken,
-		"chatgptAccountId": a.cfg.OAuthAccountID,
-		"chatgptPlanType":  emptyToNil(a.cfg.OAuthPlanType),
-	}, &result)
-	if err != nil {
-		a.store.SetAuth(sessionID, model.AuthState{LastError: err.Error()}, model.ExternalAuthTokens{})
-		a.broadcastAllSnapshots()
-		http.Redirect(w, r, a.cfg.FrontendRedirectURL+"?login=codex_login_failed", http.StatusFound)
-		return
-	}
-
 	a.store.SetAuth(sessionID, model.AuthState{
 		Connected: true,
 		Mode:      "chatgptAuthTokens",
@@ -1270,10 +1677,17 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		req.HostID = model.ServerLocalHostID
 	}
 
+	if !a.useBifrostForSession(sessionID) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Bifrost runtime is not initialized"})
+		return
+	}
 	a.syncAccountState(r.Context(), sessionID)
 	auth := a.store.Auth(sessionID)
 	if !auth.Connected {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录 GPT 账号"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "LLM 未连接，请先在设置中配置 API Key"})
+		return
+	}
+	if a.answerPendingChoiceFromChatMessage(w, r, sessionID, req.Message) {
 		return
 	}
 	requestStartedAt := time.Now()
@@ -1294,13 +1708,14 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		return
 	}
 	if !host.Executable {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "选中的主机暂不支持 Codex 执行"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "选中的主机暂不支持执行"})
 		return
 	}
 
 	session := a.store.EnsureSession(sessionID)
 	previousHostID := defaultHostID(session.SelectedHostID)
-	if previousHostID != req.HostID && session.ThreadID != "" {
+	hasRuntimeBinding := session.ThreadID != "" || a.hasBifrostSession(sessionID)
+	if previousHostID != req.HostID && hasRuntimeBinding {
 		a.clearSessionThreadBinding(sessionID)
 		a.appendHostSwitchCard(sessionID, previousHostID, req.HostID)
 		session.ThreadID = ""
@@ -1321,7 +1736,6 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 		a.appendAutoThreadRefreshCard(sessionID)
 		session.ThreadID = ""
 	}
-	a.clearTransientCodexReconnectNotice(sessionID)
 	a.store.TouchSession(sessionID)
 	a.store.SetSelectedHost(sessionID, req.HostID)
 	requestID := a.beginTurnTraceRequest(sessionID, req.HostID)
@@ -1352,14 +1766,14 @@ func (a *App) handleChatMessage(w http.ResponseWriter, r *http.Request, sessionI
 	a.startRuntimeTurn(sessionID, req.HostID)
 	a.broadcastSnapshot(sessionID)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	a.setTurnCancel(sessionID, cancel)
 	defer func() {
 		a.clearTurnCancel(sessionID)
 		cancel()
 	}()
 
-	err := a.startTurn(ctx, sessionID, req)
+	err := a.runBifrostTurn(ctx, sessionID, req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) && a.turnWasInterrupted(sessionID) {
 			log.Printf(
@@ -1466,72 +1880,17 @@ func (a *App) handleChatStop(w http.ResponseWriter, r *http.Request, sessionID s
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "当前没有可中断的任务"})
 		return
 	}
-
-	threadID := session.ThreadID
-	turnID := session.TurnID
-	cancelledPending := a.cancelTurnStart(sessionID)
-
-	if threadID == "" && !cancelledPending {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "当前任务尚未进入可中断状态"})
+	if err := a.interruptSessionTurn(r.Context(), sessionID); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-
-	if threadID != "" {
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		params := map[string]any{
-			"threadId":                   threadID,
-			"clean_background_terminals": true,
-		}
-		if turnID != "" {
-			params["turnId"] = turnID
-		}
-		var result map[string]any
-		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil && !cancelledPending {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-			return
-		}
-	}
-
-	a.cleanBackgroundTerminals(threadID)
-	a.markTurnInterrupted(sessionID, turnID)
 	a.audit("chat.stop", map[string]any{
 		"sessionId": sessionID,
-		"threadId":  threadID,
-		"turnId":    turnID,
+		"threadId":  session.ThreadID,
+		"turnId":    session.TurnID,
 	})
 	a.broadcastSnapshot(sessionID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (a *App) startTurn(ctx context.Context, sessionID string, req chatRequest) error {
-	threadID, err := a.ensureThread(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-
-	err = a.requestTurn(ctx, sessionID, threadID, req)
-	if err == nil {
-		return nil
-	}
-	if !isThreadNotFoundError(err) {
-		return err
-	}
-
-	log.Printf("stale codex thread detected session=%s thread=%s err=%s", sessionID, threadID, truncate(err.Error(), 200))
-	a.store.ClearThread(sessionID)
-	a.appendThreadResetCard(sessionID)
-	a.broadcastSnapshot(sessionID)
-
-	threadID, err = a.ensureThread(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	return a.requestTurn(ctx, sessionID, threadID, req)
-}
-
-func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req chatRequest) error {
-	return a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildSingleHostTurnStartSpec(ctx, req))
 }
 
 func (a *App) appendThreadResetCard(sessionID string) {
@@ -1576,6 +1935,7 @@ func (a *App) appendHostSwitchCard(sessionID, fromHostID, toHostID string) {
 func (a *App) clearSessionThreadBinding(sessionID string) {
 	a.store.ClearThread(sessionID)
 	a.store.ClearTurn(sessionID)
+	a.clearBifrostSession(sessionID)
 }
 
 func (a *App) knownHost(hostID string) (model.Host, bool) {
@@ -1710,6 +2070,17 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 	if decision == "accept_session" {
 		a.store.AddApprovalGrant(targetSessionID, approvalGrantFromApproval(approval))
 	}
+	if strings.HasPrefix(strings.TrimSpace(approval.Type), "bifrost_") {
+		if err := a.resolveBifrostApproval(targetSessionID, approval, decision); err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		if sessionID != targetSessionID {
+			a.resolveMirroredApprovalCard(sessionID, approval, approvalStatusFromDecision(decision))
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
 	if approval.Type == "remote_command" || approval.Type == "remote_file_change" {
 		if approval.Type == "remote_file_change" && approval.Status != "pending" {
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -1723,22 +2094,26 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		}
 		now := model.NowString()
 		cardStatus := approvalStatusFromDecision(decision)
-		a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
 		approval.Status = cardStatus
 		approval.ResolvedAt = now
-		a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
-		if sessionID != targetSessionID {
-			a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
-		}
 
 		if decision == "decline" {
-			a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
-				card.Status = cardStatus
-				card.UpdatedAt = now
-			})
+			memoCard := approvalMemoCard(a.findHost(approval.HostID), approval, decision, now)
+			emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, approvalEventToolName(approval.Type), "thinking", approval, memoCard)
+			if !emitted {
+				a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
+				a.store.UpsertCard(targetSessionID, memoCard)
+				a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
+					card.Status = cardStatus
+					card.UpdatedAt = now
+				})
+			}
+			if sessionID != targetSessionID {
+				a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
+			}
 			a.setRuntimeTurnPhase(targetSessionID, "thinking")
-			if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-				_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
+			if !emitted {
+				a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, "thinking")
 			}
 			a.recordOrchestratorApprovalResolved(targetSessionID, approval)
 			a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
@@ -1754,8 +2129,14 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		}
 
 		createdAt := now
-		if existing := a.cardByID(sessionID, approval.ItemID); existing != nil && existing.CreatedAt != "" {
-			createdAt = existing.CreatedAt
+		detail := a.approvalCardDetail(targetSessionID, approval, nil)
+		if existing := a.cardByID(targetSessionID, approval.ItemID); existing != nil {
+			if existing.CreatedAt != "" {
+				createdAt = existing.CreatedAt
+			}
+			if len(existing.Detail) > 0 {
+				detail = cloneAnyMap(existing.Detail)
+			}
 		}
 		if approval.Type == "remote_file_change" {
 			card := model.Card{
@@ -1764,11 +2145,20 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				Title:     "Remote file change",
 				Status:    "inProgress",
 				Changes:   approval.Changes,
+				Detail:    detail,
 				CreatedAt: createdAt,
 				UpdatedAt: now,
 			}
 			applyCardHost(&card, a.findHost(approval.HostID))
-			a.store.UpsertCard(targetSessionID, card)
+			emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, approvalEventToolName(approval.Type), "executing", approval, card)
+			if !emitted {
+				a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
+				a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
+				a.store.UpsertCard(targetSessionID, card)
+			}
+			if !emitted {
+				a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, "executing")
+			}
 		} else {
 			card := model.Card{
 				ID:        approval.ItemID,
@@ -1777,16 +2167,25 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 				Command:   approval.Command,
 				Cwd:       approval.Cwd,
 				Status:    "inProgress",
+				Detail:    detail,
 				CreatedAt: createdAt,
 				UpdatedAt: now,
 			}
 			applyCardHost(&card, a.findHost(approval.HostID))
-			a.store.UpsertCard(targetSessionID, card)
+			emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, approvalEventToolName(approval.Type), "executing", approval, card)
+			if !emitted {
+				a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, now)
+				a.store.UpsertCard(targetSessionID, approvalMemoCard(a.findHost(approval.HostID), approval, decision, now))
+				a.store.UpsertCard(targetSessionID, card)
+			}
+			if !emitted {
+				a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, "executing")
+			}
+		}
+		if sessionID != targetSessionID {
+			a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
 		}
 		a.setRuntimeTurnPhase(targetSessionID, "executing")
-		if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-			_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "executing")
-		}
 		a.recordOrchestratorApprovalResolved(targetSessionID, approval)
 		a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, now, nil)
 		a.broadcastSnapshot(targetSessionID)
@@ -1795,13 +2194,56 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	if strings.TrimSpace(approval.RequestIDRaw) == "" {
+		cardStatus := approvalStatusFromDecision(decision)
+		resolvedAt := model.NowString()
+		approval.Status = cardStatus
+		approval.ResolvedAt = resolvedAt
+
+		nextPhase := "thinking"
+		if a.hasPendingApprovalsExcluding(targetSessionID, approvalID) {
+			nextPhase = "waiting_approval"
+		} else if approval.Type == "plan_exit" && decision == "decline" {
+			nextPhase = "planning"
+		} else if decision == "accept" || decision == "accept_session" {
+			nextPhase = "executing"
+		}
+		a.setRuntimeTurnPhase(targetSessionID, nextPhase)
+		if approval.Type == "plan_exit" && (decision == "accept" || decision == "accept_session") {
+			a.store.UpdateRuntime(targetSessionID, func(rt *model.RuntimeState) {
+				rt.PlanMode = false
+			})
+		}
+		resolutionCard := a.approvalResolutionProjectionCard(targetSessionID, approval, cardStatus, resolvedAt)
+		emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, a.approvalResolvedToolName(targetSessionID, approval), nextPhase, approval, resolutionCard)
+		if !emitted {
+			a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
+			a.store.UpsertCard(targetSessionID, resolutionCard)
+		}
+		if !emitted {
+			a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, nextPhase)
+		}
+		a.recordOrchestratorApprovalResolved(targetSessionID, approval)
+		a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, resolvedAt, nil)
+		a.broadcastSnapshot(targetSessionID)
+		if sessionID != targetSessionID {
+			a.resolveMirroredApprovalCard(sessionID, approval, cardStatus)
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+
 	codexDecision := mapApprovalDecision(decision, approval)
+	codexResponse := map[string]any{
+		"decision": codexDecision,
+	}
+	if approval.Type == "plan_exit" {
+		codexResponse = planExitApprovalToolResponse(approval, decision, codexDecision)
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	err := a.respondCodex(ctx, approval.RequestIDRaw, map[string]any{
-		"decision": codexDecision,
-	})
+	err := a.respondCodex(ctx, approval.RequestIDRaw, codexResponse)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -1809,31 +2251,77 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, ses
 
 	cardStatus := approvalStatusFromDecision(decision)
 	resolvedAt := model.NowString()
-	a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
 	approval.Status = cardStatus
 	approval.ResolvedAt = resolvedAt
 	nextPhase := "thinking"
-	if a.hasPendingApprovals(targetSessionID) {
+	if a.hasPendingApprovalsExcluding(targetSessionID, approvalID) {
 		nextPhase = "waiting_approval"
+	} else if approval.Type == "plan_exit" && codexDecision == "decline" {
+		nextPhase = "planning"
 	} else if decision == "accept" || decision == "accept_session" {
 		nextPhase = "executing"
 	}
 	a.setRuntimeTurnPhase(targetSessionID, nextPhase)
-	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, nextPhase)
+	if approval.Type == "plan_exit" && (decision == "accept" || decision == "accept_session") {
+		a.store.UpdateRuntime(targetSessionID, func(rt *model.RuntimeState) {
+			rt.PlanMode = false
+		})
 	}
 	a.recordOrchestratorApprovalResolved(targetSessionID, approval)
 	a.auditApprovalLifecycleEvent("approval.decision", targetSessionID, approval, decision, cardStatus, approval.RequestedAt, model.NowString(), nil)
 	if approval.Type == "command" {
-		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
-			card.Status = cardStatus
-			card.UpdatedAt = model.NowString()
-		})
+		resolutionCard := model.Card{
+			ID:        approval.ItemID,
+			Type:      "CommandApprovalCard",
+			Title:     "Command approval required",
+			Command:   approval.Command,
+			Cwd:       approval.Cwd,
+			Text:      approval.Reason,
+			Status:    cardStatus,
+			Detail:    a.approvalCardDetail(targetSessionID, approval, nil),
+			CreatedAt: approval.RequestedAt,
+			UpdatedAt: resolvedAt,
+		}
+		applyCardHost(&resolutionCard, a.findHost(approval.HostID))
+		if existing := a.cardByID(targetSessionID, approval.ItemID); existing != nil {
+			if existing.Type != "" {
+				resolutionCard.Type = existing.Type
+			}
+			if existing.Title != "" {
+				resolutionCard.Title = existing.Title
+			}
+			if existing.Text != "" {
+				resolutionCard.Text = existing.Text
+			}
+			if existing.Command != "" {
+				resolutionCard.Command = existing.Command
+			}
+			if existing.Cwd != "" {
+				resolutionCard.Cwd = existing.Cwd
+			}
+			if existing.CreatedAt != "" {
+				resolutionCard.CreatedAt = existing.CreatedAt
+			}
+			if len(existing.Detail) > 0 {
+				resolutionCard.Detail = cloneAnyMap(existing.Detail)
+			}
+		}
+		emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, "execute_command", nextPhase, approval, resolutionCard)
+		if !emitted {
+			a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
+			a.store.UpsertCard(targetSessionID, resolutionCard)
+		}
+		if !emitted {
+			a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, nextPhase)
+		}
 	} else {
-		a.store.UpdateCard(targetSessionID, approval.ItemID, func(card *model.Card) {
-			card.Status = cardStatus
-			card.UpdatedAt = model.NowString()
-		})
+		resolutionCard := a.approvalResolutionProjectionCard(targetSessionID, approval, cardStatus, resolvedAt)
+		emitted := a.emitApprovalResolvedEvent(context.Background(), targetSessionID, a.approvalResolvedToolName(targetSessionID, approval), nextPhase, approval, resolutionCard)
+		if !emitted {
+			a.store.ResolveApproval(targetSessionID, approvalID, cardStatus, resolvedAt)
+			a.store.UpsertCard(targetSessionID, resolutionCard)
+			a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, nextPhase)
+		}
 	}
 	a.broadcastSnapshot(targetSessionID)
 	if sessionID != targetSessionID {
@@ -1850,7 +2338,7 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 
 	choiceID := strings.TrimPrefix(r.URL.Path, "/api/v1/choices/")
 	choiceID = strings.TrimSuffix(choiceID, "/answer")
-	targetSessionID, choice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
+	_, choice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "choice not found"})
 		return
@@ -1870,7 +2358,6 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 		return
 	}
 
-	codexAnswers := make([]map[string]any, 0, len(req.Answers))
 	for _, answer := range req.Answers {
 		value := strings.TrimSpace(answer.Value)
 		if value == "" {
@@ -1879,6 +2366,28 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 		if value == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "all answers must be non-empty"})
 			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := a.submitChoiceAnswer(ctx, sessionID, choiceID, choice, req.Answers); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *App) submitChoiceAnswer(ctx context.Context, sessionID, choiceID string, choice model.ChoiceRequest, answers []choiceAnswerInput) error {
+	codexAnswers := make([]map[string]any, 0, len(answers))
+	for _, answer := range answers {
+		value := strings.TrimSpace(answer.Value)
+		if value == "" {
+			value = strings.TrimSpace(answer.Label)
+		}
+		if value == "" {
+			return errors.New("all answers must be non-empty")
 		}
 		codexAnswer := map[string]any{
 			"value": value,
@@ -1890,37 +2399,214 @@ func (a *App) handleChoiceAnswer(w http.ResponseWriter, r *http.Request, session
 		codexAnswers = append(codexAnswers, codexAnswer)
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	if err := a.respondCodex(ctx, choice.RequestIDRaw, map[string]any{
-		"answers": codexAnswers,
-	}); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
+	targetSessionID, resolvedChoice, ok := a.resolveChoiceTargetSession(sessionID, choiceID)
+	if !ok {
+		return errors.New("choice not found")
+	}
+	if strings.TrimSpace(resolvedChoice.ID) != "" {
+		choice = resolvedChoice
+	}
+	followUpPayload := choiceFollowUpPayload(choice.Questions, answers, codexAnswers)
+	hasCodexRequest := strings.TrimSpace(choice.RequestIDRaw) != ""
+	if hasCodexRequest {
+		if err := a.respondCodex(ctx, choice.RequestIDRaw, structuredToolResponse(followUpPayload, true)); err != nil {
+			return err
+		}
 	}
 
 	now := model.NowString()
-	a.store.ResolveChoice(targetSessionID, choiceID, "completed", now)
+	modelAnswers := choiceAnswersToModel(answers)
+	a.store.ResolveChoiceWithAnswers(targetSessionID, choiceID, "completed", now, modelAnswers)
 	a.store.UpdateCard(targetSessionID, choice.ItemID, func(card *model.Card) {
 		card.Status = "completed"
-		card.AnswerSummary = choiceAnswerSummary(choice.Questions, req.Answers)
+		card.AnswerSummary = choiceAnswerSummary(choice.Questions, answers)
 		card.UpdatedAt = now
 	})
 	a.setRuntimeTurnPhase(targetSessionID, "thinking")
-	if a.orchestrator != nil && a.sessionKind(targetSessionID) == model.SessionKindWorker {
-		_ = a.orchestrator.SyncWorkerPhase(targetSessionID, "thinking")
+	choiceState := choice
+	choiceState.Status = "completed"
+	choiceState.Answers = modelAnswers
+	choiceState.ResolvedAt = now
+	resolutionCard := a.cardByID(targetSessionID, choice.ItemID)
+	if resolutionCard == nil {
+		resolutionCard = &model.Card{
+			ID:            choice.ItemID,
+			Type:          "ChoiceCard",
+			Title:         choiceCardTitle(choice.Questions),
+			RequestID:     choice.ID,
+			Question:      firstChoiceQuestionText(choice.Questions),
+			Questions:     append([]model.ChoiceQuestion(nil), choice.Questions...),
+			AnswerSummary: choiceAnswerSummary(choice.Questions, answers),
+			Status:        "completed",
+			CreatedAt:     firstNonEmptyValue(choice.RequestedAt, now),
+			UpdatedAt:     now,
+		}
+		if len(resolutionCard.Questions) > 0 {
+			resolutionCard.Options = append([]model.ChoiceOption(nil), resolutionCard.Questions[0].Options...)
+		}
 	}
-	a.recordOrchestratorChoiceResolved(targetSessionID, choice, req.Answers)
+	emitted := a.emitChoiceResolvedEvent(ctx, targetSessionID, "thinking", choiceState, *resolutionCard)
+	if !emitted {
+		a.syncWorkerPhaseAndRefreshWorkspace(targetSessionID, "thinking")
+		a.recordOrchestratorChoiceResolved(targetSessionID, choiceState, answers)
+	}
 	a.audit("choice.answer", map[string]any{
 		"sessionId": targetSessionID,
 		"choiceId":  choiceID,
-		"answers":   len(req.Answers),
+		"answers":   len(answers),
 	})
 	a.broadcastSnapshot(targetSessionID)
-	if sessionID != targetSessionID {
-		a.resolveMirroredChoiceCard(sessionID, choiceID, req.Answers, choice.Questions)
+	if sessionID != targetSessionID && !emitted {
+		a.resolveMirroredChoiceCard(sessionID, choiceID, answers, choice.Questions)
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	if !hasCodexRequest {
+		a.continuePlatformChoiceAnswer(targetSessionID, choice.ItemID, followUpPayload)
+	}
+	return nil
+}
+
+func (a *App) continuePlatformChoiceAnswer(sessionID, choiceCardID string, payload map[string]any) {
+	hostID := model.ServerLocalHostID
+	if session := a.store.Session(sessionID); session != nil {
+		hostID = defaultHostID(session.SelectedHostID)
+	}
+	nextTool := strings.TrimSpace(getStringAny(payload, "next_required_tool", "required_next_tool"))
+	if nextTool == "" && choicePayloadRequestsAnswerOnly(payload) {
+		a.completePlatformAnswerOnlyChoice(sessionID, payload)
+		return
+	}
+	message := ""
+	if nextTool != "" {
+		message = requiredToolFollowupMessage(nextTool, hostID, a.latestCompletedUserText(sessionID))
+	} else {
+		message = fmt.Sprintf(
+			"The user clarified the original workspace request with this answer summary: %v.\nContinue accordingly. If the user only asked for capability or a solution outline, answer directly and do not inspect hosts, dispatch workers, or mutate state.",
+			payload["answer_summary"],
+		)
+	}
+	go a.startRequiredToolFollowup(requiredToolFollowup{
+		SessionID:    sessionID,
+		ChoiceCardID: choiceCardID,
+		Tool:         firstNonEmptyValue(nextTool, "answer_only"),
+		HostID:       hostID,
+		Message:      message,
+	})
+}
+
+func choicePayloadRequestsAnswerOnly(payload map[string]any) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	switch answers := payload["answers"].(type) {
+	case []map[string]any:
+		for _, answer := range answers {
+			if choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(answer["value"])) ||
+				choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(answer["label"])) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range answers {
+			answer, _ := item.(map[string]any)
+			if choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(answer["value"])) ||
+				choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(answer["label"])) {
+				return true
+			}
+		}
+	}
+	switch summary := payload["answer_summary"].(type) {
+	case []string:
+		for _, item := range summary {
+			if choiceAnswerTextRequestsAnswerOnly(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range summary {
+			if choiceAnswerTextRequestsAnswerOnly(fmt.Sprint(item)) {
+				return true
+			}
+		}
+	case string:
+		return choiceAnswerTextRequestsAnswerOnly(summary)
+	}
+	return false
+}
+
+func choiceAnswerTextRequestsAnswerOnly(value string) bool {
+	normalized := normalizeChoiceIntentText(value)
+	if normalized == "" {
+		return false
+	}
+	for _, blocked := range []string{
+		"readonly",
+		"read_only",
+		"repair_plan",
+		"execute_repair",
+		"只读",
+		"诊断",
+		"修复计划",
+		"准备修复",
+		"执行修复",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(blocked)) {
+			return false
+		}
+	}
+	for _, token := range []string{
+		"answer_only",
+		"capability",
+		"plan_only",
+		"只问能力",
+		"只给方案",
+		"只回答",
+		"不访问主机",
+		"不执行命令",
+	} {
+		if strings.Contains(normalized, normalizeChoiceIntentText(token)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) completePlatformAnswerOnlyChoice(sessionID string, payload map[string]any) {
+	now := model.NowString()
+	text := "可以处理。PG 不同步这类问题通常可以先用只读诊断确认是物理复制延迟、逻辑复制 slot、WAL 保留、网络/权限还是应用层同步失败，再在你明确授权后进入计划和执行流程。\n\n当前我只回答能力边界：不会访问主机、不会执行命令、不会派发 worker，也不会修改任何状态。"
+	if summary := choicePayloadAnswerSummaryText(payload); summary != "" {
+		text += "\n\n你的选择：" + summary
+	}
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("msg"),
+		Type:      "AssistantMessageCard",
+		Role:      "assistant",
+		Text:      text,
+		Status:    "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.finishRuntimeTurn(sessionID, "completed")
+	a.recordOrchestratorReply(sessionID)
+	a.broadcastSnapshot(sessionID)
+}
+
+func choicePayloadAnswerSummaryText(payload map[string]any) string {
+	switch summary := payload["answer_summary"].(type) {
+	case []string:
+		return strings.Join(summary, "；")
+	case []any:
+		items := make([]string, 0, len(summary))
+		for _, item := range summary {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				items = append(items, text)
+			}
+		}
+		return strings.Join(items, "；")
+	case string:
+		return strings.TrimSpace(summary)
+	default:
+		return ""
+	}
 }
 
 func (a *App) handleWS(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -1988,574 +2674,239 @@ func (a *App) claimRemoteFileChangeExecution(sessionID string, approvalID string
 	return true
 }
 
-func (a *App) handleCodexNotification(method string, params json.RawMessage) {
-	var payload map[string]any
-	_ = json.Unmarshal(params, &payload)
-	if method != "error" {
-		if sessionID := a.sessionIDFromPayload(payload); sessionID != "" {
-			a.clearTransientCodexReconnectNotice(sessionID)
-		}
+func (a *App) applyTurnPlanUpdated(payload map[string]any) {
+	sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
+	if sessionID == "" {
+		return
 	}
-
-	switch method {
-	case "account/updated":
-		authMode := getString(payload, "authMode")
-		planType := getString(payload, "planType")
-		log.Printf("codex notification method=%s authMode=%q planType=%q", method, authMode, planType)
-		for _, sessionID := range a.store.SessionIDs() {
-			a.store.UpdateAuth(sessionID, func(auth *model.AuthState, _ *model.ExternalAuthTokens) {
-				auth.Connected = true
-				auth.Pending = false
-				auth.Mode = authMode
-				auth.PlanType = planType
-				auth.LastError = ""
-			})
-			a.broadcastSnapshot(sessionID)
-		}
-	case "account/login/completed":
-		loginID := getString(payload, "loginId")
-		success := getBool(payload, "success")
-		log.Printf("codex notification method=%s loginId=%q success=%t error=%q", method, loginID, success, getString(payload, "error"))
-		sessionID := a.store.SessionIDByLogin(loginID)
-		targetSessionIDs := make([]string, 0, 1)
-		if sessionID != "" {
-			targetSessionIDs = append(targetSessionIDs, sessionID)
-		} else {
-			targetSessionIDs = append(targetSessionIDs, a.store.PendingSessionIDs()...)
-			if len(targetSessionIDs) == 0 {
-				log.Printf("codex login completion ignored because no session matched loginId=%q", loginID)
-				break
-			}
-		}
-
-		for _, targetSessionID := range targetSessionIDs {
-			a.store.UpdateAuth(targetSessionID, func(auth *model.AuthState, _ *model.ExternalAuthTokens) {
-				auth.Pending = false
-				if success {
-					auth.Connected = true
-					if auth.Mode == "" {
-						auth.Mode = "chatgpt"
-					}
-					auth.LastError = ""
-					return
-				}
-				auth.Connected = false
-				auth.LastError = getString(payload, "error")
-			})
-			a.broadcastSnapshot(targetSessionID)
-		}
-	case "turn/started":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		if a.shouldIgnoreTurnPayload(sessionID, payload) {
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		a.markTurnTraceTurnStarted(sessionID, getStringAny(payload, "threadId", "thread_id"), getTurnID(payload))
-	case "turn/plan/updated":
-		sessionID := a.store.SessionIDByThread(getString(payload, "threadId"))
-		if sessionID == "" {
-			return
-		}
-		if a.shouldIgnoreTurnPayload(sessionID, payload) {
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		if a.isWorkspaceDirectThread(sessionID) {
-			return
-		}
-		a.setRuntimeTurnPhase(sessionID, "planning")
-		cardID := "plan-" + getString(payload, "turnId")
-		planItems := toPlanItems(payload["plan"])
-		card := model.Card{
-			ID:        cardID,
-			Type:      "PlanCard",
-			Title:     "Plan",
-			Items:     planItems,
-			Status:    "inProgress",
-			CreatedAt: model.NowString(),
-			UpdatedAt: model.NowString(),
-		}
-		a.store.UpsertCard(sessionID, card)
-		a.broadcastSnapshot(sessionID)
-	case "item/started":
-		a.handleItemStarted(payload)
-	case "item/agentMessage/delta":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		if a.shouldIgnoreTurnPayload(sessionID, payload) {
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		itemID := getString(payload, "itemId")
-		a.markTurnTraceFirstAssistant(sessionID, itemID, "delta")
-		if a.cardIsFinal(sessionID, itemID) {
-			return
-		}
-		if session := a.store.Session(sessionID); session != nil {
-			exists := false
-			for _, card := range session.Cards {
-				if card.ID == itemID {
-					exists = true
-					break
-				}
-			}
-			if !exists {
-				now := model.NowString()
-				a.store.UpsertCard(sessionID, model.Card{
-					ID:        itemID,
-					Type:      "AssistantMessageCard",
-					Role:      "assistant",
-					Status:    "inProgress",
-					CreatedAt: now,
-					UpdatedAt: now,
-				})
-			}
-		}
-		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
-			card.Text += getString(payload, "delta")
-			card.UpdatedAt = model.NowString()
-		})
-		if a.isWorkspaceRouteThread(sessionID) {
-			a.throttledBroadcast(sessionID)
-			return
-		}
-		a.broadcastSnapshot(sessionID)
-	case "item/commandExecution/outputDelta":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		if a.shouldIgnoreTurnPayload(sessionID, payload) {
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		itemID := getString(payload, "itemId")
-		if a.cardIsFinal(sessionID, itemID) {
-			return
-		}
-		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
-			card.Output += getString(payload, "delta")
-			card.UpdatedAt = model.NowString()
-		})
-		a.broadcastSnapshot(sessionID)
-	case "item/fileChange/outputDelta":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		if a.shouldIgnoreTurnPayload(sessionID, payload) {
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		itemID := getString(payload, "itemId")
-		if a.cardIsFinal(sessionID, itemID) {
-			return
-		}
-		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
-			card.Output += getString(payload, "delta")
-			card.UpdatedAt = model.NowString()
-		})
-		a.broadcastSnapshot(sessionID)
-	case "item/completed":
-		a.handleItemCompleted(payload)
-	case "serverRequest/resolved":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		a.broadcastSnapshot(sessionID)
-	case "turn/completed":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		if a.shouldIgnoreTurnPayload(sessionID, payload) {
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		turn := getMap(payload, "turn")
-		turnStatus := getString(turn, "status")
-		a.store.UpdateCard(sessionID, "plan-"+getString(turn, "id"), func(card *model.Card) {
-			card.Status = normalizeCardStatus(turnStatus)
-			card.UpdatedAt = model.NowString()
-		})
-		if normalizeCardStatus(turnStatus) == "completed" {
-			a.finishRuntimeTurn(sessionID, "completed")
-		} else {
-			a.finishRuntimeTurn(sessionID, "failed")
-		}
-		a.recordOrchestratorTurnPhase(sessionID, normalizeCardStatus(turnStatus))
-		a.finalizeOpenTurnCards(sessionID, normalizeCardStatus(turnStatus))
-		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
-		log.Printf("turn completed session=%s turn=%s status=%s", sessionID, getString(turn, "id"), turnStatus)
-		if a.isWorkspaceRouteThread(sessionID) {
-			a.flushThrottledBroadcast(sessionID)
-			a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
-			a.recordOrchestratorReply(sessionID)
-			a.broadcastSnapshot(sessionID)
-			return
-		}
-		a.recordOrchestratorReply(sessionID)
-		a.broadcastSnapshot(sessionID)
-		a.handleMissionTurnCompleted(sessionID, normalizeCardStatus(turnStatus))
-	case "turn/aborted":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		a.cleanBackgroundTerminals(getStringAny(payload, "threadId", "thread_id"))
-		a.markTurnInterrupted(sessionID, getTurnID(payload))
-		a.recordOrchestratorTurnPhase(sessionID, "aborted")
-		a.broadcastSnapshot(sessionID)
-	case "error":
-		errorPayload := getMap(payload, "error")
-		text := getString(errorPayload, "message")
-		threadID := getString(payload, "threadId")
-		sessionIDs := a.store.SessionIDs()
-		if threadID != "" {
-			if sessionID := a.store.SessionIDByThread(threadID); sessionID != "" {
-				sessionIDs = []string{sessionID}
-			}
-		}
-		if attempt, retryMax, ok := parseCodexReconnectProgress(text); ok {
-			for _, id := range sessionIDs {
-				a.upsertTransientCodexReconnectNotice(id, attempt, retryMax)
-				a.broadcastSnapshot(id)
-			}
-			return
-		}
-		for _, id := range sessionIDs {
-			a.finishRuntimeTurn(id, "failed")
-			a.store.UpsertCard(id, model.Card{
-				ID:        model.NewID("error"),
-				Type:      "ErrorCard",
-				Title:     "Error",
-				Message:   text,
-				Text:      text,
-				Status:    "failed",
-				CreatedAt: model.NowString(),
-				UpdatedAt: model.NowString(),
-			})
-			a.broadcastSnapshot(id)
-		}
+	if a.shouldIgnoreTurnPayload(sessionID, payload) {
+		return
 	}
-}
-
-func parseCodexReconnectProgress(message string) (int, int, bool) {
-	matches := codexReconnectMessagePattern.FindStringSubmatch(strings.TrimSpace(message))
-	if len(matches) != 3 {
-		return 0, 0, false
-	}
-	attempt, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return 0, 0, false
-	}
-	retryMax, err := strconv.Atoi(matches[2])
-	if err != nil {
-		return 0, 0, false
-	}
-	if attempt <= 0 || retryMax <= 0 {
-		return 0, 0, false
-	}
-	return attempt, retryMax, true
-}
-
-func (a *App) upsertTransientCodexReconnectNotice(sessionID string, attempt, retryMax int) {
-	now := model.NowString()
-	createdAt := now
-	if existing := a.cardByID(sessionID, codexReconnectNoticeCardID); existing != nil && existing.CreatedAt != "" {
-		createdAt = existing.CreatedAt
-	}
-	text := fmt.Sprintf("与 GPT 的连接波动，正在自动重连 %d/%d", attempt, retryMax)
-	a.store.UpsertCard(sessionID, model.Card{
-		ID:        codexReconnectNoticeCardID,
-		Type:      "NoticeCard",
-		Title:     "连接恢复中",
-		Text:      text,
-		Message:   text,
+	a.bindTurnToSession(sessionID, payload)
+	a.setRuntimeTurnPhase(sessionID, "planning")
+	cardID := "plan-" + getString(payload, "turnId")
+	planItems := toPlanItems(payload["plan"])
+	card := model.Card{
+		ID:        cardID,
+		Type:      "PlanCard",
+		Title:     "Plan",
+		Items:     planItems,
 		Status:    "inProgress",
-		CreatedAt: createdAt,
+		CreatedAt: model.NowString(),
+		UpdatedAt: model.NowString(),
+	}
+	a.store.UpsertCard(sessionID, card)
+	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) handleLocalCommandApprovalRequest(rawID string, payload map[string]any) {
+	sessionID := a.sessionIDFromPayload(payload)
+	if sessionID == "" {
+		return
+	}
+	if host, ok := a.selectedRemoteHostForSession(sessionID); ok {
+		a.rejectUnexpectedLocalApproval(sessionID, rawID, "commandExecution", getString(payload, "command"), host)
+		return
+	}
+	a.bindTurnToSession(sessionID, payload)
+	hostID := model.ServerLocalHostID
+	if session := a.store.Session(sessionID); session != nil && session.SelectedHostID != "" {
+		hostID = session.SelectedHostID
+	}
+	approval := model.ApprovalRequest{
+		ID:           model.NewID("approval"),
+		RequestIDRaw: rawID,
+		HostID:       hostID,
+		Fingerprint:  approvalFingerprintForCommand(hostID, getString(payload, "command"), getString(payload, "cwd")),
+		Type:         "command",
+		Status:       "pending",
+		ThreadID:     getStringAny(payload, "threadId", "thread_id"),
+		TurnID:       getStringAny(payload, "turnId", "turn_id"),
+		ItemID:       getString(payload, "itemId"),
+		Command:      getString(payload, "command"),
+		Cwd:          getString(payload, "cwd"),
+		Reason:       getString(payload, "reason"),
+		Decisions:    toStringSlice(payload["availableDecisions"]),
+		RequestedAt:  model.NowString(),
+	}
+	commandState := a.mainAgentCapabilityState("commandExecution")
+	decision, policyErr := a.evaluateCommandPolicy(approval.Command)
+	if capabilityDisabled(commandState) {
+		a.rejectApprovalByProfile(sessionID, rawID, approval, "Command execution blocked", "commandExecution capability is disabled by the current main-agent profile")
+		return
+	}
+	if policyErr != nil {
+		a.rejectApprovalByProfile(sessionID, rawID, approval, "Command blocked by profile", policyErr.Error())
+		return
+	}
+	if a.workspacePlanModeNeedsApproval(sessionID) && commandPolicyDecisionIsMutation(decision) {
+		a.rejectApprovalByPlanMode(sessionID, rawID, approval, "计划模式禁止执行变更命令")
+		return
+	}
+	if decision.Category == "filesystem_mutation" && approval.Cwd != "" {
+		if err := a.ensureWritableRoots([]string{approval.Cwd}); err != nil {
+			a.rejectApprovalByProfile(sessionID, rawID, approval, "Command blocked by writable roots", err.Error())
+			return
+		}
+	}
+	if timeoutSec, ok := getIntAny(payload, "timeoutSec", "timeoutSeconds", "timeout"); ok && timeoutSec > a.mainAgentProfile().CommandPermissions.DefaultTimeoutSeconds {
+		a.rejectApprovalByProfile(sessionID, rawID, approval, "Command blocked by timeout policy", "requested timeout exceeds the current main-agent profile limit")
+		return
+	}
+	policyAllowsAutoApprove := !capabilityNeedsApproval(commandState) && (decision.Mode == model.AgentPermissionModeAllow || decision.Mode == model.AgentPermissionModeReadonlyOnly)
+	resolution := a.requestCommandApprovalResolution(context.Background(), sessionID, "execute_command", approval, policyAllowsAutoApprove, false)
+	approval = approvalWithResolution(approval, resolution)
+	if resolution.IsApproved() {
+		status, title, text, codexDecision := localCommandAutoApprovalPresentation(approval, resolution.RuleName)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := a.respondCodex(ctx, approval.RequestIDRaw, map[string]any{
+			"decision": codexDecision,
+		}); err != nil {
+			log.Printf("local command auto approval failed session=%s approval=%s err=%s", sessionID, approval.ID, truncate(err.Error(), 200))
+			return
+		}
+		approval.Status = status
+		approval.ResolvedAt = firstNonEmptyValue(strings.TrimSpace(approval.ResolvedAt), model.NowString())
+		a.setRuntimeTurnPhase(sessionID, "executing")
+		card := model.Card{
+			ID:        "auto-approval-" + approval.ItemID,
+			Type:      "NoticeCard",
+			Title:     title,
+			Text:      text,
+			Status:    "notice",
+			CreatedAt: approval.ResolvedAt,
+			UpdatedAt: approval.ResolvedAt,
+		}
+		if !a.emitApprovalResolvedEvent(context.Background(), sessionID, "execute_command", "executing", approval, card) {
+			a.store.AddApproval(sessionID, approval)
+			a.store.ResolveApproval(sessionID, approval.ID, approval.Status, approval.ResolvedAt)
+			a.store.UpsertCard(sessionID, card)
+		}
+		switch strings.TrimSpace(resolution.RuleName) {
+		case toolApprovalRuleSessionGrant, toolApprovalRuleHostGrant:
+			extra := map[string]any{
+				"fingerprint": approval.Fingerprint,
+			}
+			decisionName := "accept_session"
+			if resolution.RuleName == toolApprovalRuleHostGrant {
+				extra["grantMode"] = "host"
+				decisionName = "auto_accept"
+			}
+			a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, decisionName, approval.Status, approval.RequestedAt, approval.ResolvedAt, extra)
+		case toolApprovalRuleProfilePolicy:
+			a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, "accept", approval.Status, approval.RequestedAt, approval.ResolvedAt, map[string]any{
+				"autoApprovedByProfile": true,
+			})
+		default:
+			a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, "accept", approval.Status, approval.RequestedAt, approval.ResolvedAt, nil)
+		}
+		a.broadcastSnapshot(sessionID)
+		return
+	}
+	approval.Status = "pending"
+	a.setRuntimeTurnPhase(sessionID, "waiting_approval")
+	log.Printf("approval requested type=command session=%s item=%s command=%q", sessionID, approval.ItemID, approval.Command)
+	a.auditApprovalRequested(sessionID, approval, nil)
+	card := model.Card{
+		ID:      approval.ItemID,
+		Type:    "CommandApprovalCard",
+		Title:   "Command approval required",
+		Command: approval.Command,
+		Cwd:     approval.Cwd,
+		Text:    approval.Reason,
+		Status:  "pending",
+		Detail:  a.approvalCardDetail(sessionID, approval, nil),
+		Approval: &model.ApprovalRef{
+			RequestID: approval.ID,
+			Type:      approval.Type,
+			Decisions: approval.Decisions,
+		},
+		CreatedAt: approval.RequestedAt,
+		UpdatedAt: approval.RequestedAt,
+	}
+	applyCardHost(&card, a.findHost(approval.HostID))
+	emitted := a.emitApprovalRequestedEventWithOptions(context.Background(), sessionID, "execute_command", approval, card, approvalRequestedEventOptions{
+		activateQueuedWorkers: a.sessionKind(sessionID) == model.SessionKindWorker,
+	})
+	if !emitted {
+		a.store.AddApproval(sessionID, approval)
+		a.store.UpsertCard(sessionID, card)
+		a.projectApprovalRequestedFallback(sessionID, approval, card, true)
+	}
+	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) handleBuiltinUserInputRequest(rawID string, payload map[string]any) {
+	sessionID := a.sessionIDFromPayload(payload)
+	if sessionID == "" {
+		_ = a.respondToolError(context.Background(), rawID, -32000, "session not found for request_user_input")
+		return
+	}
+	a.bindTurnToSession(sessionID, payload)
+	if a.isReActThread(sessionID) {
+		message := "request_user_input is not available in this ReAct runtime; use the platform dynamic tool ask_user_question instead."
+		log.Printf("react loop request_user_input rejected session=%s raw=%s", sessionID, rawID)
+		a.store.UpsertCard(sessionID, model.Card{
+			ID:        model.NewID("error"),
+			Type:      "ErrorCard",
+			Title:     "ReAct clarification tool misconfigured",
+			Message:   message,
+			Text:      message,
+			Status:    "failed",
+			CreatedAt: model.NowString(),
+			UpdatedAt: model.NowString(),
+		})
+		a.broadcastSnapshot(sessionID)
+		_ = a.respondToolError(context.Background(), rawID, -32000, message)
+		return
+	}
+	questions := toChoiceQuestions(payload["questions"])
+	if len(questions) == 0 {
+		_ = a.respondToolError(context.Background(), rawID, -32602, "request_user_input requires questions")
+		return
+	}
+	a.createChoiceRequest(rawID, sessionID, payload, questions)
+}
+
+func (a *App) createChoiceRequest(rawID, sessionID string, payload map[string]any, questions []model.ChoiceQuestion) {
+	a.setRuntimeTurnPhase(sessionID, "waiting_input")
+	now := model.NowString()
+	choiceID := model.NewID("choice")
+	choice := model.ChoiceRequest{
+		ID:           choiceID,
+		RequestIDRaw: rawID,
+		ThreadID:     getStringAny(payload, "threadId", "thread_id"),
+		TurnID:       getStringAny(payload, "turnId", "turn_id"),
+		ItemID:       choiceID,
+		Status:       "pending",
+		Questions:    questions,
+		RequestedAt:  now,
+	}
+	card := model.Card{
+		ID:        choice.ItemID,
+		Type:      "ChoiceCard",
+		Title:     choiceCardTitle(questions),
+		RequestID: choice.ID,
+		Question:  questions[0].Question,
+		Options:   questions[0].Options,
+		Questions: questions,
+		Status:    "pending",
+		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	a.store.AddChoice(sessionID, choice)
+	a.store.UpsertCard(sessionID, card)
+	emitted := a.emitChoiceRequestedEvent(context.Background(), sessionID, choice, card)
+	if !emitted {
+		a.projectChoiceRequestedFallback(sessionID, choice, card)
+	}
+	a.audit("choice.requested", map[string]any{
+		"sessionId": sessionID,
+		"choiceId":  choice.ID,
+		"questions": len(questions),
 	})
-}
-
-func (a *App) clearTransientCodexReconnectNotice(sessionID string) {
-	a.store.UpdateCard(sessionID, codexReconnectNoticeCardID, func(card *model.Card) {
-		card.Status = "completed"
-		card.UpdatedAt = model.NowString()
-	})
-}
-
-func (a *App) handleCodexServerRequest(rawID json.RawMessage, method string, params json.RawMessage) {
-	var payload map[string]any
-	_ = json.Unmarshal(params, &payload)
-
-	switch method {
-	case "account/chatgptAuthTokens/refresh":
-		tokens := a.store.TokensForRefresh()
-		if tokens.AccessToken == "" || tokens.ChatGPTAccountID == "" {
-			_ = a.codex.RespondError(context.Background(), string(rawID), -32000, "no external tokens available")
-			return
-		}
-		_ = a.codex.Respond(context.Background(), string(rawID), map[string]any{
-			"accessToken":      tokens.AccessToken,
-			"chatgptAccountId": tokens.ChatGPTAccountID,
-			"chatgptPlanType":  emptyToNil(tokens.ChatGPTPlanType),
-		})
-	case "item/commandExecution/requestApproval":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		if host, ok := a.selectedRemoteHostForSession(sessionID); ok {
-			a.rejectUnexpectedLocalApproval(sessionID, string(rawID), "commandExecution", getString(payload, "command"), host)
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
-		hostID := model.ServerLocalHostID
-		if session := a.store.Session(sessionID); session != nil && session.SelectedHostID != "" {
-			hostID = session.SelectedHostID
-		}
-		approval := model.ApprovalRequest{
-			ID:           model.NewID("approval"),
-			RequestIDRaw: string(rawID),
-			HostID:       hostID,
-			Fingerprint:  approvalFingerprintForCommand(hostID, getString(payload, "command"), getString(payload, "cwd")),
-			Type:         "command",
-			Status:       "pending",
-			ThreadID:     getStringAny(payload, "threadId", "thread_id"),
-			TurnID:       getStringAny(payload, "turnId", "turn_id"),
-			ItemID:       getString(payload, "itemId"),
-			Command:      getString(payload, "command"),
-			Cwd:          getString(payload, "cwd"),
-			Reason:       getString(payload, "reason"),
-			Decisions:    toStringSlice(payload["availableDecisions"]),
-			RequestedAt:  model.NowString(),
-		}
-		commandState := a.mainAgentCapabilityState("commandExecution")
-		decision, policyErr := a.evaluateCommandPolicy(approval.Command)
-		if capabilityDisabled(commandState) {
-			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command execution blocked", "commandExecution capability is disabled by the current main-agent profile")
-			return
-		}
-		if policyErr != nil {
-			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by profile", policyErr.Error())
-			return
-		}
-		if decision.Category == "filesystem_mutation" && approval.Cwd != "" {
-			if err := a.ensureWritableRoots([]string{approval.Cwd}); err != nil {
-				a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by writable roots", err.Error())
-				return
-			}
-		}
-		if timeoutSec, ok := getIntAny(payload, "timeoutSec", "timeoutSeconds", "timeout"); ok && timeoutSec > a.mainAgentProfile().CommandPermissions.DefaultTimeoutSeconds {
-			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "Command blocked by timeout policy", "requested timeout exceeds the current main-agent profile limit")
-			return
-		}
-		if a.autoApproveBySessionGrant(sessionID, approval) {
-			return
-		}
-		if a.autoApproveByHostGrant(sessionID, approval) {
-			return
-		}
-		if !capabilityNeedsApproval(commandState) && (decision.Mode == model.AgentPermissionModeAllow || decision.Mode == model.AgentPermissionModeReadonlyOnly) {
-			if a.autoApproveLocalApprovalByProfile(sessionID, approval) {
-				return
-			}
-		}
-		log.Printf("approval requested type=command session=%s item=%s command=%q", sessionID, approval.ItemID, approval.Command)
-		a.auditApprovalRequested(sessionID, approval, nil)
-		a.store.AddApproval(sessionID, approval)
-		card := model.Card{
-			ID:      approval.ItemID,
-			Type:    "CommandApprovalCard",
-			Title:   "Command approval required",
-			Command: approval.Command,
-			Cwd:     approval.Cwd,
-			Text:    approval.Reason,
-			Status:  "pending",
-			Approval: &model.ApprovalRef{
-				RequestID: approval.ID,
-				Type:      approval.Type,
-				Decisions: approval.Decisions,
-			},
-			CreatedAt: model.NowString(),
-			UpdatedAt: model.NowString(),
-		}
-		applyCardHost(&card, a.findHost(approval.HostID))
-		a.store.UpsertCard(sessionID, card)
-		a.recordOrchestratorApprovalRequested(sessionID, approval)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
-			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
-			if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
-				a.activateQueuedMissionWorkers(workspaceSessionID)
-			}
-		}
-		a.broadcastSnapshot(sessionID)
-	case "item/fileChange/requestApproval":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			return
-		}
-		if host, ok := a.selectedRemoteHostForSession(sessionID); ok {
-			filePath := ""
-			cachedItem := a.store.Item(sessionID, getString(payload, "itemId"))
-			changes := toChanges(cachedItem["changes"])
-			if len(changes) > 0 {
-				filePath = changes[0].Path
-			}
-			a.rejectUnexpectedLocalApproval(sessionID, string(rawID), "fileChange", filePath, host)
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		a.setRuntimeTurnPhase(sessionID, "waiting_approval")
-		itemID := getString(payload, "itemId")
-		cachedItem := a.store.Item(sessionID, itemID)
-		hostID := model.ServerLocalHostID
-		if session := a.store.Session(sessionID); session != nil && session.SelectedHostID != "" {
-			hostID = session.SelectedHostID
-		}
-		changes := toChanges(cachedItem["changes"])
-		approval := model.ApprovalRequest{
-			ID:           model.NewID("approval"),
-			RequestIDRaw: string(rawID),
-			HostID:       hostID,
-			Fingerprint:  approvalFingerprintForFileChange(hostID, getString(payload, "grantRoot"), changes),
-			Type:         "file_change",
-			Status:       "pending",
-			ThreadID:     getStringAny(payload, "threadId", "thread_id"),
-			TurnID:       getStringAny(payload, "turnId", "turn_id"),
-			ItemID:       itemID,
-			Reason:       getString(payload, "reason"),
-			GrantRoot:    getString(payload, "grantRoot"),
-			Changes:      changes,
-			Decisions:    []string{"accept", "decline"},
-			RequestedAt:  model.NowString(),
-		}
-		fileChangeState := a.mainAgentCapabilityState("fileChange")
-		if capabilityDisabled(fileChangeState) {
-			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "File change blocked", "fileChange capability is disabled by the current main-agent profile")
-			return
-		}
-		if err := a.ensureWritableRoots(changePaths(approval.Changes)); err != nil {
-			a.rejectApprovalByProfile(sessionID, string(rawID), approval, "File change blocked by writable roots", err.Error())
-			return
-		}
-		if a.autoApproveBySessionGrant(sessionID, approval) {
-			return
-		}
-		if a.autoApproveByHostGrant(sessionID, approval) {
-			return
-		}
-		if !capabilityNeedsApproval(fileChangeState) {
-			if a.autoApproveLocalApprovalByProfile(sessionID, approval) {
-				return
-			}
-		}
-		log.Printf("approval requested type=file_change session=%s item=%s", sessionID, itemID)
-		filePath := ""
-		if len(approval.Changes) > 0 {
-			filePath = approval.Changes[0].Path
-		}
-		a.auditApprovalRequested(sessionID, approval, map[string]any{
-			"filePath": emptyToNil(strings.TrimSpace(filePath)),
-		})
-		a.store.AddApproval(sessionID, approval)
-		card := model.Card{
-			ID:      itemID,
-			Type:    "FileChangeApprovalCard",
-			Title:   "File change approval required",
-			Text:    approval.Reason,
-			Status:  "pending",
-			Changes: approval.Changes,
-			Approval: &model.ApprovalRef{
-				RequestID: approval.ID,
-				Type:      approval.Type,
-				Decisions: approval.Decisions,
-			},
-			CreatedAt: model.NowString(),
-			UpdatedAt: model.NowString(),
-		}
-		applyCardHost(&card, a.findHost(approval.HostID))
-		a.store.UpsertCard(sessionID, card)
-		a.recordOrchestratorApprovalRequested(sessionID, approval)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
-			a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
-			if workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID); workspaceSessionID != "" {
-				a.activateQueuedMissionWorkers(workspaceSessionID)
-			}
-		}
-		a.broadcastSnapshot(sessionID)
-	case "item/tool/requestUserInput", "request_user_input":
-		sessionID := a.sessionIDFromPayload(payload)
-		if sessionID == "" {
-			_ = a.codex.RespondError(context.Background(), string(rawID), -32000, "session not found for request_user_input")
-			return
-		}
-		a.bindTurnToSession(sessionID, payload)
-		questions := toChoiceQuestions(payload["questions"])
-		if len(questions) == 0 {
-			_ = a.codex.RespondError(context.Background(), string(rawID), -32602, "request_user_input requires questions")
-			return
-		}
-		a.setRuntimeTurnPhase(sessionID, "waiting_input")
-		now := model.NowString()
-		choiceID := model.NewID("choice")
-		choice := model.ChoiceRequest{
-			ID:           choiceID,
-			RequestIDRaw: string(rawID),
-			ThreadID:     getStringAny(payload, "threadId", "thread_id"),
-			TurnID:       getStringAny(payload, "turnId", "turn_id"),
-			ItemID:       choiceID,
-			Status:       "pending",
-			Questions:    questions,
-			RequestedAt:  now,
-		}
-		card := model.Card{
-			ID:        choice.ItemID,
-			Type:      "ChoiceCard",
-			Title:     choiceCardTitle(questions),
-			RequestID: choice.ID,
-			Question:  questions[0].Question,
-			Options:   questions[0].Options,
-			Questions: questions,
-			Status:    "pending",
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-		a.store.AddChoice(sessionID, choice)
-		a.store.UpsertCard(sessionID, card)
-		a.recordOrchestratorChoiceRequested(sessionID, choice)
-		if kind := a.sessionKind(sessionID); kind == model.SessionKindWorker {
-			a.mirrorInternalChoiceToWorkspace(sessionID, choice, card)
-		}
-		a.audit("choice.requested", map[string]any{
-			"sessionId": sessionID,
-			"choiceId":  choice.ID,
-			"questions": len(questions),
-		})
-		a.broadcastSnapshot(sessionID)
-	case "item/tool/call":
-		a.handleDynamicToolCall(string(rawID), payload)
-	}
-}
-
-func (a *App) codexRequest(ctx context.Context, method string, params any, result any) error {
-	if a.codexRequestFunc != nil {
-		return a.codexRequestFunc(ctx, method, params, result)
-	}
-	if a.codex == nil {
-		return errors.New("codex client not configured")
-	}
-	return a.codex.Request(ctx, method, params, result)
+	a.broadcastSnapshot(sessionID)
 }
 
 func (a *App) handleItemStarted(payload map[string]any) {
@@ -2632,9 +2983,6 @@ func (a *App) handleItemStarted(payload map[string]any) {
 		a.scheduleFinalizingExecutionCleanup(sessionID, getStringAny(payload, "threadId", "thread_id"))
 		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
 	}
-	if itemType == "agentMessage" && a.isWorkspaceRouteThread(sessionID) {
-		return
-	}
 	a.broadcastSnapshot(sessionID)
 }
 
@@ -2692,6 +3040,7 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 				output = aggregated
 			}
 			result, finalStatus, summary, highlights, kvRows := buildLocalCommandCardPresentation(item, output)
+			display := toolDisplayPayloadToProjectionMap(commandResultDisplayPayload(card.Command, card.Cwd, result, finalStatus))
 			card.Output = output
 			card.Stdout = result.Stdout
 			card.Stderr = result.Stderr
@@ -2703,6 +3052,7 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			card.Highlights = highlights
 			card.KVRows = kvRows
 			card.Status = finalStatus
+			card.Detail = toolProjectionDisplayDetailMap(display, card.Detail)
 			if itemDuration, ok := getIntAny(item, "durationMs", "duration_ms"); ok && itemDuration > 0 {
 				card.DurationMS = int64(itemDuration)
 			} else {
@@ -2710,6 +3060,30 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			}
 			card.UpdatedAt = now
 		})
+		if card := a.cardByID(sessionID, itemID); card != nil {
+			a.bindCardEvidence(sessionID, itemID, evidenceArtifactInput{
+				Kind:       "command_execution",
+				SourceKind: "command",
+				SourceRef:  firstNonEmptyValue(strings.TrimSpace(card.HostID), strings.TrimSpace(card.Command), itemID),
+				Title:      firstNonEmptyValue(strings.TrimSpace(card.Title), "Command execution"),
+				Summary:    strings.TrimSpace(card.Summary),
+				Content: firstNonEmptyValue(
+					card.Output,
+					strings.TrimSpace(strings.Join([]string{card.Stdout, card.Stderr}, "\n")),
+					card.Error,
+				),
+				Raw: item,
+				Metadata: map[string]any{
+					"command":  card.Command,
+					"cwd":      card.Cwd,
+					"status":   card.Status,
+					"exitCode": card.ExitCode,
+				},
+			})
+			if card = a.cardByID(sessionID, itemID); card != nil {
+				a.syncActionVerification(sessionID, *card)
+			}
+		}
 		a.resumeThinkingAfterExecution(sessionID)
 	case "fileChange":
 		a.store.UpdateCard(sessionID, itemID, func(card *model.Card) {
@@ -2718,30 +3092,59 @@ func (a *App) handleItemCompleted(payload map[string]any) {
 			card.DurationMS = durationMS
 			card.UpdatedAt = now
 		})
+		if card := a.cardByID(sessionID, itemID); card != nil {
+			target := itemID
+			paths := changePaths(card.Changes)
+			if len(paths) > 0 {
+				target = paths[0]
+			}
+			summary := strings.TrimSpace(card.Summary)
+			if summary == "" {
+				summary = truncate(strings.Join(paths, ", "), 120)
+			}
+			if summary == "" {
+				summary = firstNonEmptyValue(strings.TrimSpace(card.Status), strings.TrimSpace(card.Title))
+			}
+			a.bindCardEvidence(sessionID, itemID, evidenceArtifactInput{
+				Kind:       "file_change",
+				SourceKind: "config_diff",
+				SourceRef:  target,
+				Title:      firstNonEmptyValue(strings.TrimSpace(card.Title), "File change"),
+				Summary:    summary,
+				Content: stableCardJSON(map[string]any{
+					"changes": card.Changes,
+					"status":  card.Status,
+				}),
+				Raw: item,
+				Metadata: map[string]any{
+					"status": card.Status,
+					"paths":  paths,
+				},
+			})
+			if card = a.cardByID(sessionID, itemID); card != nil {
+				a.syncActionVerification(sessionID, *card)
+			}
+		}
 		a.resumeThinkingAfterExecution(sessionID)
 	}
 	if itemType == "agentMessage" {
 		a.scheduleSilentTurnCompletionCheck(sessionID, silentTurnCompletionDelay)
-		if a.isWorkspaceRouteThread(sessionID) {
-			a.flushThrottledBroadcast(sessionID)
-			a.broadcastSnapshot(sessionID)
-			return
-		}
 	}
 	a.broadcastSnapshot(sessionID)
 }
 
 func (a *App) autoApproveBySessionGrant(sessionID string, approval model.ApprovalRequest) bool {
-	if approval.Fingerprint == "" {
-		return false
-	}
-	if _, ok := a.store.ApprovalGrant(sessionID, approval.Fingerprint); !ok {
+	if _, ok := a.matchToolApprovalRule(
+		context.Background(),
+		buildToolApprovalRequestForExistingApproval(sessionID, "execute_command", approval, false, false),
+		toolApprovalRuleSessionGrant,
+	); !ok {
 		return false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := a.codex.Respond(ctx, approval.RequestIDRaw, map[string]any{
+	if err := a.respondCodex(ctx, approval.RequestIDRaw, map[string]any{
 		"decision": "accept",
 	}); err != nil {
 		log.Printf("auto approval failed session=%s approval=%s err=%s", sessionID, approval.ID, truncate(err.Error(), 200))
@@ -2751,10 +3154,8 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 	now := model.NowString()
 	approval.Status = "accepted_for_session_auto"
 	approval.ResolvedAt = now
-	a.store.AddApproval(sessionID, approval)
-	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
 	a.setRuntimeTurnPhase(sessionID, "executing")
-	a.store.UpsertCard(sessionID, model.Card{
+	card := model.Card{
 		ID:        "auto-approval-" + approval.ItemID,
 		Type:      "NoticeCard",
 		Title:     "Auto-approved for session",
@@ -2762,7 +3163,12 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	if !a.emitApprovalResolvedEvent(context.Background(), sessionID, "execute_command", "executing", approval, card) {
+		a.store.AddApproval(sessionID, approval)
+		a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+		a.store.UpsertCard(sessionID, card)
+	}
 	log.Printf("approval auto accepted by session grant session=%s approval=%s type=%s", sessionID, approval.ID, approval.Type)
 	a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, "accept_session", approval.Status, approval.RequestedAt, now, map[string]any{
 		"fingerprint": approval.Fingerprint,
@@ -2772,13 +3178,11 @@ func (a *App) autoApproveBySessionGrant(sessionID string, approval model.Approva
 }
 
 func (a *App) autoApproveByHostGrant(sessionID string, approval model.ApprovalRequest) bool {
-	if approval.Fingerprint == "" || approval.HostID == "" {
-		return false
-	}
-	if a.approvalGrantStore == nil {
-		return false
-	}
-	if _, ok := a.approvalGrantStore.MatchFingerprint(approval.HostID, approval.Fingerprint); !ok {
+	if _, ok := a.matchToolApprovalRule(
+		context.Background(),
+		buildToolApprovalRequestForExistingApproval(sessionID, "execute_command", approval, false, false),
+		toolApprovalRuleHostGrant,
+	); !ok {
 		return false
 	}
 
@@ -2794,10 +3198,8 @@ func (a *App) autoApproveByHostGrant(sessionID string, approval model.ApprovalRe
 	now := model.NowString()
 	approval.Status = "accepted_for_host_auto"
 	approval.ResolvedAt = now
-	a.store.AddApproval(sessionID, approval)
-	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
 	a.setRuntimeTurnPhase(sessionID, "executing")
-	a.store.UpsertCard(sessionID, model.Card{
+	card := model.Card{
 		ID:        "auto-approval-" + approval.ItemID,
 		Type:      "NoticeCard",
 		Title:     "Auto-approved by host grant",
@@ -2805,7 +3207,12 @@ func (a *App) autoApproveByHostGrant(sessionID string, approval model.ApprovalRe
 		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	if !a.emitApprovalResolvedEvent(context.Background(), sessionID, "execute_command", "executing", approval, card) {
+		a.store.AddApproval(sessionID, approval)
+		a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+		a.store.UpsertCard(sessionID, card)
+	}
 	log.Printf("approval auto accepted by host grant session=%s approval=%s type=%s host=%s", sessionID, approval.ID, approval.Type, approval.HostID)
 	a.auditApprovalLifecycleEvent("approval.auto_accepted", sessionID, approval, "auto_accept", approval.Status, approval.RequestedAt, now, map[string]any{
 		"fingerprint": approval.Fingerprint,
@@ -2826,6 +3233,7 @@ func hostGrantAutoApprovalNoticeText(approval model.ApprovalRequest) string {
 }
 
 func (a *App) startRuntimeTurn(sessionID, hostID string) {
+	previousSnapshot := a.snapshot(sessionID)
 	startedAt := model.NowString()
 	a.store.ClearTurn(sessionID)
 	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
@@ -2840,10 +3248,12 @@ func (a *App) startRuntimeTurn(sessionID, hostID string) {
 		}
 	})
 	a.markTurnTraceRuntimeStart(sessionID, hostID)
+	a.syncIncidentStageTransition(sessionID, previousSnapshot, "thinking")
 }
 
 func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
 	phase = normalizeRuntimeTurnPhase(phase)
+	previousSnapshot := a.snapshot(sessionID)
 	session := a.store.Session(sessionID)
 	if session != nil && session.Runtime.Turn.Phase == phase {
 		currentActive := phase != "idle" && phase != "completed" && phase != "failed" && phase != "aborted"
@@ -2863,6 +3273,7 @@ func (a *App) setRuntimeTurnPhase(sessionID, phase string) {
 		}
 	})
 	a.recordOrchestratorTurnPhase(sessionID, phase)
+	a.syncIncidentStageTransition(sessionID, previousSnapshot, phase)
 }
 
 func normalizeRuntimeTurnPhase(phase string) string {
@@ -2878,6 +3289,7 @@ func normalizeRuntimeTurnPhase(phase string) string {
 }
 
 func (a *App) finishRuntimeTurn(sessionID, phase string) {
+	previousSnapshot := a.snapshot(sessionID)
 	a.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
 		runtime.Turn.Active = false
 		runtime.Turn.Phase = phase
@@ -2889,6 +3301,7 @@ func (a *App) finishRuntimeTurn(sessionID, phase string) {
 		runtime.Activity.CurrentWebSearchQuery = ""
 	})
 	a.completeTurnTrace(sessionID, phase)
+	a.syncIncidentStageTransition(sessionID, previousSnapshot, phase)
 }
 
 func (a *App) beginTurnTraceRequest(sessionID, hostID string) string {
@@ -3232,33 +3645,14 @@ func (a *App) failStalledTurn(sessionID, turnID string, delay time.Duration) {
 	a.store.UpsertCard(sessionID, model.Card{
 		ID:        model.NewID("error"),
 		Type:      "ErrorCard",
-		Title:     "Codex 响应超时",
-		Message:   fmt.Sprintf("这次请求在 %.0f 秒内没有返回任何进展，已自动结束。请重试；如果频繁出现，多半是 Codex 到 GPT 的连接不稳定。", delay.Seconds()),
-		Text:      fmt.Sprintf("这次请求在 %.0f 秒内没有返回任何进展，已自动结束。请重试；如果频繁出现，多半是 Codex 到 GPT 的连接不稳定。", delay.Seconds()),
+		Title:     "LLM 响应超时",
+		Message:   fmt.Sprintf("这次请求在 %.0f 秒内没有返回任何进展，已自动结束。请重试；如果频繁出现，多半是当前 LLM 链路不稳定。", delay.Seconds()),
+		Text:      fmt.Sprintf("这次请求在 %.0f 秒内没有返回任何进展，已自动结束。请重试；如果频繁出现，多半是当前 LLM 链路不稳定。", delay.Seconds()),
 		Status:    "failed",
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
 	a.broadcastSnapshot(sessionID)
-
-	if current.ThreadID == "" || !a.codex.Alive() {
-		return
-	}
-	go func(threadID string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		params := map[string]any{
-			"threadId":                   threadID,
-			"clean_background_terminals": true,
-		}
-		if turnID != "" {
-			params["turnId"] = turnID
-		}
-		var result map[string]any
-		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil {
-			log.Printf("stalled turn interrupt failed session=%s turn=%s err=%s", sessionID, turnID, truncate(err.Error(), 200))
-		}
-	}(current.ThreadID)
 }
 
 func (a *App) resumeThinkingAfterExecution(sessionID string) {
@@ -3396,6 +3790,7 @@ func (a *App) finalizeLingeringExecutionCards(sessionID string) bool {
 			}
 			result, status, summary, highlights, kvRows := buildLocalCommandCardPresentation(item, output)
 			a.store.UpdateCard(sessionID, existing.ID, func(card *model.Card) {
+				display := toolDisplayPayloadToProjectionMap(commandResultDisplayPayload(card.Command, card.Cwd, result, status))
 				card.Output = output
 				card.Stdout = result.Stdout
 				card.Stderr = result.Stderr
@@ -3407,6 +3802,7 @@ func (a *App) finalizeLingeringExecutionCards(sessionID string) bool {
 				card.Highlights = highlights
 				card.KVRows = kvRows
 				card.Status = status
+				card.Detail = toolProjectionDisplayDetailMap(display, card.Detail)
 				card.DurationMS = durationMS
 				card.UpdatedAt = now
 			})
@@ -3560,24 +3956,13 @@ func (a *App) shouldIgnoreTurnPayload(sessionID string, payload map[string]any) 
 	return threadID != "" && threadID == session.ThreadID
 }
 
-func (a *App) isWorkspaceRouteThread(sessionID string) bool {
+func (a *App) isReActThread(sessionID string) bool {
 	session := a.store.Session(sessionID)
 	if session == nil {
 		return false
 	}
-	return session.Meta.Kind == model.SessionKindWorkspace && strings.HasSuffix(strings.TrimSpace(session.ThreadConfigHash), ":workspace-route")
-}
-
-func (a *App) isWorkspaceReadonlyThread(sessionID string) bool {
-	session := a.store.Session(sessionID)
-	if session == nil {
-		return false
-	}
-	return session.Meta.Kind == model.SessionKindWorkspace && strings.HasSuffix(strings.TrimSpace(session.ThreadConfigHash), ":workspace-readonly")
-}
-
-func (a *App) isWorkspaceDirectThread(sessionID string) bool {
-	return a.isWorkspaceRouteThread(sessionID) || a.isWorkspaceReadonlyThread(sessionID)
+	hash := strings.TrimSpace(session.ThreadConfigHash)
+	return strings.HasSuffix(hash, ":"+reActLoopVersion) || strings.HasSuffix(hash, ":workspace-"+reActLoopVersion)
 }
 
 func (a *App) cardIsFinal(sessionID, cardID string) bool {
@@ -3763,8 +4148,12 @@ func (a *App) syncProcessLineCard(sessionID, itemID string, item map[string]any,
 
 func (a *App) markTurnInterrupted(sessionID, turnID string) {
 	now := model.NowString()
+	a.finalizeInterruptedStreamingAssistantCard(sessionID, now)
 	a.cancelRemoteExecsForSession(sessionID, "任务已中断")
 	a.finishRuntimeTurn(sessionID, "aborted")
+	a.appendIncidentEvent(sessionID, "cancel.requested", "completed", "任务已中断", "用户停止了当前任务", map[string]any{
+		"turnId": emptyToNil(strings.TrimSpace(turnID)),
+	})
 	a.finalizeOpenTurnCards(sessionID, "failed")
 	a.resolvePendingTurnRequests(sessionID, now)
 	a.resolveMirroredPendingTurnRequests(sessionID, "cancelled", "任务已中断")
@@ -3783,6 +4172,41 @@ func (a *App) markTurnInterrupted(sessionID, turnID string) {
 	})
 }
 
+func (a *App) finalizeInterruptedStreamingAssistantCard(sessionID, now string) {
+	if strings.TrimSpace(now) == "" {
+		now = model.NowString()
+	}
+	if bifrostSession, ok := a.bifrostSession(sessionID); ok && bifrostSession != nil {
+		if cardID := strings.TrimSpace(bifrostSession.CurrentCardID()); cardID != "" {
+			a.store.UpdateCard(sessionID, cardID, func(card *model.Card) {
+				if card.Type != "AssistantMessageCard" || normalizeCardStatus(card.Status) != "inProgress" {
+					return
+				}
+				card.Status = "cancelled"
+				card.UpdatedAt = now
+			})
+			bifrostSession.SetCurrentCardID("")
+		}
+	}
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return
+	}
+	for _, existing := range session.Cards {
+		if existing.Type != "AssistantMessageCard" || normalizeCardStatus(existing.Status) != "inProgress" {
+			continue
+		}
+		cardID := existing.ID
+		a.store.UpdateCard(sessionID, cardID, func(card *model.Card) {
+			if card.Type != "AssistantMessageCard" || normalizeCardStatus(card.Status) != "inProgress" {
+				return
+			}
+			card.Status = "cancelled"
+			card.UpdatedAt = now
+		})
+	}
+}
+
 func (a *App) cleanBackgroundTerminals(threadID string) {
 	a.cleanBackgroundTerminalsWithTimeout(threadID, 5*time.Second)
 }
@@ -3790,17 +4214,6 @@ func (a *App) cleanBackgroundTerminals(threadID string) {
 func (a *App) cleanBackgroundTerminalsWithTimeout(threadID string, timeout time.Duration) {
 	if strings.TrimSpace(threadID) == "" {
 		return
-	}
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	var result map[string]any
-	if err := a.codexRequest(ctx, "thread/backgroundTerminals/clean", map[string]any{
-		"threadId": threadID,
-	}, &result); err != nil {
-		log.Printf("background terminal cleanup skipped thread=%s err=%s", threadID, truncate(err.Error(), 200))
 	}
 }
 
@@ -3980,7 +4393,7 @@ func autoApprovalNoticeText(approval model.ApprovalRequest) string {
 }
 
 func approvalMemoCard(host model.Host, approval model.ApprovalRequest, decision, now string) model.Card {
-	return model.Card{
+	card := model.Card{
 		ID:        "approval-memo-" + approval.ID,
 		Type:      "NoticeCard",
 		Text:      approvalMemoText(host, approval, decision),
@@ -3988,6 +4401,14 @@ func approvalMemoCard(host model.Host, approval model.ApprovalRequest, decision,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	if approval.Type == "remote_file_change" || approval.Type == "file_change" || approval.Type == bifrostApprovalTypeRemoteFileChange {
+		if len(approval.Changes) > 0 {
+			change := approval.Changes[0]
+			card.Summary = declinedRemoteFileChangeSummary(change.Path)
+			card.Detail = fileChangeDisplayDetail(nil, fileChangeDisplayPayload(change, "", declinedRemoteFileChangeSummary(change.Path), "用户拒绝了本次文件变更审批。"))
+		}
+	}
+	return card
 }
 
 func approvalMemoText(host model.Host, approval model.ApprovalRequest, decision string) string {
@@ -4036,7 +4457,8 @@ func (a *App) auditApprovalLifecycleEvent(event, sessionID string, approval mode
 	hostID := defaultHostID(strings.TrimSpace(approval.HostID))
 	hostName := hostNameOrID(a.findHost(approval.HostID))
 	operator := a.auditOperator(sessionID)
-	toolName := approvalAuditToolName(approval)
+	toolName := a.approvalResolvedToolName(sessionID, approval)
+	meta := a.approvalLifecycleMetadata(sessionID, approval, fields)
 
 	payload := map[string]any{
 		"sessionId":        sessionID,
@@ -4101,11 +4523,13 @@ func (a *App) auditApprovalLifecycleEvent(event, sessionID string, approval mode
 			Fingerprint:  strings.TrimSpace(approval.Fingerprint),
 			StartedAt:    strings.TrimSpace(startedAt),
 			EndedAt:      strings.TrimSpace(endedAt),
+			Meta:         meta,
 		}
 		if err := a.approvalAuditStore.Add(record); err != nil {
 			log.Printf("approval audit store add failed event=%s approval=%s err=%s", event, approval.ID, truncate(err.Error(), 200))
 		}
 	}
+	a.recordApprovalIncidentEvent(sessionID, event, approval, approvalDecision, status, startedAt, endedAt, meta)
 }
 
 func (a *App) sessionThreadID(sessionID string) string {
@@ -4246,6 +4670,127 @@ func approvalStatusFromDecision(decision string) string {
 	return decision
 }
 
+func (a *App) hasPendingApprovalsExcluding(sessionID, approvalID string) bool {
+	session := a.store.Session(sessionID)
+	if session == nil {
+		return false
+	}
+	for id, approval := range session.Approvals {
+		if strings.TrimSpace(id) == strings.TrimSpace(approvalID) {
+			continue
+		}
+		if strings.TrimSpace(approval.Status) == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) approvalResolutionProjectionCard(sessionID string, approval model.ApprovalRequest, approvalStatus, resolvedAt string) model.Card {
+	cardStatus := approvalStatusToCardStatus(approvalStatus)
+	if existing := a.cardByID(sessionID, approval.ItemID); existing != nil {
+		card := *existing
+		if existing.Detail != nil {
+			card.Detail = cloneAnyMap(existing.Detail)
+		}
+		if existing.Approval != nil {
+			approvalRef := *existing.Approval
+			card.Approval = &approvalRef
+		}
+		if len(existing.Changes) > 0 {
+			card.Changes = append([]model.FileChange(nil), existing.Changes...)
+		}
+		card.Status = cardStatus
+		card.UpdatedAt = resolvedAt
+		return card
+	}
+
+	card := model.Card{
+		ID:        approval.ItemID,
+		Status:    cardStatus,
+		Detail:    a.approvalCardDetail(sessionID, approval, nil),
+		CreatedAt: firstNonEmptyValue(strings.TrimSpace(approval.RequestedAt), resolvedAt),
+		UpdatedAt: resolvedAt,
+	}
+	switch approval.Type {
+	case "plan_exit":
+		card.Type = "PlanApprovalCard"
+		card.Title = firstNonEmptyValue(strings.TrimSpace(approval.Reason), "计划审批")
+	case "command":
+		card.Type = "CommandApprovalCard"
+		card.Title = "Command approval required"
+		card.Command = approval.Command
+		card.Cwd = approval.Cwd
+		card.Text = approval.Reason
+	default:
+		card.Type = "ApprovalCard"
+		card.Title = firstNonEmptyValue(strings.TrimSpace(approval.Reason), "审批请求")
+		card.Command = approval.Command
+		card.Cwd = approval.Cwd
+		card.Text = approval.Reason
+	}
+	applyCardHost(&card, a.findHost(approval.HostID))
+	return card
+}
+
+func planExitApprovalToolResponse(approval model.ApprovalRequest, decision, codexDecision string) map[string]any {
+	approved := codexDecision == "accept"
+	payload := map[string]any{
+		"tool":          "exit_plan_mode",
+		"approval_type": "plan_exit",
+		"approval_id":   approval.ID,
+		"decision":      codexDecision,
+		"raw_decision":  decision,
+		"approved":      approved,
+	}
+	if approved {
+		payload["next_mode"] = "execute"
+		payload["instruction"] = "The user approved the plan. You may proceed only within the approved plan scope and dispatch workers only for approved tasks."
+		return structuredToolResponse(payload, true)
+	}
+	payload["next_mode"] = "plan"
+	payload["instruction"] = "The user declined the plan. Do not execute or dispatch workers. Continue in plan mode: revise the plan or ask the user what to change."
+	return structuredToolResponse(payload, true)
+}
+
+func commandPolicyDecisionIsMutation(decision commandPolicyDecision) bool {
+	if !decision.Readonly {
+		return true
+	}
+	return strings.HasSuffix(strings.TrimSpace(decision.Category), "_mutation")
+}
+
+func (a *App) blockApprovalByPlanMode(sessionID string, approval model.ApprovalRequest, message string) {
+	now := model.NowString()
+	approval.Status = "blocked_by_plan_mode"
+	approval.ResolvedAt = now
+	a.store.AddApproval(sessionID, approval)
+	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+	a.setRuntimeTurnPhase(sessionID, "planning")
+	a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, "decline", approval.Status, approval.RequestedAt, now, map[string]any{
+		"blockedByPlanMode": true,
+		"reason":            message,
+	})
+	a.store.UpsertCard(sessionID, model.Card{
+		ID:        model.NewID("error"),
+		Type:      "ErrorCard",
+		Title:     "Plan mode blocked mutation",
+		Message:   message,
+		Text:      message,
+		Status:    "failed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	a.broadcastSnapshot(sessionID)
+}
+
+func (a *App) rejectApprovalByPlanMode(sessionID, rawID string, approval model.ApprovalRequest, message string) {
+	a.blockApprovalByPlanMode(sessionID, approval, message)
+	_ = a.respondCodex(context.Background(), rawID, map[string]any{
+		"decision": "decline",
+	})
+}
+
 func approvalFingerprintForCommand(hostID, command, cwd string) string {
 	return strings.Join([]string{"command", hostID, cwd, command}, "|")
 }
@@ -4264,38 +4809,55 @@ func (a *App) ensureThread(ctx context.Context, sessionID string) (string, error
 	if session.ThreadID != "" {
 		return session.ThreadID, nil
 	}
-	return a.ensureThreadWithSpec(ctx, sessionID, a.buildSingleHostThreadStartSpec(ctx, sessionID))
+	return a.ensureThreadWithSpec(ctx, sessionID, a.buildSingleHostReActThreadStartSpec(ctx, sessionID))
 }
 
 func (a *App) ensureThreadWithSpec(ctx context.Context, sessionID string, spec threadStartSpec) (string, error) {
-	session := a.store.EnsureSession(sessionID)
-	if session.ThreadID != "" {
-		return session.ThreadID, nil
+	if a.runtimeStartThreadFunc != nil {
+		session := a.store.EnsureSession(sessionID)
+		if session.ThreadID != "" {
+			return session.ThreadID, nil
+		}
+		startedAt := time.Now()
+		requestID := firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-")
+		a.markTurnTraceThreadStartBegin(sessionID)
+		log.Printf(
+			"runtime hook thread start begin session=%s request=%s cwd=%s model=%s sandbox=%s approval=%s dynamic_tools=%d",
+			sessionID,
+			requestID,
+			spec.Cwd,
+			spec.Model,
+			spec.SandboxMode,
+			spec.ApprovalPolicy,
+			len(spec.DynamicTools),
+		)
+		threadID, err := a.runtimeStartThreadFunc(ctx, sessionID, spec)
+		if err != nil {
+			log.Printf("runtime hook thread start failed session=%s request=%s err=%v duration=%s", sessionID, requestID, err, time.Since(startedAt))
+			return "", err
+		}
+		a.store.SetThread(sessionID, threadID)
+		a.store.SetThreadConfigHash(sessionID, spec.ThreadConfigHash)
+		a.markTurnTraceThreadStarted(sessionID, threadID)
+		log.Printf("runtime hook thread start ok session=%s request=%s thread=%s duration=%s", sessionID, requestID, threadID, time.Since(startedAt))
+		a.broadcastSnapshot(sessionID)
+		return threadID, nil
 	}
-
-	var result struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
+	if !a.useBifrost() {
+		return "", errors.New("bifrost runtime is not initialized")
 	}
-	params := map[string]any{
-		"model":                 spec.Model,
-		"cwd":                   spec.Cwd,
-		"approvalPolicy":        spec.ApprovalPolicy,
-		"sandbox":               spec.SandboxMode,
-		"developerInstructions": spec.DeveloperInstructions,
-	}
-	if len(spec.Config) > 0 {
-		params["config"] = spec.Config
-	}
-	if len(spec.DynamicTools) > 0 {
-		params["dynamicTools"] = spec.DynamicTools
+	storeSession := a.store.EnsureSession(sessionID)
+	expectedHash := strings.TrimSpace(spec.ThreadConfigHash)
+	if existing, ok := a.bifrostSession(sessionID); ok && existing != nil && strings.TrimSpace(storeSession.ThreadConfigHash) == expectedHash {
+		if binding := strings.TrimSpace(storeSession.ThreadID); binding != "" {
+			return binding, nil
+		}
 	}
 	startedAt := time.Now()
 	requestID := firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-")
 	a.markTurnTraceThreadStartBegin(sessionID)
 	log.Printf(
-		"codex thread start begin session=%s request=%s cwd=%s model=%s sandbox=%s approval=%s dynamic_tools=%d",
+		"bifrost thread bind begin session=%s request=%s cwd=%s model=%s sandbox=%s approval=%s dynamic_tools=%d",
 		sessionID,
 		requestID,
 		spec.Cwd,
@@ -4304,39 +4866,68 @@ func (a *App) ensureThreadWithSpec(ctx context.Context, sessionID string, spec t
 		spec.ApprovalPolicy,
 		len(spec.DynamicTools),
 	)
-	if err := a.codexRequest(ctx, "thread/start", params, &result); err != nil {
-		log.Printf("codex thread start failed session=%s request=%s err=%v duration=%s", sessionID, requestID, err, time.Since(startedAt))
-		return "", err
-	}
-	a.store.SetThread(sessionID, result.Thread.ID)
-	a.store.SetThreadConfigHash(sessionID, spec.ThreadConfigHash)
-	a.markTurnTraceThreadStarted(sessionID, result.Thread.ID)
-	log.Printf("codex thread start ok session=%s request=%s thread=%s duration=%s", sessionID, requestID, result.Thread.ID, time.Since(startedAt))
+	session := agentloop.NewSession(sessionID, bifrostSessionSpecFromThreadSpec(spec, a.cfg.LLMModel))
+	a.setBifrostSession(sessionID, session)
+	threadID := syntheticBifrostThreadID(sessionID, expectedHash)
+	a.store.SetThread(sessionID, threadID)
+	a.store.SetThreadConfigHash(sessionID, expectedHash)
+	a.markTurnTraceThreadStarted(sessionID, threadID)
+	log.Printf("bifrost thread bind ok session=%s request=%s thread=%s duration=%s", sessionID, requestID, threadID, time.Since(startedAt))
 	a.broadcastSnapshot(sessionID)
-	return result.Thread.ID, nil
+	return threadID, nil
 }
 
 func (a *App) requestTurnWithSpec(ctx context.Context, sessionID, threadID string, spec turnStartSpec) error {
-	var result map[string]any
-	params := map[string]any{
-		"threadId":              threadID,
-		"cwd":                   spec.Cwd,
-		"approvalPolicy":        spec.ApprovalPolicy,
-		"developerInstructions": spec.DeveloperInstructions,
-		"sandboxPolicy": map[string]any{
-			"type":          codexSandboxPolicyType(spec.SandboxMode),
-			"writableRoots": append([]string(nil), spec.WritableRoots...),
-		},
-		"input": spec.Input,
+	if a.runtimeStartTurnFunc != nil {
+		startedAt := time.Now()
+		requestID := firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-")
+		a.markTurnTraceTurnStartBegin(sessionID, threadID)
+		log.Printf(
+			"runtime hook turn start begin session=%s request=%s thread=%s cwd=%s sandbox=%s approval=%s input_items=%d reasoning=%s",
+			sessionID,
+			requestID,
+			threadID,
+			spec.Cwd,
+			spec.SandboxMode,
+			spec.ApprovalPolicy,
+			len(spec.Input),
+			spec.ReasoningEffort,
+		)
+		turnID, err := a.runtimeStartTurnFunc(ctx, sessionID, threadID, spec)
+		if err != nil {
+			log.Printf("runtime hook turn start failed session=%s request=%s thread=%s err=%v duration=%s", sessionID, requestID, threadID, err, time.Since(startedAt))
+			return err
+		}
+		if turnID != "" {
+			a.store.SetTurn(sessionID, turnID)
+			a.scheduleTurnStallMonitor(sessionID, stalledTurnTimeout)
+			a.markTurnTraceTurnStarted(sessionID, threadID, turnID)
+			log.Printf("runtime hook turn start ok session=%s request=%s thread=%s turn=%s duration=%s", sessionID, requestID, threadID, turnID, time.Since(startedAt))
+			return nil
+		}
+		a.markTurnTraceTurnStarted(sessionID, threadID, "")
+		log.Printf("runtime hook turn start ok session=%s request=%s thread=%s turn=<missing> duration=%s", sessionID, requestID, threadID, time.Since(startedAt))
+		return nil
 	}
-	if spec.ReasoningEffort != "" {
-		params["reasoningEffort"] = spec.ReasoningEffort
+	if !a.useBifrostForSession(sessionID) {
+		return errors.New("bifrost runtime is not initialized")
+	}
+	session, ok := a.bifrostSession(sessionID)
+	if !ok || session == nil {
+		return errors.New("bifrost session is not initialized")
+	}
+	inputText := turnStartInputText(spec)
+	if strings.TrimSpace(inputText) == "" {
+		return errors.New("turn input is required")
 	}
 	startedAt := time.Now()
 	requestID := firstNonEmptyValue(a.turnTraceRequestID(sessionID), "-")
 	a.markTurnTraceTurnStartBegin(sessionID, threadID)
+	turnID := model.NewID("turn")
+	a.store.SetTurn(sessionID, turnID)
+	session.SetCancelFunc(nil)
 	log.Printf(
-		"codex turn start begin session=%s request=%s thread=%s cwd=%s sandbox=%s approval=%s input_items=%d reasoning=%s",
+		"bifrost turn start begin session=%s request=%s thread=%s cwd=%s sandbox=%s approval=%s input_items=%d reasoning=%s",
 		sessionID,
 		requestID,
 		threadID,
@@ -4346,20 +4937,28 @@ func (a *App) requestTurnWithSpec(ctx context.Context, sessionID, threadID strin
 		len(spec.Input),
 		spec.ReasoningEffort,
 	)
-	if err := a.codexRequest(ctx, "turn/start", params, &result); err != nil {
-		log.Printf("codex turn start failed session=%s request=%s thread=%s err=%v duration=%s", sessionID, requestID, threadID, err, time.Since(startedAt))
+	a.markTurnTraceTurnStarted(sessionID, threadID, turnID)
+	if err := a.agentLoop.RunTurn(ctx, session, inputText); err != nil {
+		log.Printf("bifrost turn start failed session=%s request=%s thread=%s err=%v duration=%s", sessionID, requestID, threadID, err, time.Since(startedAt))
 		return err
 	}
-	if turnID := getTurnID(result); turnID != "" {
-		a.store.SetTurn(sessionID, turnID)
-		a.scheduleTurnStallMonitor(sessionID, stalledTurnTimeout)
-		a.markTurnTraceTurnStarted(sessionID, threadID, turnID)
-		log.Printf("codex turn start ok session=%s request=%s thread=%s turn=%s duration=%s", sessionID, requestID, threadID, turnID, time.Since(startedAt))
-		return nil
-	}
-	a.markTurnTraceTurnStarted(sessionID, threadID, "")
-	log.Printf("codex turn start ok session=%s request=%s thread=%s turn=<missing> duration=%s", sessionID, requestID, threadID, time.Since(startedAt))
+	log.Printf("bifrost turn start ok session=%s request=%s thread=%s turn=%s duration=%s", sessionID, requestID, threadID, turnID, time.Since(startedAt))
 	return nil
+}
+
+func (a *App) requestTurn(ctx context.Context, sessionID, threadID string, req chatRequest) error {
+	return a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildSingleHostReActTurnStartSpec(ctx, sessionID, req))
+}
+
+func syntheticBifrostThreadID(sessionID, hash string) string {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		hash = model.NewID("thread")
+	}
+	if len(hash) > 12 {
+		hash = hash[:12]
+	}
+	return "bifrost:" + strings.TrimSpace(sessionID) + ":" + hash
 }
 
 func (a *App) agentProfileIDFromRequest(r *http.Request) string {
@@ -4418,19 +5017,10 @@ func (a *App) renderMainAgentDeveloperInstructions(profile model.AgentProfile, h
 	}
 	if isRemoteHostID(hostID) {
 		sections = append(sections, remoteThreadDeveloperInstructions(hostID))
+	} else {
+		sections = append(sections, localThreadDeveloperInstructions())
 	}
 	return strings.TrimSpace(strings.Join(sections, "\n\n"))
-}
-
-func codexSandboxPolicyType(mode string) string {
-	switch strings.TrimSpace(mode) {
-	case "read-only":
-		return "readOnly"
-	case "danger-full-access":
-		return "dangerFullAccess"
-	default:
-		return "workspaceWrite"
-	}
 }
 
 func (a *App) mergeAndValidateAgentProfile(sessionID, requestedProfileID string, incoming model.AgentProfile, riskConfirmed bool) (model.AgentProfile, model.AgentProfile, error) {
@@ -4837,17 +5427,17 @@ func cloneStringMap(in map[string]string) map[string]string {
 func (a *App) snapshot(sessionID string) model.Snapshot {
 	snapshot := a.store.Snapshot(sessionID, model.UIConfig{
 		OAuthConfigured: a.cfg.OAuthConfigured(),
-		CodexAlive:      a.codex != nil && a.codex.Alive(),
+		CodexAlive:      a.useBifrost(),
+		Provider:        a.cfg.LLMProvider,
+		Model:           a.cfg.LLMModel,
 	})
 	snapshot.Runtime.Codex.RetryMax = 5
-	if a.codex != nil && a.codex.Alive() {
+	if a.useBifrost() {
 		snapshot.Runtime.Codex.Status = "connected"
 		snapshot.Runtime.Codex.LastError = ""
 	} else {
 		snapshot.Runtime.Codex.Status = "stopped"
-		if a.codex != nil {
-			snapshot.Runtime.Codex.LastError = a.codex.LastExitError()
-		}
+		snapshot.Runtime.Codex.LastError = "bifrost runtime is not initialized"
 	}
 	if snapshot.Runtime.Turn.Phase == "" {
 		snapshot.Runtime.Turn.Phase = "idle"
@@ -4976,102 +5566,10 @@ func (a *App) getOrCreateBrowserSessionID(w http.ResponseWriter, r *http.Request
 }
 
 func (a *App) syncAccountState(ctx context.Context, sessionID string) {
-	if !a.codex.Alive() {
+	if !a.useBifrostForSession(sessionID) {
 		return
 	}
-	currentAuth := a.store.Auth(sessionID)
-	currentTokens := a.store.Tokens(sessionID)
-	if !currentAuth.Connected && currentAuth.Mode != "apiKey" && currentTokens.AccessToken == "" {
-		if imported, err := a.importLocalCodexAuth(ctx, sessionID); err != nil {
-			log.Printf("local codex auth import skipped session=%s err=%s", sessionID, truncate(err.Error(), 200))
-		} else if imported {
-			currentAuth = a.store.Auth(sessionID)
-			currentTokens = a.store.Tokens(sessionID)
-		}
-	}
-	if !currentAuth.Connected && currentAuth.Mode != "apiKey" && currentTokens.AccessToken != "" {
-		if restored, err := a.restoreStoredCodexAuth(ctx, sessionID, currentTokens, currentAuth.Mode); err != nil {
-			log.Printf("stored codex auth restore skipped session=%s err=%s", sessionID, truncate(err.Error(), 200))
-		} else if restored {
-			currentAuth = a.store.Auth(sessionID)
-			currentTokens = a.store.Tokens(sessionID)
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	var result struct {
-		Account            map[string]any `json:"account"`
-		RequiresOpenAIAuth bool           `json:"requiresOpenaiAuth"`
-	}
-	refreshToken := currentAuth.Pending || !currentAuth.Connected
-	if err := a.codexRequest(ctx, "account/read", map[string]any{"refreshToken": refreshToken}, &result); err != nil {
-		log.Printf("account sync skipped session=%s err=%s", sessionID, truncate(err.Error(), 200))
-		return
-	}
-
-	if result.RequiresOpenAIAuth || result.Account == nil {
-		if !currentAuth.Connected && currentTokens.AccessToken != "" && currentAuth.Mode != "apiKey" {
-			if restored, err := a.restoreStoredCodexAuth(ctx, sessionID, currentTokens, currentAuth.Mode); err != nil {
-				log.Printf("stored codex auth retry failed session=%s err=%s", sessionID, truncate(err.Error(), 200))
-			} else if restored {
-				var retryResult struct {
-					Account            map[string]any `json:"account"`
-					RequiresOpenAIAuth bool           `json:"requiresOpenaiAuth"`
-				}
-				if err := a.codexRequest(ctx, "account/read", map[string]any{"refreshToken": false}, &retryResult); err == nil {
-					result = retryResult
-				}
-			}
-		}
-	}
-
-	if result.RequiresOpenAIAuth || result.Account == nil {
-		if currentTokens.AccessToken != "" && currentAuth.Mode != "apiKey" {
-			a.store.UpdateAuth(sessionID, func(auth *model.AuthState, tokens *model.ExternalAuthTokens) {
-				auth.Connected = true
-				auth.Pending = false
-				if auth.Mode == "" {
-					auth.Mode = "chatgptAuthTokens"
-				}
-				auth.LastError = ""
-				if tokens.AccessToken == "" {
-					*tokens = currentTokens
-				}
-			})
-			return
-		}
-		if currentAuth.Pending {
-			return
-		}
-		a.store.UpdateAuth(sessionID, func(auth *model.AuthState, _ *model.ExternalAuthTokens) {
-			auth.Connected = false
-			auth.Pending = false
-			auth.LastError = ""
-		})
-		return
-	}
-
-	accountType := getString(result.Account, "type")
-	email := getString(result.Account, "email")
-	planType := getString(result.Account, "planType")
-	log.Printf("account sync session=%s connected=true type=%q email=%q planType=%q refreshToken=%t", sessionID, accountType, email, planType, refreshToken)
-	a.store.UpdateAuth(sessionID, func(auth *model.AuthState, tokens *model.ExternalAuthTokens) {
-		auth.Connected = true
-		auth.Pending = false
-		if accountType != "" {
-			auth.Mode = accountType
-		}
-		if planType != "" {
-			auth.PlanType = planType
-		}
-		if email != "" {
-			auth.Email = email
-			tokens.Email = email
-		}
-		auth.LastError = ""
-	})
+	a.ensureBifrostAuthState(sessionID)
 }
 
 func (a *App) monitorHosts(ctx context.Context) {
@@ -5109,72 +5607,6 @@ func (a *App) monitorHosts(ctx context.Context) {
 	}
 }
 
-func (a *App) importLocalCodexAuth(ctx context.Context, sessionID string) (bool, error) {
-	authPath := filepath.Join(a.cfg.CodexHome, "auth.json")
-	content, err := os.ReadFile(authPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	var payload struct {
-		AuthMode string `json:"auth_mode"`
-		Tokens   struct {
-			AccessToken string `json:"access_token"`
-			AccountID   string `json:"account_id"`
-			IDToken     string `json:"id_token"`
-		} `json:"tokens"`
-	}
-	if err := json.Unmarshal(content, &payload); err != nil {
-		return false, err
-	}
-	if payload.Tokens.AccessToken == "" || payload.Tokens.AccountID == "" {
-		return false, nil
-	}
-
-	mode := payload.AuthMode
-	if mode == "" {
-		mode = "chatgptAuthTokens"
-	}
-	return a.restoreStoredCodexAuth(ctx, sessionID, model.ExternalAuthTokens{
-		IDToken:          payload.Tokens.IDToken,
-		AccessToken:      payload.Tokens.AccessToken,
-		ChatGPTAccountID: payload.Tokens.AccountID,
-	}, mode)
-}
-
-func (a *App) restoreStoredCodexAuth(ctx context.Context, sessionID string, tokens model.ExternalAuthTokens, mode string) (bool, error) {
-	if tokens.AccessToken == "" || tokens.ChatGPTAccountID == "" {
-		return false, nil
-	}
-
-	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	var result map[string]any
-	if err := a.codexRequest(requestCtx, "account/login/start", map[string]any{
-		"type":             "chatgptAuthTokens",
-		"accessToken":      tokens.AccessToken,
-		"chatgptAccountId": tokens.ChatGPTAccountID,
-		"chatgptPlanType":  emptyToNil(tokens.ChatGPTPlanType),
-	}, &result); err != nil {
-		return false, err
-	}
-
-	if mode == "" {
-		mode = "chatgptAuthTokens"
-	}
-	a.store.SetAuth(sessionID, model.AuthState{
-		Connected: true,
-		Mode:      mode,
-		PlanType:  tokens.ChatGPTPlanType,
-		Email:     tokens.Email,
-	}, tokens)
-	log.Printf("local codex auth imported session=%s codexHome=%s", sessionID, a.cfg.CodexHome)
-	return true, nil
-}
-
 func (a *App) signSessionCookie(sessionID string) string {
 	return sessionID + "." + a.signatureForSession(sessionID)
 }
@@ -5183,10 +5615,16 @@ func (a *App) respondCodex(ctx context.Context, rawID string, result any) error 
 	if a.codexRespondFunc != nil {
 		return a.codexRespondFunc(ctx, rawID, result)
 	}
-	if a.codex == nil {
-		return errors.New("codex app-server not ready")
-	}
-	return a.codex.Respond(ctx, rawID, result)
+	return errors.New("runtime responder not configured")
+}
+
+func (a *App) respondToolError(ctx context.Context, rawID string, code int, message string) error {
+	return a.respondCodex(ctx, rawID, map[string]any{
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	})
 }
 
 func (a *App) selectedRemoteHostForSession(sessionID string) (model.Host, bool) {
@@ -5262,28 +5700,6 @@ func (a *App) rejectUnexpectedLocalApproval(sessionID, rawID, toolName, target s
 	})
 }
 
-func (a *App) interruptTurnAsync(threadID, turnID string) {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" || a.codex == nil {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		params := map[string]any{
-			"threadId":                   threadID,
-			"clean_background_terminals": true,
-		}
-		if turnID = strings.TrimSpace(turnID); turnID != "" {
-			params["turnId"] = turnID
-		}
-		var result map[string]any
-		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil {
-			log.Printf("interrupt unexpected local fallback failed thread=%s turn=%s err=%s", threadID, turnID, truncate(err.Error(), 200))
-		}
-	}()
-}
-
 func (a *App) blockUnexpectedLocalExecution(sessionID string, payload, item map[string]any, host model.Host) {
 	itemID := getString(item, "id")
 	itemType := getString(item, "type")
@@ -5333,7 +5749,11 @@ func (a *App) blockUnexpectedLocalExecution(sessionID string, payload, item map[
 		"phase":     "started",
 	})
 	a.broadcastSnapshot(sessionID)
-	a.interruptTurnAsync(getStringAny(payload, "threadId", "thread_id"), getTurnID(payload))
+	go func() {
+		if err := a.interruptSessionTurn(context.Background(), sessionID); err != nil {
+			log.Printf("interrupt unexpected local fallback failed session=%s err=%s", sessionID, truncate(err.Error(), 200))
+		}
+	}()
 }
 
 func (a *App) verifySessionCookie(value string) (string, bool) {
@@ -5589,6 +6009,7 @@ func toChoiceOptions(raw any) []model.ChoiceOption {
 				Label:       label,
 				Value:       optionValue,
 				Description: getString(value, "description"),
+				Recommended: getBool(value, "recommended"),
 			})
 		}
 	}
@@ -5596,23 +6017,36 @@ func toChoiceOptions(raw any) []model.ChoiceOption {
 }
 
 func toChanges(raw any) []model.FileChange {
-	list, ok := raw.([]any)
-	if !ok {
+	switch typed := raw.(type) {
+	case []model.FileChange:
+		return append([]model.FileChange(nil), typed...)
+	case []map[string]any:
+		changes := make([]model.FileChange, 0, len(typed))
+		for _, changeMap := range typed {
+			changes = append(changes, model.FileChange{
+				Path: getString(changeMap, "path"),
+				Kind: kindLabel(changeMap["kind"]),
+				Diff: getString(changeMap, "diff"),
+			})
+		}
+		return changes
+	case []any:
+		changes := make([]model.FileChange, 0, len(typed))
+		for _, entry := range typed {
+			changeMap, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			changes = append(changes, model.FileChange{
+				Path: getString(changeMap, "path"),
+				Kind: kindLabel(changeMap["kind"]),
+				Diff: getString(changeMap, "diff"),
+			})
+		}
+		return changes
+	default:
 		return nil
 	}
-	changes := make([]model.FileChange, 0, len(list))
-	for _, entry := range list {
-		changeMap, ok := entry.(map[string]any)
-		if !ok {
-			continue
-		}
-		changes = append(changes, model.FileChange{
-			Path: getString(changeMap, "path"),
-			Kind: kindLabel(changeMap["kind"]),
-			Diff: getString(changeMap, "diff"),
-		})
-	}
-	return changes
 }
 
 func choiceCardTitle(questions []model.ChoiceQuestion) string {
@@ -5625,6 +6059,13 @@ func choiceCardTitle(questions []model.ChoiceQuestion) string {
 		}
 	}
 	return "需要你的输入"
+}
+
+func firstChoiceQuestionText(questions []model.ChoiceQuestion) string {
+	if len(questions) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(questions[0].Question)
 }
 
 func choiceAnswerSummary(questions []model.ChoiceQuestion, answers []choiceAnswerInput) []string {
@@ -5648,6 +6089,22 @@ func choiceAnswerSummary(questions []model.ChoiceQuestion, answers []choiceAnswe
 		summary = append(summary, label)
 	}
 	return summary
+}
+
+func choiceAnswersToModel(answers []choiceAnswerInput) []model.ChoiceAnswer {
+	if len(answers) == 0 {
+		return nil
+	}
+	out := make([]model.ChoiceAnswer, 0, len(answers))
+	for _, answer := range answers {
+		out = append(out, model.ChoiceAnswer{
+			Value:   strings.TrimSpace(answer.Value),
+			Label:   strings.TrimSpace(answer.Label),
+			IsOther: answer.IsOther,
+			Note:    strings.TrimSpace(answer.Note),
+		})
+	}
+	return out
 }
 
 func getTurnID(payload map[string]any) string {

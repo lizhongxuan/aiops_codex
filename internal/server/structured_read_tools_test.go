@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func TestStructuredReadToolRoutedBeforeExecuteReadonlyQuery(t *testing.T) {
 		"threadId": "thread-sess-structured-route",
 		"turnId":   "turn-sess-structured-route",
 		"callId":   "call-structured-route",
-		"tool":     "host.summary",
+		"tool":     hostSummaryToolName,
 		"arguments": map[string]any{
 			"host":   "linux-route-01",
 			"reason": "check system overview",
@@ -59,10 +60,10 @@ func TestStructuredReadToolRoutedBeforeExecuteReadonlyQuery(t *testing.T) {
 	select {
 	case payload := <-responded:
 		if payload["success"] != true {
-			t.Fatalf("expected host.summary to succeed, got %#v", payload)
+			t.Fatalf("expected %s to succeed, got %#v", hostSummaryToolName, payload)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for host.summary response")
+		t.Fatalf("timed out waiting for %s response", hostSummaryToolName)
 	}
 }
 
@@ -98,17 +99,16 @@ func TestUnknownToolReturnsError(t *testing.T) {
 	}
 }
 
-
 // ---------- Capability gateway / permission tests ----------
 
 func TestCapabilityGatewayStructuredReadAllowed(t *testing.T) {
 	app := newRemoteDynamicToolPolicyApp(t, "sess-gw-sr", "linux-gw-01")
-	result := app.evaluateCapabilityGateway("linux-gw-01", "host.summary")
+	result := app.evaluateCapabilityGateway("linux-gw-01", hostSummaryToolName)
 	if result.Layer != CapabilityLayerStructuredRead {
 		t.Fatalf("expected layer %q, got %q", CapabilityLayerStructuredRead, result.Layer)
 	}
 	if !result.Allowed {
-		t.Fatalf("expected host.summary to be allowed, reason: %s", result.Reason)
+		t.Fatalf("expected %s to be allowed, reason: %s", hostSummaryToolName, result.Reason)
 	}
 }
 
@@ -119,12 +119,12 @@ func TestCapabilityGatewayStructuredReadDisabledWhenCommandExecutionOff(t *testi
 	profile.CapabilityPermissions.CommandExecution = model.AgentCapabilityDisabled
 	app.store.UpsertAgentProfile(profile)
 
-	result := app.evaluateCapabilityGateway("linux-gw-02", "host.process.top")
+	result := app.evaluateCapabilityGateway("linux-gw-02", hostProcessTopToolName)
 	if result.Layer != CapabilityLayerStructuredRead {
 		t.Fatalf("expected layer %q, got %q", CapabilityLayerStructuredRead, result.Layer)
 	}
 	if result.Allowed {
-		t.Fatalf("expected host.process.top to be disallowed when commandExecution is disabled")
+		t.Fatalf("expected %s to be disallowed when commandExecution is disabled", hostProcessTopToolName)
 	}
 }
 
@@ -167,22 +167,27 @@ func TestStructuredReadToolDefinitionsCount(t *testing.T) {
 	}
 }
 
-func TestAllStructuredReadToolsHaveHostPrefix(t *testing.T) {
+func TestAllStructuredReadToolsUseCodexSafeNames(t *testing.T) {
+	validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	for _, def := range structuredReadToolDefinitions() {
 		name, ok := def["name"].(string)
-		if !ok || !strings.HasPrefix(name, "host.") {
-			t.Fatalf("expected tool name with host. prefix, got %q", name)
+		if !ok || !strings.HasPrefix(name, "host_") {
+			t.Fatalf("expected tool name with host_ prefix, got %q", name)
+		}
+		if !validName.MatchString(name) {
+			t.Fatalf("expected Codex-safe tool name, got %q", name)
 		}
 	}
 }
 
 func TestIsStructuredReadToolPositive(t *testing.T) {
 	tools := []string{
+		hostSummaryToolName, hostProcessTopToolName, hostServiceStatusToolName,
+		hostJournalTailToolName, hostFileExistsToolName, hostFileReadToolName,
+		hostFileSearchToolName, hostNetworkListenersToolName, hostNetworkConnectionsToolName,
+		hostPackageVersionToolName, hostNginxStatusToolName, hostMySQLSummaryToolName,
+		hostRedisSummaryToolName, hostJVMSummaryToolName,
 		"host.summary", "host.process.top", "host.service.status",
-		"host.journal.tail", "host.file.exists", "host.file.read",
-		"host.file.search", "host.network.listeners", "host.network.connections",
-		"host.package.version", "host.nginx.status", "host.mysql.summary",
-		"host.redis.summary", "host.jvm.summary",
 	}
 	for _, name := range tools {
 		if !isStructuredReadTool(name) {
@@ -206,17 +211,17 @@ func TestIsStructuredReadToolNegative(t *testing.T) {
 // ---------- Command building tests ----------
 
 func TestBuildStructuredReadCommandStatic(t *testing.T) {
-	cmd, err := buildStructuredReadCommand("host.summary", nil)
+	cmd, err := buildStructuredReadCommand(hostSummaryToolName, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cmd == "" {
-		t.Fatalf("expected non-empty command for host.summary")
+		t.Fatalf("expected non-empty command for %s", hostSummaryToolName)
 	}
 }
 
 func TestBuildStructuredReadCommandWithArgs(t *testing.T) {
-	cmd, err := buildStructuredReadCommand("host.service.status", map[string]any{
+	cmd, err := buildStructuredReadCommand(hostServiceStatusToolName, map[string]any{
 		"service": "nginx",
 	})
 	if err != nil {
@@ -228,7 +233,7 @@ func TestBuildStructuredReadCommandWithArgs(t *testing.T) {
 }
 
 func TestBuildStructuredReadCommandRejectsShellInjection(t *testing.T) {
-	_, err := buildStructuredReadCommand("host.service.status", map[string]any{
+	_, err := buildStructuredReadCommand(hostServiceStatusToolName, map[string]any{
 		"service": "nginx; rm -rf /",
 	})
 	if err == nil {
@@ -265,7 +270,7 @@ func TestStructuredReadToolBlockedWhenCapabilityDisabled(t *testing.T) {
 		"threadId": "thread-sess-sr-blocked",
 		"turnId":   "turn-sess-sr-blocked",
 		"callId":   "call-sr-blocked",
-		"tool":     "host.summary",
+		"tool":     hostSummaryToolName,
 		"arguments": map[string]any{
 			"host":   "linux-blocked-01",
 			"reason": "check system",
@@ -275,7 +280,7 @@ func TestStructuredReadToolBlockedWhenCapabilityDisabled(t *testing.T) {
 	select {
 	case payload := <-responded:
 		if payload["success"] == true {
-			t.Fatalf("expected host.summary to be blocked when commandExecution is disabled")
+			t.Fatalf("expected %s to be blocked when commandExecution is disabled", hostSummaryToolName)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for blocked response")
@@ -293,8 +298,9 @@ func TestControlledMutationToolDefinitionsCount(t *testing.T) {
 
 func TestIsControlledMutationToolPositive(t *testing.T) {
 	tools := []string{
+		serviceRestartToolName, serviceStopToolName, configApplyToolName,
+		packageInstallToolName, packageUpgradeToolName,
 		"service.restart", "service.stop", "config.apply",
-		"package.install", "package.upgrade",
 	}
 	for _, name := range tools {
 		if !isControlledMutationTool(name) {
@@ -305,7 +311,7 @@ func TestIsControlledMutationToolPositive(t *testing.T) {
 
 func TestIsControlledMutationToolNegative(t *testing.T) {
 	negatives := []string{
-		"host.summary", "execute_readonly_query", "execute_system_mutation",
+		hostSummaryToolName, "execute_readonly_query", "execute_system_mutation",
 		"service.nonexistent", "config.nonexistent",
 	}
 	for _, name := range negatives {
@@ -316,7 +322,7 @@ func TestIsControlledMutationToolNegative(t *testing.T) {
 }
 
 func TestBuildControlledMutationCommandServiceRestart(t *testing.T) {
-	cmd, err := buildControlledMutationCommand("service.restart", map[string]any{
+	cmd, err := buildControlledMutationCommand(serviceRestartToolName, map[string]any{
 		"service": "nginx",
 	})
 	if err != nil {
@@ -331,7 +337,7 @@ func TestBuildControlledMutationCommandServiceRestart(t *testing.T) {
 }
 
 func TestBuildControlledMutationCommandRejectsShellInjection(t *testing.T) {
-	_, err := buildControlledMutationCommand("service.restart", map[string]any{
+	_, err := buildControlledMutationCommand(serviceRestartToolName, map[string]any{
 		"service": "nginx; rm -rf /",
 	})
 	if err == nil {
@@ -348,7 +354,7 @@ func TestBuildControlledMutationCommandUnknownTool(t *testing.T) {
 
 func TestCapabilityGatewayControlledMutationToolsRouteToLayer2(t *testing.T) {
 	app := newRemoteDynamicToolPolicyApp(t, "sess-gw-cm-tools", "linux-gw-cm-01")
-	tools := []string{"service.restart", "service.stop", "config.apply", "package.install", "package.upgrade"}
+	tools := []string{serviceRestartToolName, serviceStopToolName, configApplyToolName, packageInstallToolName, packageUpgradeToolName}
 	for _, toolName := range tools {
 		result := app.evaluateCapabilityGateway("linux-gw-cm-01", toolName)
 		if result.Layer != CapabilityLayerControlledMutation {
@@ -367,12 +373,12 @@ func TestCapabilityGatewayControlledMutationBlockedWhenBothDisabled(t *testing.T
 	profile.CapabilityPermissions.FileChange = model.AgentCapabilityDisabled
 	app.store.UpsertAgentProfile(profile)
 
-	result := app.evaluateCapabilityGateway("linux-gw-cm-02", "service.restart")
+	result := app.evaluateCapabilityGateway("linux-gw-cm-02", serviceRestartToolName)
 	if result.Layer != CapabilityLayerControlledMutation {
 		t.Fatalf("expected layer %q, got %q", CapabilityLayerControlledMutation, result.Layer)
 	}
 	if result.Allowed {
-		t.Fatalf("expected service.restart to be disallowed when both capabilities are disabled")
+		t.Fatalf("expected %s to be disallowed when both capabilities are disabled", serviceRestartToolName)
 	}
 }
 
@@ -391,7 +397,7 @@ func TestControlledMutationToolCreatesApproval(t *testing.T) {
 		"threadId": "thread-sess-cm-approval",
 		"turnId":   "turn-sess-cm-approval",
 		"callId":   "call-cm-approval",
-		"tool":     "service.restart",
+		"tool":     serviceRestartToolName,
 		"arguments": map[string]any{
 			"host":    "linux-cm-01",
 			"service": "nginx",
@@ -420,5 +426,38 @@ func TestControlledMutationToolCreatesApproval(t *testing.T) {
 	}
 	if !hasPending {
 		t.Fatalf("expected a pending or accepted approval for controlled mutation tool")
+	}
+}
+
+func TestBuildStructuredReadCommandSupportsLegacyDottedAlias(t *testing.T) {
+	cmd, err := buildStructuredReadCommand("host.summary", nil)
+	if err != nil {
+		t.Fatalf("expected legacy dotted alias to still work, got %v", err)
+	}
+	if cmd == "" {
+		t.Fatalf("expected non-empty command for legacy dotted alias")
+	}
+}
+
+func TestBuildControlledMutationCommandSupportsLegacyDottedAlias(t *testing.T) {
+	cmd, err := buildControlledMutationCommand("service.restart", map[string]any{"service": "nginx"})
+	if err != nil {
+		t.Fatalf("expected legacy dotted alias to still work, got %v", err)
+	}
+	if !strings.Contains(cmd, "systemctl restart nginx") {
+		t.Fatalf("expected restart command for legacy dotted alias, got %q", cmd)
+	}
+}
+
+func TestControlledMutationDefinitionsUseCodexSafeNames(t *testing.T) {
+	validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	for _, def := range controlledMutationToolDefinitions() {
+		name, ok := def["name"].(string)
+		if !ok || strings.Contains(name, ".") {
+			t.Fatalf("expected canonical controlled mutation tool name without dots, got %q", name)
+		}
+		if !validName.MatchString(name) {
+			t.Fatalf("expected Codex-safe controlled mutation tool name, got %q", name)
+		}
 	}
 }

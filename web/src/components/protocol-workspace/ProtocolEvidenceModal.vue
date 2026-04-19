@@ -47,7 +47,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["close", "update:open", "update:activeTab", "switch"]);
+const emit = defineEmits(["close", "update:open", "update:activeTab", "switch", "action", "pin"]);
 const bodyOverflow = ref("");
 
 const normalizedTabs = computed(() =>
@@ -66,6 +66,8 @@ const activePanel = computed(() => {
   if (!currentTab.value) return null;
   return normalizePanel(props.panels?.[currentTab.value.value] || props.panels?.[currentTab.value.value.replace(/-/g, "_")] || {});
 });
+const activePanelListItems = computed(() => panelListItems(activePanel.value));
+const activePanelRawText = computed(() => panelRawText(activePanel.value));
 
 watch(
   () => props.open,
@@ -98,6 +100,7 @@ function normalizePanel(panel) {
     items: Array.isArray(panel.items) ? panel.items : [],
     lines: Array.isArray(panel.lines) ? panel.lines : [],
     sections: Array.isArray(panel.sections) ? panel.sections : [],
+    actions: Array.isArray(panel.actions) ? panel.actions : [],
   };
 }
 
@@ -107,9 +110,70 @@ function selectTab(value) {
   emit("switch", value);
 }
 
+function panelListItems(panel = {}) {
+  const source = panel || {};
+  if (Array.isArray(source.items) && source.items.length) return source.items;
+  if (Array.isArray(source.lines) && source.lines.length) return source.lines;
+  if (Array.isArray(source.sections) && source.sections.length) return source.sections;
+  return [];
+}
+
+function panelRawText(panel = {}) {
+  const raw = panel?.raw;
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object") {
+    try {
+      return JSON.stringify(raw, null, 2);
+    } catch {
+      return String(raw);
+    }
+  }
+  return "";
+}
+
+function panelItemKey(item, index) {
+  if (item && typeof item === "object") {
+    return item.id || item.key || item.label || index;
+  }
+  return index;
+}
+
+function panelItemLabel(item) {
+  if (!item || typeof item !== "object") return "";
+  return item.label || item.key || "";
+}
+
+function panelValueText(value) {
+  if (value === null || value === undefined) return "";
+  if (["string", "number", "boolean"].includes(typeof value)) return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function panelItemValue(item) {
+  if (item && typeof item === "object") {
+    return panelValueText(item.value ?? item.text ?? item.summary ?? item.content ?? item);
+  }
+  return panelValueText(item);
+}
+
 function requestClose() {
   emit("close");
   emit("update:open", false);
+}
+
+function triggerAction(action) {
+  if (!action || typeof action !== "object") return;
+  emit("action", action);
+}
+
+function requestPin() {
+  emit("pin", {
+    activeTab: displayTab.value,
+  });
 }
 
 function onBackdropClick() {
@@ -145,9 +209,14 @@ onBeforeUnmount(() => {
               <h3>{{ title }}</h3>
               <p>{{ subtitle }}</p>
             </div>
-            <button class="close-btn" type="button" @click="requestClose">
-              <XIcon size="18" />
-            </button>
+            <div class="modal-head-actions">
+              <button class="pin-btn" type="button" data-testid="protocol-evidence-pin" @click="requestPin">
+                固定到证据抽屉
+              </button>
+              <button class="close-btn" type="button" @click="requestClose">
+                <XIcon size="18" />
+              </button>
+            </div>
           </header>
 
           <nav class="modal-tabs" aria-label="证据分区">
@@ -165,110 +234,42 @@ onBeforeUnmount(() => {
           </nav>
 
           <div class="modal-body">
-            <template v-if="displayTab === 'main-agent-plan'">
-              <slot name="main-agent-plan" :panel="activePanel">
-                <EvidencePanelFallback :panel="activePanel" />
-              </slot>
-            </template>
-            <template v-else-if="displayTab === 'worker-conversation'">
-              <slot name="worker-conversation" :panel="activePanel">
-                <EvidencePanelFallback :panel="activePanel" />
-              </slot>
-            </template>
-            <template v-else-if="displayTab === 'host-terminal'">
-              <slot name="host-terminal" :panel="activePanel">
-                <EvidencePanelFallback :panel="activePanel" />
-              </slot>
-            </template>
-            <template v-else-if="displayTab === 'mcp-surface'">
-              <slot name="mcp-surface" :panel="activePanel">
-                <EvidencePanelFallback :panel="activePanel" />
-              </slot>
-            </template>
-            <template v-else-if="displayTab === 'approval-context'">
-              <slot name="approval-context" :panel="activePanel">
-                <EvidencePanelFallback :panel="activePanel" />
-              </slot>
-            </template>
-            <template v-else>
-              <slot :name="displayTab" :panel="activePanel">
-                <EvidencePanelFallback :panel="activePanel" />
-              </slot>
-            </template>
+            <slot :name="displayTab" :panel="activePanel">
+              <section class="panel-fallback">
+                <div v-if="activePanel?.title || activePanel?.summary" class="panel-hero">
+                  <h4 v-if="activePanel?.title">{{ activePanel.title }}</h4>
+                  <p v-if="activePanel?.summary">{{ activePanel.summary }}</p>
+                  <div v-if="activePanel.actions?.length" class="panel-actions">
+                    <button
+                      v-for="action in activePanel.actions"
+                      :key="action.id || action.kind || action.label"
+                      type="button"
+                      class="panel-action"
+                      @click="triggerAction(action)"
+                    >
+                      {{ action.label || action.title || action.kind }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="activePanelListItems.length" class="panel-list">
+                  <article v-for="(item, index) in activePanelListItems" :key="panelItemKey(item, index)" class="panel-item">
+                    <strong v-if="panelItemLabel(item)">{{ panelItemLabel(item) }}</strong>
+                    <span>{{ panelItemValue(item) }}</span>
+                  </article>
+                </div>
+
+                <pre v-else-if="activePanelRawText" class="panel-raw">{{ activePanelRawText }}</pre>
+
+                <div v-else class="panel-empty">当前 tab 还没有内容。</div>
+              </section>
+            </slot>
           </div>
         </section>
       </div>
     </transition>
   </teleport>
 </template>
-
-<script>
-export default {
-  name: "ProtocolEvidenceModal",
-  components: {
-    EvidencePanelFallback: {
-      props: {
-        panel: {
-          type: Object,
-          default: () => ({}),
-        },
-      },
-      computed: {
-        listItems() {
-          const panel = this.panel || {};
-          if (Array.isArray(panel.items) && panel.items.length) return panel.items;
-          if (Array.isArray(panel.lines) && panel.lines.length) return panel.lines;
-          if (Array.isArray(panel.sections) && panel.sections.length) return panel.sections;
-          return [];
-        },
-        rawText() {
-          const raw = this.panel?.raw;
-          if (typeof raw === "string") return raw;
-          if (raw && typeof raw === "object") {
-            try {
-              return JSON.stringify(raw, null, 2);
-            } catch {
-              return String(raw);
-            }
-          }
-          return "";
-        },
-      },
-      methods: {
-        rowKey(item, index) {
-          if (item && typeof item === "object") {
-            return item.id || item.key || item.label || index;
-          }
-          return index;
-        },
-      },
-      template: `
-        <section class="panel-fallback">
-          <div v-if="panel.title || panel.summary" class="panel-hero">
-            <h4 v-if="panel.title">{{ panel.title }}</h4>
-            <p v-if="panel.summary">{{ panel.summary }}</p>
-          </div>
-
-          <div v-if="listItems.length" class="panel-list">
-            <article v-for="(item, index) in listItems" :key="rowKey(item, index)" class="panel-item">
-              <strong v-if="typeof item === 'object' && (item.label || item.key)">{{ item.label || item.key }}</strong>
-              <span v-if="typeof item === 'object'">
-                {{ item.value ?? item.text ?? item.summary ?? item.content ?? item }}
-              </span>
-              <span v-else>{{ item }}</span>
-            </article>
-          </div>
-
-          <pre v-else-if="rawText" class="panel-raw">{{ rawText }}</pre>
-
-          <div v-else class="panel-empty">当前 tab 还没有内容，主页面可以通过 slot 或 panels 传入数据。</div>
-        </section>
-      `,
-    },
-  },
-};
-</script>
-
 <style scoped>
 .protocol-evidence-backdrop {
   position: fixed;
@@ -284,6 +285,7 @@ export default {
 
 .protocol-evidence-modal {
   width: 100%;
+  min-height: min(520px, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -331,6 +333,32 @@ export default {
   line-height: 1.6;
 }
 
+.modal-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  background: rgba(255, 255, 255, 0.96);
+  color: #0369a1;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pin-btn:hover {
+  background: rgba(240, 249, 255, 0.98);
+}
+
 .close-btn {
   display: inline-flex;
   align-items: center;
@@ -343,6 +371,27 @@ export default {
   color: #0f172a;
   cursor: pointer;
   transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.panel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(191, 219, 254, 0.95);
+  background: rgba(239, 246, 255, 0.92);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .close-btn:hover {
@@ -404,7 +453,8 @@ export default {
 }
 
 .modal-body {
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 180px;
   overflow: auto;
   padding: 16px 18px 18px;
 }
@@ -498,7 +548,13 @@ export default {
   }
 
   .modal-head {
+    flex-direction: column;
     padding: 18px 16px 14px;
+  }
+
+  .modal-head-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 </style>

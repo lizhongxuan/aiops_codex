@@ -51,6 +51,59 @@ func (g *GeneratorService) GenerateBundleFromCoroot(serviceType string, querySch
 	return &card, nil
 }
 
+// GenerateSkillsFromCoroot batch-generates draft AgentSkills from Coroot tool
+// metadata. Each generated skill is lint-validated; skills with error-level
+// issues are filtered out of the result.
+func (g *GeneratorService) GenerateSkillsFromCoroot(tools []CorootToolMeta) ([]model.AgentSkill, error) {
+	if len(tools) == 0 {
+		return nil, fmt.Errorf("tools list is empty")
+	}
+	drafts := buildSkillsFromCorootTools(tools)
+	var valid []model.AgentSkill
+	for i := range drafts {
+		if !hasErrorIssues(g.Lint(&drafts[i])) {
+			valid = append(valid, drafts[i])
+		}
+	}
+	return valid, nil
+}
+
+// GenerateCardFromCoroot produces a draft UICardDefinition from a Coroot
+// service type and query schema. The result is lint-validated; if the card
+// has error-level issues it is rejected.
+func (g *GeneratorService) GenerateCardFromCoroot(serviceType string, querySchema map[string]any) (*model.UICardDefinition, error) {
+	if strings.TrimSpace(serviceType) == "" {
+		return nil, fmt.Errorf("serviceType is required")
+	}
+	card := buildBundleFromCoroot(serviceType, querySchema)
+	issues := g.Lint(&card)
+	if hasErrorIssues(issues) {
+		return nil, fmt.Errorf("generated card has lint errors: %s", formatLintErrors(issues))
+	}
+	return &card, nil
+}
+
+// hasErrorIssues returns true if any issue has error level.
+func hasErrorIssues(issues []LintIssue) bool {
+	for _, issue := range issues {
+		if issue.Level == "error" {
+			return true
+		}
+	}
+	return false
+}
+
+// formatLintErrors returns a summary string of error-level lint issues.
+func formatLintErrors(issues []LintIssue) string {
+	var msgs []string
+	for _, issue := range issues {
+		if issue.Level == "error" {
+			msgs = append(msgs, issue.Field+": "+issue.Message)
+		}
+	}
+	return strings.Join(msgs, "; ")
+}
+
 // Lint validates a draft object and returns any issues found.
 // It accepts *model.AgentSkill or *model.UICardDefinition.
 func (g *GeneratorService) Lint(draft any) []LintIssue {

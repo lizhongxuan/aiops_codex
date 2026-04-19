@@ -27,6 +27,10 @@ const props = defineProps({
     type: Number,
     default: 0,
   },
+  activeItemId: {
+    type: String,
+    default: "",
+  },
 });
 
 const emit = defineEmits(["select"]);
@@ -82,7 +86,7 @@ function handleSelect(item) {
         :key="item.id"
         type="button"
         class="timeline-item"
-        :class="item.tone"
+        :class="[item.tone, { active: item.id === activeItemId }]"
         :data-testid="`protocol-event-${item.id}`"
         @click="handleSelect(item)"
       >
@@ -187,6 +191,14 @@ function handleSelect(item) {
   background: #f8fafc;
   transform: none;
   box-shadow: none;
+}
+
+.timeline-item.active {
+  background: rgba(239, 246, 255, 0.88);
+}
+
+.timeline-item.active .timeline-title strong {
+  color: #1d4ed8;
 }
 
 .timeline-rail {

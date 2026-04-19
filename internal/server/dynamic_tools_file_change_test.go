@@ -71,6 +71,19 @@ func TestValidateRemoteFileChangeArgumentsRequiresExplicitProtocol(t *testing.T)
 		}
 	})
 
+	t.Run("success with missing write_mode defaults to overwrite", func(t *testing.T) {
+		err := validateRemoteFileChangeArguments(map[string]any{
+			"host":    "linux-01",
+			"mode":    "file_change",
+			"path":    "/etc/app.conf",
+			"content": "x",
+			"reason":  "update",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	cases := []struct {
 		name    string
 		args    map[string]any
@@ -108,17 +121,6 @@ func TestValidateRemoteFileChangeArgumentsRequiresExplicitProtocol(t *testing.T)
 				"reason":     "update",
 			},
 			wantMsg: "file_change requires content",
-		},
-		{
-			name: "missing write_mode",
-			args: map[string]any{
-				"host":    "linux-01",
-				"mode":    "file_change",
-				"path":    "/etc/app.conf",
-				"content": "x",
-				"reason":  "update",
-			},
-			wantMsg: "file_change requires write_mode",
 		},
 		{
 			name: "missing path",
@@ -224,6 +226,20 @@ func TestRequestRemoteFileChangeApprovalDoesNotWriteBeforeApproval(t *testing.T)
 			if len(card.Changes) == 0 || card.Changes[0].Kind != "create" {
 				t.Fatalf("expected missing file to be represented as create, got %#v", card.Changes)
 			}
+			display := toolProjectionDisplayMapFromDetail(card.Detail)
+			if got := getStringAny(display, "summary"); got == "" || !strings.Contains(got, "/etc/app.conf") {
+				t.Fatalf("expected approval display summary to mention path, got %#v", display)
+			}
+			blocks, ok := display["blocks"].([]map[string]any)
+			if !ok || len(blocks) < 2 {
+				t.Fatalf("expected approval display blocks, got %#v", display["blocks"])
+			}
+			if getStringAny(blocks[0], "kind") != ToolDisplayBlockResultStats {
+				t.Fatalf("expected first approval block result_stats, got %#v", blocks)
+			}
+			if getStringAny(blocks[1], "kind") != ToolDisplayBlockFileDiffSummary {
+				t.Fatalf("expected second approval block file_diff_summary, got %#v", blocks)
+			}
 		}
 	}
 	if !foundApproval {
@@ -274,7 +290,7 @@ func TestExecuteApprovedRemoteFileChangeHandlesOverwriteAndAppend(t *testing.T) 
 				WriteMode:  "append",
 			},
 			wantKind: "append",
-			wantText: "已修改远程文件 /etc/app.conf",
+			wantText: "已追加远程文件 /etc/app.conf",
 			wantDiff: "extra-line",
 		},
 	}
@@ -467,7 +483,109 @@ func TestExecuteApprovedRemoteFileChangeReportsPermissionAndIOErrors(t *testing.
 					t.Fatalf("expected card text to contain %q, got %q", part, card.Text)
 				}
 			}
+			display := toolProjectionDisplayMapFromDetail(card.Detail)
+			if got := getStringAny(display, "summary"); got == "" || !strings.Contains(got, "/etc/app.conf") {
+				t.Fatalf("expected failed display summary to mention path, got %#v", display)
+			}
+			blocks, ok := display["blocks"].([]map[string]any)
+			if !ok || len(blocks) < 3 {
+				t.Fatalf("expected failed display blocks, got %#v", display["blocks"])
+			}
+			if getStringAny(blocks[0], "kind") != ToolDisplayBlockResultStats {
+				t.Fatalf("expected first failed block result_stats, got %#v", blocks)
+			}
+			if getStringAny(blocks[1], "kind") != ToolDisplayBlockWarning {
+				t.Fatalf("expected second failed block warning, got %#v", blocks)
+			}
+			if getStringAny(blocks[2], "kind") != ToolDisplayBlockFileDiffSummary {
+				t.Fatalf("expected third failed block file_diff_summary, got %#v", blocks)
+			}
 		})
+	}
+}
+
+func TestHandleRemoteFileChangeApprovalDeclineProjectsStructuredDisplay(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-file-change-decline-display"
+	hostID := "linux-01"
+	approvalID := "approval-decline-display"
+	itemID := "item-decline-display"
+	now := model.NowString()
+
+	app.codexRespondFunc = func(_ context.Context, rawID string, result any) error {
+		if rawID != "raw-decline-display" {
+			t.Fatalf("unexpected raw id %q", rawID)
+		}
+		payload, ok := result.(map[string]any)
+		if !ok || payload["success"] != false {
+			t.Fatalf("expected decline tool response payload, got %#v", result)
+		}
+		return nil
+	}
+
+	change := model.FileChange{
+		Path: "/etc/app.conf",
+		Kind: "update",
+		Diff: "--- /etc/app.conf\n+++ /etc/app.conf\n@@\n-old-value\n+new-value",
+	}
+
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertHost(model.Host{ID: hostID, Name: "linux-01", Kind: "agent", Status: "online", Executable: true})
+	app.store.AddApproval(sessionID, model.ApprovalRequest{
+		ID:           approvalID,
+		RequestIDRaw: "raw-decline-display",
+		HostID:       hostID,
+		Type:         "remote_file_change",
+		Status:       "pending",
+		ThreadID:     "thread-decline-display",
+		TurnID:       "turn-decline-display",
+		ItemID:       itemID,
+		Reason:       "update config",
+		Changes:      []model.FileChange{change},
+		Decisions:    []string{"accept", "accept_session", "decline"},
+		RequestedAt:  now,
+	})
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        itemID,
+		Type:      "FileChangeApprovalCard",
+		Status:    "pending",
+		Changes:   []model.FileChange{change},
+		Detail:    fileChangeDisplayDetail(nil, fileChangeDisplayPayload(change, "overwrite", pendingRemoteFileChangeSummary(change.Path), "")),
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/"+approvalID+"/decision", strings.NewReader(`{"decision":"decline"}`))
+	recorder := httptest.NewRecorder()
+	app.handleApprovalDecision(recorder, req, sessionID)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+
+	card := app.cardByID(sessionID, "approval-memo-"+approvalID)
+	if card == nil {
+		t.Fatalf("expected decline memo card")
+	}
+	if card.Status != "decline" {
+		t.Fatalf("expected decline memo status, got %#v", card)
+	}
+	display := toolProjectionDisplayMapFromDetail(card.Detail)
+	if got := getStringAny(display, "summary"); got == "" || !strings.Contains(got, "/etc/app.conf") {
+		t.Fatalf("expected decline display summary to mention path, got %#v", display)
+	}
+	blocks, ok := display["blocks"].([]map[string]any)
+	if !ok || len(blocks) < 3 {
+		t.Fatalf("expected decline display blocks, got %#v", display["blocks"])
+	}
+	if getStringAny(blocks[1], "kind") != ToolDisplayBlockWarning {
+		t.Fatalf("expected warning block on decline display, got %#v", blocks)
+	}
+	if getStringAny(blocks[2], "kind") != ToolDisplayBlockFileDiffSummary {
+		t.Fatalf("expected file_diff_summary block on decline display, got %#v", blocks)
+	}
+	approvalCard := app.cardByID(sessionID, itemID)
+	if approvalCard == nil || approvalCard.Status != "failed" {
+		t.Fatalf("expected original approval card to be marked failed, got %#v", approvalCard)
 	}
 }
 
@@ -772,6 +890,126 @@ func TestHandleRemoteFileChangeApprovalSequentialRequestsDoNotCrossPollute(t *te
 	mu.Unlock()
 	if gotWrites != 2 {
 		t.Fatalf("expected exactly two writes, got %d", gotWrites)
+	}
+}
+
+func TestExecuteApprovedRemoteFileChangeProjectsLifecycleState(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-file-change-lifecycle"
+	hostID := "linux-01"
+	approvalID := "approval-lifecycle"
+	itemID := "item-lifecycle"
+	now := model.NowString()
+
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertHost(model.Host{ID: hostID, Name: "linux-01", Kind: "agent", Status: "online", Executable: true})
+	app.store.RememberItem(sessionID, itemID, map[string]any{
+		"host":       hostID,
+		"mode":       "file_change",
+		"path":       "/etc/app.conf",
+		"content":    "new-value\n",
+		"write_mode": "overwrite",
+		"writeMode":  "overwrite",
+		"reason":     "update config",
+	})
+	app.store.AddApproval(sessionID, model.ApprovalRequest{
+		ID:           approvalID,
+		RequestIDRaw: "raw-lifecycle",
+		HostID:       hostID,
+		Type:         "remote_file_change",
+		Status:       "accepted",
+		ThreadID:     "thread-lifecycle",
+		TurnID:       "turn-lifecycle",
+		ItemID:       itemID,
+		Reason:       "update config",
+		Changes:      []model.FileChange{{Path: "/etc/app.conf", Kind: "update", Diff: "placeholder"}},
+		RequestedAt:  now,
+	})
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        itemID,
+		Type:      "FileChangeApprovalCard",
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	stream := &fileChangeAgentStream{
+		onSend: func(msg *agentrpc.Envelope) error {
+			if msg.FileWriteRequest == nil {
+				return nil
+			}
+			app.handleAgentFileWriteResult(hostID, &agentrpc.FileWriteResult{
+				RequestID:  msg.FileWriteRequest.RequestID,
+				Path:       msg.FileWriteRequest.Path,
+				OldContent: "old-value\n",
+				NewContent: "new-value\n",
+				Created:    false,
+				WriteMode:  msg.FileWriteRequest.WriteMode,
+			})
+			return nil
+		},
+	}
+	app.setAgentConnection(hostID, &agentConnection{hostID: hostID, stream: stream})
+
+	approval, ok := app.store.Approval(sessionID, approvalID)
+	if !ok {
+		t.Fatalf("expected approval to exist")
+	}
+	app.executeApprovedRemoteFileChange(sessionID, approval)
+
+	process := app.cardByID(sessionID, "process-"+itemID)
+	if process == nil {
+		t.Fatalf("expected process line card to exist")
+	}
+	if process.Status != "completed" {
+		t.Fatalf("expected completed process line card, got %#v", process)
+	}
+	if !strings.Contains(process.Text, "已修改 /etc/app.conf") {
+		t.Fatalf("expected process text to mention path, got %#v", process)
+	}
+
+	card := app.cardByID(sessionID, itemID)
+	if card == nil || card.Status != "completed" {
+		t.Fatalf("expected completed file change card, got %#v", card)
+	}
+	display := toolProjectionDisplayMapFromDetail(card.Detail)
+	if got := getStringAny(display, "summary"); got == "" || !strings.Contains(got, "/etc/app.conf") {
+		t.Fatalf("expected structured write summary on file change card, got %#v", card.Detail)
+	}
+	blocks, ok := display["blocks"].([]map[string]any)
+	if !ok || len(blocks) < 2 {
+		t.Fatalf("expected write summary blocks on file change card, got %#v", display["blocks"])
+	}
+	if getStringAny(blocks[0], "kind") != ToolDisplayBlockResultStats {
+		t.Fatalf("expected first write block result_stats, got %#v", blocks)
+	}
+	if getStringAny(blocks[1], "kind") != ToolDisplayBlockFileDiffSummary {
+		t.Fatalf("expected second write block file_diff_summary, got %#v", blocks)
+	}
+	evidenceID := getStringAny(card.Detail, "evidenceId")
+	if evidenceID == "" {
+		t.Fatalf("expected file change evidenceId, got %#v", card.Detail)
+	}
+	if item := app.store.Item(sessionID, evidenceID); item == nil {
+		t.Fatalf("expected evidence artifact %q", evidenceID)
+	}
+	record := findVerificationRecord(app.snapshot(sessionID).VerificationRecords, "verify-"+itemID)
+	if record == nil {
+		t.Fatalf("expected verification record for remote file change, got %#v", app.snapshot(sessionID).VerificationRecords)
+	}
+	if got := anyToString(record.Metadata["evidenceId"]); got != evidenceID {
+		t.Fatalf("expected verification metadata evidenceId %q, got %#v", evidenceID, record.Metadata)
+	}
+
+	session := app.store.Session(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to exist")
+	}
+	if session.Runtime.Activity.FilesChanged != 1 {
+		t.Fatalf("expected filesChanged to be 1, got %d", session.Runtime.Activity.FilesChanged)
+	}
+	if session.Runtime.Activity.CurrentChangingFile != "" {
+		t.Fatalf("expected currentChangingFile to be cleared, got %q", session.Runtime.Activity.CurrentChangingFile)
 	}
 }
 

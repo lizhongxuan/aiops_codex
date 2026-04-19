@@ -1,22 +1,44 @@
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { XIcon, MaximizeIcon, MinimizeIcon, ExternalLinkIcon } from "lucide-vue-next";
 
 const props = defineProps({
   title: { type: String, default: "Coroot" },
   url: { type: String, default: "" },
-  mode: { type: String, default: "drawer" }, // "drawer" | "modal"
+  displayMode: { type: String, default: "drawer" }, // "drawer" | "modal"
+  mode: { type: String, default: "iframe" }, // "iframe" | "fetch"
+  baseUrl: { type: String, default: "/api/v1/coroot/" },
 });
 
 const emit = defineEmits(["close"]);
 
-const loading = ref(true);
-const content = ref(null);
+const iframeLoading = ref(true);
+const iframeError = ref(false);
 const expanded = ref(false);
 
+// fetch mode state (fallback)
+const fetchLoading = ref(true);
+const content = ref(null);
+
+const iframeSrc = computed(() => {
+  if (props.url) return props.url;
+  return props.baseUrl;
+});
+
+function onIframeLoad() {
+  iframeLoading.value = false;
+  iframeError.value = false;
+}
+
+function onIframeError() {
+  iframeLoading.value = false;
+  iframeError.value = true;
+}
+
+// fetch mode fallback
 async function fetchContent() {
   if (!props.url) return;
-  loading.value = true;
+  fetchLoading.value = true;
   try {
     const res = await fetch(props.url);
     if (res.ok) {
@@ -27,7 +49,7 @@ async function fetchContent() {
   } catch (e) {
     content.value = { error: `请求异常: ${e.message}` };
   } finally {
-    loading.value = false;
+    fetchLoading.value = false;
   }
 }
 
@@ -39,15 +61,32 @@ function close() {
   emit("close");
 }
 
+function openInNewWindow() {
+  const target = iframeSrc.value || props.url;
+  if (target) window.open(target, "_blank", "noopener,noreferrer");
+}
+
 function handleKeydown(e) {
   if (e.key === "Escape") close();
 }
 
-watch(() => props.url, () => { void fetchContent(); });
+watch(
+  () => props.url,
+  () => {
+    if (props.mode === "iframe") {
+      iframeLoading.value = true;
+      iframeError.value = false;
+    } else {
+      void fetchContent();
+    }
+  },
+);
 
 onMounted(() => {
   document.addEventListener("keydown", handleKeydown);
-  void fetchContent();
+  if (props.mode !== "iframe") {
+    void fetchContent();
+  }
 });
 
 onBeforeUnmount(() => {
@@ -57,28 +96,65 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div class="embed-overlay" :class="{ 'mode-modal': mode === 'modal', 'mode-drawer': mode !== 'modal' }" @click.self="close">
+    <div
+      class="embed-overlay"
+      :class="{ 'mode-modal': displayMode === 'modal', 'mode-drawer': displayMode !== 'modal' }"
+      @click.self="close"
+    >
       <div class="embed-panel" :class="{ expanded }" role="dialog" :aria-label="title">
         <header class="embed-header">
           <h3>{{ title }}</h3>
           <div class="embed-actions">
-            <button type="button" class="icon-btn" :title="expanded ? '收起' : '展开'" @click="toggleExpand">
+            <button
+              type="button"
+              class="icon-btn"
+              :title="expanded ? '收起' : '展开'"
+              @click="toggleExpand"
+            >
               <MaximizeIcon v-if="!expanded" :size="16" />
               <MinimizeIcon v-else :size="16" />
             </button>
-            <a v-if="url" :href="url" target="_blank" rel="noopener" class="icon-btn" title="新窗口打开">
+            <button
+              v-if="iframeSrc || url"
+              type="button"
+              class="icon-btn"
+              title="新窗口打开"
+              @click="openInNewWindow"
+            >
               <ExternalLinkIcon :size="16" />
-            </a>
+            </button>
             <button type="button" class="icon-btn" title="关闭" @click="close">
               <XIcon :size="16" />
             </button>
           </div>
         </header>
         <div class="embed-body">
-          <div v-if="loading" class="embed-loading">加载中…</div>
-          <div v-else-if="content && content.error" class="embed-error">{{ content.error }}</div>
-          <pre v-else-if="content" class="embed-content">{{ JSON.stringify(content, null, 2) }}</pre>
-          <div v-else class="embed-empty">暂无数据</div>
+          <!-- iframe mode -->
+          <template v-if="mode === 'iframe'">
+            <div v-if="iframeLoading && !iframeError" class="embed-loading">
+              <span class="spinner" aria-hidden="true"></span>
+              加载中…
+            </div>
+            <div v-if="iframeError" class="embed-error">
+              Dashboard 加载失败，请检查 Coroot 连接
+            </div>
+            <iframe
+              v-show="!iframeError"
+              :src="iframeSrc"
+              class="coroot-iframe"
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              referrerpolicy="no-referrer"
+              @load="onIframeLoad"
+              @error="onIframeError"
+            />
+          </template>
+          <!-- fetch fallback mode -->
+          <template v-else>
+            <div v-if="fetchLoading" class="embed-loading">加载中…</div>
+            <div v-else-if="content && content.error" class="embed-error">{{ content.error }}</div>
+            <pre v-else-if="content" class="embed-content">{{ JSON.stringify(content, null, 2) }}</pre>
+            <div v-else class="embed-empty">暂无数据</div>
+          </template>
         </div>
       </div>
     </div>
@@ -175,7 +251,8 @@ onBeforeUnmount(() => {
 .embed-body {
   flex: 1;
   overflow: auto;
-  padding: 18px;
+  padding: 0;
+  position: relative;
 }
 
 .embed-loading {
@@ -183,14 +260,44 @@ onBeforeUnmount(() => {
   font-size: 14px;
   text-align: center;
   padding: 40px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #fff;
+}
+
+.spinner {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  border: 3px solid rgba(100, 116, 139, 0.2);
+  border-top-color: #64748b;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .embed-error {
   color: #dc2626;
   font-size: 13px;
   padding: 12px;
+  margin: 18px;
   background: #fee2e2;
   border-radius: 8px;
+}
+
+.coroot-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
 }
 
 .embed-content {
@@ -202,6 +309,7 @@ onBeforeUnmount(() => {
   color: #334155;
   background: #f8fafc;
   padding: 14px;
+  margin: 18px;
   border-radius: 10px;
   border: 1px solid rgba(226, 232, 240, 0.9);
 }
@@ -210,6 +318,6 @@ onBeforeUnmount(() => {
   color: #94a3b8;
   font-size: 13px;
   text-align: center;
-  padding: 40px 0;
+  padding: 40px 18px;
 }
 </style>

@@ -25,24 +25,20 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	var reqMu sync.Mutex
 	threadSeq := 0
 	turnSeq := 0
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		reqMu.Lock()
-		defer reqMu.Unlock()
-
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			reqMu.Lock()
+			defer reqMu.Unlock()
 			threadSeq++
-			payload = map[string]any{"thread": map[string]any{"id": fmt.Sprintf("thread-e2e-%02d", threadSeq)}}
-		case "turn/start":
+			return fmt.Sprintf("thread-e2e-%02d", threadSeq), nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			reqMu.Lock()
+			defer reqMu.Unlock()
 			turnSeq++
-			payload = map[string]any{"turnId": fmt.Sprintf("turn-e2e-%02d", turnSeq)}
-		case "turn/interrupt":
-			payload = map[string]any{"ok": true}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+			return fmt.Sprintf("turn-e2e-%02d", turnSeq), nil
+		},
+	}).install(app)
 
 	hostIDs := setupBudgetedFanoutHosts(t, app, 32)
 
@@ -161,8 +157,7 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	app.setRuntimeTurnPhase(approvedSessionID, "waiting_approval")
 	app.store.AddApproval(approvedSessionID, approval)
 	app.store.UpsertCard(approvedSessionID, approvalCard)
-	app.recordOrchestratorApprovalRequested(approvedSessionID, approval)
-	app.mirrorInternalApprovalToWorkspace(approvedSessionID, approval, approvalCard)
+	app.projectApprovalRequestedFallback(approvedSessionID, approval, approvalCard, false)
 
 	waitFor(t, 5*time.Second, "workspace mirrored approval", func() bool {
 		approval, ok := app.store.Approval(workspaceSessionID, approvalID)
@@ -283,7 +278,7 @@ func TestWorkspaceMissionEndToEndWithApprovalAndBudgetedFanout(t *testing.T) {
 	}
 }
 
-func TestWorkspaceChatEndToEndHostReadonlyTargetThenPlanningSameSession(t *testing.T) {
+func TestWorkspaceChatEndToEndUsesReActLoopAcrossMessages(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
 
@@ -291,29 +286,23 @@ func TestWorkspaceChatEndToEndHostReadonlyTargetThenPlanningSameSession(t *testi
 	threadSeq := 0
 	turnSeq := 0
 	var turnInputs []string
-	app.codexRequestFunc = func(_ context.Context, method string, params any, result any) error {
-		reqMu.Lock()
-		defer reqMu.Unlock()
-
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			reqMu.Lock()
+			defer reqMu.Unlock()
 			threadSeq++
-			payload = map[string]any{"thread": map[string]any{"id": fmt.Sprintf("thread-chat-flow-%02d", threadSeq)}}
-		case "turn/start":
+			return fmt.Sprintf("thread-chat-flow-%02d", threadSeq), nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, spec turnStartSpec) (string, error) {
+			reqMu.Lock()
+			defer reqMu.Unlock()
 			turnSeq++
-			if rawParams, ok := params.(map[string]any); ok {
-				if inputItems, ok := rawParams["input"].([]map[string]any); ok && len(inputItems) > 0 {
-					turnInputs = append(turnInputs, getStringAny(inputItems[0], "text"))
-				}
+			if len(spec.Input) > 0 {
+				turnInputs = append(turnInputs, getStringAny(spec.Input[0], "text"))
 			}
-			payload = map[string]any{"turnId": fmt.Sprintf("turn-chat-flow-%02d", turnSeq)}
-		case "turn/interrupt":
-			payload = map[string]any{"ok": true}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+			return fmt.Sprintf("turn-chat-flow-%02d", turnSeq), nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -354,41 +343,18 @@ func TestWorkspaceChatEndToEndHostReadonlyTargetThenPlanningSameSession(t *testi
 		t.Fatalf("expected workspace session")
 	}
 	if session.SelectedHostID != "host-1" {
-		t.Fatalf("expected first route to start from current selected host host-1, got %q", session.SelectedHostID)
+		t.Fatalf("expected first ReAct turn to start from current selected host host-1, got %q", session.SelectedHostID)
 	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceRouteThreadConfigHash("host-1") {
-		t.Fatalf("expected first route thread config hash, got %q", got)
+	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceReActThreadConfigHash("host-1") {
+		t.Fatalf("expected first ReAct thread config hash, got %q", got)
+	}
+	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
+		t.Fatalf("expected no mission before the ReAct agent dispatches work, got %#v", mission)
 	}
 
 	now := model.NowString()
 	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "assistant-route-readonly",
-		Type:      "AssistantMessageCard",
-		Role:      "assistant",
-		Text:      "```json\n{\"route\":\"host_readonly\",\"reason\":\"single-host readonly check\",\"targetHostId\":\"host-2\",\"needsPlan\":false,\"needsWorker\":false}\n```\n我先切到目标主机做只读检查。",
-		Status:    "completed",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
-
-	session = app.store.Session(workspaceSessionID)
-	if session == nil {
-		t.Fatalf("expected workspace session after readonly route")
-	}
-	if session.SelectedHostID != "host-2" {
-		t.Fatalf("expected selected host to switch to host-2, got %q", session.SelectedHostID)
-	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceReadonlyThreadConfigHash("host-2") {
-		t.Fatalf("expected readonly thread on host-2, got %q", got)
-	}
-	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
-		t.Fatalf("expected no mission after readonly route, got %#v", mission)
-	}
-
-	now = model.NowString()
-	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "assistant-readonly-result",
+		ID:        "assistant-react-readonly",
 		Type:      "AssistantMessageCard",
 		Role:      "assistant",
 		Text:      "host-2 CPU 当前约 12%，没有明显异常。",
@@ -400,11 +366,11 @@ func TestWorkspaceChatEndToEndHostReadonlyTargetThenPlanningSameSession(t *testi
 
 	session = app.store.Session(workspaceSessionID)
 	if session == nil || session.Runtime.Turn.Active {
-		t.Fatalf("expected readonly turn to finish before next user message, got %#v", session)
+		t.Fatalf("expected first ReAct turn to finish before next user message, got %#v", session)
 	}
 
 	rec = httptest.NewRecorder()
-	secondMessage := "顺便规划一次 host-2 的 nginx 巡检，并在需要时协调 worker"
+	secondMessage := "请开始规划一次 host-2 的 nginx 巡检，并在需要时协调 worker"
 	app.handleWorkspaceChatMessage(rec, req, workspaceSessionID, chatRequest{Message: secondMessage}, time.Now())
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected second chat request accepted, got %d body=%s", rec.Code, rec.Body.String())
@@ -414,47 +380,27 @@ func TestWorkspaceChatEndToEndHostReadonlyTargetThenPlanningSameSession(t *testi
 	if session == nil {
 		t.Fatalf("expected workspace session after second chat")
 	}
-	if session.SelectedHostID != "host-2" {
-		t.Fatalf("expected second route to continue from host-2, got %q", session.SelectedHostID)
+	if session.SelectedHostID != "host-1" {
+		t.Fatalf("expected second ReAct turn to keep the selected host context host-1, got %q", session.SelectedHostID)
 	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceRouteThreadConfigHash("host-2") {
-		t.Fatalf("expected route thread to be recreated on host-2, got %q", got)
+	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceReActThreadConfigHash("host-1") {
+		t.Fatalf("expected second turn to reuse the workspace ReAct thread, got %q", got)
 	}
-
-	now = model.NowString()
-	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "assistant-route-complex",
-		Type:      "AssistantMessageCard",
-		Role:      "assistant",
-		Text:      "```json\n{\"route\":\"complex_task\",\"reason\":\"requires planning and possible worker coordination\",\"targetHostId\":\"\",\"needsPlan\":true,\"needsWorker\":true}\n```\n我先整理计划，准备在需要时协调 worker。",
-		Status:    "completed",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
-
-	mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
-	if !ok || mission == nil {
-		t.Fatalf("expected mission after second message enters planning")
-	}
-	session = app.store.Session(workspaceSessionID)
-	if session == nil {
-		t.Fatalf("expected workspace session after planning starts")
-	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-orchestration") {
-		t.Fatalf("expected orchestration thread after complex route, got %q", got)
-	}
-	if session.Runtime.Turn.Phase != "planning" {
-		t.Fatalf("expected workspace runtime phase planning, got %q", session.Runtime.Turn.Phase)
+	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
+		t.Fatalf("expected ReAct agent to wait for explicit dispatch tool use before creating a mission, got %#v", mission)
 	}
 
 	reqMu.Lock()
 	recordedInputs := append([]string(nil), turnInputs...)
+	startedThreads := threadSeq
 	reqMu.Unlock()
-	if len(recordedInputs) != 4 {
-		t.Fatalf("expected 4 started turns across route/readonly/route/planning, got %#v", recordedInputs)
+	if startedThreads != 1 {
+		t.Fatalf("expected one ReAct thread reused across both turns, got %d", startedThreads)
 	}
-	if recordedInputs[0] != firstMessage || recordedInputs[1] != firstMessage || recordedInputs[2] != secondMessage || recordedInputs[3] != secondMessage {
+	if len(recordedInputs) != 2 {
+		t.Fatalf("expected 2 started turns in the ReAct loop, got %#v", recordedInputs)
+	}
+	if recordedInputs[0] != firstMessage || recordedInputs[1] != secondMessage {
 		t.Fatalf("unexpected turn inputs sequence: %#v", recordedInputs)
 	}
 }

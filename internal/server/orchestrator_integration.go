@@ -18,7 +18,7 @@ import (
 	"github.com/lizhongxuan/aiops-codex/internal/orchestrator"
 )
 
-const orchestratorRemoteWorkspaceRoot = ".aiops_codex/missions"
+const orchestratorRemoteWorkspaceRoot = "/tmp/.aiops_codex/missions"
 
 type sessionCreateRequest struct {
 	Kind string `json:"kind"`
@@ -198,6 +198,24 @@ func (a *App) recordOrchestratorTurnPhase(sessionID, phase string) {
 	}
 }
 
+func (a *App) syncWorkerPhaseAndRefreshWorkspace(sessionID, phase string) {
+	if a.orchestrator == nil || a.sessionKind(sessionID) != model.SessionKindWorker {
+		return
+	}
+	if err := a.orchestrator.SyncWorkerPhase(sessionID, phase); err != nil {
+		log.Printf("orchestrator worker phase sync failed session=%s phase=%s err=%v", sessionID, phase, err)
+		return
+	}
+	workspaceSessionID := strings.TrimSpace(a.sessionMeta(sessionID).WorkspaceSessionID)
+	if workspaceSessionID == "" || workspaceSessionID == sessionID {
+		return
+	}
+	if mission, ok := a.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
+		a.syncWorkspaceMissionRuntime(mission, "")
+		a.refreshWorkspaceProjection(mission)
+	}
+}
+
 func (a *App) recordOrchestratorReply(sessionID string) {
 	if a.orchestrator == nil || !a.isOrchestratorInternalSession(sessionID) {
 		return
@@ -311,16 +329,30 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 		UpdatedAt: now,
 	})
 	hostID := a.workspaceDirectTargetHost(sessionID, req)
+	a.store.SetSelectedHost(sessionID, hostID)
+	policy := a.buildWorkspaceTurnPolicy(sessionID, hostID, req.Message)
+	if policy.NeedsDisambiguation {
+		log.Printf(
+			"workspace intent guard waiting for clarification session=%s host=%s text=%q",
+			sessionID,
+			hostID,
+			truncate(req.Message, 120),
+		)
+		a.startRuntimeTurn(sessionID, hostID)
+		a.previewWorkspaceTurnPolicy(sessionID, hostID, req.Message, "waiting_input")
+		a.createChoiceRequest("", sessionID, map[string]any{}, workspaceIntentClarificationQuestions(req.Message))
+		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+		return
+	}
 	requestID := a.beginTurnTraceRequest(sessionID, hostID)
 	log.Printf(
-		"workspace route request begin session=%s request=%s kind=%s host=%s text=%q",
+		"workspace react loop request begin session=%s request=%s kind=%s host=%s text=%q",
 		sessionID,
 		requestID,
 		a.sessionKind(sessionID),
 		hostID,
 		truncate(req.Message, 120),
 	)
-	a.store.SetSelectedHost(sessionID, hostID)
 	a.startRuntimeTurn(sessionID, hostID)
 	a.broadcastSnapshot(sessionID)
 
@@ -331,14 +363,29 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 		cancel()
 	}()
 
-	if err := a.startWorkspaceRouteTurn(ctx, sessionID, hostID, req.Message); err != nil {
+	var err error
+	if a.useBifrostForSession(sessionID) {
+		err = a.runBifrostTurn(ctx, sessionID, req)
+	} else {
+		err = a.runReActAgentLoop(ctx, reActLoopRequest{
+			SessionID:        sessionID,
+			Kind:             reActLoopKindWorkspace,
+			HostID:           hostID,
+			Message:          req.Message,
+			MonitorContext:   req.MonitorContext,
+			RequestID:        requestID,
+			RequestStartedAt: requestStartedAt,
+		})
+	}
+	if err != nil {
 		log.Printf(
-			"workspace route request failed session=%s request=%s kind=%s host=%s duration=%s err=%v",
+			"workspace request failed session=%s request=%s kind=%s host=%s duration=%s bifrost=%v err=%v",
 			sessionID,
 			requestID,
 			a.sessionKind(sessionID),
 			hostID,
 			time.Since(requestStartedAt),
+			a.useBifrostForSession(sessionID),
 			err,
 		)
 		if errors.Is(err, context.Canceled) && a.turnWasInterrupted(sessionID) {
@@ -352,7 +399,7 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 		a.store.UpsertCard(sessionID, model.Card{
 			ID:        model.NewID("error"),
 			Type:      "ErrorCard",
-			Title:     "主 Agent 路由失败",
+			Title:     "Workspace turn failed",
 			Message:   err.Error(),
 			Text:      err.Error(),
 			Status:    "failed",
@@ -365,12 +412,13 @@ func (a *App) handleWorkspaceChatMessage(w http.ResponseWriter, r *http.Request,
 	}
 
 	log.Printf(
-		"workspace route request accepted session=%s request=%s kind=%s host=%s duration=%s",
+		"workspace request accepted session=%s request=%s kind=%s host=%s duration=%s bifrost=%v",
 		sessionID,
 		requestID,
 		a.sessionKind(sessionID),
 		hostID,
 		time.Since(requestStartedAt),
+		a.useBifrostForSession(sessionID),
 	)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 }
@@ -457,89 +505,6 @@ func (a *App) canReuseRunningWorkspaceMission(workspaceSessionID string, mission
 		}
 	}
 	return false
-}
-
-func (a *App) startWorkspaceRouteTurn(ctx context.Context, sessionID, hostID, message string) error {
-	session := a.store.EnsureSession(sessionID)
-	expectedHash := a.workspaceRouteThreadConfigHash(defaultHostID(hostID))
-	if session.ThreadID != "" && strings.TrimSpace(session.ThreadConfigHash) != strings.TrimSpace(expectedHash) {
-		a.clearSessionThreadBinding(sessionID)
-		session.ThreadID = ""
-	}
-
-	a.startRuntimeTurn(sessionID, hostID)
-	threadID, err := a.ensureThreadWithSpec(ctx, sessionID, a.buildWorkspaceRouteThreadStartSpec(ctx, sessionID, hostID))
-	if err != nil {
-		a.finishRuntimeTurn(sessionID, "failed")
-		return err
-	}
-	if err := a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildWorkspaceRouteTurnStartSpec(ctx, hostID, message)); err != nil {
-		a.finishRuntimeTurn(sessionID, "failed")
-		return err
-	}
-	return nil
-}
-
-func (a *App) startWorkspacePlanningTurn(ctx context.Context, mission *orchestrator.Mission, message string) error {
-	if mission == nil {
-		return fmt.Errorf("mission is nil")
-	}
-	needThread := true
-	if session := a.store.Session(mission.WorkspaceSessionID); session != nil {
-		expectedHash := a.workspaceOrchestrationThreadConfigHash(defaultHostID(session.SelectedHostID))
-		if session.ThreadID != "" && strings.TrimSpace(session.ThreadConfigHash) != strings.TrimSpace(expectedHash) {
-			a.clearSessionThreadBinding(mission.WorkspaceSessionID)
-			session.ThreadID = ""
-		}
-		if session.ThreadID != "" {
-			needThread = false
-		}
-	}
-	if err := a.acquireOrchestratorPermit(ctx, mission.ID, mission.WorkspaceSessionID, mission.GlobalActiveBudget, mission.MissionActiveBudget, needThread); err != nil {
-		return err
-	}
-	defer a.releaseOrchestratorPermit(mission.WorkspaceSessionID)
-	a.ensureInternalSessionFromWorkspace(mission.WorkspaceSessionID, mission.WorkspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindWorkspace,
-		Visible:            true,
-		MissionID:          mission.ID,
-		WorkspaceSessionID: mission.WorkspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetWorkspace,
-	}, model.ServerLocalHostID)
-	a.startRuntimeTurn(mission.WorkspaceSessionID, model.ServerLocalHostID)
-	a.setRuntimeTurnPhase(mission.WorkspaceSessionID, "planning")
-	threadID, err := a.ensureThreadWithSpec(ctx, mission.WorkspaceSessionID, a.buildWorkspaceOrchestrationThreadStartSpec(ctx, mission.WorkspaceSessionID, mission))
-	if err != nil {
-		a.finishRuntimeTurn(mission.WorkspaceSessionID, "failed")
-		return err
-	}
-	if err := a.requestTurnWithSpec(ctx, mission.WorkspaceSessionID, threadID, a.buildWorkspaceOrchestrationTurnStartSpec(ctx, mission.WorkspaceSessionID, mission, message)); err != nil {
-		a.finishRuntimeTurn(mission.WorkspaceSessionID, "failed")
-		return err
-	}
-	a.refreshWorkspaceProjection(mission)
-	return nil
-}
-
-func (a *App) startWorkspaceReadonlyTurn(ctx context.Context, sessionID, hostID, message string) error {
-	session := a.store.EnsureSession(sessionID)
-	expectedHash := a.workspaceReadonlyThreadConfigHash(defaultHostID(hostID))
-	if session.ThreadID != "" && strings.TrimSpace(session.ThreadConfigHash) != strings.TrimSpace(expectedHash) {
-		a.clearSessionThreadBinding(sessionID)
-		session.ThreadID = ""
-	}
-
-	a.startRuntimeTurn(sessionID, hostID)
-	threadID, err := a.ensureThreadWithSpec(ctx, sessionID, a.buildWorkspaceReadonlyThreadStartSpec(ctx, sessionID, hostID))
-	if err != nil {
-		a.finishRuntimeTurn(sessionID, "failed")
-		return err
-	}
-	if err := a.requestTurnWithSpec(ctx, sessionID, threadID, a.buildWorkspaceReadonlyTurnStartSpec(ctx, hostID, message)); err != nil {
-		a.finishRuntimeTurn(sessionID, "failed")
-		return err
-	}
-	return nil
 }
 
 func (a *App) ensureInternalSessionFromWorkspace(targetSessionID, workspaceSessionID string, meta model.SessionMeta, hostID string) {
@@ -682,29 +647,17 @@ func (a *App) reconcileOrchestratorHostUnavailable(hostID, reason string) {
 }
 
 func (a *App) interruptSessionTurn(ctx context.Context, sessionID string) error {
+	_ = ctx
 	session := a.store.Session(sessionID)
 	if session == nil {
 		return nil
 	}
-	threadID := session.ThreadID
 	turnID := session.TurnID
 	cancelledPending := a.cancelTurnStart(sessionID)
-	if threadID == "" && !cancelledPending {
+	if bifrostSession, ok := a.bifrostSession(sessionID); ok && bifrostSession != nil {
+		bifrostSession.Cancel()
+	} else if !cancelledPending {
 		return nil
-	}
-	if threadID != "" {
-		params := map[string]any{
-			"threadId":                   threadID,
-			"clean_background_terminals": true,
-		}
-		if turnID != "" {
-			params["turnId"] = turnID
-		}
-		var result map[string]any
-		if err := a.codexRequest(ctx, "turn/interrupt", params, &result); err != nil && !cancelledPending {
-			return err
-		}
-		a.cleanBackgroundTerminals(threadID)
 	}
 	a.markTurnInterrupted(sessionID, turnID)
 	a.finishRuntimeTurn(sessionID, "aborted")
@@ -740,12 +693,6 @@ func (a *App) mirrorInternalApprovalToWorkspace(sourceSessionID string, approval
 	if workspaceSessionID == "" || workspaceSessionID == sourceSessionID {
 		return
 	}
-	if a.orchestrator != nil && meta.Kind == model.SessionKindWorker {
-		_ = a.orchestrator.SyncWorkerPhase(sourceSessionID, "waiting_approval")
-		if err := a.orchestrator.RegisterApprovalRoute(approval.ID, sourceSessionID); err != nil {
-			log.Printf("orchestrator approval route failed approval=%s session=%s err=%v", approval.ID, sourceSessionID, err)
-		}
-	}
 	a.store.AddApproval(workspaceSessionID, approval)
 	a.store.UpsertCard(workspaceSessionID, card)
 	a.setRuntimeTurnPhase(workspaceSessionID, "waiting_approval")
@@ -757,19 +704,37 @@ func (a *App) mirrorInternalApprovalToWorkspace(sourceSessionID string, approval
 	a.broadcastSnapshot(workspaceSessionID)
 }
 
+func (a *App) projectApprovalRequestedFallback(sessionID string, approval model.ApprovalRequest, card model.Card, activateQueuedWorkers bool) {
+	if a == nil {
+		return
+	}
+	a.recordOrchestratorApprovalRequested(sessionID, approval)
+
+	meta := a.sessionMeta(sessionID)
+	switch meta.Kind {
+	case model.SessionKindWorker:
+		a.syncWorkerPhaseAndRefreshWorkspace(sessionID, "waiting_approval")
+		if a.orchestrator != nil {
+			if err := a.orchestrator.RegisterApprovalRoute(approval.ID, sessionID); err != nil {
+				log.Printf("orchestrator approval route failed approval=%s session=%s err=%v", approval.ID, sessionID, err)
+			}
+		}
+		a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+		if activateQueuedWorkers {
+			if workspaceSessionID := strings.TrimSpace(meta.WorkspaceSessionID); workspaceSessionID != "" {
+				a.activateQueuedMissionWorkers(workspaceSessionID)
+			}
+		}
+	case model.SessionKindPlanner:
+		a.mirrorInternalApprovalToWorkspace(sessionID, approval, card)
+	}
+}
+
 func (a *App) mirrorInternalChoiceToWorkspace(sourceSessionID string, choice model.ChoiceRequest, card model.Card) {
 	meta := a.sessionMeta(sourceSessionID)
 	workspaceSessionID := strings.TrimSpace(meta.WorkspaceSessionID)
 	if workspaceSessionID == "" || workspaceSessionID == sourceSessionID {
 		return
-	}
-	if a.orchestrator != nil {
-		if meta.Kind == model.SessionKindWorker {
-			_ = a.orchestrator.SyncWorkerPhase(sourceSessionID, "waiting_input")
-		}
-		if err := a.orchestrator.RegisterChoiceRoute(choice.ID, sourceSessionID); err != nil {
-			log.Printf("orchestrator choice route failed choice=%s session=%s err=%v", choice.ID, sourceSessionID, err)
-		}
 	}
 	a.store.AddChoice(workspaceSessionID, choice)
 	a.store.UpsertCard(workspaceSessionID, card)
@@ -780,6 +745,23 @@ func (a *App) mirrorInternalChoiceToWorkspace(sourceSessionID string, choice mod
 		}
 	}
 	a.broadcastSnapshot(workspaceSessionID)
+}
+
+func (a *App) projectChoiceRequestedFallback(sessionID string, choice model.ChoiceRequest, card model.Card) {
+	if a == nil {
+		return
+	}
+	a.recordOrchestratorChoiceRequested(sessionID, choice)
+	if a.sessionKind(sessionID) != model.SessionKindWorker {
+		return
+	}
+	a.syncWorkerPhaseAndRefreshWorkspace(sessionID, "waiting_input")
+	if a.orchestrator != nil {
+		if err := a.orchestrator.RegisterChoiceRoute(choice.ID, sessionID); err != nil {
+			log.Printf("orchestrator choice route failed choice=%s session=%s err=%v", choice.ID, sessionID, err)
+		}
+	}
+	a.mirrorInternalChoiceToWorkspace(sessionID, choice, card)
 }
 
 func (a *App) resolveMirroredApprovalCard(workspaceSessionID string, approval model.ApprovalRequest, status string) {
@@ -805,7 +787,7 @@ func (a *App) resolveMirroredChoiceCard(workspaceSessionID, choiceID string, ans
 		return
 	}
 	now := model.NowString()
-	a.store.ResolveChoice(workspaceSessionID, choiceID, "completed", now)
+	a.store.ResolveChoiceWithAnswers(workspaceSessionID, choiceID, "completed", now, choiceAnswersToModel(answers))
 	a.store.UpdateCard(workspaceSessionID, choiceID, func(card *model.Card) {
 		card.Status = "completed"
 		card.AnswerSummary = choiceAnswerSummary(questions, answers)
@@ -978,6 +960,25 @@ func (a *App) startWorkerTask(ctx context.Context, mission *orchestrator.Mission
 	if err := a.bootstrapWorkerRemoteWorkspace(ctx, mission, workerSessionID, hostID); err != nil {
 		return a.failWorkerStart(workerSessionID, hostID, err)
 	}
+	if a.useBifrostForSession(workerSessionID) {
+		workerReq := chatRequest{
+			Message: firstNonEmptyValue(
+				turnStartInputText(a.buildWorkerTurnStartSpec(mission, task, hostID)),
+				strings.TrimSpace(task.Instruction),
+			),
+			HostID: hostID,
+		}
+		if err := a.runBifrostTurn(context.Background(), workerSessionID, workerReq); err != nil {
+			return a.failWorkerStart(workerSessionID, hostID, err)
+		}
+		if !a.hasPendingApprovals(workerSessionID) && !a.hasPendingChoices(workerSessionID) {
+			a.handleMissionTurnCompleted(workerSessionID, "completed")
+		}
+		if currentMission, ok := a.orchestrator.MissionByWorkspaceSession(mission.WorkspaceSessionID); ok {
+			a.refreshWorkspaceProjection(currentMission)
+		}
+		return nil
+	}
 	threadID, err := a.ensureThreadWithSpec(ctx, workerSessionID, a.buildWorkerThreadStartSpec(mission, task, hostID))
 	if err != nil {
 		return a.failWorkerStart(workerSessionID, hostID, err)
@@ -985,13 +986,58 @@ func (a *App) startWorkerTask(ctx context.Context, mission *orchestrator.Mission
 	if err := a.requestTurnWithSpec(ctx, workerSessionID, threadID, a.buildWorkerTurnStartSpec(mission, task, hostID)); err != nil {
 		return a.failWorkerStart(workerSessionID, hostID, err)
 	}
-	if a.orchestrator != nil {
-		_ = a.orchestrator.SyncWorkerPhase(workerSessionID, "executing")
-	}
+	a.syncWorkerPhaseAndRefreshWorkspace(workerSessionID, "executing")
 	if currentMission, ok := a.orchestrator.MissionByWorkspaceSession(mission.WorkspaceSessionID); ok {
 		a.refreshWorkspaceProjection(currentMission)
 	}
 	return nil
+}
+
+func turnStartInputText(spec turnStartSpec) string {
+	for _, item := range spec.Input {
+		if text := strings.TrimSpace(getStringAny(item, "text", "content")); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func (a *App) completeWorkerTurnOutcome(sessionID, phase string) *orchestrator.WorkerTurnOutcome {
+	if a.orchestrator == nil {
+		return nil
+	}
+	reply := a.latestCompletedAssistantText(sessionID)
+	var (
+		outcome *orchestrator.WorkerTurnOutcome
+		err     error
+	)
+	if runtime, ok := a.bifrostWorkspaceRuntime(sessionID); ok && runtime != nil {
+		outcome, err = runtime.CompleteWorkerTurn(sessionID, phase, reply)
+	} else {
+		outcome, err = a.orchestrator.CompleteWorkerTurn(sessionID, phase, reply)
+	}
+	if err != nil {
+		log.Printf("worker turn completion sync failed session=%s err=%v", sessionID, err)
+		return nil
+	}
+	a.projectWorkerOutcome(outcome)
+	if outcome != nil && outcome.NextTask != nil {
+		go func(missionID, workspaceSessionID, workerSessionID, hostID string) {
+			nextCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			mission, ok := a.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
+			if !ok {
+				return
+			}
+			if err := a.startWorkerTask(nextCtx, mission, workerSessionID, hostID); err != nil {
+				log.Printf("queued worker task start failed mission=%s host=%s err=%v", missionID, hostID, err)
+			}
+		}(outcome.MissionID, outcome.WorkspaceSessionID, outcome.WorkerSessionID, outcome.WorkerHostID)
+	}
+	if outcome != nil {
+		a.activateQueuedMissionWorkers(outcome.WorkspaceSessionID)
+	}
+	return outcome
 }
 
 func (a *App) bootstrapWorkerRemoteWorkspace(ctx context.Context, mission *orchestrator.Mission, sessionID, hostID string) error {
@@ -1045,127 +1091,6 @@ func (a *App) handleMissionTurnCompleted(sessionID, phase string) {
 	}
 	switch kind {
 	case model.SessionKindWorkspace:
-		if a.isWorkspaceRouteThread(sessionID) {
-			reply := strings.TrimSpace(a.latestCompletedAssistantText(sessionID))
-			decision, visibleReply, foundRoute, err := parseWorkspaceRouteReply(reply)
-			if err != nil {
-				log.Printf("workspace route parse failed session=%s err=%v", sessionID, err)
-				a.finishRuntimeTurn(sessionID, "failed")
-				a.store.UpsertCard(sessionID, model.Card{
-					ID:        model.NewID("error"),
-					Type:      "ErrorCard",
-					Title:     "主 Agent 路由解析失败",
-					Message:   err.Error(),
-					Text:      err.Error(),
-					Status:    "failed",
-					CreatedAt: model.NowString(),
-					UpdatedAt: model.NowString(),
-				})
-				a.broadcastSnapshot(sessionID)
-				return
-			}
-			if foundRoute {
-				if strings.TrimSpace(visibleReply) == "" {
-					switch decision.Route {
-					case "complex_task":
-						visibleReply = "我先整理计划，准备在需要时协调 worker。"
-					case "state_query":
-						visibleReply = "我正在读取当前工作台状态。"
-					case "host_readonly":
-						visibleReply = "我正在读取目标主机的只读状态。"
-					default:
-						visibleReply = "我已收到你的问题，正在直接回复。"
-					}
-				}
-				a.replaceLatestCompletedAssistantText(sessionID, visibleReply)
-			}
-			switch decision.Route {
-			case "complex_task":
-				userMessage := a.latestCompletedUserText(sessionID)
-				if userMessage == "" {
-					userMessage = visibleReply
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-				defer cancel()
-				mission, err := a.ensureMissionForWorkspaceSession(ctx, sessionID, userMessage)
-				if err != nil {
-					a.finishRuntimeTurn(sessionID, "failed")
-					a.store.UpsertCard(sessionID, model.Card{
-						ID:        model.NewID("error"),
-						Type:      "ErrorCard",
-						Title:     "Mission failed",
-						Message:   err.Error(),
-						Text:      err.Error(),
-						Status:    "failed",
-						CreatedAt: model.NowString(),
-						UpdatedAt: model.NowString(),
-					})
-					a.broadcastSnapshot(sessionID)
-					return
-				}
-				a.store.UpsertCard(sessionID, model.Card{
-					ID:        model.NewID("notice"),
-					Type:      "NoticeCard",
-					Title:     "plan 正在运行中",
-					Text:      "主 Agent 正在生成计划，并准备在需要时派发给 worker。",
-					Status:    "notice",
-					CreatedAt: model.NowString(),
-					UpdatedAt: model.NowString(),
-				})
-				if err := a.startWorkspacePlanningTurn(ctx, mission, userMessage); err != nil {
-					a.finishRuntimeTurn(sessionID, "failed")
-					a.store.UpsertCard(sessionID, model.Card{
-						ID:        model.NewID("error"),
-						Type:      "ErrorCard",
-						Title:     "Workspace planning failed",
-						Message:   err.Error(),
-						Text:      err.Error(),
-						Status:    "failed",
-						CreatedAt: model.NowString(),
-						UpdatedAt: model.NowString(),
-					})
-					a.broadcastSnapshot(sessionID)
-					return
-				}
-				a.broadcastSnapshot(sessionID)
-				return
-			case "host_readonly":
-				targetHostID := model.ServerLocalHostID
-				if session := a.store.Session(sessionID); session != nil {
-					targetHostID = defaultHostID(session.SelectedHostID)
-				}
-				if decision.TargetHost != "" {
-					targetHostID = decision.TargetHost
-					a.store.SetSelectedHost(sessionID, decision.TargetHost)
-				}
-				userMessage := a.latestCompletedUserText(sessionID)
-				if userMessage == "" {
-					userMessage = visibleReply
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-				defer cancel()
-				if err := a.startWorkspaceReadonlyTurn(ctx, sessionID, targetHostID, userMessage); err != nil {
-					a.finishRuntimeTurn(sessionID, "failed")
-					a.store.UpsertCard(sessionID, model.Card{
-						ID:        model.NewID("error"),
-						Type:      "ErrorCard",
-						Title:     "Workspace readonly failed",
-						Message:   err.Error(),
-						Text:      err.Error(),
-						Status:    "failed",
-						CreatedAt: model.NowString(),
-						UpdatedAt: model.NowString(),
-					})
-					a.broadcastSnapshot(sessionID)
-					return
-				}
-				a.broadcastSnapshot(sessionID)
-				return
-			}
-			a.finishRuntimeTurn(sessionID, phase)
-			a.broadcastSnapshot(sessionID)
-			return
-		}
 		mission, ok := a.orchestrator.MissionBySession(sessionID)
 		if !ok || mission == nil {
 			a.finishRuntimeTurn(sessionID, phase)
@@ -1238,29 +1163,18 @@ func (a *App) handleMissionTurnCompleted(sessionID, phase string) {
 		a.refreshWorkspaceProjection(mission)
 		a.broadcastSnapshot(sessionID)
 	case model.SessionKindWorker:
-		outcome, err := a.orchestrator.CompleteWorkerTurn(sessionID, phase, a.latestCompletedAssistantText(sessionID))
-		if err != nil {
-			log.Printf("worker turn completion sync failed session=%s err=%v", sessionID, err)
-			return
-		}
-		a.projectWorkerOutcome(outcome)
-		if outcome != nil && outcome.NextTask != nil {
-			go func(missionID, workspaceSessionID, workerSessionID, hostID string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-				defer cancel()
-				mission, ok := a.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
-				if !ok {
-					return
-				}
-				if err := a.startWorkerTask(ctx, mission, workerSessionID, hostID); err != nil {
-					log.Printf("queued worker task start failed mission=%s host=%s err=%v", missionID, hostID, err)
-				}
-			}(outcome.MissionID, outcome.WorkspaceSessionID, outcome.WorkerSessionID, outcome.WorkerHostID)
-		}
-		if outcome != nil {
-			a.activateQueuedMissionWorkers(outcome.WorkspaceSessionID)
-		}
+		a.completeWorkerTurnOutcome(sessionID, phase)
 	}
+}
+
+func (a *App) handleMissionTurnCompletedAsync(sessionID, phase string, recordReplyAfter bool) {
+	go func() {
+		a.handleMissionTurnCompleted(sessionID, phase)
+		if recordReplyAfter {
+			a.recordOrchestratorReply(sessionID)
+			a.broadcastSnapshot(sessionID)
+		}
+	}()
 }
 
 func (a *App) syncWorkspaceMissionRuntime(mission *orchestrator.Mission, fallbackPhase string) {
@@ -1413,6 +1327,17 @@ func (a *App) projectWorkerOutcome(outcome *orchestrator.WorkerTurnOutcome) {
 	if outcome == nil || outcome.WorkspaceSessionID == "" {
 		return
 	}
+
+	// Create worker result evidence for fan-in
+	workerEvidenceID := model.NewID("ev")
+	a.store.RememberItem(outcome.WorkspaceSessionID, workerEvidenceID, map[string]any{
+		"kind":    "worker_result",
+		"taskId":  outcome.CompletedTaskID,
+		"hostId":  outcome.WorkerHostID,
+		"status":  string(outcome.CompletedTaskStatus),
+		"summary": workerOutcomeFallbackText(outcome.CompletedTaskStatus),
+	})
+
 	reply := strings.TrimSpace(a.latestCompletedAssistantText(outcome.WorkerSessionID))
 	detail := compactDetailMap(map[string]any{
 		"workerSessionId": outcome.WorkerSessionID,
@@ -1540,38 +1465,6 @@ func (a *App) replaceLatestCompletedAssistantText(sessionID, text string) {
 	}
 }
 
-type workspaceRouteDecision struct {
-	Route       string `json:"route"`
-	Reason      string `json:"reason"`
-	TargetHost  string `json:"targetHostId"`
-	NeedsPlan   bool   `json:"needsPlan"`
-	NeedsWorker bool   `json:"needsWorker"`
-}
-
-func parseWorkspaceRouteReply(reply string) (workspaceRouteDecision, string, bool, error) {
-	reply = strings.TrimSpace(reply)
-	if reply == "" {
-		return workspaceRouteDecision{}, "", false, nil
-	}
-	block := extractWorkspaceJSONBlock(reply)
-	if block == "" {
-		return workspaceRouteDecision{}, strings.TrimSpace(reply), false, nil
-	}
-	var decision workspaceRouteDecision
-	if err := json.Unmarshal([]byte(block), &decision); err != nil {
-		return workspaceRouteDecision{}, "", true, err
-	}
-	decision.Route = strings.TrimSpace(decision.Route)
-	decision.Reason = strings.TrimSpace(decision.Reason)
-	if target := strings.TrimSpace(decision.TargetHost); target != "" {
-		decision.TargetHost = defaultHostID(target)
-	} else {
-		decision.TargetHost = ""
-	}
-	visible := stripWorkspaceJSONBlock(reply)
-	return decision, visible, true, nil
-}
-
 func parseWorkspaceDispatchRequest(reply string) (orchestrator.DispatchRequest, bool, error) {
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
@@ -1611,28 +1504,6 @@ func extractWorkspaceJSONBlock(reply string) string {
 		}
 	}
 	return ""
-}
-
-func stripWorkspaceJSONBlock(reply string) string {
-	reply = strings.TrimSpace(reply)
-	if reply == "" {
-		return ""
-	}
-	if start := strings.Index(reply, "```json"); start >= 0 {
-		start += len("```json")
-		rest := reply[start:]
-		if end := strings.Index(rest, "```"); end >= 0 {
-			return strings.TrimSpace(reply[:strings.Index(reply, "```json")] + "\n" + rest[end+3:])
-		}
-	}
-	if start := strings.Index(reply, "```"); start >= 0 {
-		start += len("```")
-		rest := reply[start:]
-		if end := strings.Index(rest, "```"); end >= 0 {
-			return strings.TrimSpace(reply[:strings.Index(reply, "```")] + "\n" + rest[end+3:])
-		}
-	}
-	return reply
 }
 
 func cardDetailValue(value any) map[string]any {
@@ -1754,7 +1625,7 @@ func conversationExcerptText(card model.Card) string {
 		return firstNonEmptyValue(card.Text, card.Summary, card.Command, card.Stdout, card.Stderr, card.Output)
 	case "FileChangeCard":
 		return firstNonEmptyValue(card.Text, card.Summary, card.Title)
-	case "NoticeCard", "ResultSummaryCard":
+	case "NoticeCard", "ResultSummaryCard", "VerificationCard", "RollbackCard":
 		return firstNonEmptyValue(card.Text, card.Summary, card.Title, card.Message)
 	default:
 		return ""
@@ -1798,7 +1669,7 @@ func workerConversationExcerpts(sessionID string, cards []model.Card, limit int)
 			continue
 		}
 		switch card.Type {
-		case "AssistantMessageCard", "CommandCard", "FileChangeCard", "NoticeCard", "ErrorCard", "ResultSummaryCard":
+		case "AssistantMessageCard", "CommandCard", "FileChangeCard", "NoticeCard", "ErrorCard", "ResultSummaryCard", "VerificationCard", "RollbackCard":
 		default:
 			continue
 		}

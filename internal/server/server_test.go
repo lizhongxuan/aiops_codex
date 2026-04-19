@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lizhongxuan/aiops-codex/internal/agentloop"
 	"github.com/lizhongxuan/aiops-codex/internal/agentrpc"
+	"github.com/lizhongxuan/aiops-codex/internal/bifrost"
 	"github.com/lizhongxuan/aiops-codex/internal/config"
 	"github.com/lizhongxuan/aiops-codex/internal/model"
 	"github.com/lizhongxuan/aiops-codex/internal/store"
@@ -105,6 +107,24 @@ func findAuditRecord(records []map[string]any, event string) map[string]any {
 	for _, record := range records {
 		if record["event"] == event {
 			return record
+		}
+	}
+	return nil
+}
+
+func findIncidentEvent(events []model.IncidentEvent, eventType string) *model.IncidentEvent {
+	for i := range events {
+		if events[i].Type == eventType {
+			return &events[i]
+		}
+	}
+	return nil
+}
+
+func findVerificationRecord(records []model.VerificationRecord, recordID string) *model.VerificationRecord {
+	for i := range records {
+		if records[i].ID == recordID {
+			return &records[i]
 		}
 	}
 	return nil
@@ -238,6 +258,159 @@ func TestSetRuntimeTurnPhaseNormalizesAndSkipsDuplicateUpdates(t *testing.T) {
 	}
 	if session.LastActivityAt != firstActivityAt {
 		t.Fatalf("expected duplicate phase update to be ignored, got lastActivityAt %q -> %q", firstActivityAt, session.LastActivityAt)
+	}
+}
+
+func TestRuntimeTurnPhaseWritesIncidentStageEvents(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-incident-stage-events"
+	app.store.EnsureSessionWithMeta(sessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: sessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+
+	app.startRuntimeTurn(sessionID, model.ServerLocalHostID)
+	now := model.NowString()
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        "plan-approval-stage-events",
+		Type:      "PlanApprovalCard",
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	app.setRuntimeTurnPhase(sessionID, "planning")
+	app.setRuntimeTurnPhase(sessionID, "waiting_approval")
+	app.finishRuntimeTurn(sessionID, "completed")
+
+	found := map[string]bool{
+		string(agentloop.IncidentStagePlanning):            false,
+		string(agentloop.IncidentStageWaitingPlanApproval): false,
+		string(agentloop.IncidentStageCompleted):           false,
+	}
+	for _, event := range app.snapshot(sessionID).IncidentEvents {
+		if event.Type != "stage.changed" {
+			continue
+		}
+		if _, ok := found[event.Stage]; ok {
+			found[event.Stage] = true
+		}
+	}
+	for stage, ok := range found {
+		if !ok {
+			t.Fatalf("expected stage.changed event for %q, got %#v", stage, app.snapshot(sessionID).IncidentEvents)
+		}
+	}
+}
+
+func TestBifrostRequestApprovalBlockedBeforePlanApproval(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	sessionID := "workspace-bifrost-plan-gate-approval"
+	app.store.EnsureSessionWithMeta(sessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: sessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.PlanMode = true
+		runtime.Turn.Active = true
+		runtime.Turn.Phase = "planning"
+	})
+	now := model.NowString()
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        "plan-card-bifrost-request-approval",
+		Type:      "PlanCard",
+		Status:    "planning",
+		Detail:    map[string]any{"tool": "update_plan"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	session := agentloop.NewSession(sessionID, agentloop.SessionSpec{Model: "test-model"})
+	_, err := app.bifrostRequestApproval(context.Background(), session, bifrost.ToolCall{
+		ID:       "call-bifrost-request-approval",
+		Function: bifrost.FunctionCall{Name: "request_approval"},
+	}, map[string]any{
+		"command":        "systemctl restart nginx",
+		"riskAssessment": "重启将影响线上流量。",
+	})
+	if err == nil || !strings.Contains(err.Error(), "计划审批通过前不能请求动作审批") {
+		t.Fatalf("expected bifrost request_approval to be blocked by plan gate, got %v", err)
+	}
+	storeSession := app.store.Session(sessionID)
+	if storeSession == nil {
+		t.Fatalf("expected session to exist")
+	}
+	if phase := storeSession.Runtime.Turn.Phase; phase != "planning" {
+		t.Fatalf("expected blocked approval to keep planning phase, got %q", phase)
+	}
+	var blocked *model.ApprovalRequest
+	for _, approval := range storeSession.Approvals {
+		if approval.Type == "mutation" {
+			copyApproval := approval
+			blocked = &copyApproval
+			break
+		}
+	}
+	if blocked == nil || blocked.Status != "blocked_by_plan_mode" {
+		t.Fatalf("expected blocked mutation approval, got %#v", storeSession.Approvals)
+	}
+}
+
+func TestBifrostExecuteCommandApprovalBlockedBeforePlanApproval(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	sessionID := "workspace-bifrost-plan-gate-command"
+	app.store.EnsureSessionWithMeta(sessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: sessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.UpdateRuntime(sessionID, func(runtime *model.RuntimeState) {
+		runtime.PlanMode = true
+		runtime.Turn.Active = true
+		runtime.Turn.Phase = "planning"
+	})
+	now := model.NowString()
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        "plan-card-bifrost-command",
+		Type:      "PlanCard",
+		Status:    "planning",
+		Detail:    map[string]any{"tool": "update_plan"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	session := agentloop.NewSession(sessionID, agentloop.SessionSpec{Model: "test-model"})
+	_, err := app.requestBifrostToolApproval(context.Background(), session, bifrost.ToolCall{
+		ID:       "call-bifrost-execute-command",
+		Function: bifrost.FunctionCall{Name: "execute_command"},
+	}, execToolArgs{
+		Command: "touch /tmp/aiops-codex-plan-gate",
+		Reason:  "尝试在计划审批前修改系统状态",
+	}, remoteFileChangeArgs{}, false)
+	if err == nil || !strings.Contains(err.Error(), "计划审批通过前不能执行变更命令") {
+		t.Fatalf("expected bifrost execute_command approval to be blocked by plan gate, got %v", err)
+	}
+	storeSession := app.store.Session(sessionID)
+	if storeSession == nil {
+		t.Fatalf("expected session to exist")
+	}
+	if phase := storeSession.Runtime.Turn.Phase; phase != "planning" {
+		t.Fatalf("expected blocked execute_command approval to keep planning phase, got %q", phase)
+	}
+	var blocked *model.ApprovalRequest
+	for _, approval := range storeSession.Approvals {
+		if approval.Type == bifrostApprovalTypeRemoteCommand {
+			copyApproval := approval
+			blocked = &copyApproval
+			break
+		}
+	}
+	if blocked == nil || blocked.Status != "blocked_by_plan_mode" {
+		t.Fatalf("expected blocked bifrost remote command approval, got %#v", storeSession.Approvals)
 	}
 }
 
@@ -396,6 +569,24 @@ func TestValidateReadonlyCommand(t *testing.T) {
 	}
 	if err := validateReadonlyCommand("ps -ef | head -20"); err != nil {
 		t.Fatalf("expected simple pipeline to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("pgrep -lf '[p]ostgres|[p]ostmaster'"); err != nil {
+		t.Fatalf("expected quoted regex alternation to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("ps aux | grep -E '[p]ostgres|[p]ostmaster'"); err != nil {
+		t.Fatalf("expected quoted regex alternation in pipeline to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("command -v psql"); err != nil {
+		t.Fatalf("expected command -v lookup to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("lsof -nP -iTCP:5432 -sTCP:LISTEN"); err != nil {
+		t.Fatalf("expected lsof read-only inspection to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("launchctl list | grep -i postgres"); err != nil {
+		t.Fatalf("expected launchctl list to pass, got %v", err)
+	}
+	if err := validateReadonlyCommand("brew services list | grep -i postgres"); err != nil {
+		t.Fatalf("expected brew services list to pass, got %v", err)
 	}
 	if err := validateReadonlyCommand("systemctl restart nginx"); err == nil {
 		t.Fatalf("expected restart to be rejected")
@@ -569,6 +760,16 @@ func TestMarkTurnInterruptedSendsRemoteCancelAndKeepsCancelledCard(t *testing.T)
 	if session == nil || session.Runtime.Turn.Phase != "aborted" {
 		t.Fatalf("expected runtime turn to be aborted, got %#v", session)
 	}
+	foundCancelRequested := false
+	for _, event := range app.snapshot(sessionID).IncidentEvents {
+		if event.Type == "cancel.requested" {
+			foundCancelRequested = true
+			break
+		}
+	}
+	if !foundCancelRequested {
+		t.Fatalf("expected cancel.requested incident event, got %#v", app.snapshot(sessionID).IncidentEvents)
+	}
 
 	app.handleAgentExecExit(hostID, &agentrpc.ExecExit{
 		ExecID:    exec.ID,
@@ -587,6 +788,95 @@ func TestMarkTurnInterruptedSendsRemoteCancelAndKeepsCancelledCard(t *testing.T)
 	}
 }
 
+func TestMarkTurnInterruptedClearsStreamingAssistantCard(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-stop-stream"
+
+	app.store.EnsureSession(sessionID)
+	bifrostSession := agentloop.NewSession(sessionID, agentloop.SessionSpec{Model: "test"})
+	app.setBifrostSession(sessionID, bifrostSession)
+
+	if err := app.OnAssistantDelta(context.Background(), bifrostSession, "partial answer"); err != nil {
+		t.Fatalf("assistant delta failed: %v", err)
+	}
+	firstCardID := strings.TrimSpace(bifrostSession.CurrentCardID())
+	if firstCardID == "" {
+		t.Fatal("expected current streaming card to be set")
+	}
+
+	app.markTurnInterrupted(sessionID, "turn-stop-stream")
+
+	if got := strings.TrimSpace(bifrostSession.CurrentCardID()); got != "" {
+		t.Fatalf("expected streaming card id to be cleared after interrupt, got %q", got)
+	}
+	firstCard := app.cardByID(sessionID, firstCardID)
+	if firstCard == nil {
+		t.Fatalf("expected interrupted assistant card to exist")
+	}
+	if firstCard.Status != "cancelled" {
+		t.Fatalf("expected interrupted assistant card to be cancelled, got %q", firstCard.Status)
+	}
+	if strings.TrimSpace(firstCard.Text) != "partial answer" {
+		t.Fatalf("expected interrupted assistant text to stay intact, got %q", firstCard.Text)
+	}
+
+	if err := app.OnAssistantDelta(context.Background(), bifrostSession, "fresh answer"); err != nil {
+		t.Fatalf("assistant delta after interrupt failed: %v", err)
+	}
+	nextCardID := strings.TrimSpace(bifrostSession.CurrentCardID())
+	if nextCardID == "" {
+		t.Fatal("expected a new streaming card after interrupt")
+	}
+	if nextCardID == firstCardID {
+		t.Fatalf("expected a new card after interrupt, reused %q", nextCardID)
+	}
+	nextCard := app.cardByID(sessionID, nextCardID)
+	if nextCard == nil {
+		t.Fatalf("expected new assistant card to exist")
+	}
+	if strings.TrimSpace(nextCard.Text) != "fresh answer" {
+		t.Fatalf("expected new assistant text to start fresh, got %q", nextCard.Text)
+	}
+}
+
+func TestCancelRemoteExecFailureAddsTimelineEvent(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-cancel-failure"
+	hostID := "linux-02"
+	cardID := "card-cancel-failure"
+	now := model.NowString()
+
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertHost(model.Host{ID: hostID, Name: hostID, Kind: "agent", Status: "online", Executable: true})
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        cardID,
+		Type:      "CommandCard",
+		Status:    "inProgress",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	app.setExecSession(&remoteExecSession{
+		ID:        "exec-cancel-failure",
+		SessionID: sessionID,
+		HostID:    hostID,
+		CardID:    cardID,
+		done:      make(chan remoteExecResult, 1),
+	})
+
+	app.cancelRemoteExecsForSession(sessionID, "任务已中断")
+
+	foundSignalFailure := false
+	for _, event := range app.snapshot(sessionID).IncidentEvents {
+		if event.Type == "cancel.signal_failed" {
+			foundSignalFailure = true
+			break
+		}
+	}
+	if !foundSignalFailure {
+		t.Fatalf("expected cancel.signal_failed incident event, got %#v", app.snapshot(sessionID).IncidentEvents)
+	}
+}
+
 func TestFinalizeExecCardAddsReadonlySummary(t *testing.T) {
 	app := New(config.Config{})
 	sessionID := "sess-readonly-summary"
@@ -594,9 +884,12 @@ func TestFinalizeExecCardAddsReadonlySummary(t *testing.T) {
 	createdAt := model.NowString()
 	app.store.EnsureSession(sessionID)
 	app.store.UpsertCard(sessionID, model.Card{
-		ID:        cardID,
-		Type:      "CommandCard",
-		Status:    "inProgress",
+		ID:     cardID,
+		Type:   "CommandCard",
+		Status: "inProgress",
+		Detail: map[string]any{
+			"tool": "execute_system_mutation",
+		},
 		CreatedAt: createdAt,
 		UpdatedAt: createdAt,
 	})
@@ -672,6 +965,45 @@ func TestFinalizeExecCardKeepsFailedMutationOutputAndExitCode(t *testing.T) {
 	}
 	if !strings.Contains(card.Summary, "退出码 1") {
 		t.Fatalf("expected failed summary to retain exit code, got %q", card.Summary)
+	}
+
+	snapshot := app.snapshot(sessionID)
+	record := findVerificationRecord(snapshot.VerificationRecords, "verify-"+cardID)
+	if record == nil {
+		t.Fatalf("expected failed verification record, got %#v", snapshot.VerificationRecords)
+	}
+	if record.Status != "failed" {
+		t.Fatalf("expected failed verification status, got %#v", record)
+	}
+	if strings.TrimSpace(record.RollbackHint) == "" {
+		t.Fatalf("expected generated rollback hint on failed verification, got %#v", record)
+	}
+	if got := anyToString(record.Metadata["nextStepSuggestion"]); got == "" {
+		t.Fatalf("expected nextStepSuggestion in failed verification metadata, got %#v", record.Metadata)
+	}
+	failedEvent := findIncidentEvent(snapshot.IncidentEvents, "verification.failed")
+	if failedEvent == nil {
+		t.Fatalf("expected verification.failed incident event")
+	}
+	if failedEvent.Verification != record.ID {
+		t.Fatalf("expected verification.failed to reference %q, got %#v", record.ID, failedEvent)
+	}
+	verificationCard := app.cardByID(sessionID, "verification-card-"+cardID)
+	if verificationCard == nil || verificationCard.Type != "VerificationCard" {
+		t.Fatalf("expected VerificationCard to be inserted, got %#v", verificationCard)
+	}
+	if verificationCard.Status != "failed" {
+		t.Fatalf("expected VerificationCard failed status, got %#v", verificationCard)
+	}
+	if !strings.Contains(verificationCard.Text, "自动验证失败") {
+		t.Fatalf("expected VerificationCard text to mention failure, got %#v", verificationCard)
+	}
+	rollbackCard := app.cardByID(sessionID, "rollback-card-"+cardID)
+	if rollbackCard == nil || rollbackCard.Type != "RollbackCard" {
+		t.Fatalf("expected RollbackCard to be inserted, got %#v", rollbackCard)
+	}
+	if !strings.Contains(rollbackCard.Text, "下一步建议") {
+		t.Fatalf("expected RollbackCard to include next-step suggestion, got %#v", rollbackCard)
 	}
 }
 
@@ -825,6 +1157,49 @@ func TestHandleRemoteApprovalAcceptSessionContinuesExecution(t *testing.T) {
 	if card.Summary == "" {
 		t.Fatalf("expected completed command card summary")
 	}
+	snapshot := app.snapshot(sessionID)
+	record := findVerificationRecord(snapshot.VerificationRecords, "verify-card-remote-accept-session")
+	if record == nil {
+		t.Fatalf("expected verification record for completed remote command, got %#v", snapshot.VerificationRecords)
+	}
+	if record.Status != "passed" {
+		t.Fatalf("expected verification status passed, got %#v", record)
+	}
+	if record.ActionEventID != "card-remote-accept-session" {
+		t.Fatalf("expected verification actionEventID card-remote-accept-session, got %#v", record)
+	}
+	if got := anyToString(record.Metadata["approvalId"]); got != "approval-remote-accept-session" {
+		t.Fatalf("expected verification metadata approvalId approval-remote-accept-session, got %#v", record.Metadata)
+	}
+	if got := anyToString(record.Metadata["cardId"]); got != "card-remote-accept-session" {
+		t.Fatalf("expected verification metadata cardId card-remote-accept-session, got %#v", record.Metadata)
+	}
+	if got := anyToString(record.Metadata["evidenceId"]); got == "" {
+		t.Fatalf("expected verification metadata evidenceId, got %#v", record.Metadata)
+	}
+	if got := anyToString(record.Metadata["verificationPlanKey"]); got == "" {
+		t.Fatalf("expected verification metadata verificationPlanKey, got %#v", record.Metadata)
+	}
+	if sources := verificationStringSlice(record.Metadata["verificationSources"]); len(sources) == 0 {
+		t.Fatalf("expected verification metadata verificationSources, got %#v", record.Metadata)
+	}
+	if len(record.SuccessCriteria) == 0 {
+		t.Fatalf("expected verification success criteria to be populated, got %#v", record)
+	}
+	startedEvent := findIncidentEvent(snapshot.IncidentEvents, "verification.started")
+	if startedEvent == nil {
+		t.Fatalf("expected verification.started incident event")
+	}
+	if startedEvent.Verification != record.ID {
+		t.Fatalf("expected verification.started to point at %q, got %#v", record.ID, startedEvent)
+	}
+	passedEvent := findIncidentEvent(snapshot.IncidentEvents, "verification.passed")
+	if passedEvent == nil {
+		t.Fatalf("expected verification.passed incident event")
+	}
+	if passedEvent.Verification != record.ID {
+		t.Fatalf("expected verification.passed to point at %q, got %#v", record.ID, passedEvent)
+	}
 	if _, ok := app.store.ApprovalGrant(sessionID, approvalFingerprintForCommand(hostID, "echo smoke-ok", "/tmp")); !ok {
 		t.Fatalf("expected approval grant to be remembered for session")
 	}
@@ -924,6 +1299,71 @@ func TestHandleRemoteApprovalAcceptSessionContinuesExecution(t *testing.T) {
 	}
 	if got, ok := finished["exitCode"].(float64); !ok || got != 0 {
 		t.Fatalf("expected finished exitCode 0, got %#v", finished["exitCode"])
+	}
+}
+
+func TestRunRemoteExecDefaultsSafeCwdAndShellForRemoteHosts(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-remote-default-cwd-shell"
+	hostID := "linux-01"
+	cardID := "card-remote-default-cwd-shell"
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertHost(model.Host{
+		ID:         hostID,
+		Name:       hostID,
+		Kind:       "agent",
+		Status:     "online",
+		Executable: true,
+		OS:         "linux",
+	})
+
+	stream := &fakeAgentConnectServer{}
+	app.setAgentConnection(hostID, &agentConnection{hostID: hostID, stream: stream})
+
+	done := make(chan struct{})
+	go func() {
+		msg := stream.waitForKind(t, "exec/start", 2*time.Second)
+		if msg.ExecStart == nil {
+			t.Errorf("expected exec start payload")
+			close(done)
+			return
+		}
+		if got := msg.ExecStart.Cwd; got != "/tmp" {
+			t.Errorf("expected default cwd /tmp, got %q", got)
+		}
+		if got := msg.ExecStart.Shell; got != "/bin/sh" {
+			t.Errorf("expected default shell /bin/sh, got %q", got)
+		}
+		if !msg.ExecStart.Cancelable {
+			t.Errorf("expected remote exec start to declare cancelable=true, got %#v", msg.ExecStart)
+		}
+		app.handleAgentExecExit(hostID, &agentrpc.ExecExit{
+			ExecID:   msg.ExecStart.ExecID,
+			ExitCode: 0,
+			Status:   "completed",
+		})
+		close(done)
+	}()
+
+	result, err := app.runRemoteExec(context.Background(), sessionID, hostID, cardID, execSpec{
+		Command:  "uptime",
+		Readonly: true,
+		ToolName: "readonly_host_inspect",
+	})
+	if err != nil {
+		t.Fatalf("runRemoteExec: %v", err)
+	}
+	<-done
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed status, got %#v", result)
+	}
+	card := app.cardByID(sessionID, cardID)
+	if card == nil {
+		t.Fatalf("expected command card to exist")
+	}
+	if card.Cwd != "/tmp" {
+		t.Fatalf("expected card cwd /tmp, got %q", card.Cwd)
 	}
 }
 
@@ -1131,6 +1571,293 @@ func TestRemoteFileChangeAuditLifecycleIncludesStableFields(t *testing.T) {
 		t.Fatalf("expected finished endedAt to be recorded")
 	}
 	mustAuditNil(t, finished, "exitCode")
+
+	snapshot := app.snapshot(sessionID)
+	record := findVerificationRecord(snapshot.VerificationRecords, "verify-"+approval.ItemID)
+	if record == nil {
+		t.Fatalf("expected verification record for remote file change, got %#v", snapshot.VerificationRecords)
+	}
+	if record.Status != "passed" {
+		t.Fatalf("expected remote file change verification status passed, got %#v", record)
+	}
+	if got := anyToString(record.Metadata["approvalId"]); got != approval.ID {
+		t.Fatalf("expected verification metadata approvalId %q, got %#v", approval.ID, record.Metadata)
+	}
+	if got := anyToString(record.Metadata["filePath"]); got != "/etc/nginx/nginx.conf" {
+		t.Fatalf("expected verification metadata filePath /etc/nginx/nginx.conf, got %#v", record.Metadata)
+	}
+	if got := anyToString(record.Metadata["dryRunSummary"]); !strings.Contains(got, "@@") {
+		t.Fatalf("expected verification metadata dryRunSummary to include diff preview, got %#v", record.Metadata)
+	}
+	startedEvent := findIncidentEvent(snapshot.IncidentEvents, "verification.started")
+	if startedEvent == nil {
+		t.Fatalf("expected verification.started incident event for file change")
+	}
+	if startedEvent.Verification != record.ID {
+		t.Fatalf("expected verification.started to point at %q, got %#v", record.ID, startedEvent)
+	}
+	passedEvent := findIncidentEvent(snapshot.IncidentEvents, "verification.passed")
+	if passedEvent == nil {
+		t.Fatalf("expected verification.passed incident event for file change")
+	}
+	if passedEvent.Verification != record.ID {
+		t.Fatalf("expected verification.passed to point at %q, got %#v", record.ID, passedEvent)
+	}
+}
+
+func TestRemoteCommandApprovalDetailIncludesStructuredRiskContext(t *testing.T) {
+	auditStorePath := filepath.Join(t.TempDir(), "approval-audits.json")
+	app := New(config.Config{})
+	app.approvalAuditStore = store.NewApprovalAuditStore(auditStorePath)
+
+	sessionID := "sess-approval-detail-command"
+	hostID := "web-structured-01"
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertHost(model.Host{
+		ID:         hostID,
+		Name:       "web-structured-01",
+		Kind:       "agent",
+		Status:     "online",
+		Executable: true,
+		Labels: map[string]string{
+			"environment": "prod",
+			"cluster":     "cn-prod-a",
+		},
+	})
+
+	app.requestRemoteCommandApproval(sessionID, hostID, "raw-approval-detail-command", dynamicToolCallParams{
+		ThreadID: "thread-structured-command",
+		TurnID:   "turn-structured-command",
+		CallID:   "call-structured-command",
+		Tool:     serviceRestartToolName,
+		Arguments: map[string]any{
+			"host":    hostID,
+			"service": "nginx",
+			"reason":  "restart nginx after config rollout",
+		},
+	}, execToolArgs{
+		HostID:  hostID,
+		Command: "systemctl restart nginx",
+		Reason:  "restart nginx after config rollout",
+	}, false)
+
+	card := app.cardByID(sessionID, dynamicToolCardID("call-structured-command"))
+	if card == nil {
+		t.Fatalf("expected command approval card")
+	}
+	if got := getStringAny(card.Detail, "toolName"); got != serviceRestartToolName {
+		t.Fatalf("expected structured toolName %q, got %#v", serviceRestartToolName, card.Detail)
+	}
+	if got := getStringAny(card.Detail, "riskLevel"); got != "high" {
+		t.Fatalf("expected riskLevel high, got %#v", card.Detail)
+	}
+	if got := getStringAny(card.Detail, "targetSummary"); !strings.Contains(got, "service nginx") {
+		t.Fatalf("expected targetSummary to include service name, got %#v", card.Detail)
+	}
+	if got := getStringAny(card.Detail, "targetEnvironment"); got != "prod / cn-prod-a" {
+		t.Fatalf("expected targetEnvironment from host labels, got %#v", card.Detail)
+	}
+	if got := getStringAny(card.Detail, "blastRadius"); !strings.Contains(got, "web-structured-01") {
+		t.Fatalf("expected blastRadius to mention host, got %#v", card.Detail)
+	}
+	if got := getStringAny(card.Detail, "rollbackHint"); got == "" {
+		t.Fatalf("expected rollbackHint to be populated, got %#v", card.Detail)
+	}
+	switch raw := card.Detail["verifyStrategies"].(type) {
+	case []string:
+		if len(raw) == 0 {
+			t.Fatalf("expected verifyStrategies, got %#v", card.Detail)
+		}
+	case []any:
+		if len(raw) == 0 {
+			t.Fatalf("expected verifyStrategies, got %#v", card.Detail)
+		}
+	default:
+		t.Fatalf("expected verifyStrategies array, got %#v", card.Detail)
+	}
+	switch raw := card.Detail["verificationSources"].(type) {
+	case []string:
+		if len(raw) == 0 {
+			t.Fatalf("expected verificationSources, got %#v", card.Detail)
+		}
+	case []any:
+		if len(raw) == 0 {
+			t.Fatalf("expected verificationSources, got %#v", card.Detail)
+		}
+	default:
+		t.Fatalf("expected verificationSources array, got %#v", card.Detail)
+	}
+	if got := getStringAny(card.Detail, "verificationPlanKey"); got == "" {
+		t.Fatalf("expected verificationPlanKey to be populated, got %#v", card.Detail)
+	}
+
+	records := app.approvalAuditStore.List(store.ApprovalAuditFilter{})
+	if len(records) == 0 {
+		t.Fatalf("expected approval audit records")
+	}
+	record := records[0]
+	if record.ToolName != serviceRestartToolName {
+		t.Fatalf("expected approval audit toolName %q, got %q", serviceRestartToolName, record.ToolName)
+	}
+	if got := anyToString(record.Meta["targetSummary"]); !strings.Contains(got, "service nginx") {
+		t.Fatalf("expected audit meta targetSummary to include service name, got %#v", record.Meta)
+	}
+	if got := anyToString(record.Meta["targetEnvironment"]); got != "prod / cn-prod-a" {
+		t.Fatalf("expected audit meta targetEnvironment, got %#v", record.Meta)
+	}
+	if sources := verificationStringSlice(record.Meta["verificationSources"]); len(sources) == 0 {
+		t.Fatalf("expected audit meta verificationSources, got %#v", record.Meta)
+	}
+}
+
+func TestRemoteFileChangeApprovalDetailIncludesDryRunSummary(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-approval-detail-file"
+	hostID := "web-file-01"
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertHost(model.Host{ID: hostID, Name: "web-file-01", Kind: "agent", Status: "online", Executable: true})
+
+	stream := &fileChangeAgentStream{
+		onSend: func(msg *agentrpc.Envelope) error {
+			if msg.Kind != "file/read" {
+				return nil
+			}
+			app.handleAgentFileReadResult(hostID, &agentrpc.FileReadResult{
+				RequestID: msg.FileReadRequest.RequestID,
+				Path:      msg.FileReadRequest.Path,
+				Content:   "user nginx;\n",
+			})
+			return nil
+		},
+	}
+	app.setAgentConnection(hostID, &agentConnection{hostID: hostID, stream: stream})
+
+	app.requestRemoteFileChangeApproval(sessionID, hostID, "raw-approval-detail-file", dynamicToolCallParams{
+		ThreadID: "thread-structured-file",
+		TurnID:   "turn-structured-file",
+		CallID:   "call-structured-file",
+		Tool:     "execute_system_mutation",
+		Arguments: map[string]any{
+			"host":       hostID,
+			"mode":       "file_change",
+			"path":       "/etc/nginx/nginx.conf",
+			"content":    "user www-data;\n",
+			"write_mode": "overwrite",
+			"reason":     "switch nginx runtime user",
+		},
+	}, remoteFileChangeArgs{
+		Mode:      "file_change",
+		Path:      "/etc/nginx/nginx.conf",
+		Content:   "user www-data;\n",
+		WriteMode: "overwrite",
+		Reason:    "switch nginx runtime user",
+	})
+
+	card := app.cardByID(sessionID, dynamicToolCardID("call-structured-file"))
+	if card == nil {
+		t.Fatalf("expected file change approval card")
+	}
+	if dryRunSupported, _ := card.Detail["dryRunSupported"].(bool); !dryRunSupported {
+		t.Fatalf("expected file change approval to expose dryRunSupported, got %#v", card.Detail)
+	}
+	if got := getStringAny(card.Detail, "dryRunSummary"); !strings.Contains(got, "@@") {
+		t.Fatalf("expected file change approval dryRunSummary to include diff preview, got %#v", card.Detail)
+	}
+	if got := getStringAny(card.Detail, "targetSummary"); !strings.Contains(got, "/etc/nginx/nginx.conf") {
+		t.Fatalf("expected targetSummary to include file path, got %#v", card.Detail)
+	}
+	if got := getStringAny(card.Detail, "rollbackHint"); !strings.Contains(got, "回滚") {
+		t.Fatalf("expected rollbackHint to mention rollback, got %#v", card.Detail)
+	}
+}
+
+func TestApprovalLifecycleWritesIncidentEvents(t *testing.T) {
+	app := New(config.Config{})
+	sessionID := "sess-approval-incident-events"
+	hostID := "web-incident-01"
+	responded := make(chan any, 1)
+	app.codexRespondFunc = func(_ context.Context, rawID string, result any) error {
+		if rawID != "raw-approval-incident-events" {
+			t.Fatalf("unexpected raw id %q", rawID)
+		}
+		responded <- result
+		return nil
+	}
+
+	app.store.EnsureSession(sessionID)
+	app.store.UpsertHost(model.Host{
+		ID:         hostID,
+		Name:       "web-incident-01",
+		Kind:       "agent",
+		Status:     "online",
+		Executable: true,
+		Labels: map[string]string{
+			"environment": "prod",
+			"cluster":     "cn-prod-a",
+		},
+	})
+
+	app.requestRemoteCommandApproval(sessionID, hostID, "raw-approval-incident-events", dynamicToolCallParams{
+		ThreadID: "thread-approval-incident-events",
+		TurnID:   "turn-approval-incident-events",
+		CallID:   "call-approval-incident-events",
+		Tool:     serviceRestartToolName,
+		Arguments: map[string]any{
+			"host":    hostID,
+			"service": "nginx",
+			"reason":  "restart nginx after verification",
+		},
+	}, execToolArgs{
+		HostID:  hostID,
+		Command: "systemctl restart nginx",
+		Reason:  "restart nginx after verification",
+	}, false)
+
+	requested := findIncidentEvent(app.snapshot(sessionID).IncidentEvents, "approval.requested")
+	if requested == nil {
+		t.Fatalf("expected approval.requested incident event")
+	}
+	if requested.ToolName != serviceRestartToolName {
+		t.Fatalf("expected requested toolName %q, got %#v", serviceRestartToolName, requested)
+	}
+	if requested.ApprovalID == "" {
+		t.Fatalf("expected requested approval id, got %#v", requested)
+	}
+	if got := anyToString(requested.Metadata["targetSummary"]); !strings.Contains(got, "service nginx") {
+		t.Fatalf("expected requested targetSummary to mention service, got %#v", requested.Metadata)
+	}
+	if got := anyToString(requested.Metadata["approvalCardId"]); got != dynamicToolCardID("call-approval-incident-events") {
+		t.Fatalf("expected approvalCardId to be recorded, got %#v", requested.Metadata)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/"+requested.ApprovalID+"/decision", strings.NewReader(`{"decision":"decline"}`))
+	recorder := httptest.NewRecorder()
+	app.handleApprovalDecision(recorder, req, sessionID)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	select {
+	case <-responded:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected codex response after declining approval")
+	}
+
+	decision := findIncidentEvent(app.snapshot(sessionID).IncidentEvents, "approval.decision")
+	if decision == nil {
+		t.Fatalf("expected approval.decision incident event")
+	}
+	if decision.ToolName != serviceRestartToolName {
+		t.Fatalf("expected decision toolName %q, got %#v", serviceRestartToolName, decision)
+	}
+	if decision.ApprovalID != requested.ApprovalID {
+		t.Fatalf("expected approval id %q, got %#v", requested.ApprovalID, decision)
+	}
+	if got := anyToString(decision.Metadata["approvalDecision"]); got != "decline" {
+		t.Fatalf("expected approvalDecision decline, got %#v", decision.Metadata)
+	}
+	if got := anyToString(decision.Metadata["resolutionCardId"]); got != "approval-memo-"+requested.ApprovalID {
+		t.Fatalf("expected resolutionCardId for decline memo, got %#v", decision.Metadata)
+	}
 }
 
 func TestHandleDynamicToolCallRejectsHostMismatch(t *testing.T) {
@@ -1199,18 +1926,15 @@ func TestHandleCommandApprovalRequestBlocksLocalFallbackOnRemoteHost(t *testing.
 	app.store.SetThread(sessionID, "thread-local-approval-blocked")
 	app.store.UpsertHost(model.Host{ID: hostID, Name: hostID, Kind: "agent", Status: "online", Executable: true})
 
-	params, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"threadId": "thread-local-approval-blocked",
 		"turnId":   "turn-local-approval-blocked",
 		"itemId":   "cmd-local-approval-blocked",
 		"command":  "pwd",
 		"cwd":      "/tmp",
 		"reason":   "debug",
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
-	app.handleCodexServerRequest(json.RawMessage("1"), "item/commandExecution/requestApproval", params)
+	app.handleLocalCommandApprovalRequest("1", payload)
 
 	select {
 	case result := <-responded:
@@ -1249,7 +1973,6 @@ func TestHandleCommandApprovalRequestBlocksLocalFallbackOnRemoteHost(t *testing.
 
 func TestHandleItemStartedBlocksUnexpectedLocalCommandOnRemoteHost(t *testing.T) {
 	app := New(config.Config{})
-	app.codex = nil
 	sessionID := "sess-local-command-blocked"
 	hostID := "linux-01"
 
@@ -1969,20 +2692,6 @@ func TestFailStalledTurnMarksSessionFailed(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected stalled turn error card to be recorded")
-	}
-}
-
-func TestParseCodexReconnectProgress(t *testing.T) {
-	attempt, retryMax, ok := parseCodexReconnectProgress("Reconnecting... 2/5")
-	if !ok {
-		t.Fatalf("expected reconnect progress to be parsed")
-	}
-	if attempt != 2 || retryMax != 5 {
-		t.Fatalf("unexpected reconnect progress %d/%d", attempt, retryMax)
-	}
-
-	if _, _, ok := parseCodexReconnectProgress("connection closed"); ok {
-		t.Fatalf("expected non-reconnect message to be ignored")
 	}
 }
 

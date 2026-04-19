@@ -1,8 +1,8 @@
 <script setup>
-import { computed, defineAsyncComponent, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { computed, defineAsyncComponent, ref, watch, nextTick, onMounted, onBeforeUnmount, shallowRef } from "vue";
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
-import { formatMainChatTurns, isChatConversationCard } from "../lib/chatTurnFormatter";
+import { formatMainChatTurns, isChatConversationCard, shouldExposeActiveFinalMessage } from "../lib/chatTurnFormatter";
 import { useChatHistoryPager } from "../composables/useChatHistoryPager";
 import { useChatScrollState } from "../composables/useChatScrollState";
 import { useAwaySummary } from "../composables/useAwaySummary";
@@ -11,10 +11,12 @@ import { buildMcpDecisionNotice, buildSyntheticMcpApproval, formatMcpActionLabel
 import CardItem from "../components/CardItem.vue";
 import ChatTurnGroup from "../components/chat/ChatTurnGroup.vue";
 import ChatComposerDock from "../components/chat/ChatComposerDock.vue";
+import ChatTerminalPreview from "../components/chat/ChatTerminalPreview.vue";
 import McpBundleHost from "../components/mcp/McpBundleHost.vue";
 import McpUiCardHost from "../components/mcp/McpUiCardHost.vue";
 import ThinkingCard from "../components/ThinkingCard.vue";
-import { BotIcon, WifiOffIcon, RefreshCwIcon, TerminalIcon } from "lucide-vue-next";
+import { BotIcon, WifiOffIcon, RefreshCwIcon, TerminalIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-vue-next";
+import { NBadge, NDrawer, NDrawerContent } from "naive-ui";
 
 const store = useAppStore();
 const WorkspaceHostTerminal = defineAsyncComponent(() => import("../components/workspace/WorkspaceHostTerminal.vue"));
@@ -48,13 +50,21 @@ const thinkingHint = ref("");
 const preferredThinkingPhase = ref("");
 let thinkingHintTimer = null;
 
+const thinkingDisplayPhase = computed(() => {
+  const phase = compactText(thinkingPhase.value).toLowerCase();
+  if (["planning", "thinking", "waiting_approval", "waiting_input", "executing", "finalizing"].includes(phase)) {
+    return phase;
+  }
+  return "thinking";
+});
+
 const thinkingCard = computed(() => ({
   id: "__thinking__",
   type: "ThinkingCard",
-  phase: thinkingPhase.value,
-  hint: thinkingHint.value,
+  phase: thinkingDisplayPhase.value,
+  hint: activeActivityLine.value || summaryLine.value || thinkingHint.value,
 }));
-const showThinkingCard = computed(() => showThinking.value && thinkingPhase.value !== "finalizing");
+const showThinkingCard = computed(() => showThinking.value);
 
 function clearThinkingPrelude() {
   if (thinkingHintTimer) {
@@ -67,6 +77,37 @@ function clearThinkingPrelude() {
 
 function compactText(value) {
   return typeof value === "string" ? value.trim() : String(value || "").trim();
+}
+
+function normalizeCompletedActivityText(text = "") {
+  return compactText(String(text || ""))
+    .replace(/^正在搜索网页/u, "已搜索网页")
+    .replace(/^正在搜索内容/u, "已搜索内容")
+    .replace(/^正在搜索文件/u, "已搜索文件")
+    .replace(/^正在浏览网页/u, "已浏览网页")
+    .replace(/^正在浏览目录/u, "已浏览目录")
+    .replace(/^正在浏览/u, "已浏览")
+    .replace(/^正在读取文件/u, "已读取文件")
+    .replace(/^正在修改文件/u, "已修改文件")
+    .replace(/^正在列出/u, "已列出")
+    .replace(/^正在检索页面内容/u, "已在页面中搜索")
+    .replace(/^正在运行/u, "已运行")
+    .replace(/^正在执行/u, "已执行");
+}
+
+function buildPersistedProcessItems(lines = [], { completed = false } = {}) {
+  const seenText = new Set();
+  return (lines || []).map((line, index) => {
+    const text = completed ? normalizeCompletedActivityText(line?.text) : compactText(line?.text);
+    if (!text || seenText.has(text)) return null;
+    seenText.add(text);
+    return {
+      id: compactText(line?.id || `activity-line-${index}`),
+      kind: text.startsWith("已搜索") ? "search" : "activity",
+      text,
+      status: completed ? "completed" : compactText(line?.status),
+    };
+  }).filter(Boolean);
 }
 
 function isMcpBundlePayload(value) {
@@ -244,11 +285,256 @@ watch(
     if (phase === "waiting_approval") {
       authCardCollapsed.value = false;
     }
-  }
+  },
+  { immediate: true },
 );
 
 /* ---- Activity summary ---- */
 const activity = computed(() => store.runtime.activity);
+
+/* ---- Codex-style activity status lines (Change 1 & 2) ---- */
+let elapsedTimerHandle = null;
+const elapsedNow = ref(Date.now());
+
+function startElapsedTimer() {
+  stopElapsedTimer();
+  elapsedNow.value = Date.now();
+  elapsedTimerHandle = window.setInterval(() => {
+    elapsedNow.value = Date.now();
+  }, 1000);
+}
+
+function stopElapsedTimer() {
+  if (elapsedTimerHandle) {
+    window.clearInterval(elapsedTimerHandle);
+    elapsedTimerHandle = null;
+  }
+}
+
+const elapsedLabel = computed(() => {
+  const startedAt = store.runtime.turn.startedAt;
+  if (!startedAt) return "";
+  const start = typeof startedAt === "number" ? startedAt : new Date(startedAt).getTime();
+  if (!start || isNaN(start)) return "";
+  const diff = Math.max(0, Math.floor((elapsedNow.value - start) / 1000));
+  if (diff < 60) return `${diff}s`;
+  const m = Math.floor(diff / 60);
+  const s = diff % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+});
+
+const workingElapsedLabel = computed(() => elapsedLabel.value || "0s");
+
+function safeTimestamp(value) {
+  const stamp = Date.parse(value || "");
+  return Number.isFinite(stamp) ? stamp : 0;
+}
+
+function stripMatchingQuotes(value) {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith("\"") && text.endsWith("\"")))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function displayInlineCommand(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const shellMatch = raw.match(/^(?:\/[\w./-]+\/)?(?:zsh|bash|sh)\s+-lc\s+([\s\S]+)$/);
+  if (shellMatch) return stripMatchingQuotes(shellMatch[1]);
+  return raw;
+}
+
+function terminalOutputText(card = {}) {
+  return String(card?.output || card?.stdout || card?.stderr || card?.text || card?.summary || "")
+    .replace(/\r\n/g, "\n")
+    .trimEnd();
+}
+
+function isFinalCommandState(status = "") {
+  const normalized = compactText(status).toLowerCase();
+  return (
+    normalized.includes("complete") ||
+    normalized.includes("done") ||
+    normalized.includes("fail") ||
+    normalized.includes("error") ||
+    normalized.includes("cancel") ||
+    normalized.includes("timeout") ||
+    normalized.includes("denied") ||
+    normalized.includes("disconnect")
+  );
+}
+
+const currentTurnStartTimestamp = computed(() => safeTimestamp(store.runtime.turn.startedAt));
+
+const codexActivityLines = computed(() => {
+  const lines = [];
+  const a = store.runtime.activity;
+  const turnStart = currentTurnStartTimestamp.value;
+  const invocations = (store.snapshot.toolInvocations || []).filter((invocation) => {
+    if (!turnStart) return true;
+    const startedAt = safeTimestamp(invocation?.startedAt);
+    const completedAt = safeTimestamp(invocation?.completedAt);
+    const compareAt = startedAt || completedAt;
+    return !compareAt || compareAt >= turnStart;
+  });
+
+  // Show individual tool invocations like Codex does
+  for (const inv of invocations) {
+    const name = inv.name || inv.toolName || "";
+    const summary = inv.inputSummary || inv.outputSummary || "";
+    const status = inv.status || "";
+    const normalizedStatus = compactText(status).toLowerCase();
+    const running = normalizedStatus === "running";
+    if (!name) continue;
+
+    let text = "";
+    switch (name) {
+      case "web_search":
+        text = `${running ? "正在搜索网页" : "已搜索网页"}（${summary || "web"}）`;
+        break;
+      case "open_page":
+        text = `${running ? "正在浏览网页" : "已浏览网页"}（${summary || inv.url || "page"}）`;
+        break;
+      case "find_in_page":
+        text = `${running ? "正在检索页面内容" : "已在页面中搜索"}（${summary || "content"}）`;
+        break;
+      case "shell_command":
+      case "execute_command":
+      case "execute_readonly_query":
+      case "code_mode":
+        text = `${running ? "正在运行" : "已运行"} ${summary || name}`;
+        break;
+      case "list_dir":
+      case "list_files":
+        text = `${running ? "正在浏览目录" : "已浏览目录"}（${summary || "dir"}）`;
+        break;
+      case "read_file":
+        text = `${running ? "正在读取文件" : "已读取文件"}（${summary || "file"}）`;
+        break;
+      case "write_file":
+      case "apply_patch":
+        text = `${running ? "正在修改文件" : "已修改文件"}（${summary || "file"}）`;
+        break;
+      case "search_files":
+        text = `${running ? "正在搜索文件" : "已搜索文件"}（${summary || "query"}）`;
+        break;
+      default:
+        text = `${running ? "正在执行" : "已执行"} ${name}${summary ? "（" + summary + "）" : ""}`;
+    }
+    lines.push({ id: `inv-${inv.id || lines.length}`, text, status: normalizedStatus });
+  }
+
+  // If no invocations yet, fall back to activity counters
+  if (lines.length === 0) {
+    // Completed web searches
+    for (const q of (a.searchedWebQueries || [])) {
+      lines.push({ id: `ws-${q.query || q.label || q}`, text: `已搜索网页（${q.query || q.label || q}）` });
+    }
+    for (const q of (a.searchedContentQueries || [])) {
+      lines.push({ id: `cs-${q.query || q.label || q}`, text: `已搜索文件（${q.query || q.label || q}）` });
+    }
+    if (a.currentSearchQuery) {
+      const kind = (a.currentSearchKind === "web" || a.currentWebSearchQuery) ? "网页" : "文件";
+      lines.push({ id: "active-search", text: `正在搜索${kind}（${a.currentSearchQuery || a.currentWebSearchQuery}）`, status: "running" });
+    }
+    for (const f of (a.viewedFiles || [])) {
+      const label = f.path || f.url || f.label || f;
+      lines.push({ id: `vf-${label}`, text: `已浏览（${label}）` });
+    }
+    if (a.currentReadingFile) {
+      lines.push({ id: "active-read", text: `正在浏览（${a.currentReadingFile}）`, status: "running" });
+    }
+    if (a.commandsRun > 0) {
+      lines.push({ id: "cmds", text: `已运行 ${a.commandsRun} 条命令` });
+    }
+  }
+
+  return lines;
+});
+
+const isThinking = computed(() => {
+  const phase = compactText(store.runtime.turn.phase).toLowerCase();
+  return phase === "thinking" || phase === "planning" || phase === "finalizing";
+});
+
+const showCodexActivity = computed(() => {
+  return store.runtime.turn.active && !isWorkspaceSession.value;
+});
+
+// Accumulate activity lines during the turn so they survive the backend clearing current fields
+const accumulatedActivityLines = shallowRef([]);
+
+function mergeAccumulatedActivityLines(lines = [], { replace = false } = {}) {
+  const nextLines = Array.isArray(lines) ? lines : [];
+  const existing = new Map(replace ? [] : accumulatedActivityLines.value.map((line) => [line.id, line]));
+  for (const line of nextLines) {
+    if (!line?.id || !compactText(line?.text)) continue;
+    existing.set(line.id, line);
+  }
+  accumulatedActivityLines.value = [...existing.values()];
+}
+
+watch(codexActivityLines, (newLines) => {
+  if (store.runtime.turn.active) {
+    mergeAccumulatedActivityLines(newLines);
+    return;
+  }
+
+  // After a refresh, runtime.activity is restored from snapshot, but the
+  // in-memory accumulated lines are gone. Rehydrate them once so the completed
+  // "已处理" fold still shows concrete process rows instead of an empty shell.
+  if (!accumulatedActivityLines.value.length && Array.isArray(newLines) && newLines.length) {
+    mergeAccumulatedActivityLines(newLines, { replace: true });
+  }
+}, { deep: true, immediate: true });
+
+watch(
+  () => store.runtime.turn.active,
+  (active, wasActive) => {
+    if (active && wasActive === false) {
+      // Turn just started (not initial mount)
+      startElapsedTimer();
+      accumulatedActivityLines.value = [];
+    }
+    if (active && wasActive === undefined) {
+      // Initial mount with active turn — start timer but keep accumulated lines
+      startElapsedTimer();
+    }
+    if (!active && wasActive) {
+      // Turn just completed
+      stopElapsedTimer();
+    }
+  },
+  { immediate: true },
+);
+
+// Approval inline mode (Change 3)
+const hasCodexApproval = computed(() => {
+  return store.runtime.turn.phase === "waiting_approval" && activeApprovalCard.value && !isWorkspaceSession.value;
+});
+
+const approvalQuestion = computed(() => {
+  const card = activeApprovalCard.value;
+  if (!card) return "是否允许执行此操作？";
+  if (card.type === "CommandApprovalCard") return "是否允许执行以下命令？";
+  if (card.type === "FileChangeApprovalCard") return "是否允许修改以下文件？";
+  return "是否允许执行此操作？";
+});
+
+const approvalCommand = computed(() => {
+  const card = activeApprovalCard.value;
+  if (!card) return "";
+  return compactText(card.command || card.title || card.summary || "");
+});
+
+function resolveCodexApproval(decision) {
+  const card = activeApprovalCard.value;
+  if (!card) return;
+  const approvalId = card.approval?.requestId || card.id;
+  decideApproval({ approvalId, decision });
+}
 
 function truncateLabel(value, max = 88) {
   if (!value || value.length <= max) return value;
@@ -280,17 +566,17 @@ const activitySummary = computed(() => {
 
 const currentReadingLine = computed(() => {
   const file = activity.value.currentReadingFile;
-  return file ? `现在浏览 ${file}` : "";
+  return file ? `正在浏览（${file}）` : "";
 });
 
 const currentChangingLine = computed(() => {
   const file = activity.value.currentChangingFile;
-  return file ? `现在修改 ${truncateLabel(file)}` : "";
+  return file ? `正在修改（${truncateLabel(file)}）` : "";
 });
 
 const currentListingLine = computed(() => {
   const path = activity.value.currentListingPath;
-  return path ? `现在列出 ${truncateLabel(path)}` : "";
+  return path ? `正在列出（${truncateLabel(path)}）` : "";
 });
 
 const currentSearchLine = computed(() => {
@@ -300,12 +586,12 @@ const currentSearchLine = computed(() => {
     return "";
   }
   if (a.currentSearchKind === "content") {
-    return `现在搜索内容（${truncateLabel(query)}）`;
+    return `正在搜索内容（${truncateLabel(query)}）`;
   }
   if (a.currentSearchKind === "web" || a.currentWebSearchQuery) {
-    return `现在搜索网页（${truncateLabel(query)}）`;
+    return `正在搜索网页（${truncateLabel(query)}）`;
   }
-  return `现在搜索内容（${truncateLabel(query)}）`;
+  return `正在搜索内容（${truncateLabel(query)}）`;
 });
 
 const viewedFileDetails = computed(() => activity.value.viewedFiles || []);
@@ -326,6 +612,29 @@ const summaryLine = computed(() => {
   return activitySummary.value;
 });
 const hasTopFeedback = computed(() => !!activeActivityLine.value || !!summaryLine.value);
+const singleHostLiveActivityLines = computed(() => {
+  const items = [];
+  const seenText = new Set();
+  const appendLine = (id, text, tone = "history") => {
+    const label = compactText(text);
+    if (!label || seenText.has(label)) return;
+    if (latestRunningCommandCard.value && /^正在运行\s+/u.test(label)) return;
+    seenText.add(label);
+    items.push({ id, text: label, tone });
+  };
+
+  if (activeActivityLine.value) {
+    appendLine("current-activity", activeActivityLine.value, "current");
+  } else if (summaryLine.value && !accumulatedActivityLines.value.length) {
+    appendLine("summary-activity", summaryLine.value, "summary");
+  }
+
+  accumulatedActivityLines.value.slice(-6).forEach((line, index) => {
+    appendLine(line.id || `accumulated-${index}`, line.text, line.status === "running" ? "current" : "history");
+  });
+
+  return items;
+});
 const activeLineExpandable = computed(() => {
   if (activeActivityKind.value === "files") return viewedFileDetails.value.length > 0;
   if (activeActivityKind.value === "search") return searchedQueryDetails.value.length > 0;
@@ -416,7 +725,13 @@ const activeApprovalQueueNote = computed(() => {
 
 const activeMcpApproval = computed(() => localMcpApprovals.value[0] || null);
 const hasActiveApprovalOverlay = computed(() => Boolean(activeApprovalCard.value || activeMcpApproval.value));
-const allowFollowUpComposer = computed(() => approvalFollowupMode.value && !hasActiveApprovalOverlay.value);
+const allowFollowUpComposer = computed(
+  () =>
+    approvalFollowupMode.value &&
+    !hasActiveApprovalOverlay.value &&
+    !store.runtime.turn.active &&
+    !store.runtime.turn.pendingStart,
+);
 const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
 const workspaceSessionLabel = computed(() => (isWorkspaceSession.value ? "工作台会话" : ""));
 const workspaceDetailLinkLabel = computed(() => (isWorkspaceSession.value ? "查看只读详情" : ""));
@@ -460,8 +775,8 @@ const terminalDockToolbarLabel = computed(() => {
 });
 const chatContainerStyle = computed(() => ({
   paddingBottom: terminalDockVisible.value
-    ? `${terminalDockHeight.value + (activePlanCard.value || hasActiveApprovalOverlay.value ? 260 : 180)}px`
-    : "180px",
+    ? `${terminalDockHeight.value + (activePlanCard.value || hasActiveApprovalOverlay.value ? 180 : 80)}px`
+    : "80px",
 }));
 
 function queueLocalMcpApproval(action) {
@@ -492,6 +807,18 @@ function handleTurnMcpAction(action) {
     return;
   }
   if (action.bundleKind === "remediation_bundle") {
+    openMcpSurfaceDrawer(action);
+    return;
+  }
+  if (action.bundleKind === "coroot_topology" || action.bundleKind === "coroot_host_overview") {
+    openMcpSurfaceDrawer(action);
+    return;
+  }
+  if (action.bundleKind === "coroot_service_monitor") {
+    void refreshMcpSurface(action);
+    return;
+  }
+  if (action.bundleKind === "coroot_incident_rca") {
     openMcpSurfaceDrawer(action);
     return;
   }
@@ -533,8 +860,31 @@ function isTerminalOutputCard(card) {
   return card?.type === "CommandCard" || (card?.type === "StepCard" && !!card?.command);
 }
 
+const singleHostCommandCards = computed(() => {
+  return (store.snapshot.cards || []).filter((card) => {
+    if (!isTerminalOutputCard(card)) return false;
+    if (card.hostId && card.hostId !== store.snapshot.selectedHostId) return false;
+    return true;
+  });
+});
+
+const latestRunningCommandCard = computed(() => {
+  if (!store.runtime.turn.active) return null;
+  const turnStart = currentTurnStartTimestamp.value;
+  const cards = singleHostCommandCards.value.filter((card) => {
+    if (isFinalCommandState(card?.status)) return false;
+    const compareAt = safeTimestamp(card?.startedAt || card?.updatedAt || card?.createdAt || card?.completedAt);
+    if (!turnStart || !compareAt) return true;
+    return compareAt >= turnStart;
+  });
+  return cards[cards.length - 1] || null;
+});
+
 const visibleCards = computed(() => {
   return store.snapshot.cards.filter((card) => {
+    if (!isWorkspaceSession.value && card.type === "ThinkingCard") {
+      return false;
+    }
     // Hide active plan card
     if (activePlanCard.value && card.id === activePlanCard.value.id && store.runtime.turn.active) {
       return false;
@@ -566,25 +916,48 @@ const streamCards = computed(() =>
   }),
 );
 
+function isUserConversationCard(card = {}) {
+  return card?.type === "UserMessageCard" || card?.role === "user";
+}
+
+function isAssistantConversationCard(card = {}) {
+  return card?.type === "AssistantMessageCard" || card?.role === "assistant";
+}
+
+const currentTurnAssistantCards = computed(() => {
+  const cards = streamCards.value.filter((card) => isChatConversationCard(card));
+  const assistants = [];
+  for (let index = cards.length - 1; index >= 0; index -= 1) {
+    const card = cards[index];
+    if (isUserConversationCard(card)) {
+      break;
+    }
+    if (isAssistantConversationCard(card)) {
+      assistants.unshift(card);
+    }
+  }
+  return assistants;
+});
+
+const activeStreamingFinalMessageVisible = computed(() => {
+  if (isWorkspaceSession.value) return false;
+  if (!(showThinkingCard.value || store.runtime.turn.active)) return false;
+  const lastAssistantCard = currentTurnAssistantCards.value[currentTurnAssistantCards.value.length - 1];
+  return shouldExposeActiveFinalMessage({ card: lastAssistantCard, sourceCard: lastAssistantCard });
+});
+
 const mainChatActiveProcess = computed(() => {
-  if (!showThinkingCard.value && !hasTopFeedback.value) return null;
-  const items = [
-    ...viewedFileDetails.value.map((entry, index) => ({
-      id: `viewed-file-${index}`,
-      kind: "file",
-      text: entry.label || entry.path || "",
-    })),
-    ...searchedQueryDetails.value.map((entry, index) => ({
-      id: `searched-query-${index}`,
-      kind: "search",
-      text: entry.label || entry.query || "",
-    })),
-  ].filter((item) => item.text);
+  const completed = (!store.runtime.turn.active && !showThinkingCard.value) || activeStreamingFinalMessageVisible.value;
+  const items = buildPersistedProcessItems(accumulatedActivityLines.value, { completed });
+
+  // Return process data when turn is active OR when there are accumulated items
+  // so the "已处理" fold persists after the turn completes.
+  if (!showThinkingCard.value && !hasTopFeedback.value && items.length === 0) return null;
 
   return {
-    phase: thinkingPhase.value,
-    liveHint: activeActivityLine.value || thinkingCard.value.hint || "",
-    summary: summaryLine.value || (!activeActivityLine.value ? activitySummary.value : ""),
+    phase: thinkingDisplayPhase.value,
+    liveHint: completed ? "" : (activeActivityLine.value || thinkingHint.value || ""),
+    summary: completed ? (activitySummary.value || "") : (summaryLine.value || (!activeActivityLine.value ? activitySummary.value : "")),
     items,
   };
 });
@@ -592,14 +965,26 @@ const mainChatActiveProcess = computed(() => {
 const mainChatTurns = computed(() =>
   formatMainChatTurns({
     conversationCards: streamCards.value.filter((card) => isChatConversationCard(card)),
+    commandCards: singleHostCommandCards.value,
     turnActive: showThinkingCard.value || store.runtime.turn.active,
     activeProcess: mainChatActiveProcess.value,
+    hideLiveProcessDetails: !isWorkspaceSession.value,
   }),
 );
 
 const mainChatTurnByAnchorId = computed(() =>
   new Map(mainChatTurns.value.map((turn) => [turn.anchorMessageId, turn])),
 );
+
+const singleHostLiveTurnId = computed(() => {
+  if (isWorkspaceSession.value) return "";
+  if (activeStreamingFinalMessageVisible.value) return "";
+  if (!(showThinkingCard.value || store.runtime.turn.active || store.runtime.turn.pendingStart)) {
+    return "";
+  }
+  const turns = mainChatTurns.value;
+  return turns.length ? turns[turns.length - 1].id : "";
+});
 
 const baseStreamEntries = computed(() => {
   const entries = [];
@@ -626,17 +1011,29 @@ const baseStreamEntries = computed(() => {
     });
   }
 
-  if (!mainChatTurns.value.length && showThinking.value && hasTopFeedback.value) {
+  if (!mainChatTurns.value.length && showThinking.value && hasTopFeedback.value && !showThinkingCard.value) {
     entries.push({ id: "__activity__", kind: "activity" });
   }
-  if (!mainChatTurns.value.length && showThinkingCard.value) {
-    entries.push({ id: "__thinking__", kind: "thinking" });
+  if (showThinkingCard.value) {
+    const activeTurnIndex = entries.findIndex((entry) => entry.kind === "turn" && entry.turn?.active);
+    // Single-host mode renders the live status inside the active turn, between the
+    // user bubble and the streamed assistant output.
+    if (isWorkspaceSession.value || (activeTurnIndex < 0 && !mainChatTurns.value.length)) {
+      entries.push({ id: "__thinking__", kind: "thinking" });
+    }
   }
 
   return entries;
 });
 
 const historySessionKey = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+
+watch(historySessionKey, () => {
+  accumulatedActivityLines.value = [];
+  if (!store.runtime.turn.active && codexActivityLines.value.length) {
+    mergeAccumulatedActivityLines(codexActivityLines.value, { replace: true });
+  }
+});
 
 const historyPager = useChatHistoryPager({
   items: baseStreamEntries,
@@ -696,9 +1093,6 @@ const historyStreamSignature = computed(() => {
 });
 
 const composerStatusHint = computed(() => {
-  if (latestTerminalCard.value && !terminalDockVisible.value) {
-    return "最近命令输出已收进终端面板，可随时展开查看。";
-  }
   if (allowFollowUpComposer.value) {
     return "当前可以直接继续输入 follow-up。";
   }
@@ -774,6 +1168,7 @@ const renderedStreamEntries = computed(() => {
 const virtualStream = useVirtualTurnList({
   items: renderedStreamEntries,
   scrollContainer,
+  suspended: computed(() => store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending),
   estimateSize(entry) {
     if (entry?.kind === "turn") return 172;
     if (entry?.kind === "divider") return 72;
@@ -782,7 +1177,7 @@ const virtualStream = useVirtualTurnList({
     if (entry?.kind === "thinking") return 96;
     return 120;
   },
-  overscan: 4,
+  overscan: 8,
   minItemCount: 18,
   getItemKey: (entry, index) => entry?.id || index,
 });
@@ -834,6 +1229,14 @@ function jumpToLatestAndSync() {
   jumpToLatest();
   nextTick(() => {
     virtualStream.syncViewport();
+    // Smooth scroll: after virtual list sync, ensure the last element is smoothly visible
+    const el = scrollContainer.value;
+    if (el) {
+      const lastChild = el.querySelector("[data-testid]:last-child, .chat-turn-group:last-child, .stream-row:last-child");
+      if (lastChild && typeof lastChild.scrollIntoView === "function") {
+        lastChild.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+    }
   });
 }
 
@@ -874,8 +1277,8 @@ const reconnectHostLabel = computed(() => {
 
 const reconnectLabel = computed(() => {
   const c = store.runtime.codex;
-  if (c.status === "stopped") return `与本地 ai-server 的实时连接已断开，无法恢复 · ${reconnectHostLabel.value}`;
-  return `与本地 ai-server 的实时连接重连中 ${c.retryAttempt}/${c.retryMax} · ${reconnectHostLabel.value}`;
+  if (c.status === "stopped") return `与 ai-server 的实时连接已断开 · ${reconnectHostLabel.value}`;
+  return `与 ai-server 的实时连接重连中 ${c.retryAttempt}/${c.retryMax} · ${reconnectHostLabel.value}`;
 });
 
 const isStopped = computed(() => store.runtime.codex.status === "stopped");
@@ -891,7 +1294,7 @@ const showCodexReconnectBanner = computed(() => {
 });
 
 const codexReconnectLabel = computed(() => {
-  return codexReconnectNotice.value?.message || codexReconnectNotice.value?.text || "与 GPT 的连接波动，正在自动恢复";
+  return codexReconnectNotice.value?.message || codexReconnectNotice.value?.text || "与 LLM 的连接波动，正在自动恢复";
 });
 
 const selectedHostAlert = computed(() => {
@@ -903,16 +1306,16 @@ const selectedHostAlert = computed(() => {
 });
 
 const composerPlaceholder = computed(() => {
-  if (!store.snapshot.auth.connected) return "请先登录 GPT 账号后再开始对话";
-  if (!store.snapshot.config.codexAlive) return "Codex app-server 当前不可用";
+  if (!store.snapshot.auth.connected) return "请先登录后再开始对话";
+  if (!store.snapshot.config.codexAlive) return "LLM 未连接，请在 设置 → LLM 配置 中设置 API Key";
   if (allowFollowUpComposer.value) return "可以继续输入 follow-up，Cmd+Enter 发送";
   if (store.selectedHost.terminalCapable && !store.selectedHost.executable) {
-    return "当前主机已接入远程终端，Codex 自动执行链路还未开启";
+    return "当前主机已接入远程终端，自动执行链路还未开启";
   }
   if (!store.selectedHost.executable) return "当前主机仅展示，不支持执行";
   if (store.selectedHost.status !== "online") return "当前主机离线，暂时不可执行";
-  if (store.selectedHost.kind === "agent") return "Ask Codex to manage this host";
-  return "Ask Codex to build something";
+  if (store.selectedHost.kind === "agent") return "输入指令，让 AI 管理这台主机";
+  return "输入你的问题或任务";
 });
 
 function getRowClass(card) {
@@ -927,15 +1330,19 @@ function getRowClass(card) {
 
 async function sendMessage() {
   if (!store.canSend || !composerMessage.value.trim()) return;
-  if (store.runtime.turn.active && !allowFollowUpComposer.value) return;
+  if (store.runtime.turn.active || store.runtime.turn.pendingStart) return;
 
-  const message = composerMessage.value.trim();
+  const draft = composerMessage.value;
+  const message = draft.trim();
   store.sending = true;
   store.errorMessage = "";
   showThinking.value = true;
-  queueThinkingPrelude(message);
-  store.setTurnPhase(preferredThinkingPhase.value || "thinking");
+  if (isWorkspaceSession.value) {
+    queueThinkingPrelude(message);
+  }
+  store.markTurnPendingStart("thinking");
   store.resetActivity();
+  composerMessage.value = "";
 
   try {
     const response = await fetch("/api/v1/chat/message", {
@@ -950,18 +1357,21 @@ async function sendMessage() {
     if (!response.ok) {
       const data = await response.json();
       store.errorMessage = data.error || "message send failed";
+      composerMessage.value = draft;
       showThinking.value = false;
       store.setTurnPhase("failed");
+      store.clearTurnPendingStart();
       clearThinkingPrelude();
     } else {
-      composerMessage.value = "";
       approvalFollowupMode.value = false;
       nextTick(() => jumpToLatest());
     }
   } catch (e) {
     store.errorMessage = "Network error";
+    composerMessage.value = draft;
     showThinking.value = false;
     store.setTurnPhase("failed");
+    store.clearTurnPendingStart();
     clearThinkingPrelude();
   } finally {
     store.sending = false;
@@ -969,7 +1379,7 @@ async function sendMessage() {
 }
 
 async function stopMessage() {
-  if (!store.runtime.turn.active) return;
+  if (!store.runtime.turn.active && !store.runtime.turn.pendingStart) return;
   try {
     const response = await fetch("/api/v1/chat/stop", {
       method: "POST",
@@ -1198,6 +1608,7 @@ watch(
 
 onBeforeUnmount(() => {
   clearThinkingPrelude();
+  stopElapsedTimer();
   window.removeEventListener("keydown", handleTerminalDockToggleKeydown);
   if (terminalDockDragState?.handleMove) {
     window.removeEventListener("mousemove", terminalDockDragState.handleMove);
@@ -1352,11 +1763,42 @@ watch(
           <ChatTurnGroup
             v-else-if="entry.kind === 'turn'"
             :turn="entry.turn"
+            :show-live-status="!isWorkspaceSession && entry.turn?.id === singleHostLiveTurnId"
             @action="handleTurnMcpAction"
             @detail="handleMcpSurfaceDetail"
             @pin="handleMcpSurfacePin"
             @refresh="handleMcpSurfaceRefresh"
-          />
+          >
+            <template #live-status>
+              <div class="stream-row row-assistant" data-testid="chat-live-status-card">
+                <div class="codex-activity-section" data-testid="codex-activity-section">
+                  <div class="codex-activity-header">
+                    <span class="codex-working-label">Working for {{ workingElapsedLabel }}</span>
+                    <hr class="codex-activity-divider" />
+                  </div>
+                  <div class="codex-activity-lines">
+                    <div
+                      v-for="line in singleHostLiveActivityLines"
+                      :key="line.id"
+                      class="codex-activity-line codex-activity-detail"
+                      :class="{
+                        'is-current': line.tone === 'current',
+                        'is-summary': line.tone === 'summary',
+                      }"
+                    >
+                      {{ line.text }}
+                    </div>
+                    <ChatTerminalPreview
+                      v-if="latestRunningCommandCard"
+                      test-id="chat-live-terminal-preview"
+                      :command="latestRunningCommandCard.command || latestRunningCommandCard.title || ''"
+                      :output="terminalOutputText(latestRunningCommandCard)"
+                    />
+                  </div>
+                </div>
+              </div>
+            </template>
+          </ChatTurnGroup>
 
           <div v-else-if="entry.kind === 'away-summary'" class="chat-away-summary" data-testid="chat-away-summary">
             <div class="chat-away-summary-kicker">你离开期间有新进展</div>
@@ -1417,8 +1859,35 @@ watch(
             </div>
           </div>
 
-          <div v-else-if="entry.kind === 'thinking'" class="stream-row row-assistant">
-            <ThinkingCard :card="thinkingCard" />
+          <div v-else-if="entry.kind === 'thinking'" class="stream-row row-assistant" data-testid="chat-live-status-card">
+            <!-- Workspace mode: use ThinkingCard -->
+            <ThinkingCard v-if="isWorkspaceSession" :card="thinkingCard" />
+            <!-- Single-host mode: Codex-style clean activity -->
+            <div v-else class="codex-activity-section" data-testid="codex-activity-section">
+              <div class="codex-activity-header">
+                <span class="codex-working-label">Working for {{ workingElapsedLabel }}</span>
+                <hr class="codex-activity-divider" />
+              </div>
+              <div class="codex-activity-lines">
+                <div
+                  v-for="line in singleHostLiveActivityLines"
+                  :key="line.id"
+                  class="codex-activity-line codex-activity-detail"
+                  :class="{
+                    'is-current': line.tone === 'current',
+                    'is-summary': line.tone === 'summary',
+                  }"
+                >
+                  {{ line.text }}
+                </div>
+                <ChatTerminalPreview
+                  v-if="latestRunningCommandCard"
+                  test-id="chat-live-terminal-preview"
+                  :command="latestRunningCommandCard.command || latestRunningCommandCard.title || ''"
+                  :output="terminalOutputText(latestRunningCommandCard)"
+                />
+              </div>
+            </div>
           </div>
         </template>
 
@@ -1429,6 +1898,8 @@ watch(
           :style="{ height: `${virtualBottomSpacerHeight}px` }"
           aria-hidden="true"
         />
+
+        <!-- Codex completed fold — now handled by ChatProcessFold inside ChatTurnGroup -->
       </div>
     </div>
   </div>
@@ -1451,70 +1922,47 @@ watch(
     :plan-card="activePlanCard"
     :session-kind="store.snapshot.kind"
     :status-hint="composerStatusHint"
-    :show-composer="!hasActiveApprovalOverlay || authCardCollapsed"
+    :show-composer="(!hasActiveApprovalOverlay || authCardCollapsed) && !hasCodexApproval"
     :is-docked-bottom="!!activePlanCard || hasActiveApprovalOverlay"
     @send="sendMessage"
     @stop="stopMessage"
   >
-    <template #terminal>
-      <div class="chat-terminal-dock-wrap">
-        <div class="chat-terminal-toolbar">
-          <button
-            data-testid="chat-terminal-toggle"
-            class="chat-terminal-toggle"
-            :class="{ active: terminalDockVisible }"
-            :disabled="isWorkspaceSession"
-            @click="toggleTerminalDock()"
-          >
-            <TerminalIcon size="14" />
-            <span>{{ terminalDockVisible ? "隐藏终端" : "显示终端" }}</span>
-          </button>
-          <span class="chat-terminal-toolbar-label">{{ terminalDockToolbarLabel }}</span>
-          <span class="chat-terminal-shortcut">Ctrl + `</span>
-        </div>
-
-        <div
-          v-if="terminalDockVisible"
-          data-testid="chat-terminal-dock"
-          class="chat-terminal-dock"
-          :class="{ dragging: terminalDockDragging }"
-          :style="{ height: `${terminalDockHeight}px` }"
-        >
-          <button
-            data-testid="chat-terminal-resizer"
-            class="chat-terminal-resizer"
-            title="拖拽调整终端高度"
-            @mousedown="handleTerminalDockResizeStart"
-          >
-            拖拽调整高度
-          </button>
-          <div class="chat-terminal-frame">
-            <WorkspaceHostTerminal
-              :key="terminalDockHost.id || store.snapshot.selectedHostId"
-              ref="terminalDockRef"
-              :host-id="terminalDockHost.id || store.snapshot.selectedHostId"
-              :host-name="terminalDockHostLabel"
-              :title="terminalDockTitle"
-              :subtitle="terminalDockSubtitle"
-              :output="terminalDockOutput"
-              :allow-takeover="terminalDockCanTakeover"
-              :auto-takeover="terminalDockCanTakeover"
-              :panel-height="terminalDockPanelHeight"
-              @connected="handleTerminalDockConnected"
-              @disconnected="handleTerminalDockDisconnected"
-              @error="handleTerminalDockError"
-            />
-          </div>
-        </div>
-      </div>
-    </template>
+    <!-- Terminal dock removed for cleaner UI -->
 
     <template #approval>
-      <div v-if="activeApprovalCard || activeMcpApproval" class="auth-overlay-dock">
+      <!-- Codex-style inline approval (Change 3) for single-host mode -->
+      <div v-if="hasCodexApproval && !authCardCollapsed" class="codex-approval-inline" data-testid="codex-approval-inline">
+        <div class="codex-approval-question">{{ approvalQuestion }}</div>
+        <div v-if="approvalCommand" class="codex-approval-command">
+          <code>{{ approvalCommand }}</code>
+        </div>
+        <div class="codex-approval-options">
+          <button class="codex-approval-option" @click="resolveCodexApproval('accept')">
+            <span class="option-number">1.</span> 是
+          </button>
+          <button class="codex-approval-option" @click="resolveCodexApproval('accept_session')">
+            <span class="option-number">2.</span> 是，且对于后续类似命令不再询问
+          </button>
+          <button class="codex-approval-option" @click="resolveCodexApproval('reject')">
+            <span class="option-number">3.</span> 否，请告知如何调整
+          </button>
+        </div>
+        <div class="codex-approval-actions">
+          <button class="codex-skip-btn" @click="resolveCodexApproval('reject')">跳过</button>
+          <button class="codex-submit-btn" @click="resolveCodexApproval('accept')">提交 ⏎</button>
+        </div>
+        <div v-if="activeApprovalQueueCount > 1" class="codex-approval-queue-note">
+          {{ activeApprovalQueueLabel }}
+        </div>
+      </div>
+
+      <!-- Fallback: original approval overlay for workspace mode or collapsed state -->
+      <div v-else-if="(activeApprovalCard || activeMcpApproval) && (isWorkspaceSession || !hasCodexApproval)" class="auth-overlay-dock">
         <div v-if="!authCardCollapsed" class="auth-overlay-container">
           <div class="auth-overlay-header">
             <div class="auth-overlay-title-group">
               <span class="auth-overlay-title">需要您的确认</span>
+              <n-badge v-if="activeApprovalCard && activeApprovalQueueCount > 0" :value="activeApprovalQueueCount" :max="99" />
               <span v-if="activeApprovalCard && activeApprovalQueueLabel" class="auth-overlay-queue-label">{{ activeApprovalQueueLabel }}</span>
               <span v-else-if="activeMcpApproval" class="auth-overlay-queue-label">MCP 变更待确认</span>
             </div>
@@ -1570,31 +2018,31 @@ watch(
 
         <button v-else class="auth-restore-btn" @click="authCardCollapsed = false">
            <span>当前审批工作台已折叠</span>
+           <n-badge v-if="activeApprovalQueueCount > 0" :value="activeApprovalQueueCount" :max="99" />
            <span v-if="activeApprovalQueueLabel" class="auth-restore-queue">{{ activeApprovalQueueLabel }}</span>
         </button>
       </div>
     </template>
   </ChatComposerDock>
 
-  <transition name="chat-mcp-drawer-fade">
-    <div
-      v-if="isMcpDrawerOpen && activeMcpSurface"
-      class="chat-mcp-surface-drawer"
-      data-testid="chat-mcp-surface-drawer"
-      @click.self="closeMcpSurfaceDrawer"
-    >
-      <aside class="chat-mcp-surface-panel" :data-surface-kind="activeMcpSurface.kind">
-        <header class="chat-mcp-surface-head">
-          <div class="chat-mcp-surface-copy">
-            <span class="chat-mcp-surface-kicker">MCP SURFACE</span>
-            <h3>{{ activeMcpSurface.title }}</h3>
-            <p v-if="activeMcpSurface.subtitle">{{ activeMcpSurface.subtitle }}</p>
-          </div>
-          <button type="button" class="chat-mcp-surface-close" data-testid="chat-mcp-surface-close" @click="closeMcpSurfaceDrawer">
-            关闭
-          </button>
-        </header>
+  <n-drawer
+    :show="isMcpDrawerOpen && !!activeMcpSurface"
+    placement="right"
+    :width="320"
+    :mask-closable="true"
+    data-testid="chat-mcp-surface-drawer"
+    @update:show="(val) => { if (!val) closeMcpSurfaceDrawer(); }"
+  >
+    <n-drawer-content :title="activeMcpSurface?.title || 'MCP SURFACE'" :native-scrollbar="false" closable>
+      <template #header>
+        <div class="chat-mcp-surface-copy">
+          <span class="chat-mcp-surface-kicker">MCP SURFACE</span>
+          <h3>{{ activeMcpSurface?.title }}</h3>
+          <p v-if="activeMcpSurface?.subtitle">{{ activeMcpSurface.subtitle }}</p>
+        </div>
+      </template>
 
+      <div v-if="activeMcpSurface" :data-surface-kind="activeMcpSurface.kind">
         <div class="chat-mcp-surface-toolbar">
           <button
             type="button"
@@ -1654,9 +2102,9 @@ watch(
             @refresh="handleMcpSurfaceRefresh"
           />
         </div>
-      </aside>
-    </div>
-  </transition>
+      </div>
+    </n-drawer-content>
+  </n-drawer>
 </template>
 
 <style scoped>
@@ -1703,10 +2151,11 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin: 8px 0 4px;
-  padding: 10px 12px;
-  margin-left: 36px;
-  max-width: 720px;
+  margin: 6px 0 3px;
+  padding: 8px 10px;
+  width: min(1040px, calc(100% - 40px));
+  margin-left: auto;
+  margin-right: auto;
   border-radius: 12px;
   border: 1px solid #dbeafe;
   background: linear-gradient(135deg, #eff6ff, #ffffff);
@@ -1804,8 +2253,9 @@ watch(
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  margin: 0 0 10px 36px;
-  padding: 8px 12px;
+  width: min(1040px, calc(100% - 40px));
+  margin: 0 auto 8px;
+  padding: 7px 10px;
   border-radius: 12px;
   background: rgba(248, 250, 252, 0.92);
   border: 1px solid #e2e8f0;
@@ -1861,8 +2311,9 @@ watch(
 }
 
 .chat-away-summary {
-  margin: 0 0 10px 36px;
-  padding: 10px 12px;
+  width: min(1040px, calc(100% - 40px));
+  margin: 0 auto 8px;
+  padding: 8px 10px;
   border-radius: 14px;
   background: rgba(239, 246, 255, 0.92);
   border: 1px solid rgba(147, 197, 253, 0.35);
@@ -1894,8 +2345,9 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 4px 0;
-  margin-left: 36px;
+  padding: 2px 0;
+  width: min(1040px, calc(100% - 40px));
+  margin: 0 auto;
   animation: fadeInUp 0.2s ease-out;
 }
 
@@ -2090,36 +2542,7 @@ watch(
   color: #94a3b8;
 }
 
-.chat-mcp-surface-drawer {
-  position: fixed;
-  inset: 0;
-  z-index: 28;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(15, 23, 42, 0.26);
-  backdrop-filter: blur(8px);
-}
-
-.chat-mcp-surface-panel {
-  width: min(760px, calc(100vw - 32px));
-  height: calc(100vh - 28px);
-  margin: 14px 14px 14px 0;
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 24px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.99));
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
-  overflow: auto;
-}
-
-.chat-mcp-surface-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
+/* chat-mcp-surface-drawer styles removed — now using <n-drawer> */
 
 .chat-mcp-surface-copy {
   display: grid;
@@ -2147,7 +2570,6 @@ watch(
   color: #475569;
 }
 
-.chat-mcp-surface-close,
 .chat-mcp-surface-toolbar-btn,
 .chat-mcp-surface-pin-chip {
   border: none;
@@ -2157,10 +2579,6 @@ watch(
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-}
-
-.chat-mcp-surface-close {
-  padding: 8px 12px;
 }
 
 .chat-mcp-surface-toolbar {
@@ -2205,15 +2623,7 @@ watch(
   gap: 12px;
 }
 
-.chat-mcp-drawer-fade-enter-active,
-.chat-mcp-drawer-fade-leave-active {
-  transition: opacity 0.18s ease;
-}
-
-.chat-mcp-drawer-fade-enter-from,
-.chat-mcp-drawer-fade-leave-to {
-  opacity: 0;
-}
+/* chat-mcp-drawer-fade transition removed — n-drawer handles animation */
 
 .chat-mcp-approval {
   display: grid;
@@ -2311,5 +2721,215 @@ watch(
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- Codex Activity Section (Change 1) ---- */
+.codex-activity-section {
+  margin: 12px 0;
+  padding: 0;
+  animation: fadeInUp 0.2s ease-out;
+}
+
+.chat-container :deep(.avatar),
+.chat-container :deep(.user-avatar) {
+  display: none;
+}
+
+.chat-container :deep(.message-wrapper) {
+  gap: 0;
+  align-items: flex-start;
+}
+
+.chat-container :deep(.stream-row) {
+  width: min(980px, 100%);
+  margin-inline: auto;
+}
+
+.chat-container :deep(.message-content) {
+  max-width: min(100ch, 100%) !important;
+}
+
+.chat-container :deep(.relative-block) {
+  max-width: min(100ch, 100%) !important;
+}
+
+.chat-container :deep(.message-text) {
+  font-size: 13px !important;
+  line-height: 1.46 !important;
+}
+
+.chat-container :deep(.markdown-body p) {
+  margin: 0 0 1px;
+}
+
+.chat-container :deep(.markdown-body ul),
+.chat-container :deep(.markdown-body ol) {
+  margin: 0 0 2px;
+}
+
+.chat-container :deep(.is-user .message-content) {
+  max-width: min(44ch, 60%) !important;
+}
+
+.codex-activity-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.codex-working-label {
+  font-size: 12.5px;
+  color: #7c8798;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.codex-activity-divider {
+  flex: 1;
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 0;
+}
+
+.codex-activity-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.codex-activity-line {
+  font-size: 12.5px;
+  color: #94a3b8;
+  padding: 0;
+  line-height: 1.5;
+}
+
+.codex-thinking {
+  color: #7c8798;
+}
+
+.codex-activity-detail {
+  color: #9aa4b2;
+}
+
+.codex-activity-detail.is-current {
+  color: #64748b;
+}
+
+.codex-activity-detail.is-summary {
+  color: #8692a3;
+}
+
+/* ---- Codex Inline Approval (Change 3) ---- */
+.codex-approval-inline {
+  width: 100%;
+  padding: 16px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+}
+
+.codex-approval-question {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+
+.codex-approval-command {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.codex-approval-command code {
+  font-size: 13px;
+  color: #334155;
+  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.codex-approval-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.codex-approval-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.codex-approval-option:hover {
+  background: #f9fafb;
+  border-color: #d1d5db;
+}
+
+.codex-approval-option .option-number {
+  color: #9ca3af;
+  font-weight: 600;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.codex-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.codex-skip-btn {
+  padding: 7px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.codex-skip-btn:hover {
+  background: #f9fafb;
+}
+
+.codex-submit-btn {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.codex-submit-btn:hover {
+  background: #1e293b;
+}
+
+.codex-approval-queue-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: center;
 }
 </style>

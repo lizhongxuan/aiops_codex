@@ -53,9 +53,12 @@ func (a *App) mainAgentCapabilityState(capability string) string {
 func (a *App) hostAgentDefaultProfile() model.AgentProfile {
 	profile, ok := a.store.AgentProfile(string(model.AgentProfileTypeHostAgentDefault))
 	if !ok {
-		return model.DefaultAgentProfile(string(model.AgentProfileTypeHostAgentDefault))
+		profile = model.DefaultAgentProfile(string(model.AgentProfileTypeHostAgentDefault))
 	}
-	return model.CompleteAgentProfile(profile)
+	profile = model.CompleteAgentProfile(profile)
+	allowShellWrapper := false
+	profile.CommandPermissions.AllowShellWrapper = &allowShellWrapper
+	return profile
 }
 
 func normalizeCapabilityState(state string) string {
@@ -401,6 +404,14 @@ func (a *App) rejectApprovalByProfile(sessionID, rawID string, approval model.Ap
 }
 
 func (a *App) autoApproveLocalApprovalByProfile(sessionID string, approval model.ApprovalRequest) bool {
+	if _, ok := a.matchToolApprovalRule(
+		context.Background(),
+		buildToolApprovalRequestForExistingApproval(sessionID, "execute_command", approval, true, false),
+		toolApprovalRuleProfilePolicy,
+	); !ok {
+		return false
+	}
+
 	now := model.NowString()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -411,10 +422,8 @@ func (a *App) autoApproveLocalApprovalByProfile(sessionID string, approval model
 	}
 	approval.Status = "accepted_by_profile_auto"
 	approval.ResolvedAt = now
-	a.store.AddApproval(sessionID, approval)
-	a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
 	a.setRuntimeTurnPhase(sessionID, "executing")
-	a.store.UpsertCard(sessionID, model.Card{
+	card := model.Card{
 		ID:        "auto-approval-" + approval.ItemID,
 		Type:      "NoticeCard",
 		Title:     "Auto-approved by profile",
@@ -422,7 +431,12 @@ func (a *App) autoApproveLocalApprovalByProfile(sessionID string, approval model
 		Status:    "notice",
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	if !a.emitApprovalResolvedEvent(context.Background(), sessionID, "execute_command", "executing", approval, card) {
+		a.store.AddApproval(sessionID, approval)
+		a.store.ResolveApproval(sessionID, approval.ID, approval.Status, now)
+		a.store.UpsertCard(sessionID, card)
+	}
 	a.auditApprovalLifecycleEvent("approval.decision", sessionID, approval, "accept", approval.Status, approval.RequestedAt, now, map[string]any{
 		"autoApprovedByProfile": true,
 	})

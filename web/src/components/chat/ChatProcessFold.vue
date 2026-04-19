@@ -1,6 +1,9 @@
 <script setup>
 import { computed, ref, watch } from "vue";
-import { ChevronDownIcon, ChevronUpIcon } from "lucide-vue-next";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-vue-next";
+import MessageCard from "../MessageCard.vue";
+import ChatTerminalPreview from "./ChatTerminalPreview.vue";
+import ToolDisplayRenderer from "./tool-display/ToolDisplayRenderer.vue";
 
 const props = defineProps({
   turn: {
@@ -10,58 +13,141 @@ const props = defineProps({
 });
 
 const expanded = ref(!props.turn?.collapsedByDefault);
+const expandedCommandIds = ref(new Set());
 
 watch(
-  () => [props.turn?.id, props.turn?.collapsedByDefault],
+  () => props.turn?.id,
   () => {
     expanded.value = !props.turn?.collapsedByDefault;
+    expandedCommandIds.value = new Set();
   },
 );
 
-const hasItems = computed(() => Array.isArray(props.turn?.processItems) && props.turn.processItems.length > 0);
-const hasBody = computed(() => hasItems.value || !!props.turn?.liveHint);
+const hasContent = computed(() => {
+  return (
+    (props.turn?.processItems?.length > 0) ||
+    props.turn?.liveHint ||
+    props.turn?.summary ||
+    intermediateMessages.value.length > 0 ||
+    historyItems.value.length > 0
+  );
+});
+
+// Intermediate assistant messages (model's thinking text, not the final answer)
+const intermediateMessages = computed(() => {
+  const items = props.turn?.processItems || [];
+  return items.filter(item => item.kind === "assistant" || item.kind === "assistant_message" || item.kind === "message");
+});
+
+const historyItems = computed(() => {
+  const items = props.turn?.processItems || [];
+  const msgSet = new Set(intermediateMessages.value.map(i => i.id));
+  return items.filter(item => !msgSet.has(item.id));
+});
+
+const foldLabel = computed(() => {
+  return props.turn?.processLabel || "已处理";
+});
 
 function toggleExpanded() {
-  if (!hasBody.value) return;
+  if (!hasContent.value) return;
   expanded.value = !expanded.value;
 }
 
-function itemMeta(item = {}) {
-  return [item.hostId, item.time].filter(Boolean).join(" · ");
+function isCommandItem(item) {
+  return item?.kind === "command" && (item?.command || item?.commandCard?.command);
+}
+
+function commandOutput(item) {
+  return String(
+    item?.output ||
+    item?.commandCard?.output ||
+    item?.commandCard?.stdout ||
+    item?.commandCard?.stderr ||
+    item?.detail ||
+    "",
+  ).trim();
+}
+
+function itemDisplay(item) {
+  return item?.display || null;
+}
+
+function isCommandExpanded(item) {
+  return expandedCommandIds.value.has(item.id);
+}
+
+function toggleCommandItem(item) {
+  if (!isCommandItem(item)) return;
+  const next = new Set(expandedCommandIds.value);
+  if (next.has(item.id)) next.delete(item.id);
+  else next.add(item.id);
+  expandedCommandIds.value = next;
 }
 </script>
 
 <template>
   <section
-    v-if="turn?.processItems?.length || turn?.liveHint || turn?.summary"
+    v-if="hasContent"
     class="chat-process-fold"
     :data-testid="`chat-process-fold-${turn.id}`"
   >
-    <div class="chat-process-divider">
-      <span class="chat-process-divider-line" />
+    <!-- Fold header: "已处理 1m 8s >" -->
+    <div class="chat-process-header">
       <button
         type="button"
         class="chat-process-toggle"
         :aria-expanded="expanded"
-        :disabled="!hasBody"
         @click="toggleExpanded"
       >
-        <span class="chat-process-label">{{ turn.processLabel || "已处理" }}</span>
-        <span v-if="turn.summary" class="chat-process-summary">{{ turn.summary }}</span>
-        <component :is="expanded ? ChevronUpIcon : ChevronDownIcon" v-if="hasBody" size="14" class="chat-process-icon" />
+        <span class="chat-process-label">{{ foldLabel }}</span>
+        <component :is="expanded ? ChevronDownIcon : ChevronRightIcon" size="14" class="chat-process-icon" />
       </button>
       <span class="chat-process-divider-line" />
     </div>
 
-    <div v-if="expanded && hasBody" class="chat-process-body">
-      <div v-if="turn.liveHint" class="chat-process-live">{{ turn.liveHint }}</div>
+    <!-- Expanded content -->
+    <div v-if="expanded" class="chat-process-surface">
+      <div class="chat-process-body">
+        <div v-for="msg in intermediateMessages" :key="msg.id" class="chat-process-message">
+          <MessageCard v-if="msg.card" :card="msg.card" />
+          <div v-else class="chat-process-text">{{ msg.text }}</div>
+          <ToolDisplayRenderer v-if="itemDisplay(msg)" class="chat-process-item-display" :display="itemDisplay(msg)" />
+        </div>
 
-      <ul v-if="hasItems" class="chat-process-list">
-        <li v-for="item in turn.processItems" :key="item.id" class="chat-process-item">
-          <div class="chat-process-item-text">{{ item.text }}</div>
-          <div v-if="itemMeta(item)" class="chat-process-item-meta">{{ itemMeta(item) }}</div>
-        </li>
-      </ul>
+        <template v-for="item in historyItems" :key="item.id">
+          <template v-if="isCommandItem(item)">
+            <button
+              type="button"
+              class="chat-process-command-row"
+              :data-testid="`chat-process-command-row-${item.id}`"
+              @click="toggleCommandItem(item)"
+            >
+              <component :is="isCommandExpanded(item) ? ChevronDownIcon : ChevronRightIcon" size="14" class="chat-process-command-icon" />
+              <span class="chat-process-command-text">{{ item.text }}</span>
+            </button>
+
+            <ToolDisplayRenderer v-if="itemDisplay(item)" class="chat-process-item-display" :display="itemDisplay(item)" />
+
+            <ChatTerminalPreview
+              v-if="isCommandExpanded(item)"
+              :test-id="`chat-process-terminal-${item.id}`"
+              :command="item.command || item.commandCard?.command || item.commandCard?.title || ''"
+              :output="commandOutput(item)"
+            />
+          </template>
+
+          <div v-else class="chat-process-item">
+            <div v-if="item.text" class="chat-process-item-line">
+              <span class="chat-process-item-bullet">•</span>
+              <span>{{ item.text }}</span>
+            </div>
+            <ToolDisplayRenderer v-if="itemDisplay(item)" class="chat-process-item-display" :display="itemDisplay(item)" />
+          </div>
+        </template>
+
+        <div v-if="turn.active && turn.liveHint" class="chat-process-live">{{ turn.liveHint }}</div>
+      </div>
     </div>
   </section>
 </template>
@@ -70,100 +156,146 @@ function itemMeta(item = {}) {
 .chat-process-fold {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin: 4px 0 8px 30px;
-  max-width: 720px;
+  gap: 4px;
+  width: min(980px, 100%);
+  margin: 2px auto;
 }
 
-.chat-process-divider {
+.chat-process-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-
-.chat-process-divider-line {
-  flex: 1;
-  height: 1px;
-  background: rgba(226, 232, 240, 0.82);
+  gap: 8px;
 }
 
 .chat-process-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  padding: 4px 11px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 999px;
-  background: rgba(248, 250, 252, 0.96);
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.4;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.3;
   cursor: pointer;
-  transition: background 0.18s ease, border-color 0.18s ease;
+  white-space: nowrap;
 }
 
-.chat-process-toggle:hover:not(:disabled) {
-  background: rgba(241, 245, 249, 0.98);
-  border-color: rgba(203, 213, 225, 0.96);
+.chat-process-toggle:hover {
+  color: #374151;
 }
 
 .chat-process-label {
-  color: #475569;
-  font-weight: 700;
-  white-space: nowrap;
+  color: inherit;
 }
 
-.chat-process-summary {
-  color: #64748b;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.chat-process-icon {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.chat-process-divider-line {
+  flex: 1;
+  height: 1px;
+  background: #e5e7eb;
 }
 
 .chat-process-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.74);
-}
-
-.chat-process-live {
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.48;
-}
-
-.chat-process-list {
-  display: flex;
-  flex-direction: column;
   gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+}
+
+.chat-process-surface {
+  border: 1px solid rgba(226, 232, 240, 0.98);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.9));
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.chat-process-message {
+  /* Intermediate messages render inline */
+}
+
+.chat-process-surface :deep(.message-wrapper) {
+  padding-left: 0;
+}
+
+.chat-process-surface :deep(.assistant-thread-block) {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.chat-process-surface :deep(.message-text),
+.chat-process-surface :deep(.markdown-body) {
+  color: #475569;
+}
+
+.chat-process-item-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: #64748b;
+  line-height: 1.45;
 }
 
 .chat-process-item {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding-left: 10px;
-  border-left: 2px solid rgba(203, 213, 225, 0.92);
+  gap: 4px;
 }
 
-.chat-process-item-text {
-  color: #334155;
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-}
-
-.chat-process-item-meta {
+.chat-process-item-bullet {
+  flex-shrink: 0;
   color: #94a3b8;
-  font-size: 11px;
-  line-height: 1.4;
+}
+
+.chat-process-text {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.chat-process-item-display {
+  margin-top: 4px;
+}
+
+.chat-process-command-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #475569;
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-process-command-row:hover {
+  color: #0f172a;
+}
+
+.chat-process-command-icon {
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.chat-process-command-text {
+  min-width: 0;
+}
+
+.chat-process-live {
+  color: #64748b;
+  font-size: 12.5px;
+  line-height: 1.42;
 }
 </style>

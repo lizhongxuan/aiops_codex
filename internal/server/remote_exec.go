@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +58,33 @@ type execSpec struct {
 	TimeoutSec int
 	Readonly   bool
 	Approval   string
+	ToolName   string
+}
+
+func defaultRemoteExecCwd(host model.Host) string {
+	if strings.EqualFold(strings.TrimSpace(host.OS), "windows") {
+		return `C:\Windows\Temp`
+	}
+	return "/tmp"
+}
+
+func defaultRemoteExecShell(host model.Host) string {
+	if strings.EqualFold(strings.TrimSpace(host.OS), "windows") {
+		return ""
+	}
+	return "/bin/sh"
+}
+
+func normalizeRemoteExecSpec(host model.Host, spec execSpec) execSpec {
+	spec.Cwd = strings.TrimSpace(spec.Cwd)
+	spec.Shell = strings.TrimSpace(spec.Shell)
+	if spec.Cwd == "" {
+		spec.Cwd = defaultRemoteExecCwd(host)
+	}
+	if spec.Shell == "" {
+		spec.Shell = defaultRemoteExecShell(host)
+	}
+	return spec
 }
 
 func (e *remoteExecSession) appendOutput(stream, chunk string) string {
@@ -153,12 +183,19 @@ func (a *App) cancelRemoteExecsForSession(sessionID, message string) {
 	a.execMu.Unlock()
 
 	for _, exec := range sessions {
-		_ = a.sendAgentEnvelope(exec.HostID, &agentrpc.Envelope{
+		if err := a.sendAgentEnvelope(exec.HostID, &agentrpc.Envelope{
 			Kind: "exec/cancel",
 			ExecCancel: &agentrpc.ExecCancel{
 				ExecID: exec.ID,
 			},
-		})
+		}); err != nil {
+			a.appendIncidentEvent(exec.SessionID, "cancel.signal_failed", "warning", "取消信号发送失败", fmt.Sprintf("未能向 %s 发送取消信号，步骤 %s 可能仍在执行", exec.HostID, exec.CardID), map[string]any{
+				"execId": exec.ID,
+				"cardId": exec.CardID,
+				"hostId": exec.HostID,
+				"error":  err.Error(),
+			})
+		}
 		if !exec.requestCancel(message) {
 			continue
 		}
@@ -194,6 +231,12 @@ func (a *App) forceCancelRemoteExec(execID string, delay time.Duration) {
 	result.ExitCode = 130
 	result.Status = "cancelled"
 	result.Cancelled = true
+	a.appendIncidentEvent(exec.SessionID, "cancel.partial_failure", "warning", "取消未获远端确认", fmt.Sprintf("步骤 %s 未返回取消确认，已在本地强制标记为 cancelled", exec.CardID), map[string]any{
+		"execId":  exec.ID,
+		"cardId":  exec.CardID,
+		"hostId":  exec.HostID,
+		"message": result.Message,
+	})
 	exec.finish(result)
 }
 
@@ -280,15 +323,27 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 	if host.Status != "online" || !host.Executable {
 		return remoteExecResult{}, errors.New("selected remote host is offline or not executable")
 	}
+	spec = normalizeRemoteExecSpec(host, spec)
 
 	now := model.NowString()
 	createdAt := now
-	if existing := a.cardByID(sessionID, cardID); existing != nil && existing.CreatedAt != "" {
-		createdAt = existing.CreatedAt
+	cardDetail := map[string]any{}
+	if existing := a.cardByID(sessionID, cardID); existing != nil {
+		if existing.CreatedAt != "" {
+			createdAt = existing.CreatedAt
+		}
+		if len(existing.Detail) > 0 {
+			cardDetail = cloneAnyMap(existing.Detail)
+		}
 	}
 
 	a.setRuntimeTurnPhase(sessionID, "executing")
 	a.incrementCommandCount(sessionID)
+	cardDetail["readonly"] = spec.Readonly
+	cardDetail["cancelable"] = true
+	if toolName := strings.TrimSpace(spec.ToolName); toolName != "" {
+		cardDetail["tool"] = toolName
+	}
 	card := model.Card{
 		ID:        cardID,
 		Type:      "CommandCard",
@@ -296,6 +351,7 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 		Command:   spec.Command,
 		Cwd:       spec.Cwd,
 		Status:    "inProgress",
+		Detail:    cardDetail,
 		CreatedAt: createdAt,
 		UpdatedAt: now,
 	}
@@ -304,10 +360,7 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 	a.broadcastSnapshot(sessionID)
 	a.recordOrchestratorRemoteExecStarted(sessionID, hostID, cardID, spec.Command)
 	a.auditRemoteToolEvent("remote.exec.started", sessionID, hostID, func() string {
-		if spec.Readonly {
-			return "execute_readonly_query"
-		}
-		return "execute_system_mutation"
+		return execSpecToolName(spec)
 	}(), map[string]any{
 		"command":          spec.Command,
 		"cwd":              spec.Cwd,
@@ -323,12 +376,7 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 		SessionID: sessionID,
 		HostID:    hostID,
 		CardID:    cardID,
-		ToolName: func() string {
-			if spec.Readonly {
-				return "execute_readonly_query"
-			}
-			return "execute_system_mutation"
-		}(),
+		ToolName:  execSpecToolName(spec),
 		Command:   spec.Command,
 		Cwd:       spec.Cwd,
 		Shell:     spec.Shell,
@@ -347,6 +395,7 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 			Shell:      spec.Shell,
 			TimeoutSec: clampExecTimeout(spec.TimeoutSec, spec.Readonly),
 			Readonly:   spec.Readonly,
+			Cancelable: true,
 		},
 	}); err != nil {
 		a.clearExecSession(exec.ID)
@@ -398,10 +447,234 @@ func (a *App) runRemoteExec(ctx context.Context, sessionID, hostID, cardID strin
 	}
 }
 
+func (a *App) runRemoteExecWithoutCard(ctx context.Context, sessionID, hostID string, spec execSpec) (remoteExecResult, error) {
+	if hostID == model.ServerLocalHostID {
+		return remoteExecResult{}, errors.New("server-local should use built-in Codex tools instead of remote execute_* tools")
+	}
+
+	host := a.findHost(hostID)
+	if host.Status != "online" || !host.Executable {
+		return remoteExecResult{}, errors.New("selected remote host is offline or not executable")
+	}
+	spec = normalizeRemoteExecSpec(host, spec)
+
+	exec := &remoteExecSession{
+		ID:        model.NewID("exec"),
+		SessionID: sessionID,
+		HostID:    hostID,
+		ToolName:  execSpecToolName(spec),
+		Command:   spec.Command,
+		Cwd:       spec.Cwd,
+		Shell:     spec.Shell,
+		StartedAt: model.NowString(),
+		Approval:  spec.Approval,
+		done:      make(chan remoteExecResult, 1),
+	}
+	a.setExecSession(exec)
+
+	if err := a.sendAgentEnvelope(hostID, &agentrpc.Envelope{
+		Kind: "exec/start",
+		ExecStart: &agentrpc.ExecStart{
+			ExecID:     exec.ID,
+			Command:    spec.Command,
+			Cwd:        spec.Cwd,
+			Shell:      spec.Shell,
+			TimeoutSec: clampExecTimeout(spec.TimeoutSec, spec.Readonly),
+			Readonly:   spec.Readonly,
+			Cancelable: true,
+		},
+	}); err != nil {
+		a.clearExecSession(exec.ID)
+		return remoteExecResult{}, err
+	}
+
+	select {
+	case <-ctx.Done():
+		_ = a.sendAgentEnvelope(hostID, &agentrpc.Envelope{
+			Kind: "exec/cancel",
+			ExecCancel: &agentrpc.ExecCancel{
+				ExecID: exec.ID,
+			},
+		})
+		exec.requestCancel("command cancelled")
+		go a.forceCancelRemoteExec(exec.ID, 2*time.Second)
+		result := <-exec.done
+		a.clearExecSession(exec.ID)
+		return result, ctx.Err()
+	case result := <-exec.done:
+		a.clearExecSession(exec.ID)
+		return result, nil
+	}
+}
+
+func (a *App) executeLocalReadonlyHostInspect(sessionID, rawID string, params dynamicToolCallParams, args execToolArgs) {
+	cardID := dynamicToolCardID(params.CallID)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(clampExecTimeout(args.TimeoutSec, true)+5)*time.Second)
+	defer cancel()
+
+	result, err := a.runLocalReadonlyExec(ctx, sessionID, cardID, execSpec{
+		Command:    args.Command,
+		Cwd:        args.Cwd,
+		TimeoutSec: args.TimeoutSec,
+		Readonly:   true,
+		ToolName:   "readonly_host_inspect",
+	})
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		_ = a.respondCodex(context.Background(), rawID, toolResponse(err.Error(), false))
+		return
+	}
+	if a.turnWasInterrupted(sessionID) {
+		return
+	}
+
+	success := execResultCardStatus(result) == "completed"
+	_ = a.respondCodex(context.Background(), rawID, toolResponse(formatExecToolResult(args.Command, result), success))
+}
+
+func (a *App) runLocalReadonlyExec(ctx context.Context, sessionID, cardID string, spec execSpec) (remoteExecResult, error) {
+	cwd := strings.TrimSpace(spec.Cwd)
+	if cwd == "" {
+		cwd = strings.TrimSpace(a.cfg.DefaultWorkspace)
+	}
+	if cwd != "" {
+		if info, err := os.Stat(cwd); err != nil {
+			return remoteExecResult{}, fmt.Errorf("local readonly cwd %q is not accessible: %w", cwd, err)
+		} else if !info.IsDir() {
+			return remoteExecResult{}, fmt.Errorf("local readonly cwd %q is not a directory", cwd)
+		}
+	}
+
+	now := model.NowString()
+	createdAt := now
+	if existing := a.cardByID(sessionID, cardID); existing != nil && existing.CreatedAt != "" {
+		createdAt = existing.CreatedAt
+	}
+	host := a.findHost(model.ServerLocalHostID)
+	a.setRuntimeTurnPhase(sessionID, "executing")
+	a.incrementCommandCount(sessionID)
+	card := model.Card{
+		ID:      cardID,
+		Type:    "CommandCard",
+		Title:   "Readonly host inspection",
+		Command: spec.Command,
+		Cwd:     cwd,
+		Status:  "inProgress",
+		Detail: map[string]any{
+			"tool":       execSpecToolName(spec),
+			"readonly":   true,
+			"cancelable": true,
+		},
+		CreatedAt: createdAt,
+		UpdatedAt: now,
+	}
+	applyCardHost(&card, host)
+	a.store.UpsertCard(sessionID, card)
+	a.broadcastSnapshot(sessionID)
+	a.audit("local.readonly_exec.started", map[string]any{
+		"sessionId": sessionID,
+		"hostId":    model.ServerLocalHostID,
+		"toolName":  execSpecToolName(spec),
+		"command":   spec.Command,
+		"cwd":       cwd,
+		"startedAt": now,
+	})
+
+	shell := strings.TrimSpace(spec.Shell)
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	cmd := exec.CommandContext(ctx, shell, "-lc", spec.Command)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+
+	result := remoteExecResult{
+		Stdout: stdout.String(),
+		Stderr: stderr.String(),
+		Output: stdout.String() + stderr.String(),
+		Status: "completed",
+	}
+	if cmd.ProcessState != nil {
+		result.ExitCode = cmd.ProcessState.ExitCode()
+	}
+	if runErr != nil {
+		result.Status = "failed"
+		result.Error = strings.TrimSpace(runErr.Error())
+		if result.ExitCode == 0 {
+			result.ExitCode = 1
+		}
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		result.Status = "timeout"
+		result.Timeout = true
+		result.Error = "command timed out"
+		result.ExitCode = 124
+		runErr = ctx.Err()
+	} else if errors.Is(ctx.Err(), context.Canceled) {
+		result.Status = "cancelled"
+		result.Cancelled = true
+		result.Error = "command cancelled"
+		result.ExitCode = 130
+		runErr = ctx.Err()
+	}
+	if result.ExitCode != 0 && result.Status == "completed" {
+		result.Status = "failed"
+	}
+
+	execSession := &remoteExecSession{
+		SessionID: sessionID,
+		HostID:    model.ServerLocalHostID,
+		CardID:    cardID,
+		ToolName:  execSpecToolName(spec),
+		Command:   spec.Command,
+		Cwd:       cwd,
+		Shell:     shell,
+		StartedAt: now,
+	}
+	a.finalizeExecCard(execSession, createdAt, result)
+	a.audit("local.readonly_exec.finished", map[string]any{
+		"sessionId": sessionID,
+		"hostId":    model.ServerLocalHostID,
+		"toolName":  execSpecToolName(spec),
+		"command":   spec.Command,
+		"cwd":       cwd,
+		"status":    execResultCardStatus(result),
+		"exitCode":  result.ExitCode,
+		"timeout":   result.Timeout,
+		"cancelled": result.Cancelled,
+		"error":     truncate(result.Error, 200),
+		"endedAt":   model.NowString(),
+	})
+	return result, runErr
+}
+
+func execSpecToolName(spec execSpec) string {
+	if toolName := strings.TrimSpace(spec.ToolName); toolName != "" {
+		return toolName
+	}
+	if spec.Readonly {
+		return "execute_readonly_query"
+	}
+	return "execute_system_mutation"
+}
+
+func readonlyHostInspectToolName(toolName string) string {
+	if strings.TrimSpace(toolName) == "readonly_host_inspect" {
+		return "readonly_host_inspect"
+	}
+	return ""
+}
+
 func (a *App) finalizeExecCard(exec *remoteExecSession, createdAt string, result remoteExecResult) {
 	now := model.NowString()
 	finalStatus := execResultCardStatus(result)
 	summary, highlights, kvRows := buildExecCardPresentation(exec, result, finalStatus)
+	display := toolDisplayPayloadToProjectionMap(commandResultDisplayPayload(exec.Command, exec.Cwd, result, finalStatus))
 	a.store.UpdateCard(exec.SessionID, exec.CardID, func(card *model.Card) {
 		card.Output = result.Output
 		card.Stdout = result.Stdout
@@ -414,9 +687,36 @@ func (a *App) finalizeExecCard(exec *remoteExecSession, createdAt string, result
 		card.Highlights = highlights
 		card.KVRows = kvRows
 		card.Status = finalStatus
+		card.Detail = toolProjectionDisplayDetailMap(display, card.Detail)
 		card.DurationMS = durationBetween(createdAt, now)
 		card.UpdatedAt = now
 	})
+	a.bindCardEvidence(exec.SessionID, exec.CardID, evidenceArtifactInput{
+		Kind:       exec.ToolName,
+		SourceKind: "command",
+		SourceRef:  firstNonEmptyValue(exec.HostID, exec.Command),
+		Title:      "Command execution",
+		Summary:    summary,
+		Content:    firstNonEmptyValue(result.Output, strings.TrimSpace(strings.Join([]string{result.Stdout, result.Stderr}, "\n")), result.Error, result.Message),
+		Raw: map[string]any{
+			"command":    exec.Command,
+			"cwd":        exec.Cwd,
+			"hostId":     exec.HostID,
+			"status":     finalStatus,
+			"exitCode":   result.ExitCode,
+			"stdout":     result.Stdout,
+			"stderr":     result.Stderr,
+			"output":     result.Output,
+			"error":      result.Error,
+			"message":    result.Message,
+			"timeout":    result.Timeout,
+			"cancelled":  result.Cancelled,
+			"durationMs": durationBetween(createdAt, now),
+		},
+	})
+	if card := a.cardByID(exec.SessionID, exec.CardID); card != nil {
+		a.syncActionVerification(exec.SessionID, *card)
+	}
 	a.resumeThinkingAfterExecution(exec.SessionID)
 	a.broadcastSnapshot(exec.SessionID)
 	a.auditRemoteToolEvent("remote.exec.finished", exec.SessionID, exec.HostID, exec.ToolName, map[string]any{
@@ -499,6 +799,8 @@ func execSuccessSummary(exec *remoteExecSession, result remoteExecResult) string
 		switch exec.ToolName {
 		case "execute_system_mutation":
 			return "远程变更命令已执行成功"
+		case "readonly_host_inspect":
+			return "只读主机检查已完成"
 		case "execute_readonly_query":
 			return "远程只读检查已完成"
 		}

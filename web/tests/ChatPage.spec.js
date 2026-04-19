@@ -2,6 +2,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { nextTick, reactive } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ChatPage from "../src/pages/ChatPage.vue";
+import { formatMainChatTurns } from "../src/lib/chatTurnFormatter";
 
 const mocks = vi.hoisted(() => ({
   store: null,
@@ -46,7 +47,7 @@ vi.mock("../src/components/Omnibar.vue", () => ({
 vi.mock("../src/components/ThinkingCard.vue", () => ({
   default: {
     props: ["card"],
-    template: '<div class="thinking-card-stub">{{ card?.phase }}</div>',
+    template: '<div class="thinking-card-stub">{{ card?.phase }} {{ card?.hint }}</div>',
   },
 }));
 
@@ -64,6 +65,25 @@ vi.mock("../src/components/PlanCard.vue", () => ({
   },
 }));
 
+
+vi.mock("naive-ui", () => ({
+  NBadge: {
+    name: "NBadge",
+    props: { value: [Number, String], dot: Boolean },
+    template: '<span class="n-badge-stub"><slot /></span>',
+  },
+  NDrawer: {
+    name: "NDrawer",
+    props: { show: Boolean, placement: String, width: Number, maskClosable: Boolean },
+    emits: ["update:show"],
+    template: '<div v-if="show" data-testid="chat-mcp-surface-drawer"><slot /></div>',
+  },
+  NDrawerContent: {
+    name: "NDrawerContent",
+    props: { title: String, nativeScrollbar: Boolean, closable: Boolean },
+    template: '<div class="n-drawer-content-stub"><slot /></div>',
+  },
+}));
 const workspaceHostTerminalStub = {
   name: "WorkspaceHostTerminal",
   props: ["hostId", "hostName", "panelHeight"],
@@ -92,7 +112,7 @@ function createStoreFixture(overrides = {}) {
       approvals: [],
     },
     runtime: {
-      turn: { active: false, phase: "idle" },
+      turn: { active: false, phase: "idle", pendingStart: false },
       codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
       activity: {
         viewedFiles: [],
@@ -107,6 +127,14 @@ function createStoreFixture(overrides = {}) {
     fetchState: vi.fn(async () => true),
     connectWs: vi.fn(),
     setTurnPhase: vi.fn(),
+    markTurnPendingStart: vi.fn((phase = "thinking") => {
+      state.runtime.turn.active = false;
+      state.runtime.turn.phase = phase;
+      state.runtime.turn.pendingStart = true;
+    }),
+    clearTurnPendingStart: vi.fn(() => {
+      state.runtime.turn.pendingStart = false;
+    }),
     resetActivity: vi.fn(),
     canSend: true,
     ...overrides,
@@ -144,7 +172,7 @@ function mountChatPage() {
   });
 }
 
-describe("ChatPage terminal dock", () => {
+describe("ChatPage command previews", () => {
   beforeEach(() => {
     mocks.store = createStoreFixture();
     mocks.terminalRef.takeover.mockClear();
@@ -157,59 +185,414 @@ describe("ChatPage terminal dock", () => {
     }
   });
 
-  it("toggles the terminal dock from the toolbar and Ctrl+`", async () => {
+  it("shows a compact live terminal preview for the running command", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        cards: [
+          {
+            id: "user-cpu-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "查看主机CPU",
+            createdAt: "2026-04-16T10:00:00Z",
+            updatedAt: "2026-04-16T10:00:00Z",
+          },
+          {
+            id: "cmd-cpu-live-1",
+            type: "CommandCard",
+            hostId: "web-01",
+            status: "running",
+            command: "/bin/zsh -lc ps -Ao %cpu,comm | sort -nr | head -n 10",
+            output: [
+              "PID COMMAND %CPU",
+              "123 WindowServer 50.1",
+              "456 Codex Helper 44.2",
+              "789 Codex Helper 29.3",
+            ].join("\n"),
+            createdAt: "2026-04-16T10:00:03Z",
+            updatedAt: "2026-04-16T10:00:06Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: true, phase: "executing", hostId: "web-01", startedAt: "2026-04-16T10:00:00Z" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
     const wrapper = mountChatPage();
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="chat-terminal-dock"]').exists()).toBe(false);
+    const liveStatus = wrapper.get('[data-testid="codex-activity-section"]');
+    expect(liveStatus.text()).toContain("Working for");
+    expect(wrapper.get('[data-testid="chat-live-terminal-preview"]').text()).toContain("ps -Ao %cpu,comm | sort -nr | head -n 10");
+    expect(wrapper.get('[data-testid="chat-live-terminal-preview"]').text()).toContain("WindowServer 50.1");
+    expect(wrapper.find(".chat-composer-hint").exists()).toBe(false);
+  });
 
-    await wrapper.get('[data-testid="chat-terminal-toggle"]').trigger("click");
+  it("normalizes detail.display into structured process item view models", () => {
+    const turns = formatMainChatTurns({
+      conversationCards: [
+        {
+          id: "user-display-1",
+          type: "UserMessageCard",
+          role: "user",
+          text: "查看运行结果",
+          createdAt: "2026-04-16T10:00:00Z",
+          updatedAt: "2026-04-16T10:00:00Z",
+        },
+        {
+          id: "assistant-display-final-1",
+          type: "AssistantMessageCard",
+          role: "assistant",
+          text: "结果已经整理完毕。",
+          createdAt: "2026-04-16T10:00:20Z",
+          updatedAt: "2026-04-16T10:00:20Z",
+        },
+      ],
+      commandCards: [
+        {
+          id: "command-display-1",
+          type: "CommandCard",
+          hostId: "web-01",
+          status: "completed",
+          command: "ps -Ao %cpu,comm | sort -nr | head -n 10",
+          output: "WindowServer 50.1",
+          detail: {
+            display: {
+              summary: "查询到 3 条结果",
+              activity: "searching",
+              blocks: [
+                { kind: "text", text: "最近查询：nginx latest status" },
+                {
+                  kind: "kv_list",
+                  title: "状态摘要",
+                  items: [
+                    { label: "状态", value: "running" },
+                    { label: "耗时", value: "12s" },
+                  ],
+                },
+                {
+                  kind: "search_queries",
+                  title: "查询记录",
+                  items: [{ query: "nginx latest status" }],
+                },
+                {
+                  kind: "link_list",
+                  title: "参考链接",
+                  items: [{ label: "Nginx docs", url: "https://nginx.org/en/docs/" }],
+                },
+                { kind: "warning", title: "提醒", text: "结果可能需要复核" },
+                {
+                  kind: "file_preview",
+                  title: "app.log",
+                  items: [{ path: "/var/log/app.log", text: "line 1\nline 2" }],
+                },
+                {
+                  kind: "file_diff_summary",
+                  title: "server.go",
+                  items: [{ path: "server.go", added: 12, removed: 4, summary: "+12 -4" }],
+                },
+                {
+                  kind: "result_stats",
+                  title: "结果统计",
+                  items: [
+                    { label: "命中", value: 3 },
+                    { label: "来源", value: 2 },
+                  ],
+                },
+                { kind: "command", title: "已执行命令", text: "ps -Ao %cpu,comm | sort -nr | head -n 10" },
+              ],
+            },
+          },
+          createdAt: "2026-04-16T10:00:03Z",
+          updatedAt: "2026-04-16T10:00:06Z",
+        },
+      ],
+      turnActive: false,
+    });
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].processItems).toHaveLength(1);
+    expect(turns[0].processItems[0].display.summary).toBe("查询到 3 条结果");
+    expect(turns[0].processItems[0].display.blocks.map((block) => block.kind)).toEqual([
+      "text",
+      "kv_list",
+      "search_queries",
+      "link_list",
+      "warning",
+      "file_preview",
+      "file_diff_summary",
+      "result_stats",
+      "command",
+    ]);
+  });
+
+  it("hides the live terminal preview once the command has completed", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        cards: [
+          {
+            id: "user-cpu-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "查看主机CPU",
+            createdAt: "2026-04-16T10:00:00Z",
+            updatedAt: "2026-04-16T10:00:00Z",
+          },
+          {
+            id: "assistant-cpu-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "CPU 当前不是打满状态。",
+            createdAt: "2026-04-16T10:00:08Z",
+            updatedAt: "2026-04-16T10:00:08Z",
+          },
+          {
+            id: "cmd-cpu-done-1",
+            type: "CommandCard",
+            hostId: "web-01",
+            status: "completed",
+            command: "top -l 1 | grep '^CPU usage'",
+            output: "CPU usage: 13.7% user, 13.75% sys, 73.17% idle",
+            createdAt: "2026-04-16T10:00:03Z",
+            updatedAt: "2026-04-16T10:00:06Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: false, phase: "completed", hostId: "web-01", startedAt: "2026-04-16T10:00:00Z" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="chat-terminal-dock"]').exists()).toBe(true);
-    expect(mocks.terminalRef.takeover).toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="chat-live-terminal-preview"]').exists()).toBe(false);
+    expect(wrapper.find(".chat-composer-hint").exists()).toBe(false);
+  });
 
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "`", code: "Backquote", ctrlKey: true, bubbles: true }));
+  it("keeps completed command previews inside the process fold", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        cards: [
+          {
+            id: "user-cpu-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "查看主机CPU",
+            createdAt: "2026-04-16T10:00:00Z",
+            updatedAt: "2026-04-16T10:00:00Z",
+          },
+          {
+            id: "assistant-cpu-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "CPU 当前不是打满状态。",
+            createdAt: "2026-04-16T10:00:08Z",
+            updatedAt: "2026-04-16T10:00:08Z",
+          },
+          {
+            id: "cmd-cpu-done-1",
+            type: "CommandCard",
+            hostId: "web-01",
+            status: "completed",
+            command: "ps -Ao %cpu,comm | sort -nr | head -n 10",
+            output: [
+              "PID COMMAND %CPU",
+              "123 WindowServer 50.1",
+              "456 Codex Helper 44.2",
+              "789 Codex Helper 29.3",
+            ].join("\n"),
+            createdAt: "2026-04-16T10:00:03Z",
+            updatedAt: "2026-04-16T10:00:06Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: false, phase: "completed", hostId: "web-01", startedAt: "2026-04-16T10:00:00Z" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="chat-process-fold-turn-user-cpu-1"] .chat-process-toggle').trigger("click");
+    expect(wrapper.get('[data-testid="chat-process-command-row-command-cmd-cpu-done-1"]').text()).toContain("已运行 ps -Ao %cpu,comm | sort -nr | head -n 10");
+    expect(wrapper.find('[data-testid="chat-process-terminal-command-cmd-cpu-done-1"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="chat-process-command-row-command-cmd-cpu-done-1"]').trigger("click");
+    expect(wrapper.get('[data-testid="chat-process-terminal-command-cmd-cpu-done-1"]').text()).toContain("WindowServer 50.1");
+  });
+
+  it("renders structured display blocks in the process fold while keeping command preview intact", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        cards: [
+          {
+            id: "user-display-2",
+            type: "UserMessageCard",
+            role: "user",
+            text: "查看运行结果",
+            createdAt: "2026-04-16T10:00:00Z",
+            updatedAt: "2026-04-16T10:00:00Z",
+          },
+          {
+            id: "assistant-display-2",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "结果已经整理完毕。",
+            createdAt: "2026-04-16T10:00:20Z",
+            updatedAt: "2026-04-16T10:00:20Z",
+          },
+          {
+            id: "command-display-2",
+            type: "CommandCard",
+            hostId: "web-01",
+            status: "completed",
+            command: "ps -Ao %cpu,comm | sort -nr | head -n 10",
+            output: [
+              "PID COMMAND %CPU",
+              "123 WindowServer 50.1",
+            ].join("\n"),
+            detail: {
+              display: {
+                summary: "查询到 3 条结果",
+                blocks: [
+                  { kind: "text", text: "最近查询：nginx latest status" },
+                  {
+                    kind: "kv_list",
+                    title: "状态摘要",
+                    items: [
+                      { label: "状态", value: "running" },
+                      { label: "耗时", value: "12s" },
+                    ],
+                  },
+                  {
+                    kind: "search_queries",
+                    title: "查询记录",
+                    items: [{ query: "nginx latest status" }],
+                  },
+                  {
+                    kind: "link_list",
+                    title: "参考链接",
+                    items: [{ label: "Nginx docs", url: "https://nginx.org/en/docs/" }],
+                  },
+                  { kind: "warning", title: "提醒", text: "结果可能需要复核" },
+                  {
+                    kind: "file_preview",
+                    title: "app.log",
+                    items: [{ path: "/var/log/app.log", text: "line 1\nline 2" }],
+                  },
+                  {
+                    kind: "file_diff_summary",
+                    title: "server.go",
+                    items: [{ path: "server.go", added: 12, removed: 4, summary: "+12 -4" }],
+                  },
+                  {
+                    kind: "result_stats",
+                    title: "结果统计",
+                    items: [{ label: "命中", value: 3 }],
+                  },
+                ],
+              },
+            },
+            createdAt: "2026-04-16T10:00:03Z",
+            updatedAt: "2026-04-16T10:00:06Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: false, phase: "completed", hostId: "web-01", startedAt: "2026-04-16T10:00:00Z" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="chat-process-fold-turn-user-display-2"] .chat-process-toggle').trigger("click");
     await nextTick();
 
-    expect(wrapper.find('[data-testid="chat-terminal-dock"]').exists()).toBe(false);
+    const processFold = wrapper.get('[data-testid="chat-process-fold-turn-user-display-2"]');
+    expect(processFold.text()).toContain("最近查询：nginx latest status");
+    expect(processFold.text()).toContain("状态摘要");
+    expect(processFold.text()).toContain("状态");
+    expect(processFold.text()).toContain("running");
+    expect(processFold.text()).toContain("查询记录");
+    expect(processFold.text()).toContain("参考链接");
+    expect(processFold.text()).toContain("结果可能需要复核");
+    expect(processFold.text()).toContain("/var/log/app.log");
+    expect(processFold.text()).toContain("server.go");
+    expect(processFold.text()).toContain("+12 -4");
+    expect(processFold.text()).toContain("结果统计");
+
+    expect(processFold.get('[data-testid="chat-process-command-row-command-command-display-2"]').text()).toContain("已运行 ps -Ao %cpu,comm | sort -nr | head -n 10");
+    expect(processFold.find('[data-testid="chat-process-terminal-command-command-display-2"]').exists()).toBe(false);
+
+    await processFold.get('[data-testid="chat-process-command-row-command-command-display-2"]').trigger("click");
+    expect(processFold.get('[data-testid="chat-process-terminal-command-command-display-2"]').text()).toContain("WindowServer 50.1");
   });
 
-  it("resizes the terminal dock by dragging the resize handle", async () => {
-    const wrapper = mountChatPage();
-    await flushPromises();
-
-    await wrapper.get('[data-testid="chat-terminal-toggle"]').trigger("click");
-    await flushPromises();
-
-    const dock = wrapper.get('[data-testid="chat-terminal-dock"]');
-    expect(dock.attributes("style")).toContain("height: 320px");
-
-    await wrapper.get('[data-testid="chat-terminal-resizer"]').trigger("mousedown", { clientY: 600 });
-    window.dispatchEvent(new MouseEvent("mousemove", { clientY: 520, bubbles: true }));
-    await nextTick();
-
-    expect(wrapper.get('[data-testid="chat-terminal-dock"]').attributes("style")).toContain("height: 400px");
-
-    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  });
-
-  it("switches the dock target when the selected host changes", async () => {
-    const wrapper = mountChatPage();
-    await flushPromises();
-
-    await wrapper.get('[data-testid="chat-terminal-toggle"]').trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get(".workspace-terminal-stub").attributes("data-host-id")).toBe("web-01");
-
-    mocks.store.snapshot.selectedHostId = "web-02";
-    await flushPromises();
-
-    expect(wrapper.get(".workspace-terminal-stub").attributes("data-host-id")).toBe("web-02");
-  });
-
-  it("renders the main chat as turn + process fold when the current turn is active", async () => {
+  it("keeps the single-host active turn lightweight while the live status stays visible", async () => {
     mocks.store = createStoreFixture({
       snapshot: {
         kind: "single_host",
@@ -228,6 +611,22 @@ describe("ChatPage terminal dock", () => {
             text: "帮我查一下 nginx 的情况",
             createdAt: "2026-04-03T10:00:00Z",
             updatedAt: "2026-04-03T10:00:00Z",
+          },
+          {
+            id: "assistant-prelude-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "我先查一下最新网页信息，再给你一个简洁结论。",
+            createdAt: "2026-04-03T10:00:01Z",
+            updatedAt: "2026-04-03T10:00:01Z",
+          },
+          {
+            id: "thinking-1",
+            type: "ThinkingCard",
+            phase: "thinking",
+            hint: "我先查一下最新网页信息，再给你一个简洁结论。",
+            createdAt: "2026-04-03T10:00:02Z",
+            updatedAt: "2026-04-03T10:00:02Z",
           },
         ],
         approvals: [],
@@ -249,8 +648,205 @@ describe("ChatPage terminal dock", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-testid="chat-turn-turn-user-1"]').exists()).toBe(true);
-    expect(wrapper.get('[data-testid="chat-process-fold-turn-user-1"]').text()).toContain("正在思考");
-    expect(wrapper.text()).toContain("现在搜索网页");
+    expect(wrapper.find('[data-testid="chat-process-fold-turn-user-1"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("我先查一下最新网页信息，再给你一个简洁结论。");
+    expect(wrapper.find('[data-card-id="thinking-1"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="codex-activity-section"]').text()).toContain("Working for");
+    expect(wrapper.get('[data-testid="codex-activity-section"]').text()).not.toContain("正在思考");
+    expect(wrapper.get('[data-testid="codex-activity-section"]').text()).toContain("正在搜索网页（nginx latest status）");
+    expect(wrapper.findAll('[data-testid="chat-live-status-card"]')).toHaveLength(1);
+    expect(
+      wrapper.element.querySelector(
+        '[data-testid="chat-turn-turn-user-1"] .chat-turn-live-status [data-testid="chat-live-status-card"]',
+      ),
+    ).toBeTruthy();
+
+  });
+
+  it("keeps the live status card visible while the turn is finalizing", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "帮我汇总一下",
+            createdAt: "2026-04-03T10:00:00Z",
+            updatedAt: "2026-04-03T10:00:00Z",
+          },
+          {
+            id: "assistant-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "我先整理结果。",
+            createdAt: "2026-04-03T10:00:05Z",
+            updatedAt: "2026-04-03T10:00:05Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: true, phase: "finalizing" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="codex-activity-section"]').text()).toContain("Working for");
+    expect(wrapper.get('[data-testid="codex-activity-section"]').text()).not.toContain("正在整理结果");
+  });
+
+  it("renders tool invocation progress lines under the live status for single-host turns", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        toolInvocations: [
+          {
+            id: "inv-search-1",
+            name: "web_search",
+            status: "completed",
+            inputSummary: "A股 指数 快照",
+            startedAt: "2026-04-16T10:00:01Z",
+            completedAt: "2026-04-16T10:00:02Z",
+          },
+          {
+            id: "inv-open-1",
+            name: "open_page",
+            status: "running",
+            inputSummary: "https://finance.example.com/ashare-close",
+            startedAt: "2026-04-16T10:00:03Z",
+          },
+        ],
+        cards: [
+          {
+            id: "user-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "看下A股行情",
+            createdAt: "2026-04-16T10:00:00Z",
+            updatedAt: "2026-04-16T10:00:00Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: true, phase: "thinking", hostId: "web-01", startedAt: "2026-04-16T10:00:00Z" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
+    await flushPromises();
+
+    const liveStatus = wrapper.get('[data-testid="codex-activity-section"]').text();
+    expect(liveStatus).toContain("已搜索网页（A股 指数 快照）");
+    expect(liveStatus).toContain("正在浏览网页（https://finance.example.com/ashare-close）");
+  });
+
+  it("streams the in-progress final answer while moving finished search context into the turn fold", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        cards: [
+          {
+            id: "user-btc-live-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "查看一下BTC的今天行情",
+            createdAt: "2026-04-16T10:00:00Z",
+            updatedAt: "2026-04-16T10:00:00Z",
+          },
+          {
+            id: "assistant-btc-live-prelude-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "我先抓取 CoinGecko 和 CoinMarketCap 的报价。",
+            status: "completed",
+            createdAt: "2026-04-16T10:00:02Z",
+            updatedAt: "2026-04-16T10:00:02Z",
+          },
+          {
+            id: "assistant-btc-live-final-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "截至 2026-04-16 18:29 CST，BTC 约 $74.45k，日内偏强。",
+            status: "inProgress",
+            createdAt: "2026-04-16T10:00:04Z",
+            updatedAt: "2026-04-16T10:00:05Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: true, phase: "finalizing", hostId: "web-01", startedAt: "2026-04-16T10:00:00Z" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [{ query: "BTC price today" }],
+          searchedContentQueries: [],
+          currentSearchQuery: "BTC price today",
+          currentSearchKind: "web",
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("截至 2026-04-16 18:29 CST，BTC 约 $74.45k");
+    const processFold = wrapper.get('[data-testid="chat-process-fold-turn-user-btc-live-1"]');
+    expect(processFold.text()).toContain("已搜索网页（BTC price today）");
+    expect(processFold.text()).not.toContain("正在搜索网页（BTC price today）");
+    expect(wrapper.text()).not.toContain("我先抓取 CoinGecko 和 CoinMarketCap 的报价。");
+    expect(wrapper.find('[data-testid="codex-activity-section"]').exists()).toBe(false);
+    expect(
+      wrapper.element.querySelector(
+        '[data-testid="chat-turn-turn-user-btc-live-1"] .chat-turn-live-status [data-testid="chat-live-status-card"]',
+      ),
+    ).toBeFalsy();
+
+    mocks.store.runtime.turn.active = false;
+    mocks.store.runtime.turn.phase = "completed";
+    await flushPromises();
+
+    const completedFold = wrapper.get('[data-testid="chat-process-fold-turn-user-btc-live-1"]');
+    expect(completedFold.find(".chat-process-surface").exists()).toBe(true);
+    expect(completedFold.text()).toContain("已搜索网页（BTC price today）");
   });
 
   it("opens the MCP surface drawer from bundle detail, pin and refresh actions", async () => {
@@ -422,7 +1018,6 @@ describe("ChatPage terminal dock", () => {
     const processFold = wrapper.get('[data-testid="chat-process-fold-turn-user-1"]');
 
     expect(processFold.text()).toContain("已处理");
-    expect(processFold.text()).toContain("已记录 1 条过程细项");
     expect(processFold.find(".chat-process-body").exists()).toBe(false);
     expect(wrapper.text()).toContain("已经确认 nginx 本体正常，异常集中在 service-a upstream timeout。");
     expect(wrapper.text()).not.toContain("我先检查日志和 upstream 指标。");
@@ -430,8 +1025,159 @@ describe("ChatPage terminal dock", () => {
     await processFold.get(".chat-process-toggle").trigger("click");
     await nextTick();
 
+    expect(processFold.find(".chat-process-surface").exists()).toBe(true);
     expect(processFold.find(".chat-process-body").exists()).toBe(true);
     expect(processFold.text()).toContain("我先检查日志和 upstream 指标。");
+  });
+
+  it("rehydrates completed process lines from snapshot activity after refresh", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        cards: [
+          {
+            id: "user-near-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "查看今天山寨币near行情",
+            createdAt: "2026-04-16T10:00:00Z",
+            updatedAt: "2026-04-16T10:00:00Z",
+          },
+          {
+            id: "assistant-near-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "截至 2026-04-16 当前搜索快照，NEAR Protocol（NEAR）报价约 $1.35–$1.43，24h 偏弱下跌。",
+            createdAt: "2026-04-16T10:00:12Z",
+            updatedAt: "2026-04-16T10:00:13Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: false, phase: "completed", hostId: "web-01", startedAt: "2026-04-16T10:00:00Z" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          searchCount: 2,
+          viewedFiles: [
+            { url: "https://coinmarketcap.com/currencies/near-protocol/" },
+          ],
+          searchedWebQueries: [
+            { query: "NEAR Protocol price today USD" },
+            { query: "Binance NEAR USDT price" },
+          ],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
+    await flushPromises();
+
+    const processFold = wrapper.get('[data-testid="chat-process-fold-turn-user-near-1"]');
+    expect(processFold.text()).toContain("已处理");
+
+    await processFold.get(".chat-process-toggle").trigger("click");
+    await nextTick();
+
+    expect(processFold.text()).toContain("已搜索网页（NEAR Protocol price today USD）");
+    expect(processFold.text()).toContain("已搜索网页（Binance NEAR USDT price）");
+    expect(processFold.text()).toContain("已浏览（https://coinmarketcap.com/currencies/near-protocol/）");
+  });
+
+  it("normalizes completed process lines into past tense and keeps them on one level", async () => {
+    mocks.store = createStoreFixture({
+      snapshot: {
+        kind: "single_host",
+        sessionId: "single-1",
+        selectedHostId: "web-01",
+        auth: { connected: true },
+        config: { codexAlive: true },
+        hosts: [
+          { id: "web-01", name: "web-01", status: "online", executable: true, terminalCapable: true },
+        ],
+        toolInvocations: [
+          {
+            id: "inv-search-1",
+            name: "web_search",
+            status: "completed",
+            inputSummary: "BTC price today",
+            startedAt: "2026-04-16T10:00:01Z",
+            completedAt: "2026-04-16T10:00:02Z",
+          },
+          {
+            id: "inv-open-1",
+            name: "open_page",
+            status: "running",
+            inputSummary: "https://coinmarketcap.com/currencies/bitcoin/",
+            startedAt: "2026-04-16T10:00:03Z",
+          },
+        ],
+        cards: [
+          {
+            id: "user-btc-history-1",
+            type: "UserMessageCard",
+            role: "user",
+            text: "查看一下BTC的今天行情",
+            createdAt: "2026-04-16T10:00:00Z",
+            updatedAt: "2026-04-16T10:00:00Z",
+          },
+          {
+            id: "assistant-btc-history-prelude-1",
+            type: "AssistantMessageCard",
+            role: "assistant",
+            text: "我先抓取 CoinGecko 和 CoinMarketCap 的报价。",
+            createdAt: "2026-04-16T10:00:02Z",
+            updatedAt: "2026-04-16T10:00:02Z",
+          },
+        ],
+        approvals: [],
+      },
+      runtime: {
+        turn: { active: true, phase: "thinking", hostId: "web-01", startedAt: "2026-04-16T10:00:00Z" },
+        codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+        activity: {
+          viewedFiles: [],
+          searchedWebQueries: [],
+          searchedContentQueries: [],
+        },
+      },
+    });
+
+    const wrapper = mountChatPage();
+    await flushPromises();
+
+    mocks.store.snapshot.cards.push({
+      id: "assistant-btc-history-final-1",
+      type: "AssistantMessageCard",
+      role: "assistant",
+      text: "截至 2026-04-16 18:29 CST，BTC 约 $74.45k，日内偏强。",
+      createdAt: "2026-04-16T10:00:06Z",
+      updatedAt: "2026-04-16T10:00:06Z",
+    });
+    mocks.store.runtime.turn.active = false;
+    mocks.store.runtime.turn.phase = "completed";
+    await flushPromises();
+
+    const processFold = wrapper.get('[data-testid="chat-process-fold-turn-user-btc-history-1"]');
+    if (!processFold.find(".chat-process-surface").exists()) {
+      await processFold.get(".chat-process-toggle").trigger("click");
+      await nextTick();
+    }
+
+    expect(processFold.text()).toContain("已搜索网页（BTC price today）");
+    expect(processFold.text()).toContain("已浏览网页（https://coinmarketcap.com/currencies/bitcoin/）");
+    expect(processFold.text()).not.toContain("正在搜索网页");
+    expect(processFold.text()).not.toContain("正在浏览网页");
+    expect(processFold.find(".chat-search-fold").exists()).toBe(false);
+    expect(processFold.find(".chat-process-live").exists()).toBe(false);
   });
 
   it("shows an unread pill instead of forcing scroll when new turn content arrives off-screen", async () => {
@@ -701,7 +1447,7 @@ describe("ChatPage terminal dock", () => {
 
     expect(wrapper.text()).not.toContain("approval-resolved");
     expect(wrapper.text()).not.toContain("command-1");
-    expect(wrapper.text()).toContain("最近命令输出已收进终端面板");
+    expect(wrapper.text()).not.toContain("最近命令输出已收进终端面板");
   });
 
   it("keeps pending approvals out of the thread while leaving the overlay actionable", async () => {
@@ -762,10 +1508,10 @@ describe("ChatPage terminal dock", () => {
       await flushPromises();
 
       expect(wrapper.find(".chat-stream").text()).not.toContain("approval-pending-1");
-      expect(wrapper.get(".auth-overlay-dock .card-item-stub").attributes("data-card-id")).toBe("approval-pending-1");
+      expect(wrapper.get('[data-testid="codex-approval-inline"]').text()).toContain("systemctl reload nginx");
       expect(wrapper.find(".omnibar-stub").exists()).toBe(false);
 
-      await wrapper.get(".auth-overlay-dock .card-item-approval-action").trigger("click");
+      await wrapper.get('[data-testid="codex-approval-inline"] .codex-submit-btn').trigger("click");
       await flushPromises();
 
       expect(mocks.store.setTurnPhase).toHaveBeenCalledWith("executing");

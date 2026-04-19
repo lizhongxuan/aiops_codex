@@ -69,31 +69,31 @@ const selectedPack = computed(() => {
             </div>
           </div>
 
-          <div class="ops-pack-list">
-            <button
+          <n-list bordered>
+            <n-list-item
               v-for="pack in filteredPacks"
               :key="pack.id"
-              type="button"
-              class="ops-pack-item"
-              :class="{ 'is-active': selectedPack && selectedPack.id === pack.id }"
               @click="selectedPackId = pack.id"
+              style="cursor:pointer;"
             >
-              <div class="ops-pack-mark" :class="toneClass(pack.confidenceTone)"></div>
-              <div class="ops-pack-copy">
-                <strong>{{ pack.name }}</strong>
-                <span>{{ pack.summary }}</span>
-                <div class="ops-chip-row">
-                  <span class="ops-mini-pill">{{ pack.version }}</span>
-                  <span class="ops-pill" :class="toneClass(pack.confidenceTone)">{{ pack.confidence }}</span>
+              <n-card :bordered="false" size="small" :class="{ 'is-active': selectedPack && selectedPack.id === pack.id }">
+                <div style="display:flex;align-items:center;gap:12px;">
+                  <div class="ops-pack-mark" :class="toneClass(pack.confidenceTone)"></div>
+                  <div style="flex:1;min-width:0;">
+                    <strong>{{ pack.name }}</strong>
+                    <div style="color:#64748b;font-size:13px;">{{ pack.summary }}</div>
+                    <div style="display:flex;gap:6px;margin-top:6px;">
+                      <n-tag size="small">{{ pack.version }}</n-tag>
+                      <n-tag size="small" :type="pack.confidenceTone === 'success' ? 'success' : pack.confidenceTone === 'warning' ? 'warning' : 'default'">{{ pack.confidence }}</n-tag>
+                    </div>
+                  </div>
+                  <span style="color:#64748b;font-size:12px;">{{ pack.bindings }}</span>
                 </div>
-              </div>
-              <span class="ops-pack-meta">{{ pack.bindings }}</span>
-            </button>
+              </n-card>
+            </n-list-item>
+          </n-list>
 
-            <div v-if="!filteredPacks.length" class="ops-empty">
-              没有命中的经验包，试试更宽松的关键词。
-            </div>
-          </div>
+          <n-empty v-if="!filteredPacks.length" description="没有命中的经验包，试试更宽松的关键词。" />
         </article>
 
         <article class="ops-card ops-sidebar-card" v-if="selectedPack">
@@ -135,9 +135,11 @@ const selectedPack = computed(() => {
           </div>
 
           <div class="ops-card-actions">
-            <button class="ops-button primary">加载到主 Agent</button>
-            <button class="ops-button ghost">附加到主机组</button>
-            <button class="ops-button ghost">创建新版本</button>
+            <n-button-group>
+              <n-button type="primary">加载到主 Agent</n-button>
+              <n-button>附加到主机组</n-button>
+              <n-button>创建新版本</n-button>
+            </n-button-group>
           </div>
         </article>
       </div>

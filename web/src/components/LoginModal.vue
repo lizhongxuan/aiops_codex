@@ -1,10 +1,11 @@
 <script setup>
 import { computed } from "vue";
-import Modal from "./Modal.vue";
 import { useAppStore } from "../store";
+import { useMessage } from "naive-ui";
 
 const emit = defineEmits(["close"]);
 const store = useAppStore();
+const msg = useMessage();
 
 const loginResultMessages = {
   success: "GPT 登录成功，当前页面会自动恢复登录态。",
@@ -41,7 +42,7 @@ async function login() {
     });
     const data = await response.json();
     if (!response.ok) {
-      store.errorMessage = data.error || "login failed";
+      msg.error(data.error || "login failed");
       return;
     }
     await store.fetchState();
@@ -50,7 +51,7 @@ async function login() {
     }
     emit("close");
   } catch (e) {
-    store.errorMessage = "Network error during login";
+    msg.error("Network error during login");
   }
 }
 
@@ -66,7 +67,15 @@ function startConfiguredOAuth() {
 </script>
 
 <template>
-  <Modal title="GPT Status & Login" @close="emit('close')">
+  <n-modal
+    :show="true"
+    preset="card"
+    title="GPT Status & Login"
+    :bordered="false"
+    style="width: 480px; max-width: 90vw;"
+    :mask-closable="true"
+    @update:show="(val) => { if (!val) emit('close'); }"
+  >
     <div class="login-container">
       <div class="status-box" :class="{ connected: store.snapshot.auth.connected }">
         <span class="status-dot"></span>
@@ -85,7 +94,7 @@ function startConfiguredOAuth() {
       </div>
       <div v-if="store.snapshot.auth.planType" class="info-row">
         <span class="label">计划</span>
-        <span class="value badge">{{ store.snapshot.auth.planType }}</span>
+        <n-tag size="small">{{ store.snapshot.auth.planType }}</n-tag>
       </div>
       
       <p v-if="store.snapshot.auth.pending" class="hint-text text-amber">正在等待浏览器认证完成...</p>
@@ -94,58 +103,56 @@ function startConfiguredOAuth() {
       </p>
 
       <div class="form-row" v-if="store.snapshot.config.oauthConfigured">
-        <button class="btn btn-primary fluid" @click="startConfiguredOAuth">使用已配置 OAuth 登录</button>
+        <n-button type="primary" block @click="startConfiguredOAuth">使用已配置 OAuth 登录</n-button>
       </div>
 
-      <hr class="divider" />
+      <n-divider />
 
-      <div class="field">
-        <label>登录模式</label>
-        <select v-model="store.authForm.mode" class="input">
-          <option value="chatgpt">ChatGPT 登录</option>
-          <option value="chatgptAuthTokens">外部 Auth Tokens</option>
-          <option value="apiKey">API Key</option>
-        </select>
-      </div>
+      <n-form label-placement="top">
+        <n-form-item label="登录模式">
+          <n-select
+            v-model:value="store.authForm.mode"
+            :options="[
+              { label: 'ChatGPT 登录', value: 'chatgpt' },
+              { label: '外部 Auth Tokens', value: 'chatgptAuthTokens' },
+              { label: 'API Key', value: 'apiKey' },
+            ]"
+          />
+        </n-form-item>
 
-      <div v-if="store.authForm.mode === 'chatgptAuthTokens'" class="stack">
-        <div class="field">
-          <label>Access Token</label>
-          <textarea v-model="store.authForm.accessToken" rows="3" class="input"></textarea>
-        </div>
-        <div class="field">
-          <label>ChatGPT Account ID</label>
-          <input v-model="store.authForm.chatgptAccountId" class="input" />
-        </div>
-        <div class="field">
-          <label>Plan Type</label>
-          <input v-model="store.authForm.chatgptPlanType" placeholder="plus / pro / team" class="input" />
-        </div>
-        <div class="field">
-          <label>Email (Optional)</label>
-          <input v-model="store.authForm.email" class="input" />
-        </div>
-      </div>
+        <template v-if="store.authForm.mode === 'chatgptAuthTokens'">
+          <n-form-item label="Access Token">
+            <n-input v-model:value="store.authForm.accessToken" type="textarea" :rows="3" />
+          </n-form-item>
+          <n-form-item label="ChatGPT Account ID">
+            <n-input v-model:value="store.authForm.chatgptAccountId" />
+          </n-form-item>
+          <n-form-item label="Plan Type">
+            <n-input v-model:value="store.authForm.chatgptPlanType" placeholder="plus / pro / team" />
+          </n-form-item>
+          <n-form-item label="Email (Optional)">
+            <n-input v-model:value="store.authForm.email" />
+          </n-form-item>
+        </template>
 
-      <div v-if="store.authForm.mode === 'apiKey'" class="stack">
-        <div class="field">
-          <label>API Key</label>
-          <input v-model="store.authForm.apiKey" type="password" class="input" />
-        </div>
-        <div class="field">
-          <label>Email (Optional)</label>
-          <input v-model="store.authForm.email" class="input" />
-        </div>
-      </div>
+        <template v-if="store.authForm.mode === 'apiKey'">
+          <n-form-item label="API Key">
+            <n-input v-model:value="store.authForm.apiKey" type="password" show-password-on="click" />
+          </n-form-item>
+          <n-form-item label="Email (Optional)">
+            <n-input v-model:value="store.authForm.email" />
+          </n-form-item>
+        </template>
+      </n-form>
 
       <div class="actions">
-        <button class="btn" @click="logout" v-if="store.snapshot.auth.connected">注销</button>
-        <button class="btn btn-primary" style="flex: 1" @click="login">
+        <n-button v-if="store.snapshot.auth.connected" @click="logout">注销</n-button>
+        <n-button type="primary" style="flex: 1" @click="login">
           {{ store.snapshot.auth.connected ? "更换账号" : "Connect GPT" }}
-        </button>
+        </n-button>
       </div>
     </div>
-  </Modal>
+  </n-modal>
 </template>
 
 <style scoped>
@@ -199,89 +206,10 @@ function startConfiguredOAuth() {
   color: #0f172a;
 }
 
-.badge {
-  background: #e2e8f0;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 12px;
-}
-
-.divider {
-  border: none;
-  border-top: 1px solid #e2e8f0;
-  margin: 8px 0;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #475569;
-}
-
-.input {
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 14px;
-  outline: none;
-  transition: border-color 0.2s;
-  background: #f8fafc;
-}
-
-.input:focus {
-  border-color: #3b82f6;
-  background: #ffffff;
-}
-
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
 .actions {
   display: flex;
   gap: 12px;
   margin-top: 8px;
-}
-
-.btn {
-  padding: 10px 16px;
-  border-radius: 8px;
-  border: none;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-  background: #f1f5f9;
-  color: #0f172a;
-}
-
-.btn:hover {
-  background: #e2e8f0;
-}
-
-.btn:active {
-  transform: translateY(1px);
-}
-
-.btn-primary {
-  background: #0f172a;
-  color: white;
-}
-
-.btn-primary:hover {
-  background: #1e293b;
-}
-
-.fluid {
-  width: 100%;
 }
 
 .error-text {

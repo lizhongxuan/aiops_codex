@@ -1,14 +1,62 @@
 <script setup>
-import { computed, ref } from "vue";
-import { UserIcon, BotIcon, CopyIcon, CheckIcon } from "lucide-vue-next";
-import { marked } from "marked";
+import { computed, ref, watch } from "vue";
+import { UserIcon, BotIcon, CopyIcon, CheckIcon, ChevronDownIcon } from "lucide-vue-next";
+import { NSkeleton } from "naive-ui";
+import MarkdownIt from "markdown-it";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import json from "highlight.js/lib/languages/json";
+import yaml from "highlight.js/lib/languages/yaml";
+import nginx from "highlight.js/lib/languages/nginx";
+import python from "highlight.js/lib/languages/python";
+import go from "highlight.js/lib/languages/go";
+import "highlight.js/styles/github.css";
 import Modal from "./Modal.vue";
 
-// Configure marked for safe rendering
-marked.setOptions({
+// Register highlight.js languages on-demand
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("yaml", yaml);
+hljs.registerLanguage("nginx", nginx);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("go", go);
+
+// Configure markdown-it with highlight.js
+const md = new MarkdownIt({
+  html: false,
   breaks: true,
-  gfm: true,
+  linkify: true,
+  highlight(str, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(str, { language: lang }).value;
+      } catch { /* fallback */ }
+    }
+    return ""; // use external default escaping
+  },
 });
+
+// --- LRU Cache for markdown rendering (max 80 entries) ---
+const MD_CACHE_MAX = 80;
+const mdCache = new Map();
+
+function renderMarkdownCached(text) {
+  if (mdCache.has(text)) {
+    // Move to end (most recently used)
+    const val = mdCache.get(text);
+    mdCache.delete(text);
+    mdCache.set(text, val);
+    return val;
+  }
+  const rendered = md.render(text);
+  if (mdCache.size >= MD_CACHE_MAX) {
+    // Evict oldest (first key)
+    const firstKey = mdCache.keys().next().value;
+    mdCache.delete(firstKey);
+  }
+  mdCache.set(text, rendered);
+  return rendered;
+}
 
 const props = defineProps({
   card: {
@@ -20,6 +68,11 @@ const props = defineProps({
 const isUser = computed(() => props.card.role === "user");
 const rawText = computed(() => props.card.text || props.card.title || "");
 const messageText = computed(() => isUser.value ? rawText.value : cleanDisplayText(rawText.value));
+const mcpAppHtml = computed(() => {
+  if (isUser.value) return "";
+  return String(props.card?.detail?.mcpApp?.html || "").trim();
+});
+const showSkeleton = computed(() => !isUser.value && props.card.status === "inProgress" && !rawText.value.trim());
 
 const avatarIcon = computed(() => {
   return isUser.value ? UserIcon : BotIcon;
@@ -31,7 +84,7 @@ const renderAsCode = computed(() => {
   return looksStructuredText(messageText.value);
 });
 
-// Always render assistant messages as Markdown — marked handles plain text fine
+// Always render assistant messages as Markdown — markdown-it handles plain text fine
 // and properly formats lists, paragraphs, bold, code blocks, etc.
 const renderAsMarkdown = computed(() => {
   if (isUser.value) return false;
@@ -39,54 +92,57 @@ const renderAsMarkdown = computed(() => {
   return true;
 });
 
-const renderedMarkdown = computed(() => {
-  if (!renderAsMarkdown.value) return "";
+// --- Auto-collapse for long messages (>8000 chars) ---
+const COLLAPSE_THRESHOLD = 8000;
+const COLLAPSE_PREVIEW_LEN = 2000;
+const isCollapsed = ref(true);
+
+const isLongMessage = computed(() => messageText.value.length > COLLAPSE_THRESHOLD);
+
+function toggleCollapse() {
+  isCollapsed.value = !isCollapsed.value;
+}
+
+const displayText = computed(() => {
+  if (isLongMessage.value && isCollapsed.value) {
+    return messageText.value.slice(0, COLLAPSE_PREVIEW_LEN);
+  }
+  return messageText.value;
+});
+
+// --- Render markdown only after streaming settles to keep final output smooth ---
+const isStreaming = computed(() => props.card.status === "inProgress");
+const useStreamingPlainText = computed(() => isStreaming.value && renderAsMarkdown.value);
+const throttledHtml = ref("");
+
+function updateRenderedHtml() {
+  if (!renderAsMarkdown.value || useStreamingPlainText.value) {
+    throttledHtml.value = "";
+    return;
+  }
   try {
-    const preprocessed = preprocessForMarkdown(messageText.value);
-    return marked.parse(preprocessed, { breaks: true, gfm: true });
+    throttledHtml.value = renderMarkdownCached(displayText.value);
   } catch {
-    return "";
+    throttledHtml.value = "";
+  }
+}
+
+watch(
+  [displayText, renderAsMarkdown, useStreamingPlainText],
+  () => {
+    updateRenderedHtml();
+  },
+  { immediate: true },
+);
+
+// When streaming ends, do a final render to ensure we have the latest
+watch(isStreaming, (val, oldVal) => {
+  if (oldVal && !val) {
+    updateRenderedHtml();
   }
 });
 
-/**
- * Preprocess text for better Markdown rendering:
- * - If text already has proper line breaks / markdown, leave it alone
- * - If text is a dense Chinese paragraph with no line breaks, add breaks
- *   at logical boundaries (after 。followed by a topic shift)
- */
-function preprocessForMarkdown(text) {
-  if (!text) return text;
-  // If text already has multiple lines, it's already formatted
-  if (text.split("\n").filter((l) => l.trim()).length > 2) return text;
-  // If text has markdown formatting, don't touch it
-  if (/^#{1,6}\s/m.test(text) || /^\s*[-*+]\s/m.test(text) || /^\s*\d+\.\s/m.test(text) || /^```/m.test(text)) return text;
-
-  // For dense single-paragraph Chinese text, add paragraph breaks
-  // at sentence boundaries where a new topic/section starts
-  let result = text;
-  // Break before "- " dash lists that are inline
-  result = result.replace(/([。！？])\s*-\s+/g, "$1\n\n- ");
-  // Break before Chinese dash lists "－"
-  result = result.replace(/([。！？])\s*[－—]\s*/g, "$1\n\n— ");
-  // Break at major topic transitions (after period + space + new sentence starter)
-  result = result.replace(/。\s*(?=[A-Z\u4e00-\u9fff])/g, "。\n\n");
-
-  return result;
-}
-
-function hasMarkdownFormatting(value) {
-  if (!value) return false;
-  // Detect common Markdown patterns
-  return /^#{1,6}\s/m.test(value) ||       // headings
-    /^\s*[-*+]\s/m.test(value) ||           // unordered lists
-    /^\s*\d+\.\s/m.test(value) ||           // ordered lists
-    /\*\*[^*]+\*\*/m.test(value) ||         // bold
-    /`[^`]+`/.test(value) ||                // inline code
-    /^```/m.test(value) ||                  // code blocks
-    /^>\s/m.test(value) ||                  // blockquotes
-    /\|.*\|.*\|/m.test(value);             // tables
-}
+const renderedMarkdown = computed(() => throttledHtml.value);
 
 function containsMarkdownLinks(value) {
   return /\[([^\]]+)\]\(([^)]+)\)/.test(value || "");
@@ -138,9 +194,651 @@ function cleanDisplayText(text) {
   cleaned = cleaned.replace(/^这是简单对话[^\n]*\n?/gm, "");
   cleaned = cleaned.replace(/^(这是|当前).*(简单|直接).*(对话|回答|回复)[^\n]*\n?/gm, "");
   cleaned = cleaned.replace(/不会生成计划或派发\s*worker[^\n]*\n?/gm, "");
+  cleaned = stripLeadingGenericConclusionHeading(cleaned);
+  cleaned = stripCommandEvidenceSummary(cleaned);
+  cleaned = stripMarketSnapshotSectionHeadings(cleaned);
+  cleaned = compactMarketSnapshotDisplay(cleaned);
+  // Normalize "1." / "-" lines that are separated from their actual content by blank lines,
+  // which otherwise render as visually fragmented list items.
+  cleaned = cleaned.replace(/^(\s*\d+\.)\s*\n+\s*(?=\S)/gm, "$1 ");
+  cleaned = cleaned.replace(/^(\s*[-*+])\s*\n+\s*(?=\S)/gm, "$1 ");
+  cleaned = cleaned.replace(/(^\s*(?:\d+\.\s+[^\n]+|[-*+]\s+[^\n]+))\n{2,}(?=\s*[○•◦▪■▸▹►]\s)/gm, "$1\n");
+  cleaned = normalizeOutlineMarkdown(cleaned);
   // Collapse excessive newlines
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
   return cleaned || text;
+}
+
+function stripLeadingGenericConclusionHeading(text) {
+  return String(text || "").replace(
+    /^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:最终)?结论(?:\*\*)?\s*(?:\r?\n)+/u,
+    "",
+  );
+}
+
+function stripCommandEvidenceSummary(text) {
+  const lines = String(text || "").split("\n");
+  const normalized = [];
+  let skippingEvidence = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
+    const trimmed = rawLine.trim();
+
+    if (!skippingEvidence && /^证据摘要[:：]?\s*$/u.test(trimmed)) {
+      skippingEvidence = true;
+      continue;
+    }
+
+    if (skippingEvidence) {
+      if (!trimmed) {
+        continue;
+      }
+      if (
+        /^(?:[-*+]|[○•◦▪■▸▹►])\s+/u.test(trimmed) ||
+        /^(?:返回|输出)[:：]/u.test(trimmed) ||
+        /^(?:已运行|正在运行|已执行|正在执行)\s+/u.test(trimmed) ||
+        /[`$]/u.test(trimmed) ||
+        /(?:systemctl|journalctl|tail\b|cat\b|grep\b|top\b|ps\b|curl\b|kubectl\b|docker\b|ssh\b)/iu.test(trimmed)
+      ) {
+        continue;
+      }
+      skippingEvidence = false;
+    }
+
+    normalized.push(rawLine);
+  }
+
+  return normalized.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function stripMarketSnapshotSectionHeadings(text) {
+  const value = String(text || "");
+  if (!looksLikeMarketSnapshot(value)) return value;
+  return value.replace(
+    /^\s*(?:#{1,6}\s*)?(?:\*\*)?(关键证据|主流报价|市场状态|简要解读|详细分析|证据详情|来源详解|补充说明)(?:\*\*)?\s*(?:\r?\n)+/gmu,
+    "",
+  );
+}
+
+function looksLikeMarketSnapshot(text) {
+  const value = String(text || "");
+  return (
+    /(BTC|比特币|CoinMarketCap|CoinGecko|Binance|Crypto\.com|24h|24小时|市值|成交额)/i.test(value) ||
+    /(A股|股市|上证|深证|创业板|指数|行情|盘面|涨停|跌停)/i.test(value)
+  );
+}
+
+function compactMarketSnapshotDisplay(text) {
+  const value = String(text || "").trim();
+  if (!shouldCompactMarketSnapshot(value)) return value;
+
+  const flattened = flattenMarketSnapshotBullets(value);
+  const blocks = flattened
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  const introBlocks = [];
+  const judgmentBlocks = [];
+  const sourceLines = [];
+  const bulletCandidates = [];
+  for (const block of blocks) {
+    if (looksLikeSourcesLabel(block)) continue;
+    if (isFollowUpPrompt(block)) {
+      continue;
+    }
+
+    const blockLines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (blockLines.length === 1 && isInlineSourceSummaryLine(blockLines[0])) {
+      sourceLines.push(...extractSourceLabelsFromInlineSummary(blockLines[0]));
+      continue;
+    }
+
+    if (blockLines.length && looksLikeSourcesLabel(blockLines[0])) {
+      const normalizedLinks = blockLines
+        .slice(1)
+        .filter((line) => isSourceLikeLine(line))
+        .map((line) => normalizeSourceLine(line));
+      const normalizedInline = blockLines
+        .slice(1)
+        .filter((line) => isInlineSourceSummaryLine(line))
+        .flatMap((line) => extractSourceLabelsFromInlineSummary(line));
+      if (normalizedLinks.length || normalizedInline.length) {
+        sourceLines.push(...normalizedInline);
+        sourceLines.push(...normalizedLinks);
+        continue;
+      }
+    }
+
+    const allBullets = blockLines.length > 0 && blockLines.every((line) => isBulletLine(line) || isSourceLikeLine(line));
+    if (allBullets) {
+      for (const line of blockLines) {
+        if (isSourceLikeLine(line)) {
+          sourceLines.push(normalizeSourceLine(line));
+          continue;
+        }
+        const content = normalizeMarketBulletCandidate(line);
+        if (content) bulletCandidates.push(content);
+      }
+      continue;
+    }
+
+    if (blockLines.every((line) => isSourceLikeLine(line))) {
+      for (const line of blockLines) {
+        sourceLines.push(normalizeSourceLine(line));
+      }
+      continue;
+    }
+
+    if (!introBlocks.length) {
+      introBlocks.push(normalizeMarketIntro(block));
+      continue;
+    }
+
+    if (blockLines.some((line) => isBulletLine(line))) {
+      for (const line of blockLines) {
+        if (!isBulletLine(line)) continue;
+        const content = normalizeMarketBulletCandidate(line);
+        if (content) bulletCandidates.push(content);
+      }
+      continue;
+    }
+
+    if (looksLikeMarketJudgment(block)) {
+      judgmentBlocks.push(block);
+      continue;
+    }
+
+    if (containsMarkdownLinks(block)) {
+      const normalizedLinks = blockLines
+        .filter((line) => isSourceLikeLine(line))
+        .map((line) => normalizeSourceLine(line));
+      if (normalizedLinks.length) {
+        sourceLines.push(...normalizedLinks);
+        continue;
+      }
+    }
+
+    judgmentBlocks.push(block);
+  }
+
+  const compactBullets = selectMarketBullets(bulletCandidates);
+  const compactSources = dedupeStable([
+    ...sourceLines,
+    ...collectImplicitMarketSources(compactBullets),
+  ]).filter((line) => isUsableMarketSourceLabel(line)).slice(0, 2);
+  const introText = introBlocks[0] || "";
+  const judgmentText = extractExplicitMarketJudgment(flattened) || chooseCompactJudgment(judgmentBlocks);
+  const compactJudgment = normalizeCompactMarketJudgment(judgmentText);
+
+  const introWithJudgment = mergeCompactMarketIntroAndJudgment(introText, compactJudgment);
+  const parts = [];
+  if (introWithJudgment.intro) parts.push(introWithJudgment.intro);
+  if (compactBullets.length) parts.push(compactBullets.map((line) => `- ${line}`).join("\n"));
+  if (introWithJudgment.judgment && !isDuplicateParagraph(introWithJudgment.judgment, introWithJudgment.intro)) {
+    parts.push(introWithJudgment.judgment);
+  }
+  if (compactSources.length) parts.push(`来源：${compactSources.join("；")}`);
+
+  const compacted = parts
+    .join("\n\n")
+    .replace(/(?:^|\n)\s*(?:短判断|一句话判断|简判断)[:：]\s*/gu, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return compacted || value;
+}
+
+function shouldCompactMarketSnapshot(text) {
+  const value = String(text || "");
+  if (!looksLikeMarketSnapshot(value)) return false;
+  const bulletCount = (value.match(/^\s*[-*+]\s+/gm) || []).length;
+  const headingCount = (
+    value.match(/^\s*(?:#{1,6}\s*)?(?:\*\*)?(关键证据|主流报价|市场状态|简要解读|详细分析|证据详情|来源详解|补充说明)(?:\*\*)?\s*$/gmu) ||
+    []
+  ).length;
+  const labeledJudgmentOrSources = /(?:^|\n)\s*(?:短判断|一句话判断|来源)\s*[:：]/u.test(value);
+  const rawSourceUrl = /(?:^|\n)\s*(?:[-*+]\s+)?(?:[A-Za-z0-9.\u4e00-\u9fa5_-]+\s*[:：]\s*)?https?:\/\/\S+/iu.test(value);
+  const followUpPrompt = /(?:^|\n)\s*(如果你要|如果需要|要的话|如果你愿意)/u.test(value);
+  return headingCount > 0 || bulletCount > 4 || value.length > 420 || labeledJudgmentOrSources || rawSourceUrl || followUpPrompt;
+}
+
+function flattenMarketSnapshotBullets(text) {
+  const lines = String(text || "").split("\n");
+  const flattened = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const current = lines[index].replace(/\s+$/g, "");
+    const trimmed = current.trim();
+    if (!isBulletLine(trimmed) || /^\s{2,}/.test(current) || /^[\t ]+[○•◦▪■▸▹►]\s+/.test(current)) {
+      flattened.push(current);
+      continue;
+    }
+
+    const nestedParts = [];
+    let offset = index + 1;
+    while (offset < lines.length) {
+      const nestedRaw = lines[offset].replace(/\s+$/g, "");
+      const nestedTrimmed = nestedRaw.trim();
+      if (!nestedTrimmed) {
+        offset += 1;
+        continue;
+      }
+      if (/^[\t ]{2,}(?:[-*+]|[○•◦▪■▸▹►])\s+/.test(nestedRaw)) {
+        nestedParts.push(normalizeBulletContent(nestedTrimmed));
+        offset += 1;
+        continue;
+      }
+      break;
+    }
+
+    if (nestedParts.length > 0) {
+      flattened.push(`- ${joinMarketBulletParts(normalizeMarketBulletCandidate(trimmed), nestedParts.map((part) => normalizeMarketBulletCandidate(part)))}`);
+      index = offset - 1;
+      continue;
+    }
+
+    flattened.push(`- ${normalizeMarketBulletCandidate(trimmed)}`);
+  }
+
+  return flattened.join("\n");
+}
+
+function joinMarketBulletParts(parent, nestedParts) {
+  const parts = [String(parent || "").trim(), ...nestedParts.map((part) => String(part || "").trim()).filter(Boolean)];
+  return parts.filter(Boolean).join("，");
+}
+
+function selectMarketBullets(candidates) {
+  const deduped = dedupeStable(candidates.map((line) => normalizeInlineSpacing(line)).filter(Boolean));
+  if (deduped.length <= 4) return deduped;
+
+  const scored = deduped.map((line, index) => ({ line, index, score: scoreMarketBullet(line) }));
+  return scored
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, 4)
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.line);
+}
+
+function scoreMarketBullet(line) {
+  let score = 0;
+  const value = String(line || "");
+  if (/(CoinGecko|CoinMarketCap|Binance|Crypto\.com|The Block|新浪|东方财富|上证|深证|创业板)/i.test(value)) score += 5;
+  if (/(\$|¥|元|点|亿|万|T\b|B\b|%)/.test(value)) score += 4;
+  if (/(24h|24小时|区间|成交额|成交量|市值|总市值|支撑|压力|涨跌|涨幅|跌幅|现价|报价)/i.test(value)) score += 3;
+  if (/(搜索结果|搜索快照|页面头部|页面汇率|转换页|摘要显示|摘显示)/.test(value)) score -= 4;
+  if (/(多个来源都指向|不同平台价格差异|口径差异|正常现象|参考|说明当前)/.test(value)) score -= 3;
+  return score;
+}
+
+function chooseCompactJudgment(blocks) {
+  const candidates = blocks
+    .map((block) => normalizeMarketJudgment(block))
+    .filter(Boolean)
+    .filter((block) => !containsMarkdownLinks(block))
+    .filter((block) => !/^(我这里|这里的|说明当前|这说明|换句话说)/u.test(block))
+    .filter((block) => looksLikeMarketJudgment(block) || block.length <= 120);
+  return candidates[0] || "";
+}
+
+function extractExplicitMarketJudgment(text) {
+  const match = String(text || "").match(/(?:^|\n)(一句话判断[:：]?\s*[^\n]+)(?=\n|$)/u);
+  return match ? normalizeMarketJudgment(match[1]) : "";
+}
+
+function looksLikeMarketJudgment(text) {
+  return /(偏强|偏弱|震荡|突破|承压|支撑|压力|短线|结构|强弱|行情|走势|判断|不是单边|偏震荡|偏活跃)/.test(String(text || ""));
+}
+
+function looksLikeSourcesLabel(text) {
+  return /^(?:#{1,6}\s*)?(?:\*\*)?来源(?:\*\*)?[:：]?$/.test(String(text || "").trim());
+}
+
+function isSourceLinkLine(line) {
+  return /^\s*(?:[-*+]\s+)?\[[^\]]+\]\([^)]+\)\s*$/.test(String(line || ""));
+}
+
+function isPlainSourceLine(line) {
+  return /^(?:\s*[-*+]\s+)?(?:[A-Za-z0-9.\u4e00-\u9fa5_-]+\s*[:：]\s*)?https?:\/\/\S+$/iu.test(String(line || "").trim());
+}
+
+function isSourceLikeLine(line) {
+  return isSourceLinkLine(line) || isPlainSourceLine(line);
+}
+
+function normalizeSourceLine(line) {
+  const value = String(line || "").trim().replace(/^[-*+]\s+/, "");
+  if (isSourceLinkLine(value)) {
+    const match = value.match(/^\[([^\]]+)\]\([^)]+\)$/);
+    return match ? match[1].trim() : value;
+  }
+  if (isPlainSourceLine(value)) {
+    const sourceLabel = extractImplicitMarketSourceLabel(value);
+    if (sourceLabel) return sourceLabel;
+    const urlMatch = value.match(/https?:\/\/([^/\s?#]+)/i);
+    if (urlMatch) return urlMatch[1].replace(/^www\./i, "");
+  }
+  return value;
+}
+
+function isUsableMarketSourceLabel(value) {
+  return /[A-Za-z\u4e00-\u9fa5]{2,}/u.test(String(value || ""));
+}
+
+function isInlineSourceSummaryLine(line) {
+  return /^来源[:：]\s*/u.test(String(line || "").trim());
+}
+
+function extractSourceLabelsFromInlineSummary(line) {
+  const raw = String(line || "").trim().replace(/^来源[:：]\s*/u, "");
+  if (!raw) return [];
+  return dedupeStable(
+    raw
+      .split(/[；;,，、]\s*/u)
+      .map((entry) => normalizeSourceLine(entry))
+      .filter((entry) => isUsableMarketSourceLabel(entry)),
+  );
+}
+
+function isBulletLine(line) {
+  return /^\s*(?:[-*+]|[○•◦▪■▸▹►])\s+/.test(String(line || ""));
+}
+
+function normalizeBulletContent(line) {
+  return normalizeInlineSpacing(String(line || "").replace(/^\s*(?:[-*+]|[○•◦▪■▸▹►])\s+/, "").trim());
+}
+
+function normalizeInlineSpacing(line) {
+  return String(line || "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s+([，。！？；：])/g, "$1")
+    .trim();
+}
+
+function dedupeStable(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const key = String(item || "")
+      .replace(/\*\*/g, "")
+      .replace(/[` ]+/g, "")
+      .toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function isFollowUpPrompt(text) {
+  return /^(如果你要|如果需要|要的话|如果你愿意)/.test(String(text || "").trim());
+}
+
+function isDuplicateParagraph(candidate, baseline) {
+  const normalize = (value) => String(value || "").replace(/\*\*/g, "").replace(/\s+/g, "").trim();
+  const left = normalize(candidate);
+  const right = normalize(baseline);
+  return Boolean(left) && left === right;
+}
+
+function normalizeMarketIntro(text) {
+  return normalizeInlineSpacing(
+    String(text || "")
+      .replace(/\n+/g, " ")
+      .replace(/（[^）]*(?:快照|报价|行情|搜索结果)[^）]*）/gu, "")
+      .replace(/的搜索快照/u, "")
+      .replace(/基于刚检索到的公开行情快照/u, "")
+      .replace(/当前主流报价(?:大致)?在/g, "当前大致在")
+      .trim(),
+  );
+}
+
+function normalizeMarketJudgment(text) {
+  return normalizeInlineSpacing(
+    String(text || "")
+      .replace(/\n+/g, " ")
+      .replace(/^\s*(?:一句话判断|短判断|简判断|判断|结论)[:：]\s*/u, "")
+      .replace(/^从你贴出的(?:实时)?搜索结果看[，,]?\s*/u, "")
+      .replace(/^综合多方(?:实时)?报价看[，,]?\s*/u, "")
+      .trim(),
+  );
+}
+
+function normalizeCompactMarketJudgment(text) {
+  return normalizeMarketJudgment(text)
+    .replace(/^当前/u, "")
+    .replace(/^(?:今天|今日)(?:还是|属于)?/u, "今天")
+    .trim();
+}
+
+function mergeCompactMarketIntroAndJudgment(intro, judgment) {
+  const normalizedIntro = normalizeInlineSpacing(intro);
+  const normalizedJudgment = normalizeCompactMarketJudgment(judgment);
+  if (!normalizedIntro) {
+    return { intro: "", judgment: normalizedJudgment };
+  }
+  if (!normalizedJudgment) {
+    return { intro: normalizedIntro, judgment: "" };
+  }
+  if (containsDirectionalMarketSummary(normalizedIntro)) {
+    return { intro: normalizedIntro, judgment: "" };
+  }
+  if (normalizedIntro.length + normalizedJudgment.length <= 116) {
+    const merged = normalizedIntro.replace(/[。．]\s*$/u, "");
+    return {
+      intro: `${merged}；${normalizedJudgment}`,
+      judgment: "",
+    };
+  }
+  return { intro: normalizedIntro, judgment: normalizedJudgment };
+}
+
+function containsDirectionalMarketSummary(text) {
+  return /(偏强|偏弱|震荡|承压|突破|回落|上行|下行|偏涨|偏跌|偏空|偏多)/u.test(String(text || ""));
+}
+
+function knownMarketSourceLabels() {
+  return [
+    "CoinMarketCap",
+    "CoinGecko",
+    "Binance",
+    "Crypto.com",
+    "CoinCodex",
+    "DigitalCoinPrice",
+    "TradingView",
+    "The Block",
+    "新浪",
+    "东方财富",
+    "上证",
+    "深证",
+    "创业板",
+  ];
+}
+
+function normalizeMarketBulletCandidate(line) {
+  const bullet = normalizeBulletContent(line)
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!bullet) return "";
+  if (isFollowUpPrompt(bullet)) return "";
+  if (isSourceLikeLine(line) || /https?:\/\//i.test(bullet)) return "";
+
+  const sourceLabel = extractImplicitMarketSourceLabel(bullet);
+  if (!sourceLabel) {
+    return normalizeInlineSpacing(
+      bullet
+        .replace(/(?:页面头部(?:信息)?显示|页面(?:汇率)?数据(?:约)?|搜索(?:快照|结果)|摘要显示|摘显示)[:：]?\s*/gu, "")
+        .replace(/不同站点存在抓取时点差/u, "不同来源存在抓取时点差")
+        .trim(),
+    );
+  }
+
+  const stripped = normalizeInlineSpacing(
+    bullet
+      .replace(new RegExp(`^${escapeRegExp(sourceLabel)}\\s*`, "u"), "")
+      .replace(/^(?:页面头部(?:信息)?显示|页面(?:汇率)?数据(?:约)?|搜索(?:快照|结果)|转换页|摘要显示|摘显示|页面显示)[:：]?\s*/u, "")
+      .trim(),
+  );
+  const price = extractMarketPrice(stripped);
+  const pcts = extractMarketPercentages(stripped);
+  const volume = extractMarketVolume(stripped);
+  const range = extractMarketRange(stripped);
+  const dominance = extractMarketDominance(stripped);
+
+  const parts = [];
+  if (price) parts.push(price);
+  if (pcts.length) parts.push(...pcts.slice(0, 2));
+  if (range) parts.push(range);
+  if (volume) parts.push(volume);
+  if (dominance) parts.push(dominance);
+
+  if (parts.length) {
+    return `${sourceLabel}：${parts.join("，")}`;
+  }
+
+  return `${sourceLabel}：${stripped}`.replace(/：\s*$/u, "");
+}
+
+function collectImplicitMarketSources(lines) {
+  return dedupeStable(
+    (lines || [])
+      .map((line) => extractImplicitMarketSourceLabel(line))
+      .filter(Boolean),
+  );
+}
+
+function extractImplicitMarketSourceLabel(line) {
+  const value = String(line || "").replace(/[`*]/g, "").trim();
+  if (!value) return "";
+  for (const label of knownMarketSourceLabels()) {
+    if (new RegExp(`(^|\\b)${escapeRegExp(label)}(?:\\b|\\s|：|:)`, "iu").test(value)) {
+      return label;
+    }
+  }
+  return "";
+}
+
+function extractMarketPrice(text) {
+  const match = String(text || "").match(/\$\s?[\d,.]+(?:\.\d+)?(?:万|k|K|M|B|T)?/u);
+  return match ? normalizeInlineSpacing(match[0].replace(/\s+/g, "")) : "";
+}
+
+function extractMarketPercentages(text) {
+  const value = String(text || "");
+  const results = [];
+  const oneHourMatch = value.match(/1小时\s*([+\-]?\d+(?:\.\d+)?%)/u);
+  if (oneHourMatch) {
+    results.push(`1h ${normalizePercent(oneHourMatch[1])}`);
+  }
+  const dayMatch = value.match(/24小时\s*([+\-]?\d+(?:\.\d+)?%)/u);
+  if (dayMatch) {
+    results.push(`24h ${normalizePercent(dayMatch[1])}`);
+  }
+  const directionalMatch = value.match(/过去\s*(?:24h|24小时)?[^。\n，,]*?(上涨|下跌)\s*([\d.]+%)/u);
+  if (directionalMatch) {
+    const sign = directionalMatch[1] === "上涨" ? "+" : "-";
+    results.push(`24h ${sign}${directionalMatch[2]}`);
+  }
+  if (!results.length) {
+    const genericMatch = value.match(/([+\-]\d+(?:\.\d+)?%)/);
+    if (genericMatch) {
+      results.push(`24h ${genericMatch[1]}`);
+    }
+  }
+  return dedupeStable(results);
+}
+
+function normalizePercent(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^[+\-]/.test(text)) return text;
+  return text;
+}
+
+function extractMarketVolume(text) {
+  const value = String(text || "");
+  const turnoverMatch = value.match(/(?:24h|24小时)(?:成交额|成交量)[:：]?\s*([$¥]?\s?[\d,.]+(?:\.\d+)?(?:[KMBT]|亿|万)?)/iu);
+  if (turnoverMatch) {
+    return `24h成交额 ${normalizeInlineSpacing(turnoverMatch[1].replace(/\s+/g, ""))}`;
+  }
+  const marketCapMatch = value.match(/(?:市值|总市值)[:：]?\s*([$¥]?\s?[\d,.]+(?:\.\d+)?(?:[KMBT]|亿|万)?)/iu);
+  if (marketCapMatch) {
+    return `市值 ${normalizeInlineSpacing(marketCapMatch[1].replace(/\s+/g, ""))}`;
+  }
+  return "";
+}
+
+function extractMarketRange(text) {
+  const match = String(text || "").match(/(?:区间|24h区间)[:：]?\s*(\$\s?[\d,.]+(?:\.\d+)?(?:万|k|K|M|B|T)?)\s*(?:-|–|—|~|～)\s*(\$\s?[\d,.]+(?:\.\d+)?(?:万|k|K|M|B|T)?)/u);
+  if (!match) return "";
+  const left = normalizeInlineSpacing(match[1].replace(/\s+/g, ""));
+  const right = normalizeInlineSpacing(match[2].replace(/\s+/g, ""));
+  return `区间 ${left}-${right}`;
+}
+
+function extractMarketDominance(text) {
+  const match = String(text || "").match(/(?:占市率|Dominance)[:：]?\s*([\d.]+%)/iu);
+  return match ? `市占率 ${match[1]}` : "";
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeOutlineMarkdown(text) {
+  const lines = String(text || "").split("\n");
+  const normalized = [];
+  let orderedContext = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index].replace(/\s+$/g, "");
+    const trimmed = rawLine.trim();
+    const nextNonEmpty = lines
+      .slice(index + 1)
+      .map((line) => line.trim())
+      .find(Boolean) || "";
+
+    if (!trimmed) {
+      if (
+        orderedContext &&
+        (/^\d+\.\s+\S/.test(nextNonEmpty) ||
+          /^[○•◦▪■▸▹►]\s+\S/.test(nextNonEmpty) ||
+          /^[-*+]\s+\S/.test(nextNonEmpty))
+      ) {
+        continue;
+      }
+      if (normalized[normalized.length - 1] !== "") {
+        normalized.push("");
+      }
+      orderedContext = false;
+      continue;
+    }
+
+    const orderedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
+    if (orderedMatch) {
+      normalized.push(`${orderedMatch[1]}. ${orderedMatch[2].trim()}`);
+      orderedContext = true;
+      continue;
+    }
+
+    const specialBulletMatch = trimmed.match(/^[○•◦▪■▸▹►]\s+(.+)$/);
+    if (specialBulletMatch) {
+      normalized.push(`${orderedContext ? "   " : ""}- ${specialBulletMatch[1].trim()}`);
+      continue;
+    }
+
+    normalized.push(rawLine);
+    orderedContext = false;
+  }
+
+  return normalized.join("\n");
 }
 
 function parseInlineChunks(text) {
@@ -310,6 +1008,22 @@ async function openFilePreview(raw) {
 function closePreview() {
   previewOpen.value = false;
 }
+
+function autoResize(event) {
+  const iframe = event?.target;
+  if (!iframe) return;
+  try {
+    const doc = iframe.contentDocument;
+    const bodyHeight = doc?.body?.scrollHeight || 0;
+    const rootHeight = doc?.documentElement?.scrollHeight || 0;
+    const height = Math.max(bodyHeight, rootHeight);
+    if (height > 0) {
+      iframe.style.height = `${height + 20}px`;
+    }
+  } catch (_err) {
+    // sandboxed iframe may not expose its document in every browser mode.
+  }
+}
 </script>
 
 <template>
@@ -321,7 +1035,34 @@ function closePreview() {
     <div class="message-content">
       <div class="content-block relative-block assistant-thread-block" v-if="!isUser">
         <pre v-if="renderAsCode" class="message-code">{{ messageText }}</pre>
-        <div v-else-if="renderAsMarkdown" class="message-text markdown-body" v-html="renderedMarkdown"></div>
+        <template v-else-if="renderAsMarkdown">
+          <div
+            v-if="useStreamingPlainText"
+            class="message-text streaming-plain-text"
+            data-testid="message-streaming-plain"
+          >
+            <span>{{ displayText }}</span>
+            <span class="streaming-cursor" aria-hidden="true"></span>
+          </div>
+          <div
+            v-else
+            class="message-text markdown-body"
+            :class="{ 'is-streaming': isStreaming }"
+            v-html="renderedMarkdown"
+          ></div>
+          <div v-if="isLongMessage" class="collapse-toggle">
+            <button type="button" class="expand-btn" @click="toggleCollapse">
+              <template v-if="isCollapsed">
+                展开全部
+                <ChevronDownIcon size="14" />
+              </template>
+              <template v-else>
+                收起
+                <ChevronDownIcon size="14" class="chevron-up" />
+              </template>
+            </button>
+          </div>
+        </template>
         <div v-else class="message-text rich-message">
           <template v-for="(block, blockIdx) in messageBlocks" :key="blockIdx">
             <div v-if="block.type === 'text'" class="message-line">
@@ -355,6 +1096,14 @@ function closePreview() {
             <div v-else-if="block.type === 'spacer'" class="message-spacer"></div>
           </template>
         </div>
+        <iframe
+          v-if="mcpAppHtml"
+          :srcdoc="mcpAppHtml"
+          sandbox="allow-scripts"
+          class="mcp-ui-card"
+          data-testid="mcp-ui-card"
+          @load="autoResize"
+        />
         <button class="copy-btn" @click="handleCopy" :class="{ copied: isCopied }" title="Copy">
           <CheckIcon v-if="isCopied" size="14" class="text-green-500" />
           <CopyIcon v-else size="14" />
@@ -378,9 +1127,12 @@ function closePreview() {
           </template>
         </div>
       </template>
-      <div class="ghost-loader" v-if="card.status === 'inProgress'">
-        <span class="spinner-small"></span> 
-        <span class="ghost-text">Thinking...</span>
+      <div class="ghost-loader" v-if="showSkeleton">
+        <n-skeleton text :repeat="2" style="width: 60%" />
+        <n-skeleton text style="width: 40%" />
+      </div>
+      <div class="ghost-loader" v-else-if="card.status === 'inProgress' && !isUser">
+        <span class="streaming-cursor" />
       </div>
     </div>
     
@@ -404,7 +1156,7 @@ function closePreview() {
 <style scoped>
 .message-wrapper {
   display: flex;
-  gap: 8px;
+  gap: 4px;
   max-width: 100%;
   width: 100%;
 }
@@ -439,6 +1191,7 @@ function closePreview() {
 .message-content {
   flex: 1;
   max-width: calc(100% - 34px);
+  min-width: 0;
 }
 
 .is-user .message-content {
@@ -449,8 +1202,8 @@ function closePreview() {
 }
 
 .message-text {
-  font-size: var(--text-body, 13.5px);
-  line-height: var(--line-height-body, 1.58);
+  font-size: var(--text-body, 13.25px);
+  line-height: var(--line-height-body, 1.5);
   color: #0f172a;
   white-space: pre-wrap;
   letter-spacing: 0;
@@ -459,16 +1212,22 @@ function closePreview() {
 .rich-message {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
+}
+
+.streaming-plain-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
 }
 
 .message-line {
   white-space: pre-wrap;
-  line-height: 1.58;
+  line-height: 1.5;
 }
 
 .message-spacer {
-  height: 5px;
+  height: 2px;
 }
 
 .file-list-block {
@@ -496,15 +1255,25 @@ function closePreview() {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+.mcp-ui-card {
+  width: 100%;
+  border: none;
+  border-radius: 12px;
+  margin-top: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  min-height: 200px;
+  background: #fff;
+}
+
 .user-message-bubble {
   background: #f3f4f6;
   border: 1px solid rgba(226, 232, 240, 0.95);
-  padding: 9px 14px;
+  padding: 7px 12px;
   border-radius: 16px;
   color: #0f172a;
   display: inline-block;
-  font-size: 13.5px;
-  line-height: 1.55;
+  font-size: 13.25px;
+  line-height: 1.5;
   box-shadow: 0 1px 1px rgba(15, 23, 42, 0.02);
 }
 
@@ -515,43 +1284,39 @@ function closePreview() {
 
 .ghost-loader {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
   margin-top: 4px;
-  color: #94a3b8;
+  max-width: min(480px, 100%);
 }
 
-.ghost-text {
-  font-size: 12px;
-  font-style: italic;
-}
-
-
-.spinner-small {
+.streaming-cursor {
   display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 2px solid rgba(0,0,0,0.1);
-  border-radius: 50%;
-  border-top-color: currentColor;
-  animation: spin 1s linear infinite;
+  width: 2px;
+  height: 16px;
+  background: #3b82f6;
+  border-radius: 1px;
+  animation: blink-cursor 1s step-end infinite;
+  vertical-align: text-bottom;
+  margin-left: 1px;
 }
 
-@keyframes spin { 
-  to { transform: rotate(360deg); }
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 .relative-block {
   position: relative;
   display: block;
-  width: min(720px, 100%);
+  width: min(108ch, 100%);
   max-width: 100%;
 }
 
 .copy-btn {
   position: absolute;
-  bottom: 4px;
-  right: 0;
+  top: 0;
+  right: -26px;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(226, 232, 240, 0.95);
   border-radius: 999px;
@@ -604,6 +1369,36 @@ function closePreview() {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Collapse / Expand toggle */
+.collapse-toggle {
+  margin-top: 6px;
+  text-align: left;
+}
+
+.expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #2563eb;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.expand-btn:hover {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.chevron-up {
+  transform: rotate(180deg);
 }
 
 .file-link-text {
@@ -689,10 +1484,24 @@ function closePreview() {
 
 /* Markdown rendered content */
 .markdown-body {
-  font-size: var(--text-body, 13.5px);
-  line-height: 1.58;
+  font-size: var(--text-body, 13.25px);
+  line-height: 1.46;
   color: #0f172a;
   word-break: break-word;
+}
+
+.markdown-body.is-streaming :deep(p:last-child::after),
+.markdown-body.is-streaming :deep(li:last-child::after),
+.markdown-body.is-streaming :deep(code:last-child::after) {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 0.9em;
+  background: #3b82f6;
+  border-radius: 1px;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  animation: blink-cursor 1s step-end infinite;
 }
 
 .markdown-body :deep(h1),
@@ -701,9 +1510,9 @@ function closePreview() {
 .markdown-body :deep(h4),
 .markdown-body :deep(h5),
 .markdown-body :deep(h6) {
-  margin: 6px 0 3px;
+  margin: 0 0 2px;
   font-weight: 600;
-  line-height: 1.28;
+  line-height: 1.2;
   color: #0f172a;
 }
 
@@ -712,8 +1521,8 @@ function closePreview() {
 .markdown-body :deep(h3) { font-size: 1.02em; }
 
 .markdown-body :deep(p) {
-  margin: 0 0 2px;
-  line-height: 1.58;
+  margin: 0 0 1px;
+  line-height: 1.46;
 }
 
 .markdown-body :deep(p:last-child) {
@@ -722,17 +1531,38 @@ function closePreview() {
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 1px 0 3px;
-  padding-left: 18px;
+  margin: 0 0 2px;
+  padding-left: 15px;
 }
 
 .markdown-body :deep(li) {
-  margin: 0;
-  line-height: 1.56;
+  margin: 0 0 1px;
+  line-height: 1.42;
 }
 
 .markdown-body :deep(li p) {
   margin: 0;
+}
+
+.markdown-body :deep(li > p:first-child) {
+  display: inline;
+}
+
+.markdown-body :deep(li > p:first-child + p) {
+  display: block;
+  margin-top: 1px;
+}
+
+.markdown-body :deep(li > ul),
+.markdown-body :deep(li > ol) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.markdown-body :deep(ol > li::marker),
+.markdown-body :deep(ul > li::marker) {
+  color: #64748b;
+  font-weight: 600;
 }
 
 .markdown-body :deep(code) {
@@ -745,8 +1575,8 @@ function closePreview() {
 }
 
 .markdown-body :deep(pre) {
-  margin: 6px 0;
-  padding: 9px 12px;
+  margin: 3px 0;
+  padding: 8px 12px;
   border-radius: 10px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
@@ -756,12 +1586,14 @@ function closePreview() {
 .markdown-body :deep(pre code) {
   background: transparent;
   padding: 0;
-  font-size: 12px;
-  line-height: 1.48;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: inherit;
 }
 
 .markdown-body :deep(blockquote) {
-  margin: 6px 0;
+  margin: 4px 0;
   padding: 3px 10px;
   border-left: 3px solid #cbd5e1;
   color: #475569;
@@ -773,7 +1605,7 @@ function closePreview() {
 
 .markdown-body :deep(table) {
   border-collapse: collapse;
-  margin: 6px 0;
+  margin: 4px 0;
   font-size: 12.5px;
 }
 
@@ -792,7 +1624,7 @@ function closePreview() {
 .markdown-body :deep(hr) {
   border: none;
   border-top: 1px solid #e2e8f0;
-  margin: 8px 0;
+  margin: 6px 0;
 }
 
 .markdown-body :deep(a) {
@@ -802,5 +1634,12 @@ function closePreview() {
 
 .markdown-body :deep(a:hover) {
   text-decoration: underline;
+}
+
+@media (max-width: 900px) {
+  .copy-btn {
+    top: 0;
+    right: 0;
+  }
 }
 </style>

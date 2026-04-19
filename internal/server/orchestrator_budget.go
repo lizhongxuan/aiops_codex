@@ -48,7 +48,10 @@ func (a *App) tryReserveOrchestratorPermit(missionID, sessionID string, globalBu
 	a.threadStarts = pruneStartTimes(a.threadStarts, now)
 	a.turnStarts = pruneStartTimes(a.turnStarts, now)
 
-	if a.codex != nil && a.codex.PendingCount() >= orchestratorPendingRequestBudget {
+	a.turnMu.Lock()
+	pendingTurns := len(a.turnCancels)
+	a.turnMu.Unlock()
+	if pendingTurns >= orchestratorPendingRequestBudget {
 		return false
 	}
 	if needThread && len(a.threadStarts) >= orchestratorThreadCreateRateLimit {
@@ -91,7 +94,7 @@ func (a *App) countOrchestratorActiveLocked(missionID, excludeSessionID string) 
 			continue
 		}
 		meta := a.sessionMeta(sessionID)
-		if meta.Kind != model.SessionKindWorkspace && meta.Kind != model.SessionKindWorker {
+		if meta.Kind != model.SessionKindWorker {
 			continue
 		}
 		global++

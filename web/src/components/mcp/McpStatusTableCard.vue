@@ -31,10 +31,25 @@ const tableShape = computed(() => {
   const rows = asArray(table.rows);
   const columns = asArray(table.columns);
   if (columns.length) {
-    return { columns, rows };
+    // Normalize rows: if a row is an object with a `cells` array, unwrap it.
+    const normalizedRows = rows.map((row) => {
+      if (row && typeof row === "object" && !Array.isArray(row) && Array.isArray(row.cells)) {
+        return row.cells;
+      }
+      return row;
+    });
+    return { columns, rows: normalizedRows };
   }
   if (rows.length && !Array.isArray(rows[0])) {
-    const keys = Object.keys(asObject(rows[0]));
+    const first = asObject(rows[0]);
+    // If rows are objects with `cells`, unwrap and auto-detect columns
+    if (Array.isArray(first.cells)) {
+      return {
+        columns: [],
+        rows: rows.map((row) => asArray(asObject(row).cells)),
+      };
+    }
+    const keys = Object.keys(first);
     return {
       columns: keys,
       rows: rows.map((row) => keys.map((key) => row?.[key] ?? "")),

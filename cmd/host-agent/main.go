@@ -108,6 +108,9 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 			case "error":
 				log.Printf("server error: %s", msg.Error)
 			case "terminal/open":
+				if msg.TerminalOpen != nil {
+					log.Printf("recv terminal/open session=%s cwd=%q shell=%q", msg.TerminalOpen.SessionID, msg.TerminalOpen.Cwd, msg.TerminalOpen.Shell)
+				}
 				if err := terminals.open(msg.TerminalOpen); err != nil {
 					_ = sender.send(&agentrpc.Envelope{
 						Kind: "terminal/status",
@@ -119,6 +122,9 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 					})
 				}
 			case "terminal/input":
+				if msg.TerminalInput != nil {
+					log.Printf("recv terminal/input session=%s bytes=%d data=%q", msg.TerminalInput.SessionID, len(msg.TerminalInput.Data), summarizeLogText(msg.TerminalInput.Data, 240))
+				}
 				if err := terminals.input(msg.TerminalInput); err != nil {
 					_ = sender.send(&agentrpc.Envelope{
 						Kind: "terminal/status",
@@ -130,6 +136,9 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 					})
 				}
 			case "terminal/resize":
+				if msg.TerminalResize != nil {
+					log.Printf("recv terminal/resize session=%s cols=%d rows=%d", msg.TerminalResize.SessionID, msg.TerminalResize.Cols, msg.TerminalResize.Rows)
+				}
 				if err := terminals.resize(msg.TerminalResize); err != nil {
 					_ = sender.send(&agentrpc.Envelope{
 						Kind: "terminal/status",
@@ -141,6 +150,9 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 					})
 				}
 			case "terminal/signal":
+				if msg.TerminalSignal != nil {
+					log.Printf("recv terminal/signal session=%s signal=%q", msg.TerminalSignal.SessionID, msg.TerminalSignal.Signal)
+				}
 				if err := terminals.signal(msg.TerminalSignal); err != nil {
 					_ = sender.send(&agentrpc.Envelope{
 						Kind: "terminal/status",
@@ -152,6 +164,9 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 					})
 				}
 			case "terminal/close":
+				if msg.TerminalClose != nil {
+					log.Printf("recv terminal/close session=%s", msg.TerminalClose.SessionID)
+				}
 				if err := terminals.close(msg.TerminalClose); err != nil {
 					_ = sender.send(&agentrpc.Envelope{
 						Kind: "terminal/status",
@@ -163,20 +178,29 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 					})
 				}
 			case "exec/start":
-				if err := execs.start(msg.ExecStart); err != nil {
-					_ = sender.send(&agentrpc.Envelope{
-						Kind: "exec/exit",
-						ExecExit: &agentrpc.ExecExit{
-							ExecID:   safeExecID(msg.ExecStart),
-							Code:     1,
-							ExitCode: 1,
-							Status:   "failed",
-							Message:  err.Error(),
-							Error:    err.Error(),
-						},
-					})
-				}
+				go func(req *agentrpc.ExecStart) {
+					if req != nil {
+						log.Printf("recv exec/start exec=%s readonly=%t timeout=%ds cwd=%q shell=%q command=%q", req.ExecID, req.Readonly, req.TimeoutSec, req.Cwd, req.Shell, summarizeLogText(req.Command, 320))
+					}
+					if err := execs.start(req); err != nil {
+						log.Printf("exec/start failed exec=%s err=%v", safeExecID(req), err)
+						_ = sender.send(&agentrpc.Envelope{
+							Kind: "exec/exit",
+							ExecExit: &agentrpc.ExecExit{
+								ExecID:   safeExecID(req),
+								Code:     1,
+								ExitCode: 1,
+								Status:   "failed",
+								Message:  err.Error(),
+								Error:    err.Error(),
+							},
+						})
+					}
+				}(msg.ExecStart)
 			case "exec/cancel":
+				if msg.ExecCancel != nil {
+					log.Printf("recv exec/cancel exec=%s", msg.ExecCancel.ExecID)
+				}
 				if err := execs.cancel(msg.ExecCancel); err != nil {
 					_ = sender.send(&agentrpc.Envelope{
 						Kind: "exec/exit",
@@ -192,7 +216,11 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				}
 			case "file/list":
 				go func(req *agentrpc.FileListRequest) {
+					if req != nil {
+						log.Printf("recv file/list request=%s path=%q recursive=%t max_entries=%d", req.RequestID, req.Path, req.Recursive, req.MaxEntries)
+					}
 					if err := handleAgentFileList(agentRuntime, sender, req); err != nil {
+						log.Printf("file/list failed request=%s err=%v", safeFileRequestIDFromList(req), err)
 						_ = sender.send(&agentrpc.Envelope{
 							Kind: "file/list/result",
 							FileListResult: &agentrpc.FileListResult{
@@ -204,7 +232,11 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				}(msg.FileListRequest)
 			case "file/read":
 				go func(req *agentrpc.FileReadRequest) {
+					if req != nil {
+						log.Printf("recv file/read request=%s path=%q max_bytes=%d", req.RequestID, req.Path, req.MaxBytes)
+					}
 					if err := handleAgentFileRead(agentRuntime, sender, req); err != nil {
+						log.Printf("file/read failed request=%s err=%v", safeFileRequestIDFromRead(req), err)
 						_ = sender.send(&agentrpc.Envelope{
 							Kind: "file/read/result",
 							FileReadResult: &agentrpc.FileReadResult{
@@ -216,7 +248,11 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				}(msg.FileReadRequest)
 			case "file/search":
 				go func(req *agentrpc.FileSearchRequest) {
+					if req != nil {
+						log.Printf("recv file/search request=%s path=%q query=%q max_matches=%d", req.RequestID, req.Path, summarizeLogText(req.Query, 200), req.MaxMatches)
+					}
 					if err := handleAgentFileSearch(agentRuntime, sender, req); err != nil {
+						log.Printf("file/search failed request=%s err=%v", safeFileRequestIDFromSearch(req), err)
 						_ = sender.send(&agentrpc.Envelope{
 							Kind: "file/search/result",
 							FileSearchResult: &agentrpc.FileSearchResult{
@@ -228,7 +264,11 @@ func run(ctx context.Context, addr, hostID, hostname, version, token string, lab
 				}(msg.FileSearchRequest)
 			case "file/write":
 				go func(req *agentrpc.FileWriteRequest) {
+					if req != nil {
+						log.Printf("recv file/write request=%s path=%q mode=%q content=%q", req.RequestID, req.Path, req.WriteMode, summarizeLogText(req.Content, 240))
+					}
 					if err := handleAgentFileWrite(agentRuntime, sender, req); err != nil {
+						log.Printf("file/write failed request=%s err=%v", safeFileRequestIDFromWrite(req), err)
 						_ = sender.send(&agentrpc.Envelope{
 							Kind: "file/write/result",
 							FileWriteResult: &agentrpc.FileWriteResult{

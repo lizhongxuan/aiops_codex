@@ -53,6 +53,14 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  choiceSubmitting: {
+    type: Object,
+    default: () => ({}),
+  },
+  choiceErrors: {
+    type: Object,
+    default: () => ({}),
+  },
   runningAgents: {
     type: Array,
     default: () => [],
@@ -64,6 +72,10 @@ const props = defineProps({
   planSummaryLabel: {
     type: String,
     default: "",
+  },
+  planOverviewRows: {
+    type: Array,
+    default: () => [],
   },
   statusCard: {
     type: Object,
@@ -97,6 +109,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  virtualizationSuspended: {
+    type: Boolean,
+    default: false,
+  },
   emptyLabel: {
     type: String,
     default: "这里会显示主 Agent 的对话流。",
@@ -111,7 +127,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["update:draft", "send", "stop", "choice", "select-message", "process-item-select", "plan-action", "agent-select", "open-history", "action", "detail", "pin", "refresh"]);
+const emit = defineEmits(["update:draft", "send", "stop", "choice", "select-message", "process-item-select", "evidence-select", "plan-action", "agent-select", "open-history", "action", "detail", "pin", "refresh"]);
 
 const draftModel = computed({
   get: () => props.draft,
@@ -197,6 +213,10 @@ const normalizedChoiceCards = computed(() =>
   (Array.isArray(props.choiceCards) ? props.choiceCards : []).filter((card) => card?.status === "pending"),
 );
 
+function choiceRequestId(card) {
+  return String(card?.requestId || card?.id || "");
+}
+
 const normalizedTurns = computed(() =>
   Array.isArray(props.formattedTurns) && props.formattedTurns.length ? props.formattedTurns : [],
 );
@@ -232,6 +252,10 @@ function selectMessage(message, event) {
 
 function selectProcessItem(payload) {
   emit("process-item-select", payload);
+}
+
+function selectEvidence(payload) {
+  emit("evidence-select", payload);
 }
 
 function forwardAction(payload) {
@@ -270,7 +294,7 @@ const visibleStreamItems = computed(() => historyPager.visibleItems.value);
 
 const streamSignature = computed(() => {
   if (visibleStreamItems.value.length) {
-    return visibleStreamItems.value
+    const visibleSignature = visibleStreamItems.value
       .map((turn) => [
         turn.id,
         turn.processItems?.length || 0,
@@ -279,6 +303,12 @@ const streamSignature = computed(() => {
         turn.liveHint || "",
       ].join(":"))
       .join("|");
+    return [
+      visibleSignature,
+      props.statusCard?.phase || "",
+      props.statusCard?.hint || "",
+      historyPager.topSentinel.value?.kind || "",
+    ].join("|");
   }
   return [
     visibleStreamItems.value.length,
@@ -311,6 +341,7 @@ const {
 const virtualTurns = useVirtualTurnList({
   items: visibleStreamItems,
   scrollContainer,
+  suspended: computed(() => props.virtualizationSuspended),
   estimateSize(turn) {
     if (turn?.active) return 220;
     return turn?.collapsedByDefault ? 180 : 212;
@@ -433,12 +464,17 @@ function handlePaneScroll(event) {
               :turn="entry.turn"
               @select-message="selectMessage"
               @select-process-item="selectProcessItem"
+              @evidence-select="selectEvidence"
               @action="forwardAction"
               @detail="forwardDetail"
               @pin="forwardPin"
               @refresh="forwardRefresh"
             />
           </template>
+
+          <div v-if="statusCard" class="stream-row row-assistant protocol-thinking-row" data-testid="protocol-live-status-card">
+            <ThinkingCard :card="statusCard" />
+          </div>
         </div>
 
         <div v-else-if="showLegacyMessageStream" class="chat-stream protocol-chat-stream">
@@ -452,7 +488,7 @@ function handlePaneScroll(event) {
             <MessageCard :card="message.card" />
           </div>
 
-          <div v-if="statusCard" class="stream-row row-assistant protocol-thinking-row">
+          <div v-if="statusCard" class="stream-row row-assistant protocol-thinking-row" data-testid="protocol-live-status-card">
             <ThinkingCard :card="statusCard" />
           </div>
         </div>
@@ -491,6 +527,8 @@ function handlePaneScroll(event) {
             v-for="choiceCard in normalizedChoiceCards"
             :key="choiceCard.id"
             :card="choiceCard"
+            :submitting="Boolean(choiceSubmitting[choiceRequestId(choiceCard)])"
+            :error-message="choiceErrors[choiceRequestId(choiceCard)] || ''"
             session-kind="workspace"
             @choice="submitChoice"
           />
@@ -499,8 +537,11 @@ function handlePaneScroll(event) {
         <ProtocolInlinePlanWidget
           v-if="normalizedPlanCards.length"
           docked
+          :initially-expanded="false"
           :steps="normalizedPlanCards"
           :summary-label="planSummaryLabel"
+          :overview-rows="planOverviewRows"
+          @plan-action="({ action }) => planAction({ action }, null)"
           @step-action="({ action, plan }) => planAction({ action }, plan)"
           @host-select="({ host, plan }) => selectHost(host, plan)"
         />
@@ -612,20 +653,20 @@ function handlePaneScroll(event) {
 .protocol-chat-inner {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
-  max-width: 780px;
+  max-width: 1080px;
   margin: 0 auto;
 }
 
 .protocol-chat-stream {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .protocol-turn-stream {
-  gap: 12px;
+  gap: 8px;
 }
 
 .protocol-turn-spacer {
@@ -666,17 +707,17 @@ function handlePaneScroll(event) {
 }
 
 .protocol-agent-section {
-  margin-left: 36px;
-  max-width: 720px;
+  width: min(980px, 100%);
+  margin: 0 auto;
 }
 
 .protocol-composer-widgets {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  max-width: 780px;
-  margin: 0 auto 8px;
+  max-width: 1080px;
+  margin: 0 auto 6px;
 }
 
 .protocol-composer-choice-stack {
@@ -692,8 +733,8 @@ function handlePaneScroll(event) {
 
 .protocol-omnibar-dock {
   padding-bottom: 20px;
-  padding-left: 28px;
-  padding-right: 28px;
+  padding-left: 20px;
+  padding-right: 20px;
 }
 
 .protocol-unread-pill {
@@ -722,32 +763,37 @@ function handlePaneScroll(event) {
   align-items: flex-start;
 }
 
+.protocol-conversation-pane :deep(.stream-row) {
+  width: min(980px, 100%);
+  margin-inline: auto;
+}
+
 .protocol-conversation-pane :deep(.message-content) {
-  max-width: min(680px, calc(100% - 34px)) !important;
+  max-width: min(100ch, calc(100% - 24px)) !important;
 }
 
 .protocol-conversation-pane :deep(.message-text) {
-  font-size: 13.5px !important;
-  line-height: 1.55 !important;
+  font-size: 13.25px !important;
+  line-height: 1.5 !important;
   letter-spacing: 0;
   color: #0f172a;
 }
 
 .protocol-conversation-pane :deep(.message-line) {
-  line-height: 1.55 !important;
+  line-height: 1.5 !important;
 }
 
 .protocol-conversation-pane :deep(.rich-message) {
-  gap: 4px;
+  gap: 2px;
 }
 
 .protocol-conversation-pane :deep(.message-spacer) {
-  height: 5px;
+  height: 2px;
 }
 
 /* Markdown body spacing in protocol pane */
 .protocol-conversation-pane :deep(.markdown-body p) {
-  margin: 0 0 2px;
+  margin: 0 0 1px;
 }
 
 .protocol-conversation-pane :deep(.markdown-body ul),
@@ -756,7 +802,7 @@ function handlePaneScroll(event) {
 }
 
 .protocol-conversation-pane :deep(.markdown-body li) {
-  margin: 0;
+  margin: 0 0 1px;
 }
 
 .protocol-conversation-pane :deep(.avatar),
@@ -770,32 +816,32 @@ function handlePaneScroll(event) {
 }
 
 .protocol-conversation-pane :deep(.message-content) {
-  max-width: min(700px, 100%) !important;
+  max-width: min(100ch, 100%) !important;
 }
 
 .protocol-conversation-pane :deep(.relative-block) {
-  max-width: min(700px, calc(100vw - 420px)) !important;
+  max-width: min(100ch, calc(100vw - 320px)) !important;
 }
 
 .protocol-conversation-pane :deep(.copy-btn) {
-  bottom: 6px;
-  right: -4px;
+  bottom: 4px;
+  right: -2px;
   border-radius: 6px;
 }
 
 .protocol-conversation-pane :deep(.is-user .message-content) {
-  max-width: min(440px, 68%) !important;
+  max-width: min(46ch, 64%) !important;
 }
 
 .protocol-conversation-pane :deep(.is-user .message-text) {
   background: #f3f4f6 !important;
-  padding: 9px 14px !important;
+  padding: 7px 12px !important;
   border-radius: 14px !important;
   color: #0f172a;
   display: inline-block;
-  font-size: 13.5px !important;
+  font-size: 13.25px !important;
   font-weight: 400;
-  line-height: 1.55 !important;
+  line-height: 1.5 !important;
 }
 
 .protocol-conversation-pane :deep(.thinking-wrapper) {
@@ -811,7 +857,7 @@ function handlePaneScroll(event) {
   background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
   color: #475569;
-  max-width: min(640px, calc(100vw - 400px));
+  max-width: min(88ch, calc(100vw - 300px));
 }
 
 .protocol-conversation-pane :deep(.thinking-text) {
@@ -884,10 +930,10 @@ function handlePaneScroll(event) {
 .protocol-starter-thread {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  max-width: 720px;
-  margin: 12px 0 0 36px;
+  max-width: 1020px;
+  margin: 8px auto 0;
   padding-bottom: 6px;
 }
 
@@ -941,8 +987,8 @@ function handlePaneScroll(event) {
 
 @media (max-width: 900px) {
   .protocol-agent-section {
-    margin-left: 0;
-    max-width: 100%;
+    width: 100%;
+    margin-inline: auto;
   }
 
   .protocol-chat-container,

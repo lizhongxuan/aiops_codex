@@ -1,6 +1,7 @@
 <script setup>
-import { ref, computed } from "vue";
-import { CheckCircle2Icon, CircleIcon, Loader2Icon, ListTodoIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-vue-next";
+import { ref, computed, watch } from "vue";
+import { NTimeline, NTimelineItem, NCollapse, NCollapseItem } from "naive-ui";
+import { ListTodoIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-vue-next";
 
 const props = defineProps({
   card: {
@@ -30,15 +31,40 @@ const summaryText = computed(() => {
 
 const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台计划投影" : "计划"));
 
+const planTitle = computed(() => {
+  if (props.card.title && props.card.title !== "PlanCard") return props.card.title;
+  return null;
+});
+
+const planText = computed(() => {
+  if (props.card.text) return props.card.text;
+  return null;
+});
+
 function toggleExpand() {
   isExpanded.value = !isExpanded.value;
 }
 
-function getIconForStatus(status) {
-  if (status === "completed") return CheckCircle2Icon;
-  if (status === "inProgress") return Loader2Icon;
-  return CircleIcon;
+function timelineType(status) {
+  if (status === "completed") return "success";
+  if (status === "inProgress") return "info";
+  if (status === "failed" || status === "error") return "error";
+  if (status === "waiting" || status === "waiting_approval") return "warning";
+  return "default";
 }
+
+function stepSummary(item, index) {
+  return `${index + 1}. ${item.step || "未命名步骤"}`;
+}
+
+// Auto-expand executing steps, auto-collapse completed
+const expandedStepNames = computed(() => {
+  const items = props.card.items || [];
+  return items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.status === "inProgress")
+    .map(({ index }) => `step-${index}`);
+});
 </script>
 
 <template>
@@ -48,25 +74,32 @@ function getIconForStatus(status) {
         <ListTodoIcon size="16" class="plan-icon" />
         <div class="plan-title-group">
           <span class="plan-context">{{ contextLabel }}</span>
+          <span v-if="planTitle" class="plan-title">{{ planTitle }}</span>
           <span class="plan-summary">{{ summaryText }}</span>
         </div>
       </div>
       <component :is="isExpanded ? ChevronDownIcon : ChevronRightIcon" size="16" class="plan-toggle" />
     </div>
 
-    <div class="plan-body" v-if="isExpanded">
-      <div
-        v-for="(item, index) in card.items"
-        :key="index"
-        class="plan-item"
-        :class="item.status"
-      >
-        <div class="item-icon" :class="item.status">
-          <component :is="getIconForStatus(item.status)" size="16" :class="{'spin': item.status === 'inProgress'}" />
-        </div>
-        <span class="item-number">{{ index + 1 }}.</span>
-        <div class="item-text">{{ item.step }}</div>
-      </div>
+    <div class="plan-body" v-if="isExpanded && (card.items?.length || planText)">
+      <div v-if="planText && !card.items?.length" class="plan-goal">{{ planText }}</div>
+      <n-timeline v-if="card.items?.length">
+        <n-timeline-item
+          v-for="(item, index) in card.items"
+          :key="index"
+          :type="timelineType(item.status)"
+          :title="stepSummary(item, index)"
+          :class="{ 'step-completed': item.status === 'completed', 'step-active': item.status === 'inProgress' }"
+        >
+          <template v-if="item.output || item.detail">
+            <n-collapse :default-expanded-names="expandedStepNames">
+              <n-collapse-item :title="item.status === 'inProgress' ? '执行中...' : '查看详情'" :name="`step-${index}`">
+                <pre class="step-output">{{ item.output || item.detail || '' }}</pre>
+              </n-collapse-item>
+            </n-collapse>
+          </template>
+        </n-timeline-item>
+      </n-timeline>
     </div>
   </div>
 </template>
@@ -140,71 +173,58 @@ function getIconForStatus(status) {
   color: #374151;
 }
 
+.plan-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.plan-goal {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+  border-left: 3px solid #3b82f6;
+  margin-bottom: 8px;
+  background: #f8fafc;
+  border-radius: 0 6px 6px 0;
+}
+
 .plan-toggle {
   color: #9ca3af;
 }
 
 .plan-body {
-  padding: 2px 12px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  padding: 6px 14px 14px;
 }
 
 .plan-card.compact .plan-body {
-  padding: 4px 14px 12px;
+  padding: 6px 14px 14px;
 }
 
-.plan-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 6px 0;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.item-icon {
-  margin-top: 2px;
-  color: #d1d5db;
-  flex-shrink: 0;
-}
-
-.item-icon.inProgress {
-  color: #3b82f6;
-}
-
-.item-icon.completed {
-  color: #22c55e;
-}
-
-.item-number {
-  color: #9ca3af;
-  font-weight: 500;
-  min-width: 20px;
-  flex-shrink: 0;
-}
-
-.item-text {
-  color: #374151;
-  line-height: 1.5;
-}
-
-.plan-item.completed .item-text {
+.step-completed :deep(.n-timeline-item-content__title) {
   text-decoration: line-through;
   color: #9ca3af;
 }
 
-.plan-item.inProgress .item-text {
+.step-active :deep(.n-timeline-item-content__title) {
   color: #0f172a;
-  font-weight: 500;
+  font-weight: 600;
 }
 
-.spin {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+.step-output {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  color: #1f2937;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  max-height: 200px;
+  overflow: auto;
 }
 </style>

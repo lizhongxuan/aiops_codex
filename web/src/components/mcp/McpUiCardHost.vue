@@ -7,6 +7,7 @@ import McpKpiStripCard from "./McpKpiStripCard.vue";
 import McpSummaryCard from "./McpSummaryCard.vue";
 import McpTimeseriesChartCard from "./McpTimeseriesChartCard.vue";
 import McpStatusTableCard from "./McpStatusTableCard.vue";
+import McpTopologyCard from "./McpTopologyCard.vue";
 import { MCP_UI_KINDS, normalizeMcpUiCard } from "../../lib/mcpUiCardModel";
 
 const props = defineProps({
@@ -92,6 +93,9 @@ const rendererComponent = computed(() => {
   }
   if (resolvedUiKind.value === "readonly_chart") {
     return TABLE_VISUAL_KINDS.has(visualKind) ? McpStatusTableCard : McpTimeseriesChartCard;
+  }
+  if (resolvedUiKind.value === "topology_card") {
+    return McpTopologyCard;
   }
   return hasActionSurface.value ? GenericMcpActionCard : McpSummaryCard;
 });

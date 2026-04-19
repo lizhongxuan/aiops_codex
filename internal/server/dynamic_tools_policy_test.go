@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -142,8 +144,113 @@ func TestRemoteDynamicToolReadOnlyQueryDoesNotCreateApproval(t *testing.T) {
 	if len(session.Approvals) != 0 {
 		t.Fatalf("expected no approvals for readonly query, got %#v", session.Approvals)
 	}
+	if len(session.Cards) != 1 {
+		t.Fatalf("expected only command card for readonly query, got %#v", session.Cards)
+	}
+	card := app.cardByID("sess-readonly-policy", dynamicToolCardID("call-readonly-policy"))
+	if card == nil {
+		t.Fatalf("expected command card to exist")
+	}
+	if card.Type != "CommandCard" || card.Status != "completed" {
+		t.Fatalf("expected completed CommandCard, got %#v", card)
+	}
+	if !strings.Contains(card.Output, "load average") {
+		t.Fatalf("expected command output to be preserved on card, got %#v", card)
+	}
+	events := app.toolEventStore.SessionEvents("sess-readonly-policy")
+	if len(events) < 2 {
+		t.Fatalf("expected lifecycle events for readonly query, got %#v", events)
+	}
+	if events[0].Type != string(ToolLifecycleEventStarted) || events[len(events)-1].Type != string(ToolLifecycleEventCompleted) {
+		t.Fatalf("expected started/completed lifecycle events, got %#v", events)
+	}
 	if len(stream.kinds()) != 1 || stream.kinds()[0] != "exec/start" {
 		t.Fatalf("expected one exec/start envelope, got %#v", stream.kinds())
+	}
+}
+
+func TestQueryAIServerStateUsesLifecycleWithoutExtraProcessCard(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	sessionID := "sess-state-policy"
+	app.store.EnsureSessionWithMeta(sessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: sessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetThread(sessionID, "thread-"+sessionID)
+	app.store.SetTurn(sessionID, "turn-"+sessionID)
+	app.store.UpsertHost(model.Host{ID: "db-01", Name: "db-01", Kind: "remote", Status: "online", Executable: true})
+
+	responded := make(chan any, 1)
+	app.codexRespondFunc = func(_ context.Context, rawID string, result any) error {
+		if rawID != "raw-state-policy" {
+			t.Fatalf("unexpected raw id %q", rawID)
+		}
+		responded <- result
+		return nil
+	}
+
+	app.handleDynamicToolCall("raw-state-policy", map[string]any{
+		"threadId": "thread-" + sessionID,
+		"turnId":   "turn-" + sessionID,
+		"callId":   "call-state-policy",
+		"tool":     "query_ai_server_state",
+		"arguments": map[string]any{
+			"focus": "runtime",
+		},
+	})
+
+	select {
+	case result := <-responded:
+		payload, ok := result.(map[string]any)
+		if !ok {
+			t.Fatalf("expected tool response map, got %#v", result)
+		}
+		if payload["success"] != true {
+			t.Fatalf("expected state query to succeed, got %#v", payload)
+		}
+		text := toolResponseText(t, payload)
+		if strings.HasPrefix(text, "{") {
+			var structured map[string]any
+			if err := json.Unmarshal([]byte(text), &structured); err != nil {
+				t.Fatalf("expected JSON payload or readable text, got %q: %v", text, err)
+			}
+			if got := getStringAny(structured, "sessionId"); got != sessionID {
+				t.Fatalf("expected session id %q, got %#v", sessionID, structured)
+			}
+			if got, _ := getIntAny(structured, "hostCount"); got != 2 {
+				t.Fatalf("expected host count 2 including server-local, got %#v", structured)
+			}
+		} else {
+			if !strings.Contains(text, sessionID) || !strings.Contains(text, "hostCount") {
+				t.Fatalf("expected readable state payload, got %q", text)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for state query response")
+	}
+
+	session := app.store.Session(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to exist")
+	}
+	if len(session.Cards) != 1 {
+		t.Fatalf("expected only workspace result card, got %#v", session.Cards)
+	}
+	card := app.cardByID(sessionID, dynamicToolCardID("raw-state-policy"))
+	if card == nil {
+		t.Fatalf("expected workspace result card to exist")
+	}
+	if card.Type != "WorkspaceResultCard" || card.Status != "completed" {
+		t.Fatalf("expected completed workspace result card, got %#v", card)
+	}
+	events := app.toolEventStore.SessionEvents(sessionID)
+	if len(events) < 2 {
+		t.Fatalf("expected lifecycle events for state query, got %#v", events)
+	}
+	if events[0].Type != string(ToolLifecycleEventStarted) || events[len(events)-1].Type != string(ToolLifecycleEventCompleted) {
+		t.Fatalf("expected started/completed lifecycle events, got %#v", events)
 	}
 }
 
@@ -212,6 +319,65 @@ func TestRemoteDynamicToolMutationCommandCreatesPendingApproval(t *testing.T) {
 	}
 	if card.Status != "pending" {
 		t.Fatalf("expected pending card, got %#v", card.Status)
+	}
+}
+
+func TestWorkspaceRiskGateRejectsMutationBeforePlanApproval(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	sessionID := "sess-risk-gate-plan"
+	app.store.EnsureSessionWithMeta(sessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: sessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetThread(sessionID, "thread-"+sessionID)
+	app.store.SetTurn(sessionID, "turn-"+sessionID)
+	app.store.UpsertCard(sessionID, model.Card{
+		ID:        "plan-card-risk-gate",
+		Type:      "PlanCard",
+		Status:    "inProgress",
+		CreatedAt: "2026-04-15T12:00:00Z",
+		UpdatedAt: "2026-04-15T12:00:00Z",
+		Detail: map[string]any{
+			"tool": "update_plan",
+		},
+	})
+
+	var respondedPayload map[string]any
+	app.codexRespondFunc = func(_ context.Context, rawID string, result any) error {
+		if rawID != "raw-risk-gate-plan" {
+			t.Fatalf("unexpected raw id %q", rawID)
+		}
+		respondedPayload, _ = result.(map[string]any)
+		return nil
+	}
+
+	app.handleDynamicToolCall("raw-risk-gate-plan", map[string]any{
+		"threadId": "thread-" + sessionID,
+		"turnId":   "turn-" + sessionID,
+		"callId":   "call-risk-gate-plan",
+		"tool":     "execute_system_mutation",
+		"arguments": map[string]any{
+			"host":    model.ServerLocalHostID,
+			"mode":    "command",
+			"command": "systemctl restart nginx",
+			"reason":  "restart nginx",
+		},
+	})
+
+	if respondedPayload["success"] != false {
+		t.Fatalf("expected mutation to be rejected before plan approval, got %#v", respondedPayload)
+	}
+	if text := toolResponseText(t, respondedPayload); !strings.Contains(text, "计划审批通过前不能执行变更命令") {
+		t.Fatalf("expected explainable risk gate error, got %q", text)
+	}
+	session := app.store.Session(sessionID)
+	if session == nil {
+		t.Fatalf("expected session to exist")
+	}
+	if len(session.Approvals) != 0 {
+		t.Fatalf("expected no approvals to be created before plan approval, got %#v", session.Approvals)
 	}
 }
 

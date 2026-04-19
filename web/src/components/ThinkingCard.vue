@@ -1,6 +1,18 @@
 <script setup>
-import { computed } from "vue";
-import { Loader2Icon, DotIcon } from "lucide-vue-next";
+import { computed, ref } from "vue";
+import { NSpin, NCollapse, NCollapseItem } from "naive-ui";
+import {
+  BrainIcon,
+  ListTodoIcon,
+  ShieldCheckIcon,
+  MessageSquareIcon,
+  PlayIcon,
+  GlobeIcon,
+  SearchIcon,
+  PencilIcon,
+  FlaskConicalIcon,
+  CheckCircle2Icon,
+} from "lucide-vue-next";
 
 const props = defineProps({
   card: {
@@ -29,7 +41,7 @@ const normalizedPhase = computed(() => {
 
 const phaseLabel = computed(() => {
   const map = {
-    thinking: "思考中",
+    thinking: "正在思考",
     planning: "正在规划步骤",
     waiting_approval: "等待审批中",
     waiting_confirmation: "等待确认中",
@@ -44,19 +56,43 @@ const phaseLabel = computed(() => {
   return map[normalizedPhase.value];
 });
 
+const phaseIcon = computed(() => {
+  const map = {
+    thinking: BrainIcon,
+    planning: ListTodoIcon,
+    waiting_approval: ShieldCheckIcon,
+    waiting_confirmation: ShieldCheckIcon,
+    waiting_input: MessageSquareIcon,
+    executing: PlayIcon,
+    browsing: GlobeIcon,
+    searching: SearchIcon,
+    editing: PencilIcon,
+    testing: FlaskConicalIcon,
+    finalizing: CheckCircle2Icon,
+  };
+  return map[normalizedPhase.value] || BrainIcon;
+});
+
 const phaseTone = computed(() => normalizedPhase.value);
 const phaseDetail = computed(() => (props.card.hint || props.card.text || "").trim());
+const showSpin = computed(() => normalizedPhase.value !== "waiting_approval");
+const detailExpanded = ref([]);
 </script>
 
 <template>
   <div class="thinking-wrapper" :class="phaseTone">
     <div class="thinking-indicator">
       <span class="thinking-state">
-        <Loader2Icon v-if="normalizedPhase !== 'waiting_approval'" size="15" class="thinking-spinner" />
-        <DotIcon v-else size="15" class="thinking-dot" />
+        <n-spin v-if="showSpin" :size="14" />
+        <component :is="phaseIcon" v-else size="15" class="thinking-phase-icon" />
         <span class="thinking-text">{{ phaseLabel }}</span>
       </span>
-      <span v-if="phaseDetail" class="thinking-detail">{{ phaseDetail }}</span>
+      <n-collapse v-if="phaseDetail" v-model:expanded-names="detailExpanded" class="thinking-collapse">
+        <n-collapse-item title="活动详情" name="detail">
+          <span class="thinking-detail">{{ phaseDetail }}</span>
+        </n-collapse-item>
+      </n-collapse>
+      <span v-if="phaseDetail && !detailExpanded.length" class="thinking-detail-preview">{{ phaseDetail }}</span>
     </div>
   </div>
 </template>
@@ -84,13 +120,7 @@ const phaseDetail = computed(() => (props.card.hint || props.card.text || "").tr
   max-width: min(640px, calc(100vw - 80px));
 }
 
-.thinking-spinner {
-  animation: spin 1s linear infinite;
-  color: #3b82f6;
-  flex-shrink: 0;
-}
-
-.thinking-dot {
+.thinking-phase-icon {
   color: #64748b;
   flex-shrink: 0;
 }
@@ -107,6 +137,10 @@ const phaseDetail = computed(() => (props.card.hint || props.card.text || "").tr
   gap: 5px;
 }
 
+.thinking-collapse {
+  width: 100%;
+}
+
 .thinking-detail {
   color: #64748b;
   font-size: 11.5px;
@@ -115,8 +149,14 @@ const phaseDetail = computed(() => (props.card.hint || props.card.text || "").tr
   word-break: break-word;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
+.thinking-detail-preview {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 @keyframes fadeInUp {

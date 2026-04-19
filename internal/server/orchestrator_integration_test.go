@@ -191,7 +191,7 @@ func TestHandleChoiceAnswerRoutesToWorkerSessionMirror(t *testing.T) {
 	}
 	app.store.AddChoice(workerSessionID, choice)
 	app.store.UpsertCard(workerSessionID, card)
-	app.mirrorInternalChoiceToWorkspace(workerSessionID, choice, card)
+	app.projectChoiceRequestedFallback(workerSessionID, choice, card)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/choices/"+choice.ID+"/answer", strings.NewReader(`{"answers":[{"value":"safe","label":"保守模式"}]}`))
 	rec := httptest.NewRecorder()
@@ -204,12 +204,19 @@ func TestHandleChoiceAnswerRoutesToWorkerSessionMirror(t *testing.T) {
 	if !ok || targetChoice.Status != "completed" {
 		t.Fatalf("expected worker choice completed, got %#v, %v", targetChoice, ok)
 	}
+	if len(targetChoice.Answers) != 1 || targetChoice.Answers[0].Value != "safe" {
+		t.Fatalf("expected worker choice answer to be saved, got %#v", targetChoice.Answers)
+	}
 	workspaceCard := app.cardByID(workspaceSessionID, choice.ItemID)
 	if workspaceCard == nil || workspaceCard.Status != "completed" {
 		t.Fatalf("expected mirrored workspace choice card completed, got %#v", workspaceCard)
 	}
 	if got := strings.Join(workspaceCard.AnswerSummary, " "); !strings.Contains(got, "保守模式") {
 		t.Fatalf("expected answer summary to contain chosen label, got %#v", workspaceCard.AnswerSummary)
+	}
+	workspaceChoice, ok := app.store.Choice(workspaceSessionID, choice.ID)
+	if !ok || len(workspaceChoice.Answers) != 1 || workspaceChoice.Answers[0].Value != "safe" {
+		t.Fatalf("expected mirrored workspace choice answer to be saved, got %#v ok=%v", workspaceChoice.Answers, ok)
 	}
 	session := app.store.Session(workerSessionID)
 	if session == nil || session.Runtime.Turn.Phase != "thinking" {
@@ -218,26 +225,94 @@ func TestHandleChoiceAnswerRoutesToWorkerSessionMirror(t *testing.T) {
 	if respondedRawID != choice.RequestIDRaw {
 		t.Fatalf("expected codex response to original raw id, got %q", respondedRawID)
 	}
-	answers, ok := respondedPayload["answers"].([]any)
+	decodedPayload := decodeStructuredToolResponsePayload(t, respondedPayload)
+	answers, ok := decodedPayload["answers"].([]any)
 	if !ok || len(answers) != 1 {
-		t.Fatalf("expected one answer in codex response, got %#v", respondedPayload["answers"])
+		t.Fatalf("expected one answer in codex response, got %#v", decodedPayload["answers"])
+	}
+}
+
+func TestMirrorInternalChoiceToWorkspaceMirrorsWithoutOrchestratorSideEffects(t *testing.T) {
+	app, workspaceSessionID, workerSessionID := setupWorkerMissionForToolProjection(t)
+
+	now := model.NowString()
+	choice := model.ChoiceRequest{
+		ID:           "choice-worker-projection-1",
+		RequestIDRaw: "raw-choice-worker-projection-1",
+		ThreadID:     "thread-choice-worker-projection-1",
+		TurnID:       "turn-choice-worker-projection-1",
+		ItemID:       "choice-worker-projection-1",
+		Status:       "pending",
+		Questions: []model.ChoiceQuestion{{
+			Header:   "执行策略",
+			Question: "选择执行策略",
+			Options: []model.ChoiceOption{
+				{Label: "保守模式", Value: "safe"},
+				{Label: "激进模式", Value: "fast"},
+			},
+		}},
+		RequestedAt: now,
+	}
+	card := model.Card{
+		ID:        choice.ItemID,
+		Type:      "ChoiceCard",
+		Title:     "选择执行策略",
+		RequestID: choice.ID,
+		Question:  choice.Questions[0].Question,
+		Options:   choice.Questions[0].Options,
+		Questions: choice.Questions,
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	app.store.AddChoice(workerSessionID, choice)
+	app.store.UpsertCard(workerSessionID, card)
+
+	mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
+	if !ok || mission == nil {
+		t.Fatalf("expected mission for workspace %s", workspaceSessionID)
+	}
+	workerBefore := mission.Workers["host-1"]
+	taskBefore := mission.Tasks["task-1"]
+
+	app.mirrorInternalChoiceToWorkspace(workerSessionID, choice, card)
+
+	mission, ok = app.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
+	if !ok || mission == nil {
+		t.Fatalf("expected mission for workspace %s", workspaceSessionID)
+	}
+	worker := mission.Workers["host-1"]
+	if worker == nil || worker.Status != workerBefore.Status {
+		t.Fatalf("expected helper mirror not to change worker status, got %#v before=%#v", worker, workerBefore)
+	}
+	task := mission.Tasks["task-1"]
+	if task == nil || task.Status != taskBefore.Status {
+		t.Fatalf("expected helper mirror not to change task status, got %#v before=%#v", task, taskBefore)
+	}
+	workspace := app.store.Session(workspaceSessionID)
+	if workspace == nil || workspace.Runtime.Turn.Phase != "waiting_input" {
+		t.Fatalf("expected workspace runtime waiting_input, got %#v", workspace)
+	}
+	if mirrored := app.cardByID(workspaceSessionID, choice.ItemID); mirrored == nil || mirrored.Status != "pending" {
+		t.Fatalf("expected mirrored workspace choice card, got %#v", mirrored)
+	}
+	targetSessionID, _, ok := app.resolveChoiceTargetSession(workspaceSessionID, choice.ID)
+	if !ok || targetSessionID != workspaceSessionID {
+		t.Fatalf("expected no orchestrator route registration from helper mirror, got target=%q ok=%v", targetSessionID, ok)
 	}
 }
 
 func TestWorkspaceStateQueryAnswersFromAIServerProjection(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-state-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-state-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-state-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-state-1", nil
+		},
+	}).install(app)
 
 	workspaceSessionID := "workspace-state-query"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -272,8 +347,8 @@ func TestWorkspaceStateQueryAnswersFromAIServerProjection(t *testing.T) {
 	if session == nil {
 		t.Fatalf("expected workspace session")
 	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-route") {
-		t.Fatalf("expected workspace route thread config hash, got %q", got)
+	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-"+reActLoopVersion) {
+		t.Fatalf("expected workspace ReAct thread config hash, got %q", got)
 	}
 	for _, card := range session.Cards {
 		if card.Type == "NoticeCard" && strings.Contains(card.Title, "主 Agent 正在思考") {
@@ -285,17 +360,14 @@ func TestWorkspaceStateQueryAnswersFromAIServerProjection(t *testing.T) {
 func TestWorkspaceReadonlyQuestionUsesSelectedRemoteHostDirectly(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-readonly-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-readonly-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-readonly-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-readonly-1", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -330,66 +402,70 @@ func TestWorkspaceReadonlyQuestionUsesSelectedRemoteHostDirectly(t *testing.T) {
 	}
 }
 
-func TestWorkspaceRouteThreadOnlyExposesAIServerStateTool(t *testing.T) {
+func TestLegacyWorkspaceRouteHashNoLongerSuppressesPlanUpdatedEvents(t *testing.T) {
 	app := newOrchestratorTestApp(t)
-
-	spec := app.buildWorkspaceRouteThreadStartSpec(context.Background(), "workspace-route-tools", "host-1")
-
-	var toolNames []string
-	for _, tool := range spec.DynamicTools {
-		toolNames = append(toolNames, strings.TrimSpace(getStringAny(tool, "name")))
-	}
-	if len(toolNames) != 1 || toolNames[0] != "query_ai_server_state" {
-		t.Fatalf("expected only query_ai_server_state on route thread, got %#v", toolNames)
-	}
-}
-
-func TestWorkspaceRouteCompletionStartsReadonlyTurnForTargetHost(t *testing.T) {
-	app := newOrchestratorTestApp(t)
-	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-
-	var threadStartParams map[string]any
-	var turnStartParams map[string]any
-	app.codexRequestFunc = func(_ context.Context, method string, params any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			threadStartParams, _ = params.(map[string]any)
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-readonly-target"}}
-		case "turn/start":
-			turnStartParams, _ = params.(map[string]any)
-			payload = map[string]any{"turnId": "turn-workspace-readonly-target"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
-
-	workspaceSessionID := "workspace-route-host-readonly"
+	workspaceSessionID := "workspace-legacy-route-plan-update"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
 		Kind:               model.SessionKindWorkspace,
 		Visible:            true,
 		WorkspaceSessionID: workspaceSessionID,
 		RuntimePreset:      model.SessionRuntimePresetWorkspace,
 	})
-	app.store.SetSelectedHost(workspaceSessionID, "host-1")
-	app.store.SetThread(workspaceSessionID, "thread-workspace-route-old")
-	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash("host-1"))
+	app.store.SetThread(workspaceSessionID, "thread-workspace-route-legacy")
+	app.store.SetThreadConfigHash(workspaceSessionID, app.mainAgentThreadConfigHash(model.ServerLocalHostID)+":workspace-route")
+
+	payload := map[string]any{
+		"threadId": "thread-workspace-route-legacy",
+		"turnId":   "turn-workspace-route-legacy",
+		"plan": []map[string]any{
+			{"step": "检查 nginx", "status": "completed"},
+		},
+	}
+	app.applyTurnPlanUpdated(payload)
+
+	if card := app.cardByID(workspaceSessionID, "plan-turn-workspace-route-legacy"); card == nil || card.Type != "PlanCard" {
+		t.Fatalf("expected legacy route hash to be treated like a normal workspace thread, got %#v", card)
+	}
+}
+
+func TestLegacyWorkspaceRouteHashNoLongerTriggersCompatibilityCompletion(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-should-not-start", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-should-not-start", nil
+		},
+	}).install(app)
+
+	workspaceSessionID := "workspace-legacy-route-complete"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.SetThread(workspaceSessionID, "thread-workspace-route-legacy")
+	app.store.SetThreadConfigHash(workspaceSessionID, app.mainAgentThreadConfigHash(model.ServerLocalHostID)+":workspace-route")
+	app.startRuntimeTurn(workspaceSessionID, model.ServerLocalHostID)
 
 	now := model.NowString()
 	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "msg-user-host-readonly",
+		ID:        "msg-user-legacy-route",
 		Type:      "UserMessageCard",
 		Role:      "user",
-		Text:      "看下 host-2 的 CPU",
+		Text:      "帮我执行一轮全网 nginx 巡检",
 		Status:    "completed",
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
 	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "msg-assistant-host-readonly",
+		ID:        "msg-assistant-legacy-route",
 		Type:      "AssistantMessageCard",
 		Role:      "assistant",
-		Text:      "```json\n{\"route\":\"host_readonly\",\"reason\":\"single-host readonly check\",\"targetHostId\":\"host-2\",\"needsPlan\":false,\"needsWorker\":false}\n```\n我先切到目标主机做只读检查。",
+		Text:      "```json\n{\"route\":\"complex_task\",\"reason\":\"requires multi-step execution\",\"targetHostId\":\"\",\"needsPlan\":true,\"needsWorker\":true}\n```\n我先整理计划，准备在需要时协调 worker。",
 		Status:    "completed",
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -398,106 +474,30 @@ func TestWorkspaceRouteCompletionStartsReadonlyTurnForTargetHost(t *testing.T) {
 	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
 
 	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
-		t.Fatalf("expected no mission for host_readonly route, got %#v", mission)
+		t.Fatalf("expected legacy route hash to stop spawning compatibility missions, got %#v", mission)
 	}
 	session := app.store.Session(workspaceSessionID)
-	if session == nil {
-		t.Fatalf("expected workspace session")
+	if session == nil || session.Runtime.Turn.Active {
+		t.Fatalf("expected workspace turn to finish without route compatibility follow-up, got %#v", session)
 	}
-	if session.SelectedHostID != "host-2" {
-		t.Fatalf("expected selected host to switch to host-2, got %q", session.SelectedHostID)
-	}
-	if session.ThreadID != "thread-workspace-readonly-target" {
-		t.Fatalf("expected readonly thread to replace route thread, got %q", session.ThreadID)
-	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceReadonlyThreadConfigHash("host-2") {
-		t.Fatalf("expected readonly thread config hash, got %q", got)
-	}
-	if threadStartParams == nil {
-		t.Fatalf("expected readonly thread to start")
-	}
-	if turnStartParams == nil {
-		t.Fatalf("expected readonly turn to start")
-	}
-
-	dynamicTools, ok := threadStartParams["dynamicTools"].([]map[string]any)
-	if !ok {
-		t.Fatalf("expected dynamicTools in thread start params, got %#v", threadStartParams["dynamicTools"])
-	}
-	var threadToolNames []string
-	for _, tool := range dynamicTools {
-		threadToolNames = append(threadToolNames, strings.TrimSpace(getStringAny(tool, "name")))
-	}
-	if !containsStringValue(threadToolNames, "query_ai_server_state") {
-		t.Fatalf("expected readonly thread to expose query_ai_server_state, got %#v", threadToolNames)
-	}
-	if !containsStringValue(threadToolNames, "execute_readonly_query") {
-		t.Fatalf("expected readonly thread to expose readonly remote tools, got %#v", threadToolNames)
-	}
-	if containsStringValue(threadToolNames, "orchestrator_dispatch_tasks") {
-		t.Fatalf("did not expect readonly thread to expose orchestrator dispatch, got %#v", threadToolNames)
-	}
-	if got := getStringAny(turnStartParams, "threadId", "thread_id"); got != "thread-workspace-readonly-target" {
-		t.Fatalf("expected readonly turn to start on readonly thread, got %q", got)
-	}
-}
-
-func TestWorkspaceRouteTurnResetsReadonlyThreadBinding(t *testing.T) {
-	app := newOrchestratorTestApp(t)
-	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-route-fresh"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-route-fresh"}
+	for _, card := range session.Cards {
+		if card.Type == "NoticeCard" && strings.Contains(card.Title, "plan 正在运行中") {
+			t.Fatalf("did not expect legacy route compatibility planning notice, got %#v", card)
 		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
-
-	workspaceSessionID := "workspace-readonly-then-route"
-	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindWorkspace,
-		Visible:            true,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetWorkspace,
-	})
-	app.store.SetSelectedHost(workspaceSessionID, "host-1")
-	app.store.SetThread(workspaceSessionID, "thread-workspace-readonly-old")
-	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceReadonlyThreadConfigHash("host-1"))
-
-	if err := app.startWorkspaceRouteTurn(context.Background(), workspaceSessionID, "host-1", "继续处理后续任务"); err != nil {
-		t.Fatalf("start route turn after readonly: %v", err)
-	}
-
-	session := app.store.Session(workspaceSessionID)
-	if session == nil {
-		t.Fatalf("expected workspace session")
-	}
-	if session.ThreadID != "thread-workspace-route-fresh" {
-		t.Fatalf("expected readonly thread binding to be replaced, got %q", session.ThreadID)
-	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); got != app.workspaceRouteThreadConfigHash("host-1") {
-		t.Fatalf("expected route thread config hash after reset, got %q", got)
 	}
 }
 
 func TestWorkspaceSimpleConversationRepliesDirectlyWithoutMission(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-direct-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-direct-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-direct-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-direct-1", nil
+		},
+	}).install(app)
 
 	workspaceSessionID := "workspace-direct"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -521,8 +521,8 @@ func TestWorkspaceSimpleConversationRepliesDirectlyWithoutMission(t *testing.T) 
 	if session == nil {
 		t.Fatalf("expected workspace session")
 	}
-	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-route") {
-		t.Fatalf("expected route workspace thread config hash, got %q", got)
+	if got := strings.TrimSpace(session.ThreadConfigHash); !strings.HasSuffix(got, ":workspace-"+reActLoopVersion) {
+		t.Fatalf("expected workspace ReAct thread config hash, got %q", got)
 	}
 	for _, card := range session.Cards {
 		if card.Type == "NoticeCard" && strings.Contains(card.Title, "主 Agent 正在思考") {
@@ -531,200 +531,17 @@ func TestWorkspaceSimpleConversationRepliesDirectlyWithoutMission(t *testing.T) 
 	}
 }
 
-func TestWorkspaceRouteConversationIgnoresPlanUpdatedEvents(t *testing.T) {
-	app := newOrchestratorTestApp(t)
-	workspaceSessionID := "workspace-route-plan-ignore"
-	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindWorkspace,
-		Visible:            true,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetWorkspace,
-	})
-	app.store.SetThread(workspaceSessionID, "thread-workspace-route-ignore")
-	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash(model.ServerLocalHostID))
-
-	params, err := json.Marshal(map[string]any{
-		"threadId": "thread-workspace-route-ignore",
-		"turnId":   "turn-workspace-route-ignore",
-		"plan": []map[string]any{
-			{"step": "你好", "status": "completed"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
-	}
-
-	app.handleCodexNotification("turn/plan/updated", params)
-
-	session := app.store.Session(workspaceSessionID)
-	if session == nil {
-		t.Fatalf("expected workspace session")
-	}
-	for _, card := range session.Cards {
-		if card.Type == "PlanCard" {
-			t.Fatalf("expected route workspace conversation to ignore plan card, got %#v", card)
-		}
-	}
-}
-
-func TestWorkspaceReadonlyConversationIgnoresPlanUpdatedEvents(t *testing.T) {
-	app := newOrchestratorTestApp(t)
-	workspaceSessionID := "workspace-readonly-plan-ignore"
-	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindWorkspace,
-		Visible:            true,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetWorkspace,
-	})
-	app.store.SetThread(workspaceSessionID, "thread-workspace-readonly-ignore")
-	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceReadonlyThreadConfigHash("host-1"))
-
-	params, err := json.Marshal(map[string]any{
-		"threadId": "thread-workspace-readonly-ignore",
-		"turnId":   "turn-workspace-readonly-ignore",
-		"plan": []map[string]any{
-			{"step": "检查 host-1", "status": "completed"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
-	}
-
-	app.handleCodexNotification("turn/plan/updated", params)
-
-	session := app.store.Session(workspaceSessionID)
-	if session == nil {
-		t.Fatalf("expected workspace session")
-	}
-	for _, card := range session.Cards {
-		if card.Type == "PlanCard" {
-			t.Fatalf("expected readonly workspace conversation to ignore plan card, got %#v", card)
-		}
-	}
-}
-
-func TestWorkspaceRouteCompletionSanitizesDirectReply(t *testing.T) {
-	app := newOrchestratorTestApp(t)
-	workspaceSessionID := "workspace-route-direct-complete"
-	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindWorkspace,
-		Visible:            true,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetWorkspace,
-	})
-	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash(model.ServerLocalHostID))
-	now := model.NowString()
-	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "msg-user-1",
-		Type:      "UserMessageCard",
-		Role:      "user",
-		Text:      "你好",
-		Status:    "completed",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "msg-assistant-1",
-		Type:      "AssistantMessageCard",
-		Role:      "assistant",
-		Text:      "```json\n{\"route\":\"direct_answer\",\"reason\":\"greeting\",\"targetHostId\":\"\",\"needsPlan\":false,\"needsWorker\":false}\n```\n你好，有什么需要我处理的？",
-		Status:    "completed",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-
-	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
-
-	if mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID); ok && mission != nil {
-		t.Fatalf("expected no mission for direct answer, got %#v", mission)
-	}
-	reply := app.latestCompletedAssistantText(workspaceSessionID)
-	if strings.Contains(reply, "\"route\"") || strings.Contains(reply, "```json") {
-		t.Fatalf("expected sanitized assistant text, got %q", reply)
-	}
-	if !strings.Contains(reply, "你好，有什么需要我处理的") {
-		t.Fatalf("expected visible direct answer, got %q", reply)
-	}
-}
-
-func TestWorkspaceRouteCompletionStartsPlanningForComplexTask(t *testing.T) {
-	app := newOrchestratorTestApp(t)
-	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-route-plan-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-route-plan-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
-
-	workspaceSessionID := "workspace-route-complex-complete"
-	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
-		Kind:               model.SessionKindWorkspace,
-		Visible:            true,
-		WorkspaceSessionID: workspaceSessionID,
-		RuntimePreset:      model.SessionRuntimePresetWorkspace,
-	})
-	app.store.SetThreadConfigHash(workspaceSessionID, app.workspaceRouteThreadConfigHash(model.ServerLocalHostID))
-	now := model.NowString()
-	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "msg-user-1",
-		Type:      "UserMessageCard",
-		Role:      "user",
-		Text:      "帮我执行一轮全网 nginx 巡检",
-		Status:    "completed",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-	app.store.UpsertCard(workspaceSessionID, model.Card{
-		ID:        "msg-assistant-1",
-		Type:      "AssistantMessageCard",
-		Role:      "assistant",
-		Text:      "```json\n{\"route\":\"complex_task\",\"reason\":\"requires multi-step execution\",\"targetHostId\":\"\",\"needsPlan\":true,\"needsWorker\":true}\n```\n我先整理计划，准备在需要时协调 worker。",
-		Status:    "completed",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-
-	app.handleMissionTurnCompleted(workspaceSessionID, "completed")
-
-	mission, ok := app.orchestrator.MissionByWorkspaceSession(workspaceSessionID)
-	if !ok || mission == nil {
-		t.Fatalf("expected mission to start for complex task")
-	}
-	if got := strings.TrimSpace(app.store.Session(workspaceSessionID).ThreadConfigHash); !strings.HasSuffix(got, ":workspace-orchestration") {
-		t.Fatalf("expected orchestration thread config hash, got %q", got)
-	}
-	foundPlanningNotice := false
-	for _, card := range app.store.Session(workspaceSessionID).Cards {
-		if card.Type == "NoticeCard" && strings.Contains(card.Title, "plan 正在运行中") {
-			foundPlanningNotice = true
-			break
-		}
-	}
-	if !foundPlanningNotice {
-		t.Fatalf("expected planning notice after complex route")
-	}
-}
-
 func TestWorkspacePlanReplyDispatchesTasks(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-workspace-plan-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-workspace-plan-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-workspace-plan-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-workspace-plan-1", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -807,17 +624,14 @@ func TestWorkspacePlanReplyDispatchesTasks(t *testing.T) {
 func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-worker-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-worker-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-worker-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-worker-1", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -832,7 +646,7 @@ func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 			if msg.Kind != "exec/start" || msg.ExecStart == nil {
 				return nil
 			}
-			if want := "mkdir -p .aiops_codex/missions/mission-1/host-1"; msg.ExecStart.Command != want {
+			if want := "mkdir -p /tmp/.aiops_codex/missions/mission-1/host-1"; msg.ExecStart.Command != want {
 				t.Fatalf("unexpected bootstrap command %q", msg.ExecStart.Command)
 			}
 			app.handleAgentExecExit("host-1", &agentrpc.ExecExit{
@@ -899,11 +713,40 @@ func TestPlannerDispatchTasksStartsWorkerSession(t *testing.T) {
 	if workspace == nil {
 		t.Fatalf("expected workspace session")
 	}
+	if workspace.Runtime.Turn.Phase != "executing" {
+		t.Fatalf("expected workspace runtime executing after worker start, got %#v", workspace.Runtime.Turn)
+	}
 	if app.cardByID(workspaceSessionID, "workspace-plan-mission-1") == nil {
 		t.Fatalf("expected workspace plan card after dispatch")
 	}
 	if app.cardByID(workspaceSessionID, "workspace-worker-host-1") == nil {
 		t.Fatalf("expected workspace worker progress card after dispatch")
+	}
+	if worker.Status != orchestrator.WorkerStatusRunning {
+		t.Fatalf("expected worker status running after worker start, got %#v", worker)
+	}
+	if task := updatedMission.Tasks["task-1"]; task == nil || task.Status != orchestrator.TaskStatusRunning {
+		t.Fatalf("expected task status running after worker start, got %#v", task)
+	}
+	snapshot := app.snapshot(workspaceSessionID)
+	foundDispatchInvocation := false
+	for _, invocation := range snapshot.ToolInvocations {
+		if invocation.Name != "orchestrator_dispatch_tasks" {
+			continue
+		}
+		foundDispatchInvocation = true
+		if invocation.DisplayName != "任务派发" {
+			t.Fatalf("expected dispatch display name, got %#v", invocation)
+		}
+		if invocation.Kind != "agent" {
+			t.Fatalf("expected dispatch kind agent, got %#v", invocation)
+		}
+		if !strings.Contains(invocation.TargetSummary, "host-1") {
+			t.Fatalf("expected dispatch target summary to mention host, got %#v", invocation)
+		}
+	}
+	if !foundDispatchInvocation {
+		t.Fatalf("expected dispatch tool invocation in snapshot, got %#v", snapshot.ToolInvocations)
 	}
 	records := readAuditRecords(t, app.cfg.AuditLogPath)
 	found := false
@@ -989,17 +832,14 @@ func TestWorkspaceTurnKeepsReplyAfterDispatch(t *testing.T) {
 func TestWorkspaceProjectionIncludesRichPlanAndWorkerReadModels(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-worker-rich"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-worker-rich"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-worker-rich", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-worker-rich", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1194,18 +1034,14 @@ func TestPlannerDispatchTasksRejectsOfflineHost(t *testing.T) {
 func TestPlannerDispatchTaskStartFailureFailsWorkerSession(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		switch method {
-		case "thread/start":
-			payload := map[string]any{"thread": map[string]any{"id": "thread-worker-start-fail"}}
-			content, _ := json.Marshal(payload)
-			return json.Unmarshal(content, result)
-		case "turn/start":
-			return errors.New("turn/start failed")
-		default:
-			return nil
-		}
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-worker-start-fail", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "", errors.New("turn/start failed")
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1285,17 +1121,14 @@ func TestPlannerDispatchTaskStartFailureFailsWorkerSession(t *testing.T) {
 func TestWorkspaceProjectionUpdatesAfterWorkerCompletion(t *testing.T) {
 	app := newOrchestratorTestApp(t)
 	app.codexRespondFunc = func(_ context.Context, _ string, _ any) error { return nil }
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
-			payload = map[string]any{"thread": map[string]any{"id": "thread-worker-1"}}
-		case "turn/start":
-			payload = map[string]any{"turnId": "turn-worker-1"}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
+			return "thread-worker-1", nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
+			return "turn-worker-1", nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1429,19 +1262,16 @@ func TestStartWorkerTaskRefreshesExpiredIdleWorkerThread(t *testing.T) {
 
 	threadSeq := 0
 	turnSeq := 0
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		payload := map[string]any{}
-		switch method {
-		case "thread/start":
+	(&runtimeStartStub{
+		startThread: func(_ context.Context, _ string, _ threadStartSpec) (string, error) {
 			threadSeq++
-			payload = map[string]any{"thread": map[string]any{"id": fmt.Sprintf("thread-recycle-%02d", threadSeq)}}
-		case "turn/start":
+			return fmt.Sprintf("thread-recycle-%02d", threadSeq), nil
+		},
+		startTurn: func(_ context.Context, _ string, _ string, _ turnStartSpec) (string, error) {
 			turnSeq++
-			payload = map[string]any{"turnId": fmt.Sprintf("turn-recycle-%02d", turnSeq)}
-		}
-		content, _ := json.Marshal(payload)
-		return json.Unmarshal(content, result)
-	}
+			return fmt.Sprintf("turn-recycle-%02d", turnSeq), nil
+		},
+	}).install(app)
 
 	app.store.UpsertHost(model.Host{
 		ID:              "host-1",
@@ -1664,14 +1494,6 @@ func TestReconcileOrchestratorHostUnavailableUpdatesWorkspaceProjection(t *testi
 
 func TestHandleWorkspaceStopCancelsMissionAndClearsWorkerQueue(t *testing.T) {
 	app := newOrchestratorTestApp(t)
-	app.codexRequestFunc = func(_ context.Context, method string, _ any, result any) error {
-		if method == "turn/interrupt" {
-			payload := map[string]any{"ok": true}
-			content, _ := json.Marshal(payload)
-			return json.Unmarshal(content, result)
-		}
-		return nil
-	}
 
 	workspaceSessionID := "workspace-stop"
 	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
@@ -1790,6 +1612,40 @@ func TestEnsureMissionForWorkspaceSessionStartsFreshMissionWhenRunningMissionIsS
 	}
 	if updatedStaleMission.Status != orchestrator.MissionStatusCancelled {
 		t.Fatalf("expected stale mission cancelled, got %s", updatedStaleMission.Status)
+	}
+}
+
+func TestEnsureMissionForWorkspaceSessionReusesRunningMission(t *testing.T) {
+	app := newOrchestratorTestApp(t)
+
+	workspaceSessionID := "workspace-reuse"
+	app.store.EnsureSessionWithMeta(workspaceSessionID, model.SessionMeta{
+		Kind:               model.SessionKindWorkspace,
+		Visible:            true,
+		MissionID:          "mission-reuse",
+		WorkspaceSessionID: workspaceSessionID,
+		RuntimePreset:      model.SessionRuntimePresetWorkspace,
+	})
+	app.store.UpdateRuntime(workspaceSessionID, func(rt *model.RuntimeState) {
+		rt.Turn.Active = true
+		rt.Turn.Phase = "executing"
+	})
+	mission, err := app.orchestrator.StartMission(context.Background(), orchestrator.StartMissionRequest{
+		MissionID:          "mission-reuse",
+		WorkspaceSessionID: workspaceSessionID,
+		Title:              "reuse mission",
+		Summary:            "reuse mission",
+	})
+	if err != nil {
+		t.Fatalf("start mission: %v", err)
+	}
+
+	reused, err := app.ensureMissionForWorkspaceSession(context.Background(), workspaceSessionID, "继续执行")
+	if err != nil {
+		t.Fatalf("ensure mission: %v", err)
+	}
+	if reused.ID != mission.ID {
+		t.Fatalf("expected running mission to be reused, got mission=%s reused=%s", mission.ID, reused.ID)
 	}
 }
 

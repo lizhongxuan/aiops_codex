@@ -19,15 +19,26 @@ type Client struct {
 
 // NewClient creates a new Coroot API client.
 func NewClient(baseURL, token string, timeout time.Duration) *Client {
+	return NewClientWithHTTPClient(baseURL, token, timeout, nil)
+}
+
+// NewClientWithHTTPClient creates a Coroot API client with an injected HTTP client.
+// It is primarily useful for tests and controlled transports.
+func NewClientWithHTTPClient(baseURL, token string, timeout time.Duration, httpClient *http.Client) *Client {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: timeout}
+	} else if httpClient.Timeout <= 0 {
+		cloned := *httpClient
+		cloned.Timeout = timeout
+		httpClient = &cloned
+	}
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		auth:    NewTokenManager(token),
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		auth:       NewTokenManager(token),
+		httpClient: httpClient,
 	}
 }
 
@@ -93,6 +104,24 @@ type RCAReportResult struct {
 	Suggestions []map[string]any `json:"suggestions,omitempty"`
 }
 
+// DependencyResult holds the upstream and downstream dependencies for a service.
+type DependencyResult struct {
+	ServiceID  string    `json:"serviceId"`
+	Upstream   []Service `json:"upstream,omitempty"`
+	Downstream []Service `json:"downstream,omitempty"`
+}
+
+// HostOverviewResult holds the overview data for a single host (node).
+type HostOverviewResult struct {
+	ID      string         `json:"id"`
+	Name    string         `json:"name,omitempty"`
+	Status  string         `json:"status,omitempty"`
+	CPU     map[string]any `json:"cpu,omitempty"`
+	Memory  map[string]any `json:"memory,omitempty"`
+	Disk    map[string]any `json:"disk,omitempty"`
+	Network map[string]any `json:"network,omitempty"`
+}
+
 // ---------- API methods ----------
 
 // ListServices returns all services known to Coroot.
@@ -155,6 +184,25 @@ func (c *Client) RCAReport(ctx context.Context, incidentID string) (*RCAReportRe
 	var out RCAReportResult
 	if err := c.get(ctx, "/api/v1/incidents/"+incidentID+"/rca", &out); err != nil {
 		return nil, fmt.Errorf("coroot rca report: %w", err)
+	}
+	return &out, nil
+}
+
+// ServiceDependencies returns the upstream and downstream dependencies for a service.
+func (c *Client) ServiceDependencies(ctx context.Context, serviceID string) (*DependencyResult, error) {
+	var out DependencyResult
+	if err := c.get(ctx, "/api/v1/services/"+serviceID+"/dependencies", &out); err != nil {
+		return nil, fmt.Errorf("coroot service dependencies: %w", err)
+	}
+	return &out, nil
+}
+
+// HostOverview returns the overview for a single host (node), including
+// CPU, Memory, Disk and Network metrics.
+func (c *Client) HostOverview(ctx context.Context, hostID string) (*HostOverviewResult, error) {
+	var out HostOverviewResult
+	if err := c.get(ctx, "/api/v1/hosts/"+hostID+"/overview", &out); err != nil {
+		return nil, fmt.Errorf("coroot host overview: %w", err)
 	}
 	return &out, nil
 }

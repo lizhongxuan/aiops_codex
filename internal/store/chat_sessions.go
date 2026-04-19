@@ -15,9 +15,13 @@ import (
 const sessionPersistDebounce = 350 * time.Millisecond
 
 type sessionTranscript struct {
-	Version   int          `json:"version"`
-	SessionID string       `json:"sessionId"`
-	Cards     []model.Card `json:"cards"`
+	Version             int                        `json:"version"`
+	SessionID           string                     `json:"sessionId"`
+	Cards               []model.Card               `json:"cards"`
+	IncidentEvents      []model.IncidentEvent      `json:"incidentEvents,omitempty"`
+	VerificationRecords []model.VerificationRecord `json:"verificationRecords,omitempty"`
+	TurnPolicy          *model.TurnPolicy          `json:"turnPolicy,omitempty"`
+	PromptEnvelope      *model.PromptEnvelope      `json:"promptEnvelope,omitempty"`
 }
 
 func (s *Store) BrowserSessionExists(browserID string) bool {
@@ -38,6 +42,12 @@ func (s *Store) BrowserSession(browserID string) *BrowserSessionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return cloneBrowserSession(s.browserSessions[browserID])
+}
+
+func (s *Store) BrowserOwnsSession(browserID, sessionID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.browserOwnsSessionLocked(s.browserSessions[browserID], sessionID)
 }
 
 func (s *Store) EnsureBrowserSession(browserID string) *BrowserSessionState {
@@ -159,8 +169,16 @@ func (s *Store) SaveSessionTranscript(sessionID string) error {
 	statePath := s.statePath
 	session := s.sessions[sessionID]
 	var cards []model.Card
+	var incidentEvents []model.IncidentEvent
+	var verificationRecords []model.VerificationRecord
+	var turnPolicy *model.TurnPolicy
+	var promptEnvelope *model.PromptEnvelope
 	if session != nil {
 		cards = append([]model.Card(nil), session.Cards...)
+		incidentEvents = cloneIncidentEvents(session.IncidentEvents)
+		verificationRecords = cloneVerificationRecords(session.VerificationRecords)
+		turnPolicy = cloneTurnPolicyPtr(session.Runtime.TurnPolicy)
+		promptEnvelope = clonePromptEnvelope(session.Runtime.PromptEnvelope)
 	}
 	s.mu.RUnlock()
 	if session == nil || statePath == "" {
@@ -168,9 +186,13 @@ func (s *Store) SaveSessionTranscript(sessionID string) error {
 	}
 
 	payload := sessionTranscript{
-		Version:   1,
-		SessionID: sessionID,
-		Cards:     cards,
+		Version:             2,
+		SessionID:           sessionID,
+		Cards:               cards,
+		IncidentEvents:      incidentEvents,
+		VerificationRecords: verificationRecords,
+		TurnPolicy:          turnPolicy,
+		PromptEnvelope:      promptEnvelope,
 	}
 	content, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -310,6 +332,12 @@ func (s *Store) loadSessionTranscriptLocked(statePath, sessionID string) error {
 		return err
 	}
 	session.Cards = append([]model.Card(nil), transcript.Cards...)
+	session.IncidentEvents = cloneIncidentEvents(transcript.IncidentEvents)
+	session.VerificationRecords = cloneVerificationRecords(transcript.VerificationRecords)
+	if transcript.TurnPolicy != nil {
+		session.Runtime.TurnPolicy = cloneTurnPolicy(*transcript.TurnPolicy)
+	}
+	session.Runtime.PromptEnvelope = clonePromptEnvelope(transcript.PromptEnvelope)
 	return nil
 }
 

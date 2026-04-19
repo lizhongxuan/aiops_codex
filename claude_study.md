@@ -1,615 +1,531 @@
-# Claude Code CLI 源码研究 — 对 AIOps Codex 的优化启示
+`12# Claude Code 源码学习笔记：可借鉴的知识点
 
-> 基于对 Claude Code CLI（TypeScript/Bun）源码的深度分析，提炼出可直接应用于 aiops-codex（Go/gRPC）项目的优化方向。所有条目按对项目的重要性排序，每条说明：Claude Code 怎么做的、对 aiops-codex 有什么价值、如何落地。
-
----
-
-## 项目对比概览
-
-| 维度 | Claude Code CLI | AIOps Codex |
-|------|----------------|-------------|
-| 语言 | TypeScript (Bun runtime) | Go + Vue.js |
-| 架构 | 本地 CLI Agent + 流式对话引擎 | 分布式编排器 + gRPC Agent + Web UI |
-| 核心模式 | QueryEngine → Tool → Permission | Manager → Dispatcher → Collector |
-| 状态管理 | AppState + FileHistoryState | Store (内存) + JSON 持久化 |
-| 工具系统 | 可扩展 Tool 接口 + 动态发现 | Dynamic Tools + Agent Profile |
+> 基于 Claude Code v2.1.88 源码（4756 个源文件）的深度分析。按"可迁移性"分类，每个知识点标注源码位置和核心思路。
 
 ---
 
-## P0：必须做——直接影响生产可用性和成本
+## 一、Agent 架构层
 
-### 1. 分层错误处理与分类重试
+### 1. ReAct 循环工程化
 
-**Claude Code 怎么做的：**
-`services/api/errors.ts` 将所有 API 错误分为 rate_limit / overloaded / network / token_revoked / prompt_too_long 等类别，每种类别有独立的重试策略、退避时间和用户提示。
+**源码**: `src/query.ts` — `queryLoop()`
 
-**对 aiops-codex 的价值：**
-当前 `internal/codex/client.go` 的 RPC 客户端对所有错误一视同仁。一个 rate_limit 错误和一个认证失败错误走同样的处理路径，导致：不该重试的错误在重试（浪费时间），该重试的错误没有退避（加剧限流）。在 Mission 场景下，8 个 Worker 同时触发 rate_limit 但没有退避，会形成"限流风暴"。
+核心是一个 `while(true)` 循环，每轮经历 7 个阶段：
 
-**落地方式：**
+```
+上下文预处理 → 附件注入 → API调用(流式) → 错误恢复 → 工具执行 → 后处理 → 循环决策
+```
 
-```go
-// internal/codex/errors.go — 新增文件，约 60 行
-type ErrorCategory string
-const (
-    ErrCategoryRetryable  ErrorCategory = "retryable"   // 网络抖动、临时过载
-    ErrCategoryRateLimit  ErrorCategory = "rate_limit"   // 需要指数退避
-    ErrCategoryFatal      ErrorCategory = "fatal"        // 认证失败、配置错误，不重试
-    ErrCategoryUserAction ErrorCategory = "user_action"  // 需要用户介入（如 token 过期）
+关键设计：
+- `needsFollowUp` 标志控制循环是否继续（模型输出了 tool_use 就继续）
+- `StreamingToolExecutor`：边接收流式响应边执行工具，不等模型输出完
+- 并行工具调用：无依赖的工具同时执行，有依赖的串行
+- 每轮迭代的 state 用一个对象传递，continue 时整体替换
+
+**可借鉴**：任何 agent 系统都需要这种结构化的循环设计，而不是简单的递归调用。
+
+### 2. 多级错误恢复
+
+**源码**: `src/query.ts` 第 1000-1300 行
+
+```
+prompt_too_long 错误
+  → 尝试1: Context Collapse drain（释放暂存上下文）
+  → 尝试2: Reactive Compact（紧急全量压缩）
+  → 尝试3: 截断最旧消息重试
+  → 报错给用户
+
+max_output_tokens 错误
+  → 尝试1: 升级限制 8K → 64K
+  → 尝试2: 注入恢复消息 "Resume directly, break into smaller pieces"
+  → 最多重试 N 次后报错
+
+模型过载
+  → 自动切换到 fallback model
+```
+
+熔断机制：连续 3 次自动压缩失败后停止重试（`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`）。源码注释提到曾有 1,279 个会话出现 50+ 次连续失败，每天浪费约 25 万次 API 调用。
+
+**可借鉴**：生产级 agent 必须有分层错误恢复 + 熔断器，否则一个错误就能让系统陷入无限循环。
+
+### 3. 子 Agent 委托
+
+**源码**: `src/tools/AgentTool/runAgent.ts`
+
+主 agent 可以 spawn 子 agent 处理子任务：
+
+```
+主 Agent
+  ├── AgentTool("explore") → Explore Agent（只读，搜索代码库）
+  ├── AgentTool("plan")    → Plan Agent（只读，制定计划）
+  └── AgentTool("custom")  → 用户自定义 Agent
+```
+
+关键设计：
+- 独立上下文：子 agent 有自己的消息历史、readFileState、agentId
+- 上下文继承：可以 fork 父 agent 的消息历史（`forkContextMessages`），共享 prompt cache
+- 工具过滤：子 agent 可以有不同的工具集（Explore agent 只有读取类工具）
+- CLAUDE.md 裁剪：只读 agent 跳过 CLAUDE.md 注入，节省 token
+- 独立 transcript：每个子 agent 有自己的会话记录文件
+
+**可借鉴**：子 agent 的上下文隔离 + 选择性继承是关键。完全隔离浪费 cache，完全共享会污染上下文。
+
+### 4. Hook 系统
+
+**源码**: `src/utils/hooks.ts`
+
+6 种 hook 类型：
+- PreToolUse / PostToolUse — 工具调用前后
+- PreCompact / PostCompact — 压缩前后
+- Stop — 模型停止输出时
+- SessionStart — 会话开始时
+
+Stop hooks 实现了"外部监督者模式"：即使模型认为任务完成了，外部逻辑可以强制它继续。
+
+**可借鉴**：hook 系统让 agent 的行为可被外部控制和扩展，是实现 human-in-the-loop 的关键基础设施。
+
+---
+
+## 二、上下文管理层
+
+### 5. 五层上下文防爆体系
+
+**源码**: 分布在多个文件
+
+```
+L1 源头截断 (toolLimits.ts, toolResultStorage.ts)
+  单工具: 50K 字符 / 100K tokens
+  单消息聚合: 200K 字符
+  超限 → 写磁盘 + 返回预览
+
+L2 去重 (FileReadTool)
+  文件 hash 缓存，未变文件返回 stub:
+  "File unchanged since last read..."
+
+L3 微压缩 (compact/microCompact.ts)
+  每轮清理旧的读取类工具结果
+  两条路径：cache_edits（热缓存）/ 直接清空（冷缓存）
+
+L4 自动压缩 (compact/autoCompact.ts)
+  ~83% 窗口利用率触发
+  9 维结构化摘要
+
+L5 兜底 (compact/compact.ts)
+  压缩请求本身也超了 → 按轮次丢弃最旧的重试
+  最多 3 次
+```
+
+**可借鉴**：分层防御是核心思想。大多数对话只用到 L1-L3，永远不需要全量压缩。每层的成本递增，触发频率递减。
+
+### 6. 工具结果预算系统
+
+**源码**: `src/utils/toolResultStorage.ts`
+
+两级预算 + 决策冻结：
+
+```typescript
+type ContentReplacementState = {
+  seenIds: Set<string>           // 见过的所有 tool_use_id
+  replacements: Map<string, string>  // 被替换的 id → 替换后的内容
+}
+```
+
+每个 tool_result 的命运在第一次被看到时冻结：
+- 被替换了 → 之后每轮用缓存的替换内容重新应用（`mustReapply`）
+- 没被替换 → 之后永远不会被替换（`frozen`）
+- 从未见过 → 有资格被新替换（`fresh`）
+
+**为什么冻结？** 为了 prompt cache。如果第 5 轮的结果在第 8 轮突然被替换，第 5-7 轮的缓存前缀全部失效。
+
+**可借鉴**：任何需要 prompt cache 的系统都应该保证消息内容的稳定性。决策冻结是一个通用模式。
+
+### 7. 压缩摘要的意图保持
+
+**源码**: `src/services/compact/prompt.ts`
+
+9 维结构化摘要：
+
+```
+1. Primary Request and Intent — 用户的所有显式请求
+2. Key Technical Concepts — 技术概念、框架
+3. Files and Code Sections — 文件和代码片段（含完整代码）
+4. Errors and fixes — 错误和修复方式
+5. Problem Solving — 问题解决过程
+6. All user messages — 所有非工具结果的用户消息（原文列出）
+7. Pending Tasks — 待办任务
+8. Current Work — 当前正在做的工作
+9. Optional Next Step — 下一步计划（要求逐字引用原文）
+```
+
+防漂移设计：
+- `<analysis>` 草稿纸提高质量但不进入最终上下文
+- 第 9 维要求逐字引用最近对话，打断"传话游戏"效应
+- 压缩后注入续接指令："Resume directly — do not acknowledge the summary"
+- transcript 路径作为外部记忆保底
+
+**可借鉴**：任何需要长对话摘要的系统都应该用结构化模板 + 原文引用来防止意图漂移。
+
+### 8. Prompt Cache 优化策略
+
+**源码**: `src/constants/prompts.ts`, `src/utils/api.ts`
+
+```
+System Prompt 分区:
+  ┌─────────────────────────────┐
+  │ 静态区 (scope: 'global')     │ ← 跨用户可缓存
+  │ 身份、工具说明、行为规范      │
+  ├─ DYNAMIC_BOUNDARY ──────────┤
+  │ 动态区                       │ ← 每会话不同
+  │ 语言、MCP指令、环境信息       │
+  └─────────────────────────────┘
+
+Context 注入位置:
+  - systemContext (git status) → 追加到 system prompt 末尾（会话级缓存）
+  - userContext (CLAUDE.md) → 作为第一条伪用户消息（不影响 system prompt 缓存）
+```
+
+**可借鉴**：把不变的内容和变化的内容分开，是 prompt cache 优化的核心原则。
+
+---
+
+## 三、工具系统层
+
+### 9. 工具类型系统
+
+**源码**: `src/Tool.ts`
+
+每个工具通过 `buildTool()` 定义，声明丰富的元数据：
+
+```typescript
+interface Tool {
+  name: string
+  call(input, context): Promise<Output>
+  checkPermissions(input): PermissionResult
+  isReadOnly(input): boolean        // 影响微压缩行为
+  isDestructive?(input): boolean    // 影响权限检查
+  maxResultSizeChars: number        // 影响落盘阈值
+  isConcurrencySafe(input): boolean // 影响并行执行
+  prompt(options): string           // 动态生成工具描述
+  renderToolUseMessage(input): ReactNode  // UI 渲染
+}
+```
+
+**可借鉴**：工具不只是一个函数，它需要丰富的元数据来支持权限控制、上下文管理、UI 渲染等横切关注点。
+
+### 10. 权限模式
+
+**源码**: `src/utils/permissions/`
+
+四种模式：
+- `default`：每次确认
+- `acceptEdits`：自动接受文件编辑
+- `bypassPermissions`：全部跳过（仅沙箱环境）
+- `plan`：只读规划模式
+
+Bash 工具有白名单/黑名单：`git status` 自动允许，`rm -rf /` 永远拒绝。
+
+**可借鉴**：权限不是二元的（允许/拒绝），而是一个频谱。不同场景需要不同的权限粒度。
+
+### 11. 工具结果落盘
+
+**源码**: `src/utils/toolResultStorage.ts`
+
+```
+工具执行 → 结果 > 阈值?
+  ├── 否 → 原样返回
+  └── 是 → persistToolResult()
+            ├── 写入 /session/tool-results/{id}.txt (flag: 'wx' 排他创建)
+            ├── 生成 2KB 预览（在换行符边界截断）
+            └── 返回: "<persisted-output>Output too large...Preview:...</persisted-output>"
+```
+
+空结果处理：注入 `(ToolName completed with no output)` 标记，防止模型误判 turn boundary。
+
+**可借鉴**：大数据不要塞进上下文，写磁盘 + 给模型一个"指针"让它按需加载。
+
+---
+
+## 四、终端 UI 层
+
+### 12. 自研 Ink 渲染引擎
+
+**源码**: `src/ink/`
+
+基于 React + Yoga 的终端 UI 框架（Ink 的深度 fork）：
+- `RawAnsi` 组件：直接渲染 ANSI 转义序列，绕过解析
+- `NoSelect` 组件：标记区域不可选择
+- WeakMap 缓存渲染结果，remount 时 O(1) 查找
+- 进度消息原地替换（替换最后一条而非 append），防止消息数组爆炸
+
+**可借鉴**：React 不只能做 Web UI，用 react-reconciler 可以渲染到任何目标（终端、Canvas、PDF...）。
+
+### 13. 全屏模式的消息管理
+
+**源码**: `src/screens/REPL.tsx`
+
+```typescript
+if (isCompactBoundaryMessage(newMessage)) {
+  if (isFullscreenEnvEnabled()) {
+    // 保留上一次压缩后的消息用于滚动回看
+    setMessages(old => [...getMessagesAfterCompactBoundary(old), newMessage])
+  } else {
+    // 普通模式：直接清空
+    setMessages(() => [newMessage])
+  }
+  setConversationId(randomUUID())  // 刷新 React key 触发重渲染
+}
+```
+
+**可借鉴**：UI 状态和 API 状态可以不同。UI 保留历史用于回看，API 只用压缩后的消息。
+
+---
+
+## 五、构建系统层
+
+### 14. Feature Flag 编译期消除
+
+**源码**: `build.ts`
+
+90+ 个 feature flag 通过 `bun:bundle` 的 `feature()` API 在构建时静态替换：
+
+```typescript
+import { feature } from 'bun:bundle'
+
+// 构建时替换为 true/false，未启用的分支被完全消除
+const coordinatorModule = feature('COORDINATOR_MODE')
+  ? require('./coordinator/coordinatorMode.js')
+  : null
+```
+
+等价于 webpack 的 `DefinePlugin`，但更优雅。
+
+**可借鉴**：大型项目用编译期 feature flag 比运行时 if/else 更好——不需要的代码完全不存在于产物中。
+
+### 15. System Prompt 分区缓存
+
+**源码**: `src/constants/systemPromptSections.ts`
+
+```typescript
+// 可缓存的段
+systemPromptSection('memory', () => loadMemoryPrompt())
+
+// 不可缓存的段（每轮可能变化）
+DANGEROUS_uncachedSystemPromptSection(
+  'mcp_instructions',
+  () => getMcpInstructionsSection(mcpClients),
+  'MCP servers connect/disconnect between turns'
 )
-type CategorizedError struct {
-    Category    ErrorCategory
-    Original    error
-    RetryAfter  time.Duration
-    UserMessage string
-}
-func CategorizeRPCError(err error) *CategorizedError {
-    // 根据 gRPC status code 分类：
-    // codes.Unavailable → Retryable, codes.ResourceExhausted → RateLimit
-    // codes.Unauthenticated → Fatal, codes.InvalidArgument → Fatal
+```
+
+**可借鉴**：把 prompt 的构建过程也做成声明式的，每段标注是否可缓存，系统自动优化。
+
+---
+
+## 六、数据与状态层
+
+### 16. 会话持久化与恢复
+
+**源码**: `src/utils/sessionStorage.ts`
+
+- JSONL 格式的 transcript 文件
+- `logicalParentUuid` 链接压缩前后的消息链
+- `--resume` 恢复会话时重建完整消息链
+- `reAppendSessionMetadata()`：确保用户设置的标题在 16KB 读取窗口内
+
+**可借鉴**：会话持久化不只是"保存消息"，还需要处理压缩边界、消息链接、元数据位置等细节。
+
+### 17. CLAUDE.md 发现机制
+
+**源码**: `src/utils/claudemd.ts`
+
+6 级优先级（从低到高）：
+
+```
+1. Managed  → /etc/claude-code/CLAUDE.md（全局管理员配置）
+2. User     → ~/.claude/CLAUDE.md（用户私有全局指令）
+3. Project  → CLAUDE.md, .claude/CLAUDE.md, .claude/rules/*.md
+4. Local    → CLAUDE.local.md（私有项目指令，不提交）
+5. AutoMem  → 自动记忆（跨会话持久化）
+6. TeamMem  → 团队共享记忆
+```
+
+从 cwd 向上遍历到根目录，越近优先级越高。支持 `@include` 指令引用其他文件。
+
+**可借鉴**：多级配置覆盖（全局 → 用户 → 项目 → 本地）是一个通用模式，类似 .gitconfig 的层级。
+
+### 18. 极简状态管理
+
+**源码**: `src/state/store.ts`
+
+```typescript
+function createStore<T>(initialState: T) {
+  let state = initialState
+  const listeners = new Set<() => void>()
+  return {
+    getState: () => state,
+    setState: (fn: (prev: T) => T) => { state = fn(state); listeners.forEach(l => l()) },
+    subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) },
+  }
 }
 ```
 
-改动点：`client.go` 的 `Request` 方法包一层 `RequestWithRetry`，`server.go` 的 turn 处理根据 category 决定是否重试、是否通知前端。预计改动 3 个文件，约 100 行。
+配合 React 18 的 `useSyncExternalStore` 使用。
+
+**可借鉴**：不需要 Redux/Zustand，20 行代码就能实现一个类型安全的发布-订阅 store。
 
 ---
 
-### 2. Token 成本追踪与预算控制
+## 七、API 交互层
 
-**Claude Code 怎么做的：**
-`cost-tracker.ts` 每个 turn 记录 input/output/cache token 用量，实时计算累计成本。`tokenBudget.ts` 允许用户设置 token 预算（如 `+500k`），到达预算时自动停止。支持 session 级别的成本持久化和恢复。
+### 19. 多 Provider 统一接口
 
-**对 aiops-codex 的价值：**
-当前 `orchestrator_budget.go` 只控制并发数量（`globalActiveBudget=32`），没有 token/成本维度。生产环境中一个失控的 Mission 可能消耗大量 API token 而无人察觉。这是真金白银的风险。
+**源码**: `src/services/api/client.ts`
 
-**落地方式：**
+统一接口支持：
+- Anthropic API（直连）
+- AWS Bedrock
+- Google Vertex
+- Foundry
 
-```go
-// internal/orchestrator/cost_tracker.go — 新增文件，约 80 行
-type MissionCost struct {
-    MissionID    string
-    InputTokens  int64
-    OutputTokens int64
-    TotalCostUSD float64
-    Budget       float64   // 0 = 无限制
-    UpdatedAt    time.Time
+通过 `getAnthropicClient()` 工厂函数，根据环境变量自动选择 provider。
+
+**可借鉴**：抽象 provider 层，让上层代码不关心具体用的是哪个 API。
+
+### 20. Token 估算双轨制
+
+**源码**: `src/services/tokenEstimation.ts`
+
+```typescript
+// 精确计数：调用 API
+countMessagesTokensWithAPI(messages, tools)
+
+// 粗略估算：字节数 / 4（JSON 文件 / 2），乘 4/3 安全系数
+function roughTokenCountEstimation(content, bytesPerToken = 4) {
+  return Math.round(content.length / bytesPerToken)
 }
-type CostTracker struct {
-    mu       sync.Mutex
-    missions map[string]*MissionCost
-}
-func (t *CostTracker) RecordUsage(missionID string, usage TokenUsage) error {
-    // 累加 token，计算成本，超预算返回 ErrBudgetExceeded
+
+// 不同文件类型不同比率
+function bytesPerTokenForFileType(ext) {
+  switch (ext) {
+    case 'json': return 2  // JSON 单字符 token 密度高
+    default: return 4
+  }
 }
 ```
 
-改动点：`server.go` turn 完成回调中调用 `RecordUsage`；WebSocket 推送附带成本信息；前端 `ChatPage.vue` 展示实时成本。Mission 创建时可设置 budget。预计改动 4 个文件，约 150 行。
+**可借鉴**：精确计数有网络开销，粗略估算快但要保守。两者结合使用。
+
+### 21. MCP 协议实现
+
+**源码**: `src/services/mcp/`
+
+完整的 MCP client 实现：
+- `InProcessTransport`：进程内通信（不走网络）
+- `SdkControlTransport`：SDK 控制通道
+- 指令 delta 机制：只发送变化的 MCP 指令，不重复发送
+- OAuth 认证流程
+
+**可借鉴**：MCP 是 AI 工具标准化的方向，理解其协议实现有助于构建兼容的工具生态。
 
 ---
 
-### 3. Turn 生命周期的状态机化
+## 八、提示词工程
 
-**Claude Code 怎么做的：**
-`server.go` 中的 `turnTrace` 结构体精确记录每个 turn 的生命周期：requestStartedAt → threadStartedAt → turnStartedAt → firstItemStartedAt → firstAssistantAt。每个阶段都有时间戳和 ID 追踪。
+### 22. 编码行为约束
 
-**对 aiops-codex 的价值：**
-当前 `server.go` 的 turn 管理分散在 `turnMu`/`turnCancels`/`turnTraces` 等多个 mutex 保护的 map 中，状态转换是隐式的。这导致：并发 bug 难以排查（不知道 turn 卡在哪个阶段）；`stalledTurnTimeout` 只能粗暴超时，无法区分"正在等待模型响应"和"工具执行卡住"。
+**源码**: `src/constants/prompts.ts` — `getSimpleDoingTasksSection()`
 
-**落地方式：**
-
-```go
-// internal/server/turn_state.go — 新增文件，约 120 行
-type TurnPhase string
-const (
-    TurnPhaseInit      TurnPhase = "init"
-    TurnPhaseQueued    TurnPhase = "queued"
-    TurnPhaseRunning   TurnPhase = "running"
-    TurnPhaseStreaming  TurnPhase = "streaming"
-    TurnPhaseCompleting TurnPhase = "completing"
-    TurnPhaseDone      TurnPhase = "done"
-    TurnPhaseFailed    TurnPhase = "failed"
-)
-type TurnStateMachine struct {
-    mu        sync.Mutex
-    sessionID string
-    turnID    string
-    phase     TurnPhase
-    trace     TurnTrace  // 每个阶段的时间戳
-    cancel    context.CancelFunc
-}
-func (t *TurnStateMachine) Transition(to TurnPhase) error {
-    // 校验合法转换，记录时间戳，非法转换返回 error 而非静默
-}
-```
-
-改动点：将 `server.go` 中的 `turnMu`/`turnCancels`/`turnTraces` 合并为 `map[string]*TurnStateMachine`。`stalledTurnTimeout` 可以根据 phase 设置不同超时。预计改动 1 个文件（server.go），约 200 行重构。
-
----
-
-### 4. 模型降级与 Fallback 策略
-
-**Claude Code 怎么做的：**
-`query.ts` 的 queryLoop 中：主模型请求失败 → 自动切换 fallbackModel → 清理 orphaned messages（tombstone 机制）→ 重建 StreamingToolExecutor → 通知用户降级。整个过程对用户透明。
-
-**对 aiops-codex 的价值：**
-当前 `session_runtime.go` 使用固定的 `profile.Runtime.Model`，模型不可用时整个 turn 失败。对 Mission 场景影响巨大——一个 8-worker Mission 如果因模型限流全部失败，所有任务都要重新排队。Fallback 可以将 Mission 可用性从 ~95% 提升到 ~99%。
-
-**落地方式：**
-
-```go
-// 在 model/types.go 的 RuntimeConfig 中增加一个字段
-type RuntimeConfig struct {
-    Model         string `json:"model"`
-    FallbackModel string `json:"fallbackModel,omitempty"` // 新增
-    // ...existing fields
-}
-// internal/server/session_runtime.go 中
-func (a *App) resolveModel(profile model.AgentProfile, attempt int) string {
-    if attempt == 0 || profile.Runtime.FallbackModel == "" {
-        return profile.Runtime.Model
-    }
-    return profile.Runtime.FallbackModel
-}
-```
-
-改动点：`model/types.go` 加字段；`session_runtime.go` 的 `buildXxxThreadStartSpec` 使用 `resolveModel`；codex client turn 失败时检查错误类型，rate_limit/overloaded 用 fallback 重试。预计改动 3 个文件，约 50 行。
-
----
-
-### 5. 流式工具并行执行
-
-**Claude Code 怎么做的：**
-`StreamingToolExecutor` 在模型流式输出的同时并行执行工具调用。区分 concurrency-safe 工具（read file）和 unsafe 工具（write file），safe 的并行执行，unsafe 的串行排队。
-
-**对 aiops-codex 的价值：**
-当前 Worker turn 是串行的：发送 turn → 等完整响应 → 处理工具调用 → 下一个 turn。如果 AI 同时要读 3 个远程文件，就是 3 次串行的远程读取。并行执行可以将 turn 延迟从 `N × 单次延迟` 降低到 `max(单次延迟)`，在远程主机网络延迟 200ms+ 时效果显著。
-
-**落地方式：**
-
-```go
-// internal/server/tool_executor.go — 新增文件，约 100 行
-type ToolExecutor struct {
-    mu          sync.Mutex
-    maxParallel int
-    running     int
-    queue       []*ToolCall
-    results     chan *ToolResult
-}
-func (e *ToolExecutor) Submit(call *ToolCall) {
-    e.mu.Lock()
-    defer e.mu.Unlock()
-    if call.ReadOnly && e.running < e.maxParallel {
-        e.running++
-        go e.execute(call)  // 只读工具立即并行执行
-    } else {
-        e.queue = append(e.queue, call)  // 写入工具排队串行
-    }
-}
-```
-
-改动点：`handleDynamicToolCall` 中将 `remote_read_file`/`remote_list_files`/`remote_search_files` 标记为 ReadOnly，通过 ToolExecutor 并行分发。写入工具保持串行。预计改动 2 个文件，约 150 行。
-
----
-
-### 6. 熔断器与细粒度限流
-
-**Claude Code 怎么做的：**
-queryLoop 中有多层保护：`maxTurns` 限制最大 turn 数；`maxOutputTokensRecoveryCount` 限制恢复次数（最多 3 次）；`autoCompactTracking.consecutiveFailures` 作为熔断器——连续失败后停止重试。
-
-**对 aiops-codex 的价值：**
-当前 `orchestrator_budget.go` 的限流是全局维度的（`4 thread/s`、`8 turn/s`），缺少 per-mission 和 per-worker 的熔断。一个 Worker 连续失败 10 次，系统仍然会以全速重试，浪费 API 调用并可能加剧上游压力。
-
-**落地方式：**
-
-```go
-// internal/orchestrator/circuit_breaker.go — 新增文件，约 60 行
-type CircuitBreaker struct {
-    ConsecutiveFailures int
-    LastFailure         time.Time
-    State               string // "closed" | "open" | "half_open"
-    CooldownDuration    time.Duration
-}
-func (cb *CircuitBreaker) Allow() bool {
-    if cb.State == "closed" { return true }
-    if cb.State == "open" && time.Since(cb.LastFailure) > cb.CooldownDuration {
-        cb.State = "half_open"
-        return true
-    }
-    return cb.State == "half_open"
-}
-func (cb *CircuitBreaker) RecordFailure() {
-    cb.ConsecutiveFailures++
-    cb.LastFailure = time.Now()
-    if cb.ConsecutiveFailures >= 3 { cb.State = "open" }
-}
-```
-
-改动点：在 `Dispatcher.Dispatch` 和 `acquireOrchestratorPermit` 中为每个 worker 维护一个 CircuitBreaker。连续失败 3 次进入 cooldown（默认 30s），half_open 时只允许一个试探请求。预计改动 2 个文件，约 80 行。
-
----
-
-## P1：应该做——显著提升用户体验和工程质量
-
-### 7. 活动追踪与实时 UI 反馈
-
-**Claude Code 怎么做的：**
-`activityManager.ts` 追踪用户活动 vs CLI 活动。tool 执行层面发出细粒度 progress 事件（正在读文件、正在搜索、正在执行命令），前端实时展示。
-
-**对 aiops-codex 的价值：**
-当前用户在 Web UI 看到的是 ThinkingCard "正在思考"，然后突然出现结果卡片，中间过程是黑盒。`ChatPage.vue` 已经有了 `activeActivityLine`/`currentReadingFile`/`currentSearchQuery` 等展示逻辑，但数据来源是前端推断而非后端推送。只需后端补上 activity 事件推送，前端几乎不用改。
-
-**落地方式：**
-
-```go
-// internal/server/activity.go — 新增文件，约 40 行
-type ActivityEvent struct {
-    SessionID string `json:"sessionId"`
-    Kind      string `json:"kind"`   // "reading" | "searching" | "executing" | "writing"
-    Target    string `json:"target"` // 文件路径、搜索词、命令
-    Phase     string `json:"phase"`  // "start" | "end"
-}
-func (a *App) emitActivity(sessionID string, event ActivityEvent) {
-    a.broadcastWS(sessionID, map[string]any{"type": "activity", "payload": event})
-}
-```
-
-改动点：在 `dynamic_tools.go` 的 `executeRemoteReadFileTool`/`executeRemoteSearchFilesTool`/`executeApprovedRemoteMutation` 等入口和出口各加一行 `emitActivity` 调用。前端 store 接收 activity 事件更新 `runtime.activity` 字段。预计改动 2 个文件，约 60 行。
-
----
-
-### 8. 优雅关闭（Graceful Shutdown）
-
-**Claude Code 怎么做的：**
-`gracefulShutdown.ts` 分阶段关闭：停止接受新请求 → 等待进行中 turn 完成（带超时）→ 保存会话状态 → 清理资源。`cleanupRegistry.ts` 让每个资源在创建时注册清理函数，shutdown 时统一执行。
-
-**对 aiops-codex 的价值：**
-当前 aiops-codex 的关闭逻辑简单——直接 kill。正在执行的 turn 会丢失，terminal session 可能残留，状态可能不一致。在生产环境滚动更新时，这意味着用户正在进行的对话会中断。
-
-**落地方式：**
-
-```go
-// internal/server/shutdown.go — 新增文件，约 60 行
-func (a *App) GracefulShutdown(ctx context.Context) error {
-    // Phase 1: 停止接受新连接
-    a.httpServer.SetKeepAlivesEnabled(false)
-    // Phase 2: 等待活跃 turn 完成（最多 30s）
-    a.drainActiveTurns(ctx)
-    // Phase 3: 断开 agent 连接（发送 graceful disconnect）
-    a.disconnectAgents(ctx)
-    // Phase 4: 持久化状态
-    a.store.SaveStableState(a.cfg.StatePath)
-    // Phase 5: 关闭服务器
-    a.grpcServer.GracefulStop()
-    return a.httpServer.Shutdown(ctx)
-}
-
-// internal/server/cleanup.go — 新增文件，约 40 行
-type CleanupRegistry struct {
-    mu       sync.Mutex
-    cleanups []func(context.Context) error
-}
-func (r *CleanupRegistry) Register(fn func(context.Context) error) func() {
-    // 返回取消注册函数
-}
-func (r *CleanupRegistry) RunAll(ctx context.Context) []error {
-    // 执行所有注册的清理函数
-}
-```
-
-改动点：`cmd/` 的 main 函数中捕获 SIGTERM/SIGINT，调用 `GracefulShutdown`。`createTerminalSession`/`createRemoteTerminalSession` 中注册清理函数。预计改动 3 个文件，约 120 行。
-
----
-
-### 9. server.go 的职责拆分
-
-**Claude Code 怎么做的：**
-Claude Code 将关注点严格分离：`query.ts`（对话循环）、`Tool.ts`（工具定义）、`hooks.ts`（事件钩子）、`state/AppState.tsx`（状态管理）各司其职。
-
-**对 aiops-codex 的价值：**
-当前 `server.go` 承载了 HTTP 路由、WebSocket 管理、gRPC 处理、turn 管理、认证、OAuth 等所有职责，是项目中最大的单文件。新功能开发时经常要在这个文件中多处修改，合并冲突频繁，代码审查困难。
-
-**落地方式：**
+最有价值的 5 条：
 
 ```
-internal/server/
-├── server.go           // 仅保留 App 结构体定义和 Start/Stop
-├── routes.go           // HTTP 路由注册（从 server.go 抽出）
-├── websocket.go        // WebSocket 管理（从 server.go 抽出）
-├── turn.go             // Turn 生命周期（从 server.go 抽出）
-├── auth.go             // Session/OAuth 认证（从 server.go 抽出）
-├── shutdown.go         // 优雅关闭（新增）
-└── ...existing files   // 保持不变
+1. 最小变更原则
+   "Don't add features, refactor code, or make improvements beyond what was asked."
+
+2. 不要为假设的未来设计
+   "Three similar lines of code is better than a premature abstraction."
+
+3. 先读后改
+   "Do not propose changes to code you haven't read."
+
+4. 失败后先诊断再换策略
+   "If an approach fails, diagnose why before switching tactics."
+
+5. 记下重要信息
+   "Write down any important information you might need later, as the original 
+    tool result may be cleared later."
 ```
 
-纯重构，不改变行为。预计从 server.go 中抽出 4 个文件，每个 200-400 行。
+**可借鉴**：这些是 Anthropic 从大量真实用户反馈中总结的"模型常见毛病"的对症药。直接复用到 CLAUDE.md 或其他 AI 编码工具中。
 
----
+### 23. 行动风险评估框架
 
-### 10. Store 层的接口抽象
+**源码**: `src/constants/prompts.ts` — `getActionsSection()`
 
-**Claude Code 怎么做的：**
-`sessionStorage.ts` 通过接口抽象存储层，支持文件存储和内存存储两种实现，方便测试和切换。
-
-**对 aiops-codex 的价值：**
-当前 `internal/store/memory.go` 是纯内存实现，1300+ 行直接操作 map。所有测试都依赖真实的 Store 实例，无法 mock。未来如果要切换到 Redis/数据库（多实例部署必需），改动面巨大。
-
-**落地方式：**
-
-```go
-// internal/store/interfaces.go — 新增文件，约 40 行
-type SessionStore interface {
-    EnsureSession(sessionID string) *SessionState
-    Session(sessionID string) *SessionState
-    UpsertCard(sessionID string, card model.Card)
-    UpdateCard(sessionID, cardID string, fn func(*model.Card))
-    // ...
-}
-type HostStore interface {
-    UpsertHost(host model.Host)
-    Hosts() []model.Host
-    MarkHostOffline(hostID string)
-    MarkStaleHosts(timeout time.Duration) []string
-}
+```
+可逆的本地操作（编辑文件、跑测试）→ 自由执行
+不可逆/影响共享系统的操作 → 先确认
+用户批准一次 ≠ 批准所有场景
+遇到障碍不要用破坏性操作绕过
 ```
 
-改动点：抽取接口定义，`memory.go` 的 `Store` 实现这些接口，`server.go` 中的 `App.store` 字段类型改为接口。预计改动 3 个文件，约 80 行。为未来 Redis 实现和测试 mock 打下基础。
+**可借鉴**：给 agent 一个明确的"行动决策框架"，比简单说"小心点"有效得多。
 
----
+### 24. 输出效率指令
 
-### 11. 配置验证前置
+**源码**: `src/constants/prompts.ts` — `getOutputEfficiencySection()`
 
-**Claude Code 怎么做的：**
-`utils/envValidation.ts` 在启动时做完整的配置验证，不合法的配置直接报错退出，而不是运行时才发现。
-
-**对 aiops-codex 的价值：**
-当前 `config.go` 的 `Load()` 只读取环境变量，验证分散在各处。比如 `SessionSecret = "dev-insecure-session-secret"` 在 production 模式下是安全隐患，但只有 `ValidateHostAgentSecurity` 会检查部分配置。用户可能带着不安全的配置上线而不自知。
-
-**落地方式：**
-
-```go
-// internal/config/config.go 中增加 Validate 方法，约 30 行
-func (c Config) Validate() []error {
-    var errs []error
-    if c.SessionSecret == "dev-insecure-session-secret" &&
-       c.HostAgentSecurityProfile == "production" {
-        errs = append(errs, fmt.Errorf("production requires a secure session secret"))
-    }
-    if err := c.ValidateHostAgentSecurity(); err != nil {
-        errs = append(errs, err)
-    }
-    // 检查 CodexPath 是否存在、StatePath 目录是否可写等
-    return errs
-}
+外部版本（简洁）：
+```
+"Go straight to the point. Lead with the answer or action, not the reasoning."
 ```
 
-改动点：`cmd/` 的 main 函数中 `config.Load()` 后立即调用 `Validate()`，有错误则打印并退出。预计改动 2 个文件，约 40 行。
+内部版本（详细）：
+```
+"Write so they can pick back up cold: use complete, grammatically correct sentences 
+without unexplained jargon. Expand technical terms."
 
----
-
-## P2：值得做——提升系统能力上限
-
-### 12. 上下文压缩（Context Compaction）
-
-**Claude Code 怎么做的：**
-`services/compact/` 自动检测 token 接近阈值时触发压缩，按 API 轮次分组消息，将旧消息压缩为摘要，保留关键上下文语义。支持 micro-compact（增量缓存编辑）和 reactive compact（413 错误后紧急压缩）。
-
-**对 aiops-codex 的价值：**
-当前 orchestrator 的 `DefaultEventWindowSize = 128` 是简单的滑动窗口——超过 128 个事件就丢弃最早的。对长时间运行的 Mission（几十个 task、上百个事件），早期的关键上下文（如初始计划、重要决策）会被丢失，导致后续 Worker 缺少背景信息。
-
-**落地方式：**
-
-```go
-// internal/orchestrator/compactor.go — 新增文件，约 80 行
-type EventCompactor struct {
-    maxEvents int
-}
-func (c *EventCompactor) Compact(events []RelayEvent) []RelayEvent {
-    if len(events) <= c.maxEvents { return events }
-    cutoff := len(events) - c.maxEvents/2
-    oldEvents := events[:cutoff]
-    summary := summarizeEvents(oldEvents) // 将旧事件合并为一条摘要
-    compacted := make([]RelayEvent, 0, c.maxEvents/2+1)
-    compacted = append(compacted, RelayEvent{Type: EventTypeSnapshot, Summary: summary})
-    compacted = append(compacted, events[cutoff:]...)
-    return compacted
-}
+"Use inverted pyramid when appropriate (leading with the action)."
 ```
 
-改动点：在 `store.go` 的 `UpdateMission` 中，事件数超过阈值时调用 Compact。摘要可以先用简单的文本拼接，后续升级为 LLM 生成。预计改动 2 个文件，约 100 行。
+**可借鉴**：内部版本的"假设用户已经离开并失去了上下文"是一个很好的写作原则。
 
 ---
 
-### 13. Hook 系统（事件驱动扩展）
+## 九、可直接复用的设计模式速查表
 
-**Claude Code 怎么做的：**
-`utils/hooks.ts`（5000+ 行）支持 pre/post tool use、session start/end、compact 前后等 20+ 事件点。Hook 可以阻断操作（blocking）或仅观察。支持 HTTP webhook 和本地命令两种执行方式，内置去重和超时。
-
-**对 aiops-codex 的价值：**
-当前事件流是单向的（Collector 收集 → WebSocket 推送），用户无法在事件发生时插入自定义逻辑。比如：无法在远程命令执行前做安全审计、无法在 Mission 完成后触发 CI/CD、无法在文件变更前做合规检查。Hook 系统让平台从"工具"变成"平台"。
-
-**落地方式：**
-
-```go
-// internal/server/hooks.go — 新增文件，约 150 行
-type HookEvent string
-const (
-    HookPreRemoteExec    HookEvent = "pre_remote_exec"
-    HookPostRemoteExec   HookEvent = "post_remote_exec"
-    HookPreFileChange    HookEvent = "pre_file_change"
-    HookPostTaskComplete HookEvent = "post_task_complete"
-    HookMissionComplete  HookEvent = "mission_complete"
-)
-type HookHandler struct {
-    Event    HookEvent
-    URL      string        // Webhook URL
-    Blocking bool          // 是否阻断操作
-    Timeout  time.Duration
-}
-type HookEngine struct {
-    handlers map[HookEvent][]HookHandler
-}
-func (e *HookEngine) Execute(event HookEvent, payload map[string]any) (*HookResult, error) {
-    // blocking handler 返回 deny 时阻止操作
-}
-```
-
-改动点：在 `dynamic_tools.go` 的关键路径（远程执行、文件变更）前后调用 `HookEngine.Execute`。Hook 配置可以存在 AgentProfile 中或独立的配置文件中。预计新增 1 个文件 + 改动 2 个文件，约 250 行。
+| 模式 | 出处 | 一句话描述 |
+|------|------|-----------|
+| 决策冻结 | toolResultStorage | 第一次决策后永不改变，保证缓存稳定 |
+| 草稿纸模式 | compact/prompt | `<analysis>` 提高质量但不进入最终输出 |
+| 落盘+预览 | toolResultStorage | 大数据写磁盘，只给模型看摘要 |
+| 逐字引用 | compact/prompt | 要求摘要包含原文引用，防止多次压缩漂移 |
+| 熔断器 | autoCompact | 连续 N 次失败后停止重试 |
+| 分层防御 | 五层压缩体系 | 每层只在前一层不够用时触发 |
+| 静态/动态分区 | systemPromptSections | 不变的内容缓存，变化的内容隔离 |
+| 恢复消息注入 | query.ts | 错误后注入"继续，不要道歉"的指令 |
+| 空结果标记 | toolResultStorage | 空输出注入标记防止模型困惑 |
+| memoize + 手动清缓存 | context.ts | 会话级缓存 + 特定事件触发清除 |
+| 外部监督者 | stop hooks | 模型说完了但 hook 可以强制继续 |
+| 上下文继承 | runAgent | 子 agent fork 父上下文，共享 cache |
+| 流式并行执行 | StreamingToolExecutor | 边接收边执行，不等模型输出完 |
 
 ---
 
-### 14. 文件操作历史与回滚
+## 十、学习路线建议
 
-**Claude Code 怎么做的：**
-`utils/fileHistory.ts` 每次 tool 修改文件前自动创建备份，支持按 turn 粒度回滚（rewind），跟踪文件变更的 diff stats。用户可以用 `/rewind` 命令撤销 AI 的修改。
+按优先级排序：
 
-**对 aiops-codex 的价值：**
-当前远程文件操作（`remote_files.go`）是不可逆的。如果 AI 修改了远程主机上的配置文件导致服务异常，没有快速回滚手段。在多 Worker 并行修改文件的 Mission 场景下，某个 Worker 的修改出错需要精确回滚，而不是回滚所有 Worker 的修改。
+1. **QueryEngine / query.ts** — 理解这个文件就理解了 Claude Code 的核心
+2. **compact/** — 上下文管理是长对话 agent 的命脉
+3. **Tool.ts + tools/** — 工具系统是 agent 能力的载体
+4. **prompts.ts** — 提示词工程的最佳实践
+5. **toolResultStorage.ts** — 大数据处理的精妙设计
+6. **ink/** — 终端 UI 的 React 化
+7. **services/api/** — 多 provider 统一接口
+8. **services/mcp/** — MCP 协议实现
 
-**落地方式：**
-
-```go
-// internal/server/file_history.go — 新增文件，约 100 行
-type FileSnapshot struct {
-    SessionID string; TaskID string; HostID string
-    FilePath  string; Content []byte; Hash string
-    CreatedAt time.Time
-}
-type FileHistoryTracker struct {
-    snapshots map[string][]FileSnapshot // key: sessionID
-}
-func (t *FileHistoryTracker) TrackBeforeEdit(sessionID, taskID, hostID, path string, content []byte)
-func (t *FileHistoryTracker) RewindToTask(sessionID, taskID string) []FileSnapshot
-```
-
-改动点：在 `executeApprovedRemoteFileChange` 执行前，先通过 agent 读取文件当前内容保存快照。回滚时将快照内容写回。预计新增 1 个文件 + 改动 1 个文件，约 150 行。
+每个模块建议花 1-2 天深读，总共 2-3 周可以对整个架构有全面理解。
 
 ---
 
-### 15. Approval 批量处理与自动审批规则
-
-**Claude Code 怎么做的：**
-`ToolPermissionContext` 支持 allow/deny/ask 规则，按工具名模式匹配。用户可以设置"所有 read 操作自动批准"、"特定目录下的 write 自动批准"等。
-
-**对 aiops-codex 的价值：**
-当前 `ChatPage.vue` 的 approval 是逐个处理的（`activeApprovalCard` 一次只展示一个）。Mission 场景下多个 Worker 同时请求审批，用户需要逐个点击，严重影响效率。已有的 `autoApproveRemoteOperationByPolicy` 只支持 session 级别的 grant，不支持规则化的自动审批。
-
-**落地方式：**
-
-```go
-// 在 model/types.go 的 AgentCapabilityPermissions 中增加
-type AutoApprovalRule struct {
-    Pattern    string   `json:"pattern"`    // "remote_read_*" | "remote_exec_readonly"
-    HostIDs    []string `json:"hostIds"`    // 限定主机范围，空=所有
-    MaxPerTurn int      `json:"maxPerTurn"` // 单 turn 最多自动批准次数
-}
-```
-
-改动点：`autoApproveRemoteOperationByPolicy` 中匹配 AutoApprovalRule；前端增加"全部批准同类操作"按钮和规则配置 UI。预计改动 3 个文件，约 100 行。
-
----
-
-### 16. 虚拟滚动列表
-
-**Claude Code 怎么做的：**
-`hooks/useVirtualScroll.ts` + `VirtualMessageList.tsx` 只渲染可视区域内的消息，DOM 节点数恒定在 ~20-30 个。
-
-**对 aiops-codex 的价值：**
-当前 `ChatPage.vue` 的 `v-for="card in visibleCards"` 是全量渲染。长时间运行的 Mission 产生几百个 card 时，DOM 节点线性增长，页面明显卡顿。
-
-**落地方式：**
-引入 `vue-virtual-scroller`，将 `v-for` 替换为 `<RecycleScroller>` 组件。预计改动 1 个文件 + 1 个依赖，约 30 行。
-
----
-
-## P3：可以做——锦上添花
-
-### 17. 工具权限的细粒度控制
-
-**Claude Code 怎么做的：**
-`ToolPermissionContext` 按工具名/模式匹配 allow/deny/ask 规则，规则来源分层（user → project → managed settings）。
-
-**对 aiops-codex 的价值：**
-当前 `agent_profile_policy.go` 的权限是 profile 级别的粗粒度控制。不同 Agent Profile 无法精确控制"允许读文件但禁止执行命令"这样的细粒度策略。
-
-**落地方式：**
-在 `AgentCapabilityPermissions` 中增加 `ToolRules []ToolPermissionRule` 字段，在 `dynamic_tools.go` 的工具分发前匹配规则。预计改动 2 个文件，约 60 行。
-
----
-
-### 18. 跨会话记忆
-
-**Claude Code 怎么做的：**
-`memdir/` + `SessionMemory/` 自动从对话中提取关键记忆，按项目/用户/全局分层存储，新会话自动加载相关记忆，支持记忆老化和相关性排序。
-
-**对 aiops-codex 的价值：**
-当前每次新会话都是从零开始。系统不记得"上次这台主机的 nginx 配置在 /opt/nginx/conf 下"或"这个用户偏好用 vim 编辑"。对运维场景，积累的上下文知识非常有价值。
-
-**落地方式：**
-新增 `internal/store/session_memory.go`，在 turn 完成后提取关键信息存储，新会话开始时加载相关记忆注入 system prompt。预计新增 1 个文件 + 改动 2 个文件，约 200 行。
-
----
-
-### 19. 终端会话注册表
-
-**Claude Code 怎么做的：**
-`concurrentSessions.ts` 用 PID 文件注册每个 session，自动清理 stale session，实时更新状态（busy/idle/waiting），支持 `claude ps` 查看所有活跃 session。
-
-**对 aiops-codex 的价值：**
-当前 `terminal.go` 用固定 TTL 过期终端，不区分用户创建和 AI 创建，没有全局视图。终端进程崩溃后 session 对象可能残留。
-
-**落地方式：**
-新增 `internal/server/terminal_registry.go`，维护所有终端的状态，定期 sweep 清理已退出的终端，暴露 list API 给前端。预计新增 1 个文件 + 改动 1 个文件，约 100 行。
-
----
-
-### 20. 审计日志结构化
-
-**Claude Code 怎么做的：**
-每个工具调用都有结构化的 telemetry，包含工具名、参数、结果、耗时、风险等级等。
-
-**对 aiops-codex 的价值：**
-当前 `auditRemoteToolEvent` 是简单的文本日志。结构化审计日志可以支持：按主机/工具/时间段查询操作历史、异常操作告警、合规审计报告。
-
-**落地方式：**
-定义 `AuditEvent` 结构体，替换现有的文本日志写入，输出为 JSON 格式。预计改动 1 个文件，约 40 行。
-
----
-
-### 21. Thinking 预判增强
-
-**Claude Code 怎么做的：**
-queryLoop 在 turn 开始时并行预取相关记忆和技能发现，在模型流式输出的同时完成，不阻塞主流程。
-
-**对 aiops-codex 的价值：**
-当前 `ChatPage.vue` 的 `inferThinkingPrelude` 是纯前端关键词匹配。后端推送 tool 执行事件后，前端可以展示更准确的进度提示。
-
-**落地方式：**
-在 codex notification handler 中解析 `toolUse/start` 事件，推送给前端。前端已有展示逻辑，几乎不用改。预计改动 1 个文件，约 20 行。
-
----
-
-## 总览：改动量与收益矩阵
-
-| # | 优化项 | 核心价值 | 改动量 | 优先级 |
-|---|--------|---------|--------|--------|
-| 1 | 错误分类与重试 | 消除限流风暴，减少无效重试 | ~100 行 | P0 |
-| 2 | Token 成本追踪 | 防止生产成本失控 | ~150 行 | P0 |
-| 3 | Turn 状态机化 | 消除并发 bug，提升可观测性 | ~200 行 | P0 |
-| 4 | 模型 Fallback | Mission 可用性 95%→99% | ~50 行 | P0 |
-| 5 | 工具并行执行 | 多工具 turn 延迟降低 50-70% | ~150 行 | P0 |
-| 6 | 熔断器限流 | 防止失败 Worker 雪崩 | ~80 行 | P0 |
-| 7 | 活动追踪 UI | 用户等待从黑盒变透明 | ~60 行 | P1 |
-| 8 | 优雅关闭 | 滚动更新不丢失用户会话 | ~120 行 | P1 |
-| 9 | server.go 拆分 | 降低维护成本，减少合并冲突 | 纯重构 | P1 |
-| 10 | Store 接口抽象 | 为多实例部署和测试 mock 铺路 | ~80 行 | P1 |
-| 11 | 配置验证前置 | 防止不安全配置上线 | ~40 行 | P1 |
-| 12 | 上下文压缩 | 长 Mission 保留关键上下文 | ~100 行 | P2 |
-| 13 | Hook 系统 | 平台可扩展性质变 | ~250 行 | P2 |
-| 14 | 文件操作回滚 | 远程修改可撤销 | ~150 行 | P2 |
-| 15 | 批量审批 | Mission 审批效率提升 | ~100 行 | P2 |
-| 16 | 虚拟滚动 | 长对话 UI 不卡顿 | ~30 行 | P2 |
-| 17 | 工具级权限 | 细粒度安全控制 | ~60 行 | P3 |
-| 18 | 跨会话记忆 | 运维知识积累 | ~200 行 | P3 |
-| 19 | 终端注册表 | 终端资源可见可控 | ~100 行 | P3 |
-| 20 | 审计日志结构化 | 合规审计支持 | ~40 行 | P3 |
-| 21 | Thinking 预判 | 感知延迟降低 | ~20 行 | P3 |
+*本文基于 Claude Code v2.1.88 源码分析。源码从 npm 包的 source map 中还原，包含 4,756 个源文件、1,906 个核心源码文件。*

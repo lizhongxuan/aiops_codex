@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,7 +107,6 @@ func startAgentProfileAPITestApp(t *testing.T) *App {
 	t.Helper()
 
 	workDir := t.TempDir()
-	codexPath := writeFakeCodexAppServer(t)
 	app := New(config.Config{
 		SessionCookieName: "agent-profile-test",
 		SessionSecret:     "agent-profile-secret",
@@ -116,8 +114,6 @@ func startAgentProfileAPITestApp(t *testing.T) *App {
 		DefaultWorkspace:  filepath.Join(workDir, "workspace"),
 		StatePath:         filepath.Join(workDir, "state.json"),
 		AuditLogPath:      filepath.Join(workDir, "audit.log"),
-		CodexHome:         filepath.Join(workDir, "codex-home"),
-		CodexPath:         codexPath,
 		HTTPAddr:          "127.0.0.1:0",
 		GRPCAddr:          "127.0.0.1:0",
 	})
@@ -129,40 +125,8 @@ func startAgentProfileAPITestApp(t *testing.T) *App {
 	}
 	t.Cleanup(func() {
 		cancel()
-		if app.codex != nil {
-			_ = app.codex.Close()
-		}
 	})
 	return app
-}
-
-func writeFakeCodexAppServer(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "fake-codex-app-server")
-	script := `#!/usr/bin/env python3
-import json
-import sys
-
-for raw in sys.stdin:
-    raw = raw.strip()
-    if not raw:
-        continue
-    try:
-        msg = json.loads(raw)
-    except Exception:
-        continue
-    if msg.get("method") == "initialize" and "id" in msg:
-        sys.stdout.write(json.dumps({"id": msg["id"], "result": {"serverInfo": {"name": "fake-codex", "version": "0.0.1"}}}) + "\n")
-        sys.stdout.flush()
-    elif "id" in msg and msg.get("method"):
-        sys.stdout.write(json.dumps({"id": msg["id"], "result": {}}) + "\n")
-        sys.stdout.flush()
-`
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex app server: %v", err)
-	}
-	return path
 }
 
 func mustGetAgentProfileCookie(t *testing.T, app *App, method, path string, body *strings.Reader) *http.Cookie {

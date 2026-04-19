@@ -46,14 +46,16 @@ const seriesList = computed(() => {
   if (rawSeries.length) {
     return rawSeries.map((series, index) => {
       const source = asObject(series);
+      // Accept both `points` (native) and `data` (Coroot adapter format)
+      const rawPoints = asArray(source.points).length ? asArray(source.points) : asArray(source.data);
       return {
         id: source.id || `series-${index + 1}`,
         label: source.label || source.name || `Series ${index + 1}`,
         tone: source.tone || "info",
-        points: asArray(source.points).map((point, pointIndex) => {
+        points: rawPoints.map((point, pointIndex) => {
           const item = asObject(point);
           return {
-            x: Number(item.x ?? pointIndex),
+            x: Number(item.x ?? item.timestamp ?? pointIndex),
             y: Number(item.y ?? item.value ?? 0),
           };
         }),

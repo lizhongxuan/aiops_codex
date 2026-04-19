@@ -1,6 +1,5 @@
 <script setup>
 import { useRouter } from "vue-router";
-import Modal from "./Modal.vue";
 import { useAppStore } from "../store";
 import { ServerIcon, CheckCircle2Icon, TerminalIcon } from "lucide-vue-next";
 
@@ -23,7 +22,15 @@ async function openTerminal(hostId) {
 </script>
 
 <template>
-  <Modal title="Select Host Environment" @close="emit('close')">
+  <n-modal
+    :show="true"
+    preset="card"
+    title="Select Host Environment"
+    :bordered="false"
+    style="width: 520px; max-width: 90vw;"
+    :mask-closable="true"
+    @update:show="(val) => { if (!val) emit('close'); }"
+  >
     <div class="host-list">
       <div
         v-for="host in store.snapshot.hosts"
@@ -39,34 +46,32 @@ async function openTerminal(hostId) {
           <div class="host-name">{{ host.name }}</div>
           <div class="host-id">ID: {{ host.id }}</div>
           <div class="host-meta">
-            <span class="badge" :class="host.status === 'online' ? 'online' : 'offline'">
+            <n-tag :type="host.status === 'online' ? 'success' : 'default'" size="small" round>
               {{ host.status }}
-            </span>
+            </n-tag>
             <span class="host-kind">{{ host.kind }}</span>
-            <span v-if="host.kind === 'agent' && host.executable" class="badge terminal">远程可管</span>
-            <span v-else-if="host.terminalCapable && !host.executable" class="badge terminal">远程终端</span>
-            <span v-else-if="!host.executable" class="badge readonly">只读展示</span>
+            <n-tag v-if="host.kind === 'agent' && host.executable" size="small" type="info" round>远程可管</n-tag>
+            <n-tag v-else-if="host.terminalCapable && !host.executable" size="small" type="info" round>远程终端</n-tag>
+            <n-tag v-else-if="!host.executable" size="small" type="warning" round>只读展示</n-tag>
           </div>
         </div>
-        <button
+        <n-button
           v-if="(host.terminalCapable || host.executable) && host.status === 'online'"
-          type="button"
-          class="host-action-btn"
+          size="small"
+          round
           @click.stop="openTerminal(host.id)"
         >
-          <TerminalIcon size="14" />
-          <span>进入终端</span>
-        </button>
+          <template #icon><TerminalIcon size="14" /></template>
+          进入终端
+        </n-button>
         <div class="host-check" v-if="store.snapshot.selectedHostId === host.id">
           <CheckCircle2Icon size="20" class="text-blue" />
         </div>
       </div>
       
-      <div v-if="!store.snapshot.hosts.length" class="empty-state">
-        No hosts available.
-      </div>
+      <n-empty v-if="!store.snapshot.hosts.length" description="No hosts available." />
     </div>
-  </Modal>
+  </n-modal>
 </template>
 
 <style scoped>
@@ -148,65 +153,7 @@ async function openTerminal(hostId) {
   font-weight: 500;
 }
 
-.badge {
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-weight: 600;
-  font-size: 11px;
-}
-
-.badge.online {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.badge.offline {
-  background: #f1f5f9;
-  color: #64748b;
-}
-
-.badge.readonly {
-  background: #fffedd;
-  color: #854d0e;
-  border: 1px solid #fef08a;
-}
-
-.badge.terminal {
-  background: #eff6ff;
-  color: #1d4ed8;
-  border: 1px solid #bfdbfe;
-}
-
 .text-blue {
   color: #3b82f6;
-}
-
-.host-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid #dbe3ee;
-  background: #ffffff;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.host-action-btn:hover {
-  background: #f8fafc;
-  border-color: #cbd5e1;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 32px;
-  color: #64748b;
-  font-size: 14px;
-  background: #f8fafc;
-  border-radius: 12px;
-  border: 1px dashed #cbd5e1;
 }
 </style>

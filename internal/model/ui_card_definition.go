@@ -23,7 +23,7 @@ type UICardDefinition struct {
 	UpdatedAt         string         `json:"updatedAt"`
 }
 
-// DefaultUICardDefinitions returns the 9 built-in card definitions that are
+// DefaultUICardDefinitions returns the 11 built-in card definitions that are
 // automatically registered when the system starts.
 func DefaultUICardDefinitions() []UICardDefinition {
 	now := NowString()
@@ -174,6 +174,40 @@ func DefaultUICardDefinitions() []UICardDefinition {
 			Summary:           "聚合诊断与修复操作，提供端到端故障修复流程。",
 			Capabilities:      []string{"sub_cards", "step_flow", "approval_required"},
 			TriggerTypes:      []string{"ai_recommendation", "coroot_rca"},
+			EditableFields:    []string{"name", "summary", "placementDefaults"},
+			Status:            "active",
+			BuiltIn:           true,
+			Version:           1,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		},
+		{
+			ID:                "mcp-topology-card",
+			Name:              "服务拓扑卡片",
+			Kind:              "readonly_chart",
+			Renderer:          "McpTopologyCard",
+			BundleSupport:     []string{"monitor_bundle"},
+			PlacementDefaults: []string{"chat", "workspace"},
+			Summary:           "展示服务上下游依赖关系拓扑图，支持节点点击跳转。",
+			Capabilities:      []string{"topology_graph", "node_click", "direction_indicator"},
+			TriggerTypes:      []string{"mcp_tool_result", "coroot_metrics"},
+			EditableFields:    []string{"name", "summary", "placementDefaults"},
+			Status:            "active",
+			BuiltIn:           true,
+			Version:           1,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		},
+		{
+			ID:                "mcp-host-overview",
+			Name:              "主机概览卡片",
+			Kind:              "readonly_summary",
+			Renderer:          "McpHostOverviewCard",
+			BundleSupport:     []string{"monitor_bundle"},
+			PlacementDefaults: []string{"chat", "workspace"},
+			Summary:           "展示主机基本情况，包含 CPU、内存、磁盘、网络等关键资源指标。",
+			Capabilities:      []string{"kv_rows", "highlights", "refresh", "detail_link"},
+			TriggerTypes:      []string{"mcp_tool_result", "coroot_metrics"},
 			EditableFields:    []string{"name", "summary", "placementDefaults"},
 			Status:            "active",
 			BuiltIn:           true,

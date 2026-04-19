@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/lizhongxuan/aiops-codex/internal/model"
@@ -50,6 +51,9 @@ func (a *App) buildSingleHostThreadStartSpec(ctx context.Context, sessionID stri
 	}
 	if isRemoteHostID(selectedHostID) {
 		spec.DynamicTools = a.remoteDynamicTools()
+	} else {
+		// server-local: add local execution tools so the agent can run commands locally.
+		spec.DynamicTools = a.localDynamicTools()
 	}
 	// Merge Coroot tools when configured.
 	if corootTools := a.corootDynamicTools(); len(corootTools) > 0 {
@@ -77,110 +81,40 @@ func (a *App) buildSingleHostTurnStartSpec(ctx context.Context, req chatRequest)
 	}
 }
 
-func (a *App) workspaceRouteThreadConfigHash(hostID string) string {
-	return a.mainAgentThreadConfigHash(hostID) + ":workspace-route"
+func (a *App) singleHostReActThreadConfigHash(hostID string) string {
+	return a.mainAgentThreadConfigHash(hostID) + ":" + reActLoopVersion
 }
 
-func (a *App) workspaceReadonlyThreadConfigHash(hostID string) string {
-	return a.mainAgentThreadConfigHash(hostID) + ":workspace-readonly"
+func (a *App) workspaceReActThreadConfigHash(hostID string) string {
+	return a.mainAgentThreadConfigHash(hostID) + ":workspace-" + reActLoopVersion
 }
 
-func (a *App) workspaceOrchestrationThreadConfigHash(hostID string) string {
-	return a.mainAgentThreadConfigHash(hostID) + ":workspace-orchestration"
-}
-
-func (a *App) buildWorkspaceRouteThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
-	selectedHostID := defaultHostID(hostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceRoutePrompt()
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	spec := threadStartSpec{
-		Model:                 profile.Runtime.Model,
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		DeveloperInstructions: developerInstructions,
-		DynamicTools:          a.workspaceRouteDynamicTools(),
-		ThreadConfigHash:      a.workspaceRouteThreadConfigHash(selectedHostID),
-	}
-	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
-		spec.Config = threadConfig
-	}
-	return spec
-}
-
-func (a *App) buildWorkspaceRouteTurnStartSpec(ctx context.Context, hostID, message string) turnStartSpec {
-	selectedHostID := defaultHostID(hostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceRoutePrompt()
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	return turnStartSpec{
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		WritableRoots:         a.mainAgentWritableRoots(profile),
-		DeveloperInstructions: developerInstructions,
-		Input: []map[string]any{
-			{"type": "text", "text": message},
-		},
-		ReasoningEffort: profile.Runtime.ReasoningEffort,
-	}
-}
-
-func (a *App) buildWorkspaceReadonlyThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
-	selectedHostID := defaultHostID(hostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceReadonlyPrompt()
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	spec := threadStartSpec{
-		Model:                 profile.Runtime.Model,
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		DeveloperInstructions: developerInstructions,
-		DynamicTools:          a.workspaceDirectDynamicTools(sessionID),
-		ThreadConfigHash:      a.workspaceReadonlyThreadConfigHash(selectedHostID),
-	}
-	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
-		spec.Config = threadConfig
-	}
-	return spec
-}
-
-func (a *App) buildWorkspaceReadonlyTurnStartSpec(ctx context.Context, hostID, message string) turnStartSpec {
-	selectedHostID := defaultHostID(hostID)
-	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspaceReadonlyPrompt()
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
-	return turnStartSpec{
-		Cwd:                   a.cfg.DefaultWorkspace,
-		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
-		SandboxMode:           profile.Runtime.SandboxMode,
-		WritableRoots:         a.mainAgentWritableRoots(profile),
-		DeveloperInstructions: developerInstructions,
-		Input: []map[string]any{
-			{"type": "text", "text": message},
-		},
-		ReasoningEffort: profile.Runtime.ReasoningEffort,
-	}
-}
-
-func (a *App) buildWorkspaceOrchestrationThreadStartSpec(ctx context.Context, sessionID string, mission *orchestrator.Mission) threadStartSpec {
+func (a *App) buildSingleHostReActThreadStartSpec(ctx context.Context, sessionID string) threadStartSpec {
+	spec := a.buildSingleHostThreadStartSpec(ctx, sessionID)
 	session := a.store.EnsureSession(sessionID)
 	selectedHostID := defaultHostID(session.SelectedHostID)
+	spec.DeveloperInstructions = appendReActLoopInstructions(
+		spec.DeveloperInstructions,
+		a.buildReActLoopInstructions(reActLoopKindSingleHost, sessionID, selectedHostID, false),
+	)
+	spec.DynamicTools = append([]map[string]any{askUserQuestionDynamicTool()}, spec.DynamicTools...)
+	spec.ThreadConfigHash = a.singleHostReActThreadConfigHash(selectedHostID)
+	return spec
+}
+
+func (a *App) buildSingleHostReActTurnStartSpec(ctx context.Context, sessionID string, req chatRequest) turnStartSpec {
+	spec := a.buildSingleHostTurnStartSpec(ctx, req)
+	spec.DeveloperInstructions = appendReActLoopInstructions(
+		spec.DeveloperInstructions,
+		a.buildReActLoopInstructions(reActLoopKindSingleHost, sessionID, defaultHostID(req.HostID), true),
+	)
+	return spec
+}
+
+func (a *App) buildWorkspaceReActThreadStartSpec(ctx context.Context, sessionID, hostID string) threadStartSpec {
+	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspacePrompt(strings.TrimSpace(mission.Title), strings.TrimSpace(mission.Summary))
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, false); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
+	developerInstructions := a.buildWorkspaceReActDeveloperInstructions(sessionID, selectedHostID, "", "", false)
 	spec := threadStartSpec{
 		Model:                 profile.Runtime.Model,
 		Cwd:                   a.cfg.DefaultWorkspace,
@@ -188,7 +122,7 @@ func (a *App) buildWorkspaceOrchestrationThreadStartSpec(ctx context.Context, se
 		SandboxMode:           profile.Runtime.SandboxMode,
 		DeveloperInstructions: developerInstructions,
 		DynamicTools:          a.workspaceDynamicTools(sessionID),
-		ThreadConfigHash:      a.workspaceOrchestrationThreadConfigHash(selectedHostID),
+		ThreadConfigHash:      a.workspaceReActThreadConfigHash(selectedHostID),
 	}
 	if threadConfig := a.buildMainAgentThreadConfig(ctx, profile, selectedHostID); len(threadConfig) > 0 {
 		spec.Config = threadConfig
@@ -196,14 +130,10 @@ func (a *App) buildWorkspaceOrchestrationThreadStartSpec(ctx context.Context, se
 	return spec
 }
 
-func (a *App) buildWorkspaceOrchestrationTurnStartSpec(ctx context.Context, sessionID string, mission *orchestrator.Mission, message string) turnStartSpec {
-	session := a.store.EnsureSession(sessionID)
-	selectedHostID := defaultHostID(session.SelectedHostID)
+func (a *App) buildWorkspaceReActTurnStartSpec(ctx context.Context, sessionID, hostID, message string) turnStartSpec {
+	selectedHostID := defaultHostID(hostID)
 	profile := a.mainAgentProfile()
-	developerInstructions := orchestrator.BuildWorkspacePrompt(strings.TrimSpace(mission.Title), strings.TrimSpace(mission.Summary))
-	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, true); base != "" {
-		developerInstructions = developerInstructions + "\n\n" + base
-	}
+	developerInstructions := a.buildWorkspaceReActDeveloperInstructions(sessionID, selectedHostID, "", "", true)
 	return turnStartSpec{
 		Cwd:                   a.cfg.DefaultWorkspace,
 		ApprovalPolicy:        profile.Runtime.ApprovalPolicy,
@@ -215,6 +145,60 @@ func (a *App) buildWorkspaceOrchestrationTurnStartSpec(ctx context.Context, sess
 		},
 		ReasoningEffort: profile.Runtime.ReasoningEffort,
 	}
+}
+
+func appendReActLoopInstructions(base, extra string) string {
+	base = strings.TrimSpace(base)
+	extra = strings.TrimSpace(extra)
+	switch {
+	case base == "":
+		return extra
+	case extra == "":
+		return base
+	default:
+		return base + "\n\n" + extra
+	}
+}
+
+func (a *App) buildWorkspaceReActDeveloperInstructions(sessionID, hostID, title, summary string, turnScoped bool) string {
+	selectedHostID := defaultHostID(hostID)
+	profile := a.mainAgentProfile()
+	developerInstructions := orchestrator.BuildWorkspaceReActPrompt(strings.TrimSpace(title), strings.TrimSpace(summary))
+	if base := a.renderMainAgentDeveloperInstructions(profile, selectedHostID, turnScoped); base != "" {
+		developerInstructions = developerInstructions + "\n\n" + base
+	}
+	return appendReActLoopInstructions(
+		developerInstructions,
+		a.buildReActLoopInstructions(reActLoopKindWorkspace, sessionID, selectedHostID, turnScoped),
+	)
+}
+
+func (a *App) buildReActLoopInstructions(kind, sessionID, hostID string, turnScoped bool) string {
+	scope := "thread"
+	if turnScoped {
+		scope = "turn"
+	}
+	lines := []string{
+		"ReAct agent loop runtime attachment:",
+		"- Loop stages are explicit and replaceable: 1 context_preprocess, 2 attachment_injection, 3 model_stream_call, 4 error_recovery, 5 tool_execution, 6 postprocess, 7 loop_decision.",
+		fmt.Sprintf("- Scope=%s session=%s kind=%s selectedHost=%s.", scope, sessionID, kind, defaultHostID(hostID)),
+		"- Use a while-style ReAct loop mentally: reason, call tools only when needed, observe tool results, then continue or finish.",
+		"- If the next action would inspect hosts, start worker dispatch, or mutate state and the user's intent is ambiguous, ask the user first with ask_user_question (the platform AskUserQuestion equivalent).",
+		"- For max-token continuation, resume directly with no apology and no recap.",
+	}
+	if kind == reActLoopKindWorkspace {
+		lines = append(lines,
+			"- Workspace policy: do not expose route/planner internals; do not dispatch workers until the user has clearly authorized execution or approved the plan.",
+			"- Workspace policy: single-host readonly checks must use readonly_host_inspect or other readonly tools only; server-local readonly diagnosis must not use built-in commandExecution because it bypasses workspace evidence projection.",
+			"- Workspace plan mode: use enter_plan_mode for complex or high-risk planning, update_plan for the plan evidence, and exit_plan_mode to request approval before DispatchWorkers/orchestrator_dispatch_tasks.",
+			"- Workspace tool-result contract: if a tool result contains next_required_tool or required_next_tool, call that tool next; do not answer in plain text or repeat the same clarification.",
+		)
+	} else {
+		lines = append(lines,
+			"- Single-host policy: act only on the selected host context; ask before high-risk or ambiguous operations.",
+		)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (a *App) buildWorkerThreadStartSpec(mission *orchestrator.Mission, task *orchestrator.TaskRun, hostID string) threadStartSpec {

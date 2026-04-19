@@ -1,95 +1,220 @@
 package config
 
 import (
-	"strings"
+	"os"
+	"reflect"
 	"testing"
+	"time"
+
+	"pgregory.net/rapid"
 )
 
-func TestValidAgentBootstrapTokenSupportsRotationList(t *testing.T) {
-	cfg := Config{
-		HostAgentBootstrapToken:  "current-token",
-		HostAgentBootstrapTokens: []string{"current-token", "previous-token"},
-	}
-
-	if !cfg.ValidAgentBootstrapToken("current-token") {
-		t.Fatalf("expected current token to be accepted")
-	}
-	if !cfg.ValidAgentBootstrapToken("previous-token") {
-		t.Fatalf("expected previous token to be accepted during rotation")
-	}
-	if cfg.ValidAgentBootstrapToken("wrong-token") {
-		t.Fatalf("expected wrong token to be rejected")
-	}
-}
-
-func TestAgentHostAllowedUsesAllowlistWhenConfigured(t *testing.T) {
-	cfg := Config{
-		AllowedAgentHostIDs: []string{"linux-01", "linux-02"},
-	}
-
-	if !cfg.AgentHostAllowed("linux-01") {
-		t.Fatalf("expected allowed host id to pass")
-	}
-	if cfg.AgentHostAllowed("linux-03") {
-		t.Fatalf("expected unknown host id to be rejected")
+func clearLLMEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"USE_BIFROST",
+		"LLM_PROVIDER",
+		"LLM_MODEL",
+		"LLM_API_KEY",
+		"LLM_API_KEYS",
+		"LLM_BASE_URL",
+		"LLM_FALLBACK_PROVIDER",
+		"LLM_FALLBACK_MODEL",
+		"LLM_FALLBACK_API_KEY",
+		"LLM_COMPACT_MODEL",
+		"CODEX_API_KEY",
+	} {
+		t.Setenv(key, "")
 	}
 }
 
-func TestBootstrapTokensDoesNotAppendDefaultFallbackWhenRotationListIsConfigured(t *testing.T) {
-	t.Setenv("HOST_AGENT_BOOTSTRAP_TOKENS", "rotated-a,rotated-b")
-	t.Setenv("HOST_AGENT_BOOTSTRAP_TOKEN", "")
+func TestLoad_BifrostDefaults(t *testing.T) {
+	clearLLMEnv(t)
 
-	tokens := bootstrapTokens()
-	if len(tokens) != 2 {
-		t.Fatalf("expected only rotation tokens, got %v", tokens)
+	cfg := Load()
+
+	if !cfg.UseBifrost {
+		t.Fatal("expected UseBifrost default true")
 	}
-	for _, token := range tokens {
-		if token == "change-me" {
-			t.Fatalf("expected default token to be excluded when rotation list is configured")
+	if cfg.LLMProvider != "openai" {
+		t.Fatalf("expected default LLMProvider openai, got %q", cfg.LLMProvider)
+	}
+	if cfg.LLMModel != "gpt-4o-mini" {
+		t.Fatalf("expected default LLMModel gpt-4o-mini, got %q", cfg.LLMModel)
+	}
+	if cfg.LLMCompactModel != "gpt-4o-mini" {
+		t.Fatalf("expected default LLMCompactModel gpt-4o-mini, got %q", cfg.LLMCompactModel)
+	}
+	if cfg.LLMAPIKey != "" {
+		t.Fatalf("expected empty default LLMAPIKey, got %q", cfg.LLMAPIKey)
+	}
+}
+
+func TestLoad_BifrostConfigFromEnv(t *testing.T) {
+	clearLLMEnv(t)
+	t.Setenv("USE_BIFROST", "false")
+	t.Setenv("LLM_PROVIDER", "anthropic")
+	t.Setenv("LLM_MODEL", "claude-sonnet-4-20250514")
+	t.Setenv("LLM_API_KEY", "primary-key")
+	t.Setenv("LLM_API_KEYS", "backup-1,backup-2")
+	t.Setenv("LLM_BASE_URL", "https://example.test/v1")
+	t.Setenv("LLM_FALLBACK_PROVIDER", "openai")
+	t.Setenv("LLM_FALLBACK_MODEL", "gpt-4.1-mini")
+	t.Setenv("LLM_FALLBACK_API_KEY", "fallback-key")
+	t.Setenv("LLM_COMPACT_MODEL", "claude-3-5-haiku")
+
+	cfg := Load()
+
+	if cfg.UseBifrost {
+		t.Fatal("expected UseBifrost=false from env")
+	}
+	if cfg.LLMProvider != "anthropic" || cfg.LLMModel != "claude-sonnet-4-20250514" {
+		t.Fatalf("unexpected provider/model: %s %s", cfg.LLMProvider, cfg.LLMModel)
+	}
+	if cfg.LLMAPIKey != "primary-key" {
+		t.Fatalf("expected primary key, got %q", cfg.LLMAPIKey)
+	}
+	if cfg.LLMBaseURL != "https://example.test/v1" {
+		t.Fatalf("unexpected LLMBaseURL %q", cfg.LLMBaseURL)
+	}
+	if cfg.LLMFallbackProvider != "openai" || cfg.LLMFallbackModel != "gpt-4.1-mini" || cfg.LLMFallbackAPIKey != "fallback-key" {
+		t.Fatalf("unexpected fallback config: %#v", cfg)
+	}
+	if cfg.LLMCompactModel != "claude-3-5-haiku" {
+		t.Fatalf("unexpected compact model %q", cfg.LLMCompactModel)
+	}
+	wantKeys := []string{"primary-key", "backup-1", "backup-2"}
+	if !reflect.DeepEqual(cfg.LLMAPIKeys, wantKeys) {
+		t.Fatalf("LLMAPIKeys = %#v, want %#v", cfg.LLMAPIKeys, wantKeys)
+	}
+}
+
+func TestLoad_LLMAPIKeyFallsBackToCodexAPIKey(t *testing.T) {
+	clearLLMEnv(t)
+	t.Setenv("CODEX_API_KEY", "legacy-codex-key")
+
+	cfg := Load()
+
+	if cfg.LLMAPIKey != "legacy-codex-key" {
+		t.Fatalf("expected LLMAPIKey to fall back to CODEX_API_KEY, got %q", cfg.LLMAPIKey)
+	}
+	if !reflect.DeepEqual(cfg.LLMAPIKeys, []string{"legacy-codex-key"}) {
+		t.Fatalf("expected primary key promoted into LLMAPIKeys, got %#v", cfg.LLMAPIKeys)
+	}
+}
+
+func TestLoad_CorootRoutingDefaults(t *testing.T) {
+	// Clear any env vars that might interfere
+	os.Unsetenv("COROOT_PRIORITY")
+	os.Unsetenv("COROOT_FALLBACK_ENABLED")
+	os.Unsetenv("COROOT_HEALTH_CHECK_INTERVAL")
+
+	cfg := Load()
+
+	if cfg.CorootPriority != "coroot_first" {
+		t.Errorf("CorootPriority = %q, want %q", cfg.CorootPriority, "coroot_first")
+	}
+	if cfg.CorootFallbackEnabled != true {
+		t.Errorf("CorootFallbackEnabled = %v, want true", cfg.CorootFallbackEnabled)
+	}
+	if cfg.CorootHealthCheckInterval != 30*time.Second {
+		t.Errorf("CorootHealthCheckInterval = %v, want %v", cfg.CorootHealthCheckInterval, 30*time.Second)
+	}
+}
+
+func TestLoad_CorootRoutingFromEnv(t *testing.T) {
+	t.Setenv("COROOT_PRIORITY", "local_first")
+	t.Setenv("COROOT_FALLBACK_ENABLED", "false")
+	t.Setenv("COROOT_HEALTH_CHECK_INTERVAL", "1m")
+
+	cfg := Load()
+
+	if cfg.CorootPriority != "local_first" {
+		t.Errorf("CorootPriority = %q, want %q", cfg.CorootPriority, "local_first")
+	}
+	if cfg.CorootFallbackEnabled != false {
+		t.Errorf("CorootFallbackEnabled = %v, want false", cfg.CorootFallbackEnabled)
+	}
+	if cfg.CorootHealthCheckInterval != time.Minute {
+		t.Errorf("CorootHealthCheckInterval = %v, want %v", cfg.CorootHealthCheckInterval, time.Minute)
+	}
+}
+
+func TestLoad_CorootRCAEnabledDefault(t *testing.T) {
+	os.Unsetenv("COROOT_RCA_ENABLED")
+
+	cfg := Load()
+
+	if cfg.CorootRCAEnabled != false {
+		t.Errorf("CorootRCAEnabled = %v, want false", cfg.CorootRCAEnabled)
+	}
+}
+
+func TestLoad_CorootRCAEnabledFromEnv(t *testing.T) {
+	t.Setenv("COROOT_RCA_ENABLED", "true")
+
+	cfg := Load()
+
+	if cfg.CorootRCAEnabled != true {
+		t.Errorf("CorootRCAEnabled = %v, want true", cfg.CorootRCAEnabled)
+	}
+}
+
+func TestCorootFullConfigured(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		token   string
+		want    bool
+	}{
+		{"both set", "http://coroot:8080", "secret-token", true},
+		{"only base URL", "http://coroot:8080", "", false},
+		{"only token", "", "secret-token", false},
+		{"neither set", "", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				CorootBaseURL: tt.baseURL,
+				CorootToken:   tt.token,
+			}
+			if got := cfg.CorootFullConfigured(); got != tt.want {
+				t.Errorf("CorootFullConfigured() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// **Validates: Requirements 2.1**
+// Property 18: Config WEB_SEARCH_MODE loading — when WEB_SEARCH_MODE is set,
+// Load() returns that value; when unset, it defaults to "native".
+func TestProperty_ConfigWebSearchModeLoading(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		// Clear env vars that might interfere.
+		for _, key := range []string{
+			"WEB_SEARCH_MODE",
+			"BRAVE_API_KEY",
+		} {
+			t.Setenv(key, "")
 		}
-	}
-}
 
-func TestAgentSourceAllowedUsesCIDRAllowlist(t *testing.T) {
-	cfg := Config{
-		AllowedAgentCIDRs: []string{"100.64.0.0/10", "10.0.0.0/8"},
-	}
+		// Decide whether to set the env var or leave it unset.
+		setEnv := rapid.Bool().Draw(rt, "setEnv")
 
-	if !cfg.AgentSourceAllowed("100.100.1.8:18090") {
-		t.Fatalf("expected tailscale source to be allowed")
-	}
-	if !cfg.AgentSourceAllowed("10.20.30.40:18090") {
-		t.Fatalf("expected intranet source to be allowed")
-	}
-	if cfg.AgentSourceAllowed("8.8.8.8:18090") {
-		t.Fatalf("expected public source to be rejected")
-	}
-}
+		if setEnv {
+			value := rapid.SampledFrom([]string{"duckduckgo", "brave", "custom-engine"}).Draw(rt, "mode")
+			t.Setenv("WEB_SEARCH_MODE", value)
 
-func TestValidateHostAgentSecurityProduction(t *testing.T) {
-	cfg := Config{
-		GRPCAddr:                 "100.64.0.12:18090",
-		GRPCTLSCertFile:          "/certs/server.pem",
-		GRPCTLSKeyFile:           "/certs/server-key.pem",
-		GRPCTLSClientCAFile:      "/certs/ca.pem",
-		HostAgentBootstrapTokens: []string{"rotated-token"},
-		AllowedAgentHostIDs:      []string{"linux-01"},
-		AllowedAgentCIDRs:        []string{"100.64.0.0/10"},
-		HostAgentSecurityProfile: "production",
-	}
-
-	if err := cfg.ValidateHostAgentSecurity(); err != nil {
-		t.Fatalf("expected production config to pass, got %v", err)
-	}
-
-	cfg.GRPCAddr = "0.0.0.0:18090"
-	if err := cfg.ValidateHostAgentSecurity(); err == nil || !strings.Contains(err.Error(), "explicit private/VPN address") {
-		t.Fatalf("expected wildcard bind rejection, got %v", err)
-	}
-
-	cfg.GRPCAddr = "100.64.0.12:18090"
-	cfg.GRPCTLSClientCAFile = ""
-	if err := cfg.ValidateHostAgentSecurity(); err == nil || !strings.Contains(err.Error(), "AIOPS_GRPC_TLS_CLIENT_CA_FILE") {
-		t.Fatalf("expected mTLS requirement, got %v", err)
-	}
+			cfg := Load()
+			if cfg.WebSearchMode != value {
+				rt.Fatalf("WebSearchMode = %q, want %q", cfg.WebSearchMode, value)
+			}
+		} else {
+			cfg := Load()
+			if cfg.WebSearchMode != "native" {
+				rt.Fatalf("WebSearchMode = %q, want default %q", cfg.WebSearchMode, "native")
+			}
+		}
+	})
 }

@@ -409,10 +409,8 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="toggle-row">
-            <label class="toggle-field">
-              <input v-model="draft.defaultEnabled" type="checkbox" />
-              <span>默认启用</span>
-            </label>
+            <n-switch v-model:value="draft.defaultEnabled" />
+            <span style="margin-left:8px;">默认启用</span>
             <div class="toggle-hint">
               {{ draft.defaultActivationMode === "explicit_only" ? "仅在显式提及时激活。" : draft.defaultActivationMode === "disabled" ? "该 skill 当前不可用。" : "默认启用。"}}
             </div>

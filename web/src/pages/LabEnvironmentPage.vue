@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { NTag, NButton, NButtonGroup } from "naive-ui";
 import {
   ArrowLeftIcon,
   PlayIcon,
@@ -219,60 +220,43 @@ onBeforeUnmount(() => {
     <section v-if="activeTab === 'environments'" class="tab-content">
       <div class="section-card">
         <h2>环境列表</h2>
-        <table class="data-table" v-if="environments.length" role="table">
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>场景</th>
-              <th>节点数</th>
-              <th>状态</th>
-              <th>更新时间</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="env in environments" :key="env.id">
-              <td>{{ env.name }}</td>
-              <td>{{ env.scenario || "-" }}</td>
-              <td>{{ (env.topology && env.topology.nodes) ? env.topology.nodes.length : 0 }}</td>
-              <td><span class="status-badge" :class="statusBadgeClass(env.status)">{{ env.status }}</span></td>
-              <td>{{ env.updatedAt || "-" }}</td>
-              <td class="action-cell">
-                <button v-if="env.status !== 'running'" class="action-btn action-start" type="button" @click="startEnv(env.id)" title="启动">
-                  <PlayIcon :size="13" /> 启动
-                </button>
-                <button v-if="env.status === 'running'" class="action-btn action-stop" type="button" @click="stopEnv(env.id)" title="停止">
-                  <SquareIcon :size="13" /> 停止
-                </button>
-                <button v-if="env.status === 'running'" class="action-btn action-reset" type="button" @click="resetEnv(env.id)" title="重置">
-                  <RotateCcwIcon :size="13" /> 重置
-                </button>
-                <button class="action-btn action-delete" type="button" @click="deleteEnv(env.id)" title="删除">
-                  <TrashIcon :size="13" /> 删除
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-else-if="!loading" class="empty-hint">暂无实验环境。点击"新建环境"创建。</p>
+        <n-data-table
+          v-if="environments.length"
+          :columns="[
+            { title: '名称', key: 'name' },
+            { title: '场景', key: 'scenario', render: (row) => row.scenario || '-' },
+            { title: '节点数', key: 'nodes', render: (row) => (row.topology && row.topology.nodes) ? row.topology.nodes.length : 0 },
+            { title: '状态', key: 'status', render: (row) => h(NTag, { type: row.status === 'running' ? 'success' : row.status === 'stopped' ? 'warning' : row.status === 'error' ? 'error' : 'default', size: 'small' }, { default: () => row.status }) },
+            { title: '更新时间', key: 'updatedAt', render: (row) => row.updatedAt || '-' },
+            { title: '操作', key: 'actions', render: (row) => h(NButtonGroup, { size: 'small' }, { default: () => [row.status !== 'running' ? h(NButton, { size: 'small', type: 'success', onClick: () => startEnv(row.id) }, { default: () => '启动' }) : null, row.status === 'running' ? h(NButton, { size: 'small', type: 'warning', onClick: () => stopEnv(row.id) }, { default: () => '停止' }) : null, row.status === 'running' ? h(NButton, { size: 'small', onClick: () => resetEnv(row.id) }, { default: () => '重置' }) : null, h(NButton, { size: 'small', type: 'error', onClick: () => deleteEnv(row.id) }, { default: () => '删除' })].filter(Boolean) }) },
+          ]"
+          :data="environments"
+          :row-key="(row) => row.id"
+          :bordered="false"
+          size="small"
+        />
+        <n-empty v-else-if="!loading" description="暂无实验环境。点击「新建环境」创建。" />
       </div>
     </section>
 
     <!-- Templates Tab -->
     <section v-if="activeTab === 'templates'" class="tab-content">
-      <div class="template-grid">
-        <div v-for="tpl in scenarioTemplates" :key="tpl.name" class="template-card">
-          <h3>{{ tpl.label }}</h3>
-          <p>{{ tpl.description }}</p>
-          <div class="template-meta">
-            <span>{{ tpl.topology.nodes.length }} 节点</span>
-            <span>{{ tpl.topology.links.length }} 连接</span>
-          </div>
-          <button class="action-btn" type="button" @click="applyTemplate(tpl); showCreateDialog = true;">
-            <ZapIcon :size="13" /> 使用此模板
-          </button>
-        </div>
-      </div>
+      <n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen" :item-responsive="true">
+        <n-gi v-for="tpl in scenarioTemplates" :key="tpl.name" span="3 m:1">
+          <n-card hoverable>
+            <template #header>{{ tpl.label }}</template>
+            <p style="color:#64748b;font-size:13px;margin:0 0 12px;">{{ tpl.description }}</p>
+            <div class="template-meta">
+              <n-tag size="small">{{ tpl.topology.nodes.length }} 节点</n-tag>
+              <n-tag size="small">{{ tpl.topology.links.length }} 连接</n-tag>
+            </div>
+            <n-button size="small" @click="applyTemplate(tpl); showCreateDialog = true;">
+              <template #icon><ZapIcon :size="13" /></template>
+              使用此模板
+            </n-button>
+          </n-card>
+        </n-gi>
+      </n-grid>
     </section>
 
     <!-- Create Dialog -->

@@ -1,4 +1,6 @@
 import { defineStore } from "pinia";
+import { cloneUiFixturePayload } from "./lib/uiFixturePresets";
+import { resolveUiFixtureRuntime } from "./lib/uiFixtureRuntime";
 
 const MCP_DRAWER_STORAGE_KEY = "codex:mcp-drawer:v1";
 const MCP_DRAWER_PIN_LIMIT = 8;
@@ -256,18 +258,25 @@ function isTerminalTurnPhase(phase) {
   return ["idle", "completed", "failed", "aborted"].includes(String(phase || "").trim().toLowerCase());
 }
 
-function normalizeTurnRuntime(turn = {}, fallbackHostId = "server-local") {
+function normalizeTurnRuntime(turn = {}, fallbackHostId = "server-local", previousTurn = null) {
   const phase = String(turn?.phase || "idle").trim().toLowerCase() || "idle";
+  const active = !isTerminalTurnPhase(phase) && !!turn?.active;
+  const pendingStart =
+    active || isTerminalTurnPhase(phase)
+      ? false
+      : Boolean(turn?.pendingStart ?? previousTurn?.pendingStart);
   return {
-    active: !isTerminalTurnPhase(phase) && !!turn?.active,
+    active,
     phase,
     hostId: turn?.hostId || fallbackHostId,
     startedAt: turn?.startedAt || null,
+    pendingStart,
     ...turn,
-    active: !isTerminalTurnPhase(phase) && !!turn?.active,
+    active,
     phase,
     hostId: turn?.hostId || fallbackHostId,
     startedAt: turn?.startedAt || null,
+    pendingStart,
   };
 }
 
@@ -1212,6 +1221,20 @@ export const useAppStore = defineStore("app", {
       hosts: [],
       cards: [],
       approvals: [],
+      agentLoop: null,
+      agentLoopIterations: [],
+      incidentEvents: [],
+      verificationRecords: [],
+      currentStage: "",
+      currentMode: "",
+      currentLane: "",
+      requiredNextTool: "",
+      finalGateStatus: "",
+      missingRequirements: [],
+      turnPolicy: null,
+      promptEnvelope: null,
+      toolInvocations: [],
+      evidenceSummaries: [],
       config: {
         oauthConfigured: false,
         codexAlive: false,
@@ -1224,6 +1247,7 @@ export const useAppStore = defineStore("app", {
         phase: "idle", // idle | thinking | planning | waiting_approval | waiting_input | executing | finalizing | completed | failed | aborted
         hostId: "",
         startedAt: null,
+        pendingStart: false,
       },
       codex: {
         status: "connected", // connected | reconnecting | disconnected | stopped
@@ -1475,10 +1499,28 @@ export const useAppStore = defineStore("app", {
       this.snapshot.hosts = data.hosts || [];
       this.snapshot.cards = data.cards || [];
       this.snapshot.approvals = data.approvals || [];
+      this.snapshot.agentLoop = data.agentLoop || null;
+      this.snapshot.agentLoopIterations = Array.isArray(data.agentLoopIterations) ? data.agentLoopIterations : [];
+      this.snapshot.incidentEvents = Array.isArray(data.incidentEvents) ? data.incidentEvents : [];
+      this.snapshot.verificationRecords = Array.isArray(data.verificationRecords) ? data.verificationRecords : [];
+      this.snapshot.currentStage = compactText(data.currentStage || "");
+      this.snapshot.currentMode = compactText(data.currentMode || "");
+      this.snapshot.currentLane = compactText(data.currentLane || "");
+      this.snapshot.requiredNextTool = compactText(data.requiredNextTool || "");
+      this.snapshot.finalGateStatus = compactText(data.finalGateStatus || "");
+      this.snapshot.missingRequirements = Array.isArray(data.missingRequirements) ? data.missingRequirements : [];
+      this.snapshot.turnPolicy = data.turnPolicy || null;
+      this.snapshot.promptEnvelope = data.promptEnvelope || null;
+      this.snapshot.toolInvocations = Array.isArray(data.toolInvocations) ? data.toolInvocations : [];
+      this.snapshot.evidenceSummaries = Array.isArray(data.evidenceSummaries) ? data.evidenceSummaries : [];
       this.snapshot.config = data.config || this.snapshot.config;
       /* Merge runtime if server sends it */
       if (data.runtime) {
-        this.runtime.turn = normalizeTurnRuntime(data.runtime.turn || {}, this.snapshot.selectedHostId || "server-local");
+        this.runtime.turn = normalizeTurnRuntime(
+          data.runtime.turn || {},
+          this.snapshot.selectedHostId || "server-local",
+          this.runtime.turn,
+        );
         this.runtime.codex = {
           status: "connected",
           retryAttempt: this.runtime.codex.retryAttempt,
@@ -1561,6 +1603,29 @@ export const useAppStore = defineStore("app", {
           active: !isTerminalTurnPhase(phase),
         },
         this.snapshot.selectedHostId || "server-local",
+        this.runtime.turn,
+      );
+    },
+    markTurnPendingStart(phase = "thinking") {
+      this.runtime.turn = normalizeTurnRuntime(
+        {
+          ...this.runtime.turn,
+          phase,
+          active: false,
+          pendingStart: true,
+        },
+        this.snapshot.selectedHostId || "server-local",
+        this.runtime.turn,
+      );
+    },
+    clearTurnPendingStart() {
+      this.runtime.turn = normalizeTurnRuntime(
+        {
+          ...this.runtime.turn,
+          pendingStart: false,
+        },
+        this.snapshot.selectedHostId || "server-local",
+        this.runtime.turn,
       );
     },
     resetActivity() {
@@ -1583,15 +1648,27 @@ export const useAppStore = defineStore("app", {
       };
     },
     async fetchState() {
+      const fixture = resolveUiFixtureRuntime();
+      if (fixture?.state) {
+        this.applySnapshot(cloneUiFixturePayload(fixture.state));
+        return true;
+      }
       try {
         const response = await fetch("/api/v1/state", { credentials: "include" });
         const data = await response.json();
         this.applySnapshot(data);
+        return true;
       } catch (e) {
         console.error("Failed to fetch state:", e);
+        return false;
       }
     },
     async fetchSessions() {
+      const fixture = resolveUiFixtureRuntime();
+      if (fixture?.sessions) {
+        this.applySessions(cloneUiFixturePayload(fixture.sessions));
+        return true;
+      }
       this.historyLoading = true;
       try {
         const response = await fetch("/api/v1/sessions", { credentials: "include" });
@@ -2083,6 +2160,11 @@ export const useAppStore = defineStore("app", {
         window.clearTimeout(this._heartbeatTimer);
         this._heartbeatTimer = null;
       }
+      if (this._snapshotThrottleTimer) {
+        clearTimeout(this._snapshotThrottleTimer);
+        this._snapshotThrottleTimer = null;
+      }
+      this._pendingSnapshotData = null;
     },
     disconnectWs() {
       const socket = this._socket;
@@ -2217,6 +2299,13 @@ export const useAppStore = defineStore("app", {
     },
     connectWs() {
       this.disconnectWs();
+      const fixture = resolveUiFixtureRuntime();
+      if (fixture) {
+        this.wsStatus = "connected";
+        this.runtime.codex.status = "connected";
+        this.runtime.codex.lastError = "";
+        return;
+      }
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
       const touchHeartbeat = () => {
@@ -2264,7 +2353,29 @@ export const useAppStore = defineStore("app", {
           if (data?.type === "heartbeat") {
             return;
           }
-          this.applySnapshot(data);
+          // Task 10: Streaming snapshot throttle (48ms)
+          const turnPhase = String(data?.runtime?.turn?.phase || "").trim().toLowerCase();
+          const isNonStreaming = ["completed", "failed", "aborted", "waiting_approval", "idle"].includes(turnPhase);
+          if (isNonStreaming) {
+            // Non-streaming: immediate update
+            if (this._snapshotThrottleTimer) {
+              clearTimeout(this._snapshotThrottleTimer);
+              this._snapshotThrottleTimer = null;
+            }
+            this.applySnapshot(data);
+          } else {
+            // Streaming: throttle at 48ms
+            this._pendingSnapshotData = data;
+            if (!this._snapshotThrottleTimer) {
+              this._snapshotThrottleTimer = setTimeout(() => {
+                this._snapshotThrottleTimer = null;
+                if (this._pendingSnapshotData) {
+                  this.applySnapshot(this._pendingSnapshotData);
+                  this._pendingSnapshotData = null;
+                }
+              }, 48);
+            }
+          }
         } catch (e) {
           console.error("Failed to parse websocket message:", e);
         }

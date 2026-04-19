@@ -41,6 +41,24 @@ export function useChatScrollState({
   const unreadAnchorId = ref("");
   const lastReadItemId = ref("");
   let contentResizeObserver = null;
+  let resizeSyncHandle = 0;
+  let userScrolledAt = 0;
+
+  function scheduleResizeSync(callback) {
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      return window.requestAnimationFrame(callback);
+    }
+    return window.setTimeout(callback, 16);
+  }
+
+  function cancelResizeSync(handle) {
+    if (!handle) return;
+    if (typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(handle);
+      return;
+    }
+    window.clearTimeout(handle);
+  }
 
   const showUnreadPill = computed(() => unreadCount.value > 0 && !isPinnedToBottom.value);
 
@@ -66,6 +84,9 @@ export function useChatScrollState({
     const el = event?.target || scrollContainer?.value;
     const pinned = isNearBottom(el, threshold);
     isPinnedToBottom.value = pinned;
+    if (!pinned) {
+      userScrolledAt = Date.now();
+    }
     if (pinned) {
       markRead();
     }
@@ -104,13 +125,25 @@ export function useChatScrollState({
     nextTick(() => scrollToBottom(true));
     if (typeof ResizeObserver !== "undefined" && scrollContent?.value) {
       contentResizeObserver = new ResizeObserver(() => {
-        scrollToBottom();
+        // Sync on the next frame so streamed updates stay smooth without waiting for a coarse debounce.
+        if (resizeSyncHandle) {
+          cancelResizeSync(resizeSyncHandle);
+        }
+        resizeSyncHandle = scheduleResizeSync(() => {
+          resizeSyncHandle = 0;
+          if (Date.now() - userScrolledAt < 1500 && !isPinnedToBottom.value) return;
+          scrollToBottom();
+        });
       });
       contentResizeObserver.observe(scrollContent.value);
     }
   });
 
   onBeforeUnmount(() => {
+    if (resizeSyncHandle) {
+      cancelResizeSync(resizeSyncHandle);
+      resizeSyncHandle = 0;
+    }
     if (contentResizeObserver) {
       contentResizeObserver.disconnect();
       contentResizeObserver = null;

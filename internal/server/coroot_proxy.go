@@ -18,6 +18,16 @@ var allowedCorootReadPaths = []string{
 	"/api/v1/status",
 }
 
+// iframeCorootPaths lists additional path prefixes allowed when iframe mode
+// is enabled. These cover the Coroot UI pages and static assets needed to
+// render the embedded view.
+var iframeCorootPaths = []string{
+	"/",        // Coroot 首页
+	"/static/", // 静态资源
+	"/assets/", // 资源文件
+	"/p/",      // Coroot 项目路径
+}
+
 // handleCorootProxy is a session-authenticated reverse proxy to the Coroot
 // backend. It filters request paths to only allow read-only endpoints and
 // injects the Coroot auth token before forwarding.
@@ -40,7 +50,7 @@ func (a *App) handleCorootProxy(w http.ResponseWriter, r *http.Request, _ string
 		upstreamPath = "/"
 	}
 
-	if !isAllowedCorootPath(upstreamPath) {
+	if !isAllowedCorootPath(upstreamPath, false) {
 		http.Error(w, `{"error":"path not allowed"}`, http.StatusForbidden)
 		return
 	}
@@ -72,11 +82,19 @@ func (a *App) handleCorootProxy(w http.ResponseWriter, r *http.Request, _ string
 }
 
 // isAllowedCorootPath checks whether the upstream path matches one of the
-// read-only prefixes.
-func isAllowedCorootPath(path string) bool {
+// read-only prefixes. When iframeMode is true, additional paths required for
+// the embedded Coroot UI are also permitted.
+func isAllowedCorootPath(path string, iframeMode bool) bool {
 	for _, prefix := range allowedCorootReadPaths {
 		if strings.HasPrefix(path, prefix) {
 			return true
+		}
+	}
+	if iframeMode {
+		for _, prefix := range iframeCorootPaths {
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
 		}
 	}
 	return false
